@@ -1734,7 +1734,7 @@
     listOffRequests: listOffRequests, addOffRequest: addOffRequest, deleteOffRequest: deleteOffRequest,
     getStoreOpenedToday: getStoreOpenedToday, markStoreOpened: markStoreOpened,
     loadManagerPins: loadManagerPins, saveManagerPins: saveManagerPins,
-    lookupFreshaVoucher: lookupFreshaVoucher,
+    lookupFreshaVoucher: lookupFreshaVoucher, logVoucherLookup: logVoucherLookup,
     activeSmTrialEcs: activeSmTrialEcs,
     listAllManagers: listAllManagers, listTodayManagerClockins: listTodayManagerClockins,
     addManagerClockinWithMeta: addManagerClockinWithMeta,
@@ -1929,6 +1929,18 @@
     var n = parseFloat(String(a == null ? "" : a).replace(/[^0-9.]/g, ""));
     return isNaN(n) ? null : n;
   }
+  // The kiosk forces a full-length code, but the match only uses the last 4 —
+  // so "000000000000XXXX" (12 zeros / ones / any single repeated char + the
+  // real last 4) sails straight through. Flag a code whose prefix-before-last4
+  // is a single repeated character (or empty) as a likely shortcut, so the UI
+  // can warn and the lookup log can mark it.
+  function _isDegeneratePrefix(prefix) {
+    var p = String(prefix || "");
+    if (p.length === 0) return true;
+    var first = p.charAt(0);
+    for (var i = 1; i < p.length; i++) { if (p.charAt(i) !== first) return false; }
+    return true;
+  }
   async function lookupFreshaVoucher(typed, amount) {
     var c = client(); if (!c) throw new Error("Supabase not configured");
     // Strip spaces / dashes so a 16-char code pasted as "ABCD EFGH IJKL MNOP"
@@ -1938,9 +1950,10 @@
     var full   = String(typed || "").replace(/[^A-Za-z0-9]/g, "");
     var minLen = (cfg.voucherMinChars != null) ? cfg.voucherMinChars : 16;
     if (full.length < minLen) {
-      return { found: false, matches: [], last4: "", tooShort: true, minLen: minLen };
+      return { found: false, matches: [], last4: "", tooShort: true, minLen: minLen, suspiciousPad: false };
     }
     var last4 = full.slice(-4).toUpperCase();
+    var suspiciousPad = _isDegeneratePrefix(full.slice(0, -4));
     var res = await c.from("vouchers").select("fresha_code, amount, balance, used_total, txn_count, last_used_at, txns").eq("last4", last4);
     if (res.error) { console.error("lookupFreshaVoucher:", res.error); throw res.error; }
     var matches = (res.data || [])
@@ -1959,7 +1972,38 @@
     if (want != null) {
       matches = matches.filter(function (m) { return _normAmt(m.amount) === want; });
     }
-    return { found: matches.length > 0, matches: matches, last4: last4, tooShort: false };
+    return { found: matches.length > 0, matches: matches, last4: last4, tooShort: false, suspiciousPad: suspiciousPad };
+  }
+  // Append one row to the voucher_lookups audit table for every kiosk lookup.
+  // Best-effort: a failure here must NEVER block the manager's lookup. The HR
+  // portal Voucher Admin → Audit tab reads these rows. `rec` carries the manager
+  // identity (from the kiosk PIN gate), the typed code, the result, and the
+  // suspicious-pad flag.
+  async function logVoucherLookup(rec) {
+    try {
+      var c = client(); if (!c) return;
+      rec = rec || {};
+      var now = new Date();
+      var ymd = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0") + "-" + String(now.getDate()).padStart(2, "0");
+      var row = {
+        id:             "vl_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8),
+        looked_up_at:   now.toISOString(),
+        looked_up_ymd:  ymd,
+        branch:         branch(),
+        manager_ec:     rec.managerEc != null ? String(rec.managerEc) : null,
+        manager_name:   rec.managerName != null ? String(rec.managerName) : null,
+        typed_code:     String(rec.typedCode || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase() || null,
+        last4:          rec.last4 != null ? String(rec.last4) : null,
+        amount:         rec.amount != null ? String(rec.amount) : null,
+        found:          !!rec.found,
+        fresha_code:    rec.freshaCode != null ? String(rec.freshaCode) : null,
+        match_count:    (typeof rec.matchCount === "number") ? rec.matchCount : null,
+        balance_at:     (rec.balanceAt == null || rec.balanceAt === "") ? null : Number(rec.balanceAt),
+        suspicious_pad: !!rec.suspiciousPad
+      };
+      var res = await c.from("voucher_lookups").insert(row);
+      if (res.error) console.warn("logVoucherLookup:", res.error);
+    } catch (e) { console.warn("logVoucherLookup failed:", e); }
   }
   async function listAllManagers() {
     var c = client(); if (!c) return [];

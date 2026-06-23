@@ -2208,6 +2208,102 @@
     return { count: c.count || 0, lastPaymentDate: (last.data && last.data[0] && last.data[0].payment_date) || null };
   }
 
+  // ---------- Voucher-lookup audit (Voucher Admin → Audit tab) ----------
+  // The kiosk logs every gift-card lookup into `voucher_lookups`. These helpers
+  // join those rows to gift_card_transactions (by fresha_code) so an owner can
+  // ask, over a chosen window: was each looked-up voucher redeemed, and on the
+  // SAME day? Both are only as fresh as the last Fresha CSV import — callers
+  // surface `lastPaymentDate` as the "transactions last updated" caveat.
+  function _ymdLocal(d) {
+    var x = (d instanceof Date) ? d : new Date(d);
+    if (isNaN(x.getTime())) return null;
+    return x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0") + "-" + String(x.getDate()).padStart(2, "0");
+  }
+  // Thin reader — voucher_lookups in [fromYmd, toYmd], newest first.
+  async function listVoucherLookups(opts) {
+    opts = opts || {};
+    var q = sb.from("voucher_lookups").select("*");
+    if (opts.fromYmd) q = q.gte("looked_up_ymd", opts.fromYmd);
+    if (opts.toYmd)   q = q.lte("looked_up_ymd", opts.toYmd);
+    if (opts.flaggedOnly) q = q.eq("suspicious_pad", true);
+    q = q.order("looked_up_at", { ascending: false });
+    var res = await q;
+    if (res.error) throw res.error;
+    return res.data || [];
+  }
+  // Shared loader: found lookups in the window + their cards' transactions,
+  // grouped by upper(fresha_code), plus the global latest-payment date.
+  async function _loadLookupsAndTxns(fromYmd, toYmd) {
+    var look = await sb.from("voucher_lookups").select("*")
+      .gte("looked_up_ymd", fromYmd).lte("looked_up_ymd", toYmd)
+      .eq("found", true).order("looked_up_at", { ascending: false });
+    if (look.error) throw look.error;
+    var lookups = look.data || [];
+    var codeSet = {};
+    lookups.forEach(function (l) { if (l.fresha_code) codeSet[String(l.fresha_code).toUpperCase()] = true; });
+    var codes = Object.keys(codeSet);
+    var txnsByCode = {};
+    for (var i = 0; i < codes.length; i += 100) {
+      var chunk = codes.slice(i, i + 100);
+      var tr = await sb.from("gift_card_transactions")
+        .select("id, gift_card, payment_date, location, amount, txn_type, client_name, appointment_ref")
+        .in("gift_card", chunk);
+      if (tr.error) throw tr.error;
+      (tr.data || []).forEach(function (t) {
+        var k = String(t.gift_card || "").toUpperCase();
+        (txnsByCode[k] = txnsByCode[k] || []).push(t);
+      });
+    }
+    Object.keys(txnsByCode).forEach(function (k) {
+      txnsByCode[k].sort(function (a, b) { return new Date(a.payment_date) - new Date(b.payment_date); });
+    });
+    var stats = await giftCardTxnStats().catch(function () { return { lastPaymentDate: null }; });
+    return { lookups: lookups, txnsByCode: txnsByCode, lastPaymentDate: stats.lastPaymentDate || null };
+  }
+  // Button A — looked up but redeemed on a DIFFERENT day (or never). Returns
+  // one entry per lookup that has redemptions but none on the lookup's own day,
+  // with the card's full transaction rows so the owner can see when it was used.
+  async function auditVoucherDayMatch(opts) {
+    opts = opts || {};
+    var data = await _loadLookupsAndTxns(opts.fromYmd, opts.toYmd);
+    var mismatches = [];
+    data.lookups.forEach(function (l) {
+      var code = String(l.fresha_code || "").toUpperCase();
+      var txns = data.txnsByCode[code] || [];
+      if (!txns.length) return;                          // never redeemed → Button B's job
+      var onDay = txns.some(function (t) { return _ymdLocal(t.payment_date) === l.looked_up_ymd; });
+      if (!onDay) mismatches.push({ lookup: l, txns: txns });
+    });
+    return { window: { fromYmd: opts.fromYmd, toYmd: opts.toYmd }, lastPaymentDate: data.lastPaymentDate, mismatches: mismatches };
+  }
+  // Button B — looked up but NOT redeemed (no transaction on/after the lookup
+  // day). Grouped by card so repeated lookups of the same unused voucher show
+  // as one row with a count (the "repetitive lookups" signal).
+  async function auditUnredeemedLookups(opts) {
+    opts = opts || {};
+    var data = await _loadLookupsAndTxns(opts.fromYmd, opts.toYmd);
+    var byCode = {};
+    data.lookups.forEach(function (l) {
+      var code = String(l.fresha_code || "").toUpperCase();
+      var txns = data.txnsByCode[code] || [];
+      var redeemedSince = txns.some(function (t) {
+        var y = _ymdLocal(t.payment_date);
+        return y && l.looked_up_ymd && y >= l.looked_up_ymd;
+      });
+      if (redeemedSince) return;                         // a redemption followed the lookup → fine
+      var row = byCode[code] || { fresha_code: l.fresha_code, last4: l.last4, amount: l.amount,
+        lookupCount: 0, lastLookupAt: null, lastBy: null, branch: null, balanceAt: l.balance_at };
+      row.lookupCount += 1;
+      if (!row.lastLookupAt || l.looked_up_at > row.lastLookupAt) {
+        row.lastLookupAt = l.looked_up_at; row.lastBy = l.manager_name; row.branch = l.branch; row.balanceAt = l.balance_at;
+      }
+      byCode[code] = row;
+    });
+    var cards = Object.keys(byCode).map(function (k) { return byCode[k]; })
+      .sort(function (a, b) { return (b.lookupCount - a.lookupCount) || (String(b.lastLookupAt) > String(a.lastLookupAt) ? 1 : -1); });
+    return { window: { fromYmd: opts.fromYmd, toYmd: opts.toYmd }, lastPaymentDate: data.lastPaymentDate, cards: cards };
+  }
+
   window.BOA_DB = {
     isReady:       true,
     sb:            sb,
@@ -2223,6 +2319,10 @@
     recomputeVoucherBalancesForCodes: recomputeVoucherBalancesForCodes,
     recomputeAllVoucherBalances: recomputeAllVoucherBalances,
     giftCardTxnStats: giftCardTxnStats,
+    // Voucher-lookup audit (Voucher Admin → Audit tab)
+    listVoucherLookups: listVoucherLookups,
+    auditVoucherDayMatch: auditVoucherDayMatch,
+    auditUnredeemedLookups: auditUnredeemedLookups,
 
     // Schedules
     loadSchedule: loadSchedule,

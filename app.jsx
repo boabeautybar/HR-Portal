@@ -7683,7 +7683,14 @@ function VoucherAdmin({ currentUser }) {
       <div style={{ display: "flex", gap: 8, marginBottom: 18, flexWrap: "wrap" }}>
         <button onClick={() => setSub("uploads")} style={subTab(sub === "uploads")}>📤 Transaction Uploads</button>
         <button onClick={() => setSub("entry")} style={subTab(sub === "entry")}>🎟️ Voucher Entry</button>
+        {currentUser?.isOwner && (
+          <button onClick={() => setSub("audit")} style={subTab(sub === "audit")}>🔍 Audit</button>
+        )}
       </div>
+
+      {sub === "audit" && currentUser?.isOwner && (
+        <VoucherAuditPanel />
+      )}
 
       {sub === "entry" && (
         <VoucherEntryGrid />
@@ -7738,6 +7745,171 @@ function VoucherAdmin({ currentUser }) {
         </div>
       )}
       </>)}
+    </div>
+  );
+}
+
+// Owner-only audit of kiosk voucher lookups (Voucher Admin → Audit sub-tab).
+// Joins the voucher_lookups log to gift_card_transactions to answer, over a
+// chosen window: was each looked-up card redeemed, and on the SAME day? Plus a
+// flagged list (padded/shortcut entries + same-card/different-full-code). All
+// reads go through window.BOA_DB helpers; results are only as fresh as the last
+// Gift Card Transactions upload (surfaced as a caveat).
+function VoucherAuditPanel() {
+  const todayYmd = () => { const n = new Date(); return n.getFullYear() + "-" + String(n.getMonth() + 1).padStart(2, "0") + "-" + String(n.getDate()).padStart(2, "0"); };
+  const daysAgoYmd = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
+  const [fromYmd, setFromYmd] = React.useState(daysAgoYmd(30));
+  const [toYmd, setToYmd] = React.useState(todayYmd());
+  const [busy, setBusy] = React.useState("");           // which action is running
+  const [error, setError] = React.useState(null);
+  const [dayMatch, setDayMatch] = React.useState(null);
+  const [unredeemed, setUnredeemed] = React.useState(null);
+  const [flagged, setFlagged] = React.useState(null);
+
+  const card = { background: "#fff", border: "1px solid #FBCFE8", borderRadius: 12, padding: "16px 18px", marginBottom: 16 };
+  const fmtMoney = (x) => { const n = Number(String(x == null ? "" : x).replace(/[^0-9.\-]/g, "")); return isNaN(n) ? "—" : "R" + n.toFixed(2); };
+  const fmtDate = (x) => x ? new Date(x).toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" }) : "—";
+  const fmtDateTime = (x) => x ? new Date(x).toLocaleString(undefined, { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "—";
+  const setPreset = (n) => { setFromYmd(daysAgoYmd(n)); setToYmd(todayYmd()); };
+
+  const runDayMatch = async () => {
+    if (!(window.BOA_DB && window.BOA_DB.auditVoucherDayMatch)) { setError("Database not ready."); return; }
+    setBusy("daymatch"); setError(null);
+    try { setDayMatch(await window.BOA_DB.auditVoucherDayMatch({ fromYmd, toYmd })); }
+    catch (e) { setError("Audit failed: " + ((e && e.message) || e)); }
+    finally { setBusy(""); }
+  };
+  const runUnredeemed = async () => {
+    if (!(window.BOA_DB && window.BOA_DB.auditUnredeemedLookups)) { setError("Database not ready."); return; }
+    setBusy("unredeemed"); setError(null);
+    try { setUnredeemed(await window.BOA_DB.auditUnredeemedLookups({ fromYmd, toYmd })); }
+    catch (e) { setError("Audit failed: " + ((e && e.message) || e)); }
+    finally { setBusy(""); }
+  };
+  const runFlagged = async () => {
+    if (!(window.BOA_DB && window.BOA_DB.listVoucherLookups)) { setError("Database not ready."); return; }
+    setBusy("flagged"); setError(null);
+    try {
+      const all = await window.BOA_DB.listVoucherLookups({ fromYmd, toYmd });
+      const padded = all.filter(l => l.suspicious_pad);
+      // Same card, different full code: group lookups by fresha_code, flag any
+      // card seen with more than one distinct typed code.
+      const byCode = {};
+      all.forEach(l => {
+        if (!l.fresha_code || !l.typed_code) return;
+        const k = String(l.fresha_code).toUpperCase();
+        (byCode[k] = byCode[k] || new Set()).add(l.typed_code);
+      });
+      const mismatches = Object.keys(byCode).filter(k => byCode[k].size > 1).map(k => ({
+        fresha_code: k, codes: Array.from(byCode[k]),
+        lookups: all.filter(l => String(l.fresha_code).toUpperCase() === k)
+      }));
+      setFlagged({ padded, mismatches });
+    } catch (e) { setError("Audit failed: " + ((e && e.message) || e)); }
+    finally { setBusy(""); }
+  };
+
+  const th = { textAlign: "left", padding: "6px 8px", borderBottom: "1px solid #FBCFE8", fontSize: 11, color: "#831843", textTransform: "uppercase", letterSpacing: "0.04em" };
+  const td = { padding: "6px 8px", borderBottom: "1px solid #FCE7F3", fontSize: 12.5 };
+  const btn = (active) => ({ background: active ? "#FBCFE8" : "#BE185D", color: active ? "#831843" : "#fff", border: "none", borderRadius: 9, padding: "10px 16px", fontSize: 13, fontWeight: 700, fontFamily: "inherit", cursor: active ? "default" : "pointer" });
+
+  return (
+    <div style={{ maxWidth: 880 }}>
+      <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 14 }}>
+        Audit kiosk gift-card lookups against Fresha redemptions. Results are only as fresh as the latest Gift Card Transactions upload.
+      </div>
+
+      <div style={card}>
+        <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 10 }}>Lookup window</div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+          {[{ n: 1, l: "Today" }, { n: 7, l: "7 days" }, { n: 30, l: "30 days" }, { n: 90, l: "90 days" }, { n: 365, l: "1 year" }].map(p => (
+            <button key={p.n} onClick={() => setPreset(p.n)} style={{ background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>{p.l}</button>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <label style={{ fontSize: 12, color: "#831843" }}>From<br />
+            <input type="date" value={fromYmd} max={toYmd} onChange={e => setFromYmd(e.target.value)} style={{ marginTop: 4, padding: "6px 8px", border: "1px solid #FBCFE8", borderRadius: 8, fontFamily: "inherit", fontSize: 13 }} />
+          </label>
+          <label style={{ fontSize: 12, color: "#831843" }}>To<br />
+            <input type="date" value={toYmd} min={fromYmd} max={todayYmd()} onChange={e => setToYmd(e.target.value)} style={{ marginTop: 4, padding: "6px 8px", border: "1px solid #FBCFE8", borderRadius: 8, fontFamily: "inherit", fontSize: 13 }} />
+          </label>
+        </div>
+      </div>
+
+      {error && (<div style={{ padding: "11px 14px", borderRadius: 9, fontSize: 13, fontWeight: 600, background: "#fef2f2", border: "1px solid #fecaca", color: "#991b1b", marginBottom: 16 }}>⚠️ {error}</div>)}
+
+      <div style={card}>
+        <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 4 }}>Looked up vs redeemed — day mismatch</div>
+        <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 12 }}>Cards looked up in the window that were redeemed on a <strong>different day</strong> than the lookup. Returns the affected cards and their full transactions.</div>
+        <button onClick={runDayMatch} disabled={!!busy} style={btn(busy === "daymatch")}>{busy === "daymatch" ? "Auditing…" : "Run day-match audit"}</button>
+        {dayMatch && (
+          <div style={{ marginTop: 14 }}>
+            <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 8 }}>{dayMatch.mismatches.length} mismatch{dayMatch.mismatches.length === 1 ? "" : "es"} · transactions latest: {fmtDate(dayMatch.lastPaymentDate)}</div>
+            {dayMatch.mismatches.length === 0 ? <div style={{ fontSize: 13, color: "#14532d" }}>✓ No day mismatches in this window.</div> : dayMatch.mismatches.map((m, i) => (
+              <div key={i} style={{ border: "1px solid #FCE7F3", borderRadius: 10, padding: 10, marginBottom: 10 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#831843" }}>•••• {m.lookup.last4} · {fmtMoney(m.lookup.amount)} · <code>{m.lookup.fresha_code}</code></div>
+                <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 6 }}>Looked up {fmtDateTime(m.lookup.looked_up_at)} by {m.lookup.manager_name || "—"} @ {m.lookup.branch || "—"}</div>
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <thead><tr><th style={th}>Redeemed</th><th style={th}>Branch</th><th style={th}>Client</th><th style={th}>Appt</th><th style={{ ...th, textAlign: "right" }}>Amount</th></tr></thead>
+                  <tbody>{m.txns.map((t, j) => (
+                    <tr key={j}><td style={td}>{fmtDateTime(t.payment_date)}</td><td style={td}>{t.location || "—"}</td><td style={td}>{t.client_name || "—"}</td><td style={td}><code>{t.appointment_ref || "—"}</code></td><td style={{ ...td, textAlign: "right" }}>{fmtMoney(t.amount)}</td></tr>
+                  ))}</tbody>
+                </table>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div style={card}>
+        <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 4 }}>Looked up but not redeemed</div>
+        <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 12 }}>Cards looked up in the window with <strong>no redemption</strong> on or after the lookup day. Repeated lookups of the same unused card show as a count.</div>
+        <button onClick={runUnredeemed} disabled={!!busy} style={btn(busy === "unredeemed")}>{busy === "unredeemed" ? "Auditing…" : "Find unredeemed lookups"}</button>
+        {unredeemed && (
+          <div style={{ marginTop: 14 }}>
+            <div style={{ fontSize: 12, color: "#b45309", marginBottom: 8 }}>⚠️ Accurate to the latest transaction upload — transactions last updated: <strong>{fmtDate(unredeemed.lastPaymentDate)}</strong>. A card may simply not be in the latest CSV yet.</div>
+            {unredeemed.cards.length === 0 ? <div style={{ fontSize: 13, color: "#14532d" }}>✓ Every looked-up card has a following redemption.</div> : (
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead><tr><th style={th}>Card</th><th style={th}>Amount</th><th style={{ ...th, textAlign: "center" }}>Lookups</th><th style={th}>Last looked up</th><th style={th}>By</th><th style={th}>Branch</th></tr></thead>
+                <tbody>{unredeemed.cards.map((c, i) => (
+                  <tr key={i}><td style={td}>•••• {c.last4} · <code>{c.fresha_code}</code></td><td style={td}>{fmtMoney(c.amount)}</td><td style={{ ...td, textAlign: "center", fontWeight: 700, color: c.lookupCount > 1 ? "#b91c1c" : "#831843" }}>{c.lookupCount}</td><td style={td}>{fmtDateTime(c.lastLookupAt)}</td><td style={td}>{c.lastBy || "—"}</td><td style={td}>{c.branch || "—"}</td></tr>
+                ))}</tbody>
+              </table>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div style={card}>
+        <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 4 }}>Flagged lookups</div>
+        <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 12 }}>Shortcut/padded entries (the characters before the last 4 are all the same) and cards looked up with more than one distinct full code.</div>
+        <button onClick={runFlagged} disabled={!!busy} style={btn(busy === "flagged")}>{busy === "flagged" ? "Checking…" : "Show flagged lookups"}</button>
+        {flagged && (
+          <div style={{ marginTop: 14 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#831843", marginBottom: 6 }}>Padded / shortcut entries ({flagged.padded.length})</div>
+            {flagged.padded.length === 0 ? <div style={{ fontSize: 12, color: "#14532d", marginBottom: 12 }}>✓ None.</div> : (
+              <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 14 }}>
+                <thead><tr><th style={th}>When</th><th style={th}>By</th><th style={th}>Branch</th><th style={th}>Typed code</th><th style={th}>Amount</th><th style={{ ...th, textAlign: "center" }}>Found</th></tr></thead>
+                <tbody>{flagged.padded.map((l, i) => (
+                  <tr key={i}><td style={td}>{fmtDateTime(l.looked_up_at)}</td><td style={td}>{l.manager_name || "—"}</td><td style={td}>{l.branch || "—"}</td><td style={td}><code>{l.typed_code}</code></td><td style={td}>{fmtMoney(l.amount)}</td><td style={{ ...td, textAlign: "center" }}>{l.found ? "✓" : "✗"}</td></tr>
+                ))}</tbody>
+              </table>
+            )}
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#831843", marginBottom: 6 }}>Same card, different full code ({flagged.mismatches.length})</div>
+            {flagged.mismatches.length === 0 ? <div style={{ fontSize: 12, color: "#14532d" }}>✓ None.</div> : flagged.mismatches.map((m, i) => (
+              <div key={i} style={{ border: "1px solid #FCE7F3", borderRadius: 10, padding: 10, marginBottom: 10 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#831843", marginBottom: 6 }}><code>{m.fresha_code}</code> — {m.codes.length} distinct codes</div>
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <thead><tr><th style={th}>When</th><th style={th}>By</th><th style={th}>Typed code</th></tr></thead>
+                  <tbody>{m.lookups.map((l, j) => (
+                    <tr key={j}><td style={td}>{fmtDateTime(l.looked_up_at)}</td><td style={td}>{l.manager_name || "—"}</td><td style={td}><code>{l.typed_code}</code></td></tr>
+                  ))}</tbody>
+                </table>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
