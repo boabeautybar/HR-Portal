@@ -27505,6 +27505,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const sid = r.staff_id != null ? r.staff_id : (r.staff.id != null ? r.staff.id : null);
           if (ec && sid != null && !(ec in _mgrEcToStaffId)) _mgrEcToStaffId[ec] = sid;
         });
+        // "Is this EC a manager?" — sourced straight from the managers list so a
+        // manager with no resolvable staff_id (missing record id AND no clock-in
+        // to map them by) is STILL recognised as a manager. _mgrEcToStaffId alone
+        // missed those, which let an unbacked phantom "On Time" slip through the
+        // manager-only guards and render green even on an Annual-leave day.
+        const _mgrEcSet = new Set();
+        (managers || []).forEach(m => { const e = String((m && m.ec) || "").trim(); if (e) _mgrEcSet.add(e); });
+        const _isMgrEc = (ec) => { const t = String(ec || "").trim(); return _mgrEcSet.has(t) || (t in _mgrEcToStaffId) || (ec in _mgrEcToStaffId); };
         const _mgrStatusByEcYmd = {};
         const _mgrProofByEcYmd = {};
         const _mgrNoteByEcYmd = {};
@@ -27717,15 +27725,25 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // Scoped to the loaded clock-in window so distant historical cells we
         // can't verify against a clock-in are left untouched.
         const _isMgrPhantomPresence = (ec, d) => {
-          if (!_mgrEcToStaffId[ec]) return false;            // managers only
+          if (!_isMgrEc(ec)) return false;                   // managers only
           const cell = attGrid[ec] && attGrid[ec][d];
           if (!cell) return false;
           const bare = cell.indexOf("~") === 0 ? cell.slice(1) : cell;
           if (bare !== "on" && bare !== "late") return false; // only presence cells can be phantoms
-          const sv = attSched[ec] && attSched[ec][d];
-          if (sv === "W" || sv === "WE" || sv === "WB" || sv === "WM" || sv === "WL" || sv === "E") return false; // genuinely rostered
           const dayObj = days.find(x => x.d === d);
           if (!dayObj) return false;
+          // On approved leave (Leave Planner) or unpaid legal-status leave this
+          // day, an unbacked On Time / Late is a stale schedule mirror that must
+          // never mask the leave — a manager on Annual with no kiosk clock-in
+          // should never read green "On Time". The leave record itself is the
+          // proof of absence, so this holds even when the saved schedule grid
+          // still reads "W" and even outside the loaded clock-in window. A real
+          // clock-in on a leave day is a separate anomaly (surfaced as a review
+          // flag), so only strip the cell when nobody actually clocked in.
+          const _onLv = (_onLeaveByEcYmd[String(ec).trim()] || {})[dayObj.ymd] || _onUnpaidLegal(ec, dayObj.ymd);
+          if (_onLv && !_mgrCheckedIn(ec, dayObj.ymd)) return true;
+          const sv = attSched[ec] && attSched[ec][d];
+          if (sv === "W" || sv === "WE" || sv === "WB" || sv === "WM" || sv === "WL" || sv === "E") return false; // genuinely rostered
           if (dayObj.ymd < _mgrCheckinFromYmd) return false;  // outside loaded clock-in window — can't verify, leave as-is
           return !_mgrCheckedIn(ec, dayObj.ymd);              // phantom only when there's no real clock-in
         };
@@ -27775,7 +27793,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 // paid Annual. So 'al'/'el' cells are overridden by the record.
                 const _gv = attGrid[ec] && attGrid[ec][d];
                 const _gvBare = _gv ? (_gv.indexOf("~") === 0 ? _gv.slice(1) : _gv) : "";
-                if (!_gvBare || _gvBare === "al" || _gvBare === "el") return _lc;   // 'el' (emergency, unpaid) or 'al' (annual)
+                // Also win over an unbacked manager "On Time"/"Late" (phantom
+                // presence — no kiosk clock-in): a stale schedule mirror must not
+                // mask approved leave by rendering the day green On Time.
+                if (!_gvBare || _gvBare === "al" || _gvBare === "el" || _isMgrPhantomPresence(ec, d)) return _lc;   // 'el' (emergency, unpaid) or 'al' (annual)
               }
             }
           }
@@ -27787,7 +27808,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             if (_do && _onUnpaidLegal(ec, _do.ymd)) {
               const _gv = attGrid[ec] && attGrid[ec][d];
               const _gvBare = _gv ? (_gv.indexOf("~") === 0 ? _gv.slice(1) : _gv) : "";
-              if (!_gvBare || _gvBare === "al" || _gvBare === "el") return "el";
+              // Win over an unbacked manager "On Time"/"Late" too (see above).
+              if (!_gvBare || _gvBare === "al" || _gvBare === "el" || _isMgrPhantomPresence(ec, d)) return "el";
             }
           }
           // Tech-loan override: the home branch's loaned-out cell mirrors
