@@ -56,6 +56,11 @@
     return out;
   }
   function ymdStr(dt) { return dt.getFullYear() + "-" + pad(dt.getMonth() + 1) + "-" + pad(dt.getDate()); }
+  // Human label for a cycle's date span, e.g. "25 Jun – 24 Jul".
+  function cycleRange(ym) {
+    var ds = periodDays(ym), a = ds[0], b = ds[ds.length - 1];
+    return a.getDate() + " " + MON[a.getMonth()] + " – " + b.getDate() + " " + MON[b.getMonth()];
+  }
 
   function fetchGrid(store, isManager, ymEnd) {
     var key = (isManager ? "boa_mgrsched_" : "boa_sched_") + store + "_" + (isManager ? shiftYm(ymEnd, -1) : ymEnd);
@@ -149,22 +154,36 @@
       }
       state.name = name; state.store = store; state.ec = found.ecKey; state.isManager = found.isManager;
       try { localStorage.setItem("myboa_sched_v1", JSON.stringify({ store: store, ec: found.ecKey })); } catch (_e) {}
-      // Collect OFF days that are today or later, from the CURRENT pay cycle only
-      // (25th → 24th). Next cycle isn't offered — extra days are for this cycle.
+      // Collect OFF days that are today or later. We offer the rest of the
+      // CURRENT pay cycle (25th → 24th) AND the whole NEXT cycle as soon as its
+      // schedule has been published — managers often publish next month's
+      // roster before this one ends, so staff can put their hand up for extra
+      // days in the new cycle early. An unpublished next cycle simply has no
+      // saved grid, so fetchGrid returns null and it's skipped automatically.
       var today = new Date(); today.setHours(0, 0, 0, 0);
-      return fetchGrid(store, found.isManager, ymEnd).then(function (grid) {
-        var offs = [];
-        if (grid) {
-          var row = grid[found.ecKey];
-          periodDays(ymEnd).forEach(function (dt) {
-            if (dt < today) return;
-            if (cellOff(getCell(row, dt), found.isManager)) offs.push(dt);
-          });
-        }
-        offs.sort(function (a, b) { return a - b; });
-        state.offDays = offs;
+      var cyclesToOffer = [ymEnd, shiftYm(ymEnd, 1)];
+      return Promise.all(cyclesToOffer.map(function (ym) {
+        return fetchGrid(store, found.isManager, ym).then(function (grid) {
+          var offs = [];
+          if (grid) {
+            var row = grid[findEcKey(grid, ec) || found.ecKey];
+            periodDays(ym).forEach(function (dt) {
+              if (dt < today) return;
+              if (cellOff(getCell(row, dt), found.isManager)) offs.push(dt);
+            });
+          }
+          offs.sort(function (a, b) { return a - b; });
+          return { ym: ym, isCurrent: ym === ymEnd, offs: offs };
+        });
+      })).then(function (groups) {
+        state.offGroups = groups.filter(function (g) { return g.offs.length; });
+        state.offDays = groups.reduce(function (acc, g) { return acc.concat(g.offs); }, [])
+          .sort(function (a, b) { return a - b; });
         setBusy(false, "find", "Find my off days");
-        if (!offs.length) { renderIdentify("You have no remaining off days in this pay cycle, so there's no extra day to offer."); return; }
+        if (!state.offDays.length) {
+          renderIdentify("You have no remaining off days to offer right now. Once your next schedule is published you'll be able to offer days in the new cycle too.");
+          return;
+        }
         renderPick();
       });
     }).catch(function () {
@@ -175,14 +194,26 @@
 
   // ── Step 2: pick an off day + submit ──────────────────────────
   function renderPick() {
-    var opts = state.offDays.map(function (dt) {
+    function dayOpt(dt) {
       return '<option value="' + ymdStr(dt) + '">' + DOW[dt.getDay()] + " " + dt.getDate() + " " + MON[dt.getMonth()] + '</option>';
-    }).join("");
+    }
+    var groups = state.offGroups || [];
+    var opts, spansCycles = groups.length > 1;
+    if (spansCycles) {
+      // Off days span this cycle AND the next published one — group them so it's
+      // obvious which roster each day belongs to.
+      opts = groups.map(function (g) {
+        return '<optgroup label="' + esc((g.isCurrent ? "This cycle" : "Next cycle") + " · " + cycleRange(g.ym)) + '">'
+          + g.offs.map(dayOpt).join("") + '</optgroup>';
+      }).join("");
+    } else {
+      opts = state.offDays.map(dayOpt).join("");
+    }
     root.innerHTML = [
       '<div class="brand"><img src="boa-logo.png" alt="BOA Beauty Bar" /></div>',
       '<h1>Offer an extra day</h1>',
       '<p class="sub">' + esc(state.name) + ' · ' + esc(state.store) + ' · ' + esc(state.ec) + '</p>',
-      '<div class="note">Pick one of <b>your off days</b> below to offer. It only counts once your <b>regional manager approves</b> it — keep checking <b>My BOA → My schedule</b>, where an approved day shows as <b>Extra</b>.</div>',
+      '<div class="note">Pick one of <b>your off days</b> below to offer.' + (spansCycles ? ' You can offer a day in <b>this cycle</b> or the <b>next cycle</b> now that its schedule is out.' : '') + ' It only counts once your <b>regional manager approves</b> it — keep checking <b>My BOA → My schedule</b>, where an approved day shows as <b>Extra</b>.</div>',
       '<div class="card">',
         '<label class="field"><span>Off day you\'re offering to work</span>',
           '<select id="day">' + opts + '</select></label>',
