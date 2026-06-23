@@ -12505,6 +12505,30 @@ function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen,
   const _recent = (c) => { const t = Date.parse(c.promotedAt || c.updatedAt || c.addedAt || ""); return !!t && (Date.now() - t) < 45 * 86400000; };
   const trialOpen = (trialList || []).filter(c => _nt(c) && c.startDate && c.status !== "passed" && c.status !== "failed" && c.status !== "hired" && !c.freshaTrialOpened);
   const monthOpen = (trialList || []).filter(c => _nt(c) && (c.status === "passed" || c.promotedToOnboarding) && c.status !== "failed" && !c.freshaMonthOpened && _recent(c));
+  // Trial window — the 10 Mon–Fri (non-public-holiday) working days counted
+  // forward from the tech's in-store start date (same rule the Schedule grid
+  // paints). Surfaced on each trial card so whoever opens the profile on Fresha
+  // knows the exact date range to open them for, instead of guessing.
+  const _pad2 = (n) => String(n).padStart(2, "0");
+  const _trialWindow = (c) => {
+    if (!c || !c.startDate) return null;
+    const start = new Date(c.startDate + "T12:00:00");
+    if (isNaN(start)) return null;
+    let firstYmd = null, lastYmd = null, count = 0;
+    const cur = new Date(start);
+    for (let guard = 0; guard < 60 && count < 10; guard++) {
+      const y = cur.getFullYear(), m = cur.getMonth() + 1, dd = cur.getDate();
+      const ymd = y + "-" + _pad2(m) + "-" + _pad2(dd);
+      const dow = cur.getDay();
+      const isHol = !!(saHolidays(y) || {})[ymd];
+      if (dow !== 0 && dow !== 6 && !isHol) {
+        if (!firstYmd) firstYmd = ymd;
+        lastYmd = ymd; count++;
+      }
+      cur.setDate(cur.getDate() + 1);
+    }
+    return firstYmd ? { firstYmd, lastYmd, days: count } : null;
+  };
 
   // Manager profiles to create: a newly-onboarded manager (SSM/SM/AM) needs a
   // Fresha profile set up. Tracked on the onboarding record itself. Limited to
@@ -12724,7 +12748,9 @@ function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen,
         <div style={{ marginBottom: 22 }}>
           {secHead("🧪 Trial techs · " + (trialOpen.length + monthOpen.length) + " to open")}
           {secNote("Open trial techs on Fresha for their trial window, and again for the month once they pass.")}
-          {trialOpen.map(c => (
+          {trialOpen.map(c => {
+            const tw = _trialWindow(c);
+            return (
             <div key={"t-" + c._id} style={card}>
               <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                 <strong style={{ color: "#581c87", fontSize: 14 }}>{c.name}</strong>
@@ -12732,8 +12758,14 @@ function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen,
                 {chip("#ede9fe", "#6b21a8", "Trial opening")}
                 <span style={{ marginLeft: "auto" }}>{openBtn("Mark opened on Fresha", () => setTrialFresha(c._id, "freshaTrialOpened", true))}</span>
               </div>
+              <div style={{ marginTop: 6, fontSize: 12, color: "#6b21a8", fontWeight: 600 }}>
+                {tw
+                  ? <>🗓️ Open on Fresha for <strong>{fmtIncidentDate(tw.firstYmd)}</strong> → <strong>{fmtIncidentDate(tw.lastYmd)}</strong> <span style={{ color: "#9ca3af", fontWeight: 500 }}>· {tw.days} working day{tw.days === 1 ? "" : "s"} (Mon–Fri, excl. public holidays)</span></>
+                  : <span style={{ color: "#9ca3af", fontWeight: 500 }}>🗓️ No in-store start date set yet — add one to see the trial dates.</span>}
+              </div>
             </div>
-          ))}
+            );
+          })}
           {monthOpen.map(c => (
             <div key={"m-" + c._id} style={card}>
               <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
