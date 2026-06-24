@@ -1415,8 +1415,25 @@
     var res = await c.from("app_state").select("value").eq("key", "boa_news_v1").maybeSingle();
     if (res.error) { console.error("listNews:", res.error); return []; }
     var v = res.data && res.data.value;
-    if (Array.isArray(v)) return v;
-    return [];
+    if (!Array.isArray(v)) return [];
+    // Extra-Day announcements (edKind "offer") auto-expire from the feed once
+    // their offer is no longer claimable — filled, cancelled, expired (date
+    // passed) or deleted entirely. Posts without an edOfferId pass through
+    // untouched. We compute the live "claimable" set ONLY if such a post exists.
+    var hasEdPost = v.some(function (n) { return n && n.edKind === "offer" && n.edOfferId; });
+    if (!hasEdPost) return v;
+    var claimable = {};
+    try {
+      var offers = await loadEdOffers();
+      var today = (function () { var d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); })();
+      (offers || []).forEach(function (o) {
+        if (o && o.id && o.status === "open" && String(o.date || "") >= today) claimable[o.id] = true;
+      });
+    } catch (e) { return v; }   // on any error, don't hide anything
+    return v.filter(function (n) {
+      if (!n || n.edKind !== "offer" || !n.edOfferId) return true;   // not an ED post
+      return !!claimable[n.edOfferId];                               // keep only if still claimable
+    });
   }
 
   // ---------- Store open gate (NEW) ----------

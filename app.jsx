@@ -15709,7 +15709,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     try {
       const news = (await window.BOA_DB.loadByKey("boa_news_v1")) || [];
       const dLbl = new Date(ymd + "T12:00:00").toLocaleDateString(undefined, { weekday: "short", day: "2-digit", month: "short" });
-      const item = { ts: new Date().toISOString(), body: "✨ Extra day available — " + branch + " on " + dLbl + " (" + form.start + "–" + form.end + "). Open the kiosk to claim." };
+      // Tag the post with the offer id + kind so the kiosk can auto-drop this
+      // announcement once the offer is no longer claimable (filled / cancelled /
+      // expired / deleted) — see listNews() in kiosk/data.js.
+      const item = { ts: new Date().toISOString(), edKind: "offer", edOfferId: offer.id, body: "✨ Extra day available — " + branch + " on " + dLbl + " (" + form.start + "–" + form.end + "). Open the kiosk to claim." };
       await window.BOA_DB.saveByKey("boa_news_v1", [item].concat(Array.isArray(news) ? news : []));
     } catch (_) {}
     await refreshEd();
