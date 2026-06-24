@@ -3275,7 +3275,13 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete, smTrialActive, onStar
               </select>
             </div>
             <div><label style={lbl}>Role</label>
-              <select style={inp} value={f.role} onChange={e => set("role", e.target.value)}>
+              {/* Placeholder for a blank/unset role. A bare <select> with an
+                  empty value silently displays its first option (SSM) without
+                  it being chosen, so a role-less manager looked like an SSM and
+                  saved back blank — making her vanish from the Locations tiers.
+                  The explicit empty option surfaces the missing role instead. */}
+              <select style={inp} value={f.role || ""} onChange={e => set("role", e.target.value)}>
+                <option value="" disabled>— Select role —</option>
                 <option value="SSM">💎 Senior Store Manager (SSM)</option>
                 <option value="SM">👑 Store Manager (SM)</option>
                 <option value="AM">⭐ Assistant Manager (AM)</option>
@@ -22838,7 +22844,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         // block. effectiveRole is "SM" for trial AMs.
                         const ssm = mgrs.filter(m => (m.effectiveRole || m.role) === "SSM");
                         const sm = mgrs.filter(m => (m.effectiveRole || m.role) === "SM");
-                        const am = mgrs.filter(m => (m.effectiveRole || m.role) === "AM");
+                        // AM is the catch-all bottom tier: a real AM, or any
+                        // store manager whose `role` is blank/unknown (e.g. an
+                        // older onboard saved before Position carried through to
+                        // `role`). Without this, a branch manager with no role
+                        // matched none of the three tiers and silently dropped
+                        // off the card while still appearing on the Schedule.
+                        const am = mgrs.filter(m => {
+                          const r = m.effectiveRole || m.role;
+                          return r !== "SSM" && r !== "SM";
+                        });
                         if (allMgrs.length === 0 && (!salon.arrivingMgrs || salon.arrivingMgrs.length === 0) && (!salon.trialMgrs || salon.trialMgrs.length === 0) && (!salon.trialMgrsArriving || salon.trialMgrsArriving.length === 0)) return null;
                         return (
                           <div style={{ background: "#FCE7F3", border: "1px solid #FBCFE8", borderRadius: 10, padding: "9px 12px", marginBottom: 10 }}>
@@ -26778,7 +26793,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             address: obForm.homeAddress || null,
             idNumber: obForm.idDetails || null,
             boaPathways: !!obForm.boaPathways,
-            roleType: roleType // manager when a manager Position is picked, else tech
+            roleType: roleType, // manager when a manager Position is picked, else tech
+            // Carry the Position (SSM/SM/AM) onto the manager record as `role`.
+            // Without this the promoted manager saved with role = null, so the
+            // Locations card — which buckets managers into SSM/SM/AM tiers by
+            // (effectiveRole || role) — couldn't place her and she vanished from
+            // the Management Team section, even though the Schedule (which lists
+            // every manager at a branch regardless of role) still showed her.
+            ...(isMgrPos ? { role: obForm.position } : {})
           };
 
           let savedStaff;
