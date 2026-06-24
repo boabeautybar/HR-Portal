@@ -717,6 +717,13 @@
     if (res.error) return null;
     return (res.data && res.data.value) || null;
   }
+  // Generic upsert for a single app_state key (mirrors loadByKey). Used by
+  // features that own a small JSON blob/array (e.g. Extra-Day offers/requests).
+  async function saveByKey(key, value) {
+    var res = await sb.from("app_state").upsert({ key: key, value: value });
+    if (res.error) { console.error("saveByKey(" + key + "):", res.error); throw res.error; }
+    return value;
+  }
   // helpers used by the grid UI
   function currentSchedYm() {
     var d = new Date(), y = d.getFullYear(), m = d.getMonth() + 1;
@@ -2342,6 +2349,7 @@
     listRequestKeys: listRequestKeys,
     probeRequestTables: probeRequestTables,
     loadByKey: loadByKey,
+    saveByKey: saveByKey,
     currentSchedYm: currentSchedYm,
     currentAttYm: currentAttYm,
     periodDays: periodDays,

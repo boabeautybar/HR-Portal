@@ -652,6 +652,8 @@
       // catches a manager who walks in, opens the tablet, and stops at
       // the landing. Populated async by loadMgrClockinNagIntoPanel.
       '<div id="mgr-clockin-nag-slot" style="display:none"></div>' +
+      // Extra-Day offer alert — shows when Ops has published open extra shifts.
+      '<div id="ed-alert-slot" style="display:none"></div>' +
       // (Removed the "on emergency leave today" home panel — a tech on leave
       // already shows greyed out under Nail Tech Check-in, so no need to repeat
       // it big on the landing.)
@@ -690,6 +692,7 @@
     );
     loadKioskRemindersIntoPanel();
     loadMgrClockinNagIntoPanel();
+    loadEdAlertIntoSlot();
     if (window.BOA_FLOWS) { window.BOA_FLOWS.refreshEvalNag(); window.BOA_FLOWS.refreshCheckinNag(); window.BOA_FLOWS.refreshCashupNag(); }
     document.getElementById("tile-nailtech").onclick = function () {
       if (window.BOA_FLOWS) window.BOA_FLOWS.renderCheckin();
@@ -703,6 +706,166 @@
     };
     document.getElementById("tile-voucher").onclick = function () { renderVoucherLookup(); };
     document.getElementById("tile-guide").onclick = function () { renderCheckinGuide(); };
+  }
+
+  // ---------------- Extra Days (ED) ----------------
+  // Off-duty managers see published ED offers, claim one with their personal PIN,
+  // and can cancel a pending claim (PIN-gated, since the kiosk is shared).
+  // Approval happens back in the portal. Data: boa_mgr_ed_offers_v1 /
+  // boa_mgr_ed_requests_v1.
+  function _edTodayYmd() {
+    var n = new Date();
+    return n.getFullYear() + "-" + String(n.getMonth() + 1).padStart(2, "0") + "-" + String(n.getDate()).padStart(2, "0");
+  }
+  function _edFmtDate(ymd) {
+    try { return new Date(ymd + "T12:00:00").toLocaleDateString(undefined, { weekday: "short", day: "2-digit", month: "short" }); }
+    catch (_e) { return ymd; }
+  }
+  async function loadEdAlertIntoSlot() {
+    var slot = document.getElementById("ed-alert-slot");
+    if (!slot || !window.APP_DATA || !window.APP_DATA.loadEdOffers) return;
+    try {
+      var offers = await window.APP_DATA.loadEdOffers();
+      var today = _edTodayYmd();
+      var open = (offers || []).filter(function (o) { return o && o.status === "open" && o.date >= today; });
+      if (!open.length) { slot.style.display = "none"; slot.innerHTML = ""; return; }
+      slot.style.display = "block";
+      slot.innerHTML =
+        '<button type="button" id="ed-alert-btn" style="width:100%;text-align:left;border:none;cursor:pointer;background:linear-gradient(135deg,#BE185D,#E84B9B);color:#fff;border-radius:16px;padding:14px 18px;margin-bottom:14px;box-shadow:0 6px 18px rgba(190,24,93,0.28);display:flex;align-items:center;gap:14px">' +
+          '<div style="font-size:26px">⭐</div>' +
+          '<div style="flex:1;min-width:0">' +
+            '<div style="font-size:15px;font-weight:800">' + open.length + ' extra shift' + (open.length === 1 ? '' : 's') + ' available</div>' +
+            '<div style="font-size:12px;opacity:0.9">Tap to view and claim an extra day.</div>' +
+          '</div>' +
+          '<div style="font-size:20px">›</div>' +
+        '</button>';
+      var btn = document.getElementById("ed-alert-btn");
+      if (btn) btn.onclick = renderEdManager;
+    } catch (e) { console.warn("loadEdAlertIntoSlot:", e); slot.style.display = "none"; }
+  }
+
+  async function renderEdManager() {
+    setSublabel("Extra Days");
+    if (configMissing()) { setMain(configMissingHtml()); return; }
+    setMain(
+      '<section class="panel">' +
+        '<div class="panel-head"><h2>✨ Extra Days</h2><button class="link-btn link-btn-dark" id="back-home">← Back</button></div>' +
+        '<div id="ed-body"><div style="padding:8px 0;color:#6b7280">Loading…</div></div>' +
+      '</section>'
+    );
+    document.getElementById("back-home").onclick = renderManagerLanding;
+    var body = document.getElementById("ed-body");
+    var offers = [], requests = [];
+    try {
+      var loaded = await Promise.all([window.APP_DATA.loadEdOffers(), window.APP_DATA.loadEdRequests()]);
+      offers = loaded[0] || []; requests = loaded[1] || [];
+    } catch (e) {
+      body.innerHTML = '<div class="warn">Could not load: ' + esc((e && e.message) || e) + '</div>'; return;
+    }
+    var today = _edTodayYmd();
+    var open = offers.filter(function (o) { return o && o.status === "open" && o.date >= today; })
+      .sort(function (a, b) { return String(a.date).localeCompare(String(b.date)); });
+    var pending = requests.filter(function (r) { return r && r.status === "pending"; });
+    var offerById = {}; offers.forEach(function (o) { if (o) offerById[o.id] = o; });
+
+    var html = '<div style="font-size:13px;color:#6b7280;margin-bottom:12px;line-height:1.5">Claim an extra day on one of your <strong>off days</strong>. Ops approves the best request — first to claim isn\'t guaranteed.</div>';
+    if (!open.length) {
+      html += '<div class="empty">No open extra days right now.</div>';
+    } else {
+      html += open.map(function (o) {
+        var n = pending.filter(function (r) { return r.offerId === o.id; }).length;
+        return '<div style="border:1px solid #FBCFE8;border-radius:14px;padding:14px 16px;margin-bottom:10px;background:#fff">' +
+          '<div style="font-size:15px;font-weight:800;color:#831843">' + esc(o.branch) + ' · ' + esc(_edFmtDate(o.date)) + '</div>' +
+          '<div style="font-size:13px;color:#6b7280;margin:2px 0 10px">' + esc(o.startTime || '') + '–' + esc(o.endTime || '') + (o.note ? ' · ' + esc(o.note) : '') + (n ? ' · <strong>' + n + '</strong> claimed' : '') + '</div>' +
+          '<button class="btn btn-primary ed-claim" data-offer="' + esc(o.id) + '" type="button">Claim this day</button>' +
+          '</div>';
+      }).join('');
+    }
+    if (pending.length) {
+      html += '<div style="font-size:11px;font-weight:800;color:#9D2B62;letter-spacing:0.06em;text-transform:uppercase;margin:18px 0 8px">Pending claims</div>';
+      html += pending.map(function (r) {
+        var o = offerById[r.offerId] || {};
+        return '<div style="border:1px solid #FBE3EE;border-radius:12px;padding:10px 14px;margin-bottom:8px;background:#FFF7FB;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">' +
+          '<div style="min-width:0"><span style="font-weight:700;color:#831843">' + esc(r.name || r.ec) + '</span>' +
+          '<span style="font-size:12px;color:#9D7387"> · ' + esc(o.branch || '') + ' ' + esc(o.date ? _edFmtDate(o.date) : '') + '</span></div>' +
+          '<button class="link-btn link-btn-dark ed-cancel" data-req="' + esc(r.id) + '" data-ec="' + esc(r.ec) + '" data-name="' + esc(r.name || '') + '" type="button" style="color:#B91C1C">Cancel</button>' +
+          '</div>';
+      }).join('');
+    }
+    body.innerHTML = html;
+
+    Array.prototype.forEach.call(body.querySelectorAll('.ed-claim'), function (b) {
+      b.onclick = function () {
+        var id = b.getAttribute('data-offer');
+        var o = open.find(function (x) { return x.id === id; });
+        if (o) renderEdClaim(o);
+      };
+    });
+    Array.prototype.forEach.call(body.querySelectorAll('.ed-cancel'), function (b) {
+      b.onclick = function () { _edCancel(b.getAttribute('data-req'), b.getAttribute('data-ec'), b.getAttribute('data-name')); };
+    });
+  }
+
+  async function _edCancel(reqId, ec, name) {
+    var pin = prompt("Enter " + (name || "your") + "'s 6-digit PIN to cancel this request:");
+    if (pin == null) return;
+    pin = pin.trim();
+    try {
+      var pins = await window.APP_DATA.loadManagerPins();
+      var want = pins[ec] || pins[String(ec).trim()];
+      if (!want || pin !== String(want)) { alert("Wrong PIN."); return; }
+      var ok = await window.APP_DATA.cancelEdRequest(reqId, ec);
+      alert(ok ? "Request cancelled." : "Could not cancel (already decided?).");
+      renderEdManager();
+    } catch (e) { alert("Could not cancel: " + ((e && e.message) || e)); }
+  }
+
+  function renderEdClaim(offer) {
+    setSublabel("Claim Extra Day");
+    var elig = (offer.eligible || []);
+    setMain(
+      '<section class="panel">' +
+        '<div class="panel-head"><h2>✨ Claim Extra Day</h2><button class="link-btn link-btn-dark" id="back-ed">← Back</button></div>' +
+        '<div style="font-size:14px;font-weight:800;color:#831843">' + esc(offer.branch) + ' · ' + esc(_edFmtDate(offer.date)) + '</div>' +
+        '<div style="font-size:13px;color:#6b7280;margin:2px 0 16px">' + esc(offer.startTime || '') + '–' + esc(offer.endTime || '') + (offer.note ? ' · ' + esc(offer.note) : '') + '</div>' +
+        (elig.length
+          ? '<form id="ed-claim-form" autocomplete="off">' +
+              '<label class="lbl" for="ed-who">Your name (off that day)</label>' +
+              '<select id="ed-who" class="input">' + elig.map(function (m) { return '<option value="' + esc(m.ec) + '" data-name="' + esc(m.name) + '" data-home="' + esc(m.homeBranch || '') + '">' + esc(m.name) + (m.homeBranch ? '  ·  ' + esc(m.homeBranch) : '') + '</option>'; }).join('') + '</select>' +
+              '<label class="lbl" for="ed-pin" style="margin-top:12px">Your personal PIN</label>' +
+              '<input id="ed-pin" class="input" type="password" inputmode="numeric" autocomplete="off" maxlength="6" placeholder="6-digit PIN">' +
+              '<div id="ed-claim-err" class="warn" style="display:none;margin-top:10px"></div>' +
+              '<div class="btn-row" style="margin-top:14px"><button class="btn btn-primary" id="ed-claim-go" type="submit">Submit request</button></div>' +
+            '</form>'
+          : '<div class="warn">No eligible managers for this day — everyone is already scheduled. Nothing to claim.</div>') +
+      '</section>'
+    );
+    document.getElementById("back-ed").onclick = renderEdManager;
+    if (!elig.length) return;
+    var form = document.getElementById("ed-claim-form");
+    var whoEl = document.getElementById("ed-who");
+    var pinEl = document.getElementById("ed-pin");
+    var errEl = document.getElementById("ed-claim-err");
+    var showErr = function (m) { errEl.textContent = m; errEl.style.display = "block"; };
+    form.addEventListener("submit", async function (e) {
+      e.preventDefault();
+      var ec = whoEl.value;
+      var opt = whoEl.options[whoEl.selectedIndex];
+      var name = (opt && opt.getAttribute("data-name")) || "";
+      var home = (opt && opt.getAttribute("data-home")) || "";
+      var entered = (pinEl.value || "").trim();
+      if (!/^\d{6}$/.test(entered)) { showErr("Enter your 6-digit PIN."); return; }
+      try {
+        var pins = await window.APP_DATA.loadManagerPins();
+        var want = pins[ec] || pins[String(ec).trim()];
+        if (!want) { showErr("No PIN set for you — ask HR."); return; }
+        if (entered !== String(want)) { showErr("Wrong PIN. Try again."); return; }
+        await window.APP_DATA.requestEd({ offerId: offer.id, ec: ec, name: name, homeBranch: home });
+        alert("Request submitted! Ops will review it.");
+        renderEdManager();
+      } catch (e2) { showErr("Could not submit: " + ((e2 && e2.message) || e2)); }
+    });
+    setTimeout(function () { try { pinEl.focus(); } catch (_e) {} }, 50);
   }
 
   // ---------------- How Check-ins Work (manager guide) ----------------
