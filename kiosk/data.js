@@ -1508,6 +1508,49 @@
   function _loadAllMgrRequests()  { return _loadRequestsAt(MGR_REQUESTS_KEY); }
   function _saveAllMgrRequests(arr)  { return _saveRequestsAt(MGR_REQUESTS_KEY, arr); }
 
+  // ---------- Extra-Day (ED) offers + requests ----------
+  // Offers are PUBLISHED by Ops in the portal (boa_mgr_ed_offers_v1); the kiosk
+  // reads OPEN ones to alert managers, and writes their claims into
+  // boa_mgr_ed_requests_v1. Approval (which applies the schedule change) happens
+  // back in the portal. Reuse the generic request load/save helpers above.
+  var ED_OFFERS_KEY   = "boa_mgr_ed_offers_v1";
+  var ED_REQUESTS_KEY = "boa_mgr_ed_requests_v1";
+  function loadEdOffers()   { return _loadRequestsAt(ED_OFFERS_KEY); }
+  function loadEdRequests() { return _loadRequestsAt(ED_REQUESTS_KEY); }
+  // Append a pending claim. Read-modify-write; a manager can hold only ONE
+  // active (pending/approved) request per offer — idempotent re-claim.
+  async function requestEd(rec) {
+    rec = rec || {};
+    if (!rec.offerId || !rec.ec) throw new Error("Missing offer or manager.");
+    var arr = await loadEdRequests();
+    var ecK = String(rec.ec).trim();
+    var dup = arr.find(function (r) {
+      return r && r.offerId === rec.offerId && String(r.ec).trim() === ecK
+        && (r.status === "pending" || r.status === "approved");
+    });
+    if (dup) return dup;
+    var row = {
+      id: "edr_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7),
+      offerId: rec.offerId, ec: ecK, name: rec.name || "", homeBranch: rec.homeBranch || "",
+      status: "pending", requestedAt: new Date().toISOString()
+    };
+    arr.push(row);
+    await _saveRequestsAt(ED_REQUESTS_KEY, arr);
+    return row;
+  }
+  // A manager cancels their OWN pending request.
+  async function cancelEdRequest(requestId, ec) {
+    var arr = await loadEdRequests();
+    var ecK = String(ec || "").trim();
+    var idx = arr.findIndex(function (r) {
+      return r && r.id === requestId && String(r.ec).trim() === ecK && r.status === "pending";
+    });
+    if (idx < 0) return false;
+    arr[idx] = Object.assign({}, arr[idx], { status: "cancelled", cancelledAt: new Date().toISOString() });
+    await _saveRequestsAt(ED_REQUESTS_KEY, arr);
+    return true;
+  }
+
   async function listOffRequests(targetYm) {
     var c = client(); if (!c) return [];
     var p = targetYm.split("-"); var y = +p[0], m = +p[1];
@@ -1732,6 +1775,7 @@
     isoDate: isoDate, listNews: listNews,
     nextMonthYm: nextMonthYm, nextMonthLabel: nextMonthLabel,
     listOffRequests: listOffRequests, addOffRequest: addOffRequest, deleteOffRequest: deleteOffRequest,
+    loadEdOffers: loadEdOffers, loadEdRequests: loadEdRequests, requestEd: requestEd, cancelEdRequest: cancelEdRequest,
     getStoreOpenedToday: getStoreOpenedToday, markStoreOpened: markStoreOpened,
     loadManagerPins: loadManagerPins, saveManagerPins: saveManagerPins,
     lookupFreshaVoucher: lookupFreshaVoucher, logVoucherLookup: logVoucherLookup,
