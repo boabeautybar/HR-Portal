@@ -796,6 +796,24 @@
         });
       } catch (_lvErr) { /* overlay only */ }
     }
+    // Maternity overlay: ec → mat_start ("" = no date yet). on_mat / dates_tbc
+    // people read as Maternity leave (ML) from their start date on — exactly
+    // like the HR portal grid and My BOA, which compute this live from the
+    // maternity record rather than the saved cell. Without it, anyone flipped
+    // to maternity AFTER the roster was published kept showing their stale
+    // working shifts here (the grid cell is frozen at generation time).
+    var matStartByEc = {};
+    if (window.APP_DATA.listMaternity) {
+      try {
+        var _mats = (await window.APP_DATA.listMaternity()) || [];
+        _mats.forEach(function (m) {
+          if (!m || !m.employee_code) return;
+          if (m.mat_status !== "on_mat" && m.mat_status !== "dates_tbc") return;
+          matStartByEc[String(m.employee_code).trim().toUpperCase()] =
+            m.mat_start ? String(m.mat_start).replace(/\//g, "-") : "";
+        });
+      } catch (_matErr) { /* overlay only */ }
+    }
     // Canonicalise grid rows onto each person's CURRENT employee code — an
     // employee-code change (or a "B872 " vs "B872" variant) leaves a
     // duplicate/legacy row in the saved grid; without this the kiosk reads the
@@ -957,6 +975,10 @@
             var _hasCustom = !!(_ctRow && _ctRow[_ymd]);
             cell = (_derived && _MGR_WORK_CODES[_derived] && !_hasCustom) ? _derived : _raw;
           }
+          // Maternity wins over the saved cell from mat_start on (whole cycle
+          // when no date yet) — same precedence as My BOA / the portal grid.
+          var _matStart = matStartByEc[_ecT.toUpperCase()];
+          if (_matStart !== undefined && (!_matStart || _ymd >= _matStart)) cell = "ML";
         }
         var classes = '';
         if (d.isToday) classes += ' sched-today';
@@ -1025,6 +1047,7 @@
               '<span><span class="sched-st-O">O</span> Off</span>' +
               '<span><span class="sched-st-R">R</span> Requested off</span>' +
               '<span><span class="sched-st-L">L</span> Leave</span>' +
+              '<span><span class="sched-st-ML">ML</span> Maternity</span>' +
               (!isMgr && trialGhostRows.length ? '<span><span class="sched-cell-trial">T</span> Trial day</span>' : '') +
               '<span class="sched-legend-note">Today highlighted</span>' +
               (isMgr && customList.length ? '<span class="sched-legend-note">★ custom hours</span>' : '') +
