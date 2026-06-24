@@ -10582,6 +10582,44 @@ function assessLeaveOps(r, enriched, managers, leaveRecs) {
   }
   return { matched: true, isMgr, branch, headcount, maxOff, clashDays, peakDays, person };
 }
+// ── Published-snapshot sync ────────────────────────────────────────────────
+// My BOA / kiosk read ONLY the published approved snapshot
+// (boa_(mgr)schedapproved_<branch>_<ym>, value[0].grid) for a published cycle —
+// they never fall back to the live draft. So any IMMEDIATE/side-effect grid
+// mutation (leave, extra days, ED, coverage loans, onboarding) that is meant to
+// be live right away must be mirrored into the latest snapshot too, or the
+// staff viewers show stale data. (The manual schedule editor's draft→Publish
+// flow is intentionally NOT mirrored — it stages until the user publishes.)
+//
+// patchApprovedSnapshotGrid applies mutateGrid(grid)->bool to the newest
+// snapshot for (branch, ym, isMgr) and persists it in place if it changed.
+// No-op when the cycle isn't published (no snapshot). Best-effort — never
+// throws (a snapshot failure must not block the primary draft write).
+async function patchApprovedSnapshotGrid(branch, ym, isMgr, mutateGrid) {
+  try {
+    if (!branch || !ym) return false;
+    if (!window.BOA_DB || !window.BOA_DB.loadApprovedSchedules || !window.BOA_DB.saveByKey) return false;
+    const approved = await window.BOA_DB.loadApprovedSchedules(branch, ym, isMgr);
+    if (!Array.isArray(approved) || !approved.length || !approved[0] || !approved[0].grid) return false;
+    if (!mutateGrid(approved[0].grid)) return false;
+    await window.BOA_DB.saveByKey((isMgr ? "boa_mgrschedapproved_" : "boa_schedapproved_") + branch + "_" + ym, approved);
+    return true;
+  } catch (e) { console.error("patchApprovedSnapshotGrid " + branch + " " + ym + ":", e); return false; }
+}
+// Convenience: patch a single person's row in the snapshot. mutateRow(row)
+// must mutate the row object and return true iff it changed something. The ec
+// key is matched case-insensitively (snapshots store trimmed EC keys); an
+// absent row is created from {} so callers can add a brand-new person.
+async function patchApprovedSnapshotRow(branch, ym, isMgr, ec, mutateRow) {
+  const want = String(ec).trim().toUpperCase();
+  return patchApprovedSnapshotGrid(branch, ym, isMgr, (grid) => {
+    const ecKey = Object.keys(grid).find(k => String(k).trim().toUpperCase() === want) || String(ec).trim();
+    const row = grid[ecKey] || {};
+    if (!mutateRow(row)) return false;
+    grid[ecKey] = row;
+    return true;
+  });
+}
 // Publish approved tech leave onto the SAVED schedule grid(s). The kiosk
 // schedule and the My BOA schedule viewer read ONLY the saved boa_sched grid
 // — they have no access to the Leave Planner — so leave that exists purely as
@@ -10633,19 +10671,11 @@ async function publishLeaveToSchedule(ec, branch, startDate, endDate) {
     } catch (e) { console.error("publishLeaveToSchedule " + ym + ":", e); }
   }
   // The DRAFT grid (above) is only what the kiosk/My BOA read for the CURRENT
-  // or past cycle. For a PUBLISHED cycle they read the approved snapshot
-  // (boa_schedapproved_<branch>_<ym>) and never fall back to the draft, so the
-  // leave must also be stamped into the latest snapshot or it shows stale
-  // "Work". Best-effort and only when a snapshot exists (cycle is published).
+  // or past cycle. For a PUBLISHED cycle they read the approved snapshot and
+  // never fall back to the draft, so the leave must also be stamped into the
+  // latest snapshot or it shows stale "Work".
   for (const ym of Object.keys(byYm)) {
-    try {
-      if (!window.BOA_DB.loadApprovedSchedules || !window.BOA_DB.saveByKey) break;
-      const approved = await window.BOA_DB.loadApprovedSchedules(branch, ym, false);
-      if (!Array.isArray(approved) || !approved.length || !approved[0] || !approved[0].grid) continue;
-      if (stampLeave(approved[0].grid, byYm[ym])) {
-        await window.BOA_DB.saveByKey("boa_schedapproved_" + branch + "_" + ym, approved);
-      }
-    } catch (e) { console.error("publishLeaveToSchedule snapshot " + ym + ":", e); }
+    await patchApprovedSnapshotGrid(branch, ym, false, (grid) => stampLeave(grid, byYm[ym]));
   }
 }
 // Days inside an approved request's range that NO existing annual-leave
@@ -12330,6 +12360,14 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
         if (isMgr) { delete row[dom]; delete row[String(dom)]; }
         grid[ecKey] = row;
         await window.BOA_DB.saveSchedule(r.store, schedYm, grid, isMgr);
+        // Mirror "E" into the published snapshot too (My BOA / kiosk read it for
+        // published cycles), else the extra day doesn't show until re-publish.
+        await patchApprovedSnapshotRow(r.store, schedYm, isMgr, want, (srow) => {
+          if (srow[cellKey] === "E") return false;
+          srow[cellKey] = "E";
+          if (isMgr) { delete srow[dom]; delete srow[String(dom)]; }
+          return true;
+        });
         // Mirror into the kiosk/attendance extras sidecar (END-month keyed) —
         // nail techs only; managers are clock-in based, not on the kiosk grid.
         if (!isMgr && window.BOA_DB.saveExtraDay) {
@@ -12343,6 +12381,15 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
           grid[ecKey] = row;
           await window.BOA_DB.saveSchedule(r.store, schedYm, grid, isMgr);
         }
+        // Strip the "E" from the published snapshot too (independent of the
+        // draft's cur check — the snapshot can hold its own stale "E").
+        await patchApprovedSnapshotRow(r.store, schedYm, isMgr, want, (srow) => {
+          let t = false;
+          if (srow[cellKey] === "E") { delete srow[cellKey]; t = true; }
+          if (srow[dom] === "E") { delete srow[dom]; t = true; }
+          if (srow[String(dom)] === "E") { delete srow[String(dom)]; t = true; }
+          return t;
+        });
         if (!isMgr && window.BOA_DB.clearExtraDay) {
           try { await window.BOA_DB.clearExtraDay(r.store, endYm, dayKey, String(r.ec).trim()); }
           catch (e2) { console.error("clearExtraDay:", e2); }
@@ -12364,6 +12411,13 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
             const tcur = trow[dom] != null ? trow[dom] : trow[String(dom)];
             if (tcur === "E") { delete trow[dom]; delete trow[String(dom)]; tgrid[tKey] = trow; await window.BOA_DB.saveSchedule(r.store, endYm, tgrid, false); }
           }
+          // Strip the same stale tech "E" from the published tech snapshot.
+          await patchApprovedSnapshotRow(r.store, endYm, false, want, (srow) => {
+            let t = false;
+            if (srow[dom] === "E") { delete srow[dom]; t = true; }
+            if (srow[String(dom)] === "E") { delete srow[String(dom)]; t = true; }
+            return t;
+          });
           if (window.BOA_DB.clearExtraDay) await window.BOA_DB.clearExtraDay(r.store, endYm, dayKey, String(r.ec).trim());
         } catch (e3) { console.error("applyExtraDayToSchedule (manager self-heal):", e3); }
       }
@@ -15755,12 +15809,27 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     destGrid[ec] = destGrid[ec] || {};
     destGrid[ec][offer.date] = "E";
     await window.BOA_DB.saveSchedule(dest, ym, destGrid, true, (destSched && destSched.names) || undefined);
+    // Mirror into the published snapshot (My BOA / Coverage read it for
+    // published cycles, and ensureAwayMap needs the home loan_out + dest "E").
+    // Managers are YMD-keyed; drop any day-of-month dup so it can't shadow the
+    // YMD cell that getCell reads first.
+    const oDom = parseInt(String(offer.date).slice(8, 10), 10);
+    await patchApprovedSnapshotRow(dest, ym, true, ec, (srow) => {
+      const changed = srow[offer.date] !== "E" || srow[oDom] != null || srow[String(oDom)] != null;
+      srow[offer.date] = "E"; delete srow[oDom]; delete srow[String(oDom)];
+      return changed;
+    });
     if (home && home !== dest) {
       const homeSched = await window.BOA_DB.loadSchedule(home, ym, true);
       const homeGrid = (homeSched && homeSched.grid) ? JSON.parse(JSON.stringify(homeSched.grid)) : {};
       homeGrid[ec] = homeGrid[ec] || {};
       homeGrid[ec][offer.date] = "loan_out";
       await window.BOA_DB.saveSchedule(home, ym, homeGrid, true, (homeSched && homeSched.names) || undefined);
+      await patchApprovedSnapshotRow(home, ym, true, ec, (srow) => {
+        const changed = srow[offer.date] !== "loan_out" || srow[oDom] != null || srow[String(oDom)] != null;
+        srow[offer.date] = "loan_out"; delete srow[oDom]; delete srow[String(oDom)];
+        return changed;
+      });
       if (window.BOA_DB.saveMgrLoans) {
         const loans = (mgrLoanRows || []).slice();
         const idx = loans.findIndex(l => l && String(l.ec).trim() === ec && l.date === offer.date);
@@ -26953,6 +27022,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   });
                   grid[ec] = row;
                   await window.BOA_DB.saveSchedule(obForm.branch, ym, grid, false);
+                  // If the cycle is already published, add the new hire's row to
+                  // the snapshot too (My BOA reads it), else they're invisible
+                  // until the next re-publish. New ec → no clobber risk.
+                  await patchApprovedSnapshotRow(obForm.branch, ym, false, ec, (srow) => {
+                    let t = false;
+                    Object.keys(row).forEach(k => { if (srow[k] !== row[k]) { srow[k] = row[k]; t = true; } });
+                    return t;
+                  });
                 }
               }
             }
@@ -27063,6 +27140,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   })();
                   grid[ec] = row;
                   await window.BOA_DB.saveSchedule(obForm.branch, mgrYm, grid, true);
+                  // Add the new manager's row to the published snapshot too if
+                  // the cycle is already published (Coverage / My BOA read it).
+                  await patchApprovedSnapshotRow(obForm.branch, mgrYm, true, ec, (srow) => {
+                    let t = false;
+                    Object.keys(row).forEach(k => { if (srow[k] !== row[k]) { srow[k] = row[k]; t = true; } });
+                    return t;
+                  });
                 }
               }
             }
@@ -31857,6 +31941,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 await window.BOA_DB.saveSchedule(branch, ym, grid, false);
                 setSchedCache(prev => ({ ...prev, [branch + "|" + ym]: grid }));   // keep breakdowns in sync
               }
+              // Mirror the revert into the published snapshot (My BOA / kiosk
+              // read it for published cycles) so cancelled leave stops showing
+              // as "On leave". Reverting "L" → blank = back to working for techs.
+              await patchApprovedSnapshotRow(branch, ym, false, want, (srow) => {
+                let t = false;
+                for (const dom of byYm[ym]) {
+                  if (srow[dom] === "L") { delete srow[dom]; t = true; }
+                  if (srow[String(dom)] === "L") { delete srow[String(dom)]; t = true; }
+                }
+                return t;
+              });
             }
           } catch (e) { console.error("clearTechScheduleLeave:", e); }
         };
@@ -36644,10 +36739,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           setMgrCoverageDraftApplying(true);
           try {
             const entries = Object.entries(mgrCoverageDraft);
+            const mergedByKey = {};
             for (const [key, draftBranch] of entries) {
               const [branchName, ym] = key.split("|");
               const base = _canonicalizeGrid(mgrClockinSchedCache[key] || {}, mgrSchedNamesCache[key]);
               const merged = _mergeDraft(base, draftBranch);
+              mergedByKey[key] = merged;
               await window.BOA_DB.saveSchedule(branchName, ym, merged, true, mgrSchedNamesCache[key] || undefined);
               setMgrClockinSchedCache(prev => ({ ...prev, [key]: merged }));
             }
@@ -36670,6 +36767,48 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               });
               await window.BOA_DB.saveMgrLoans(existing);
               setMgrLoanRows(existing);
+            }
+            // Mirror the coverage loans into the published snapshots (My BOA /
+            // Coverage read them for published cycles; ensureAwayMap needs the
+            // home `loan_out` + dest work code). Driven by the precise loan
+            // deltas — never whole draft rows — so other published cells aren't
+            // clobbered. A removed loan reverts home→blank (manager blank = Off).
+            for (const dl of mgrCoverageDraftLoans) {
+              const date = dl.date; if (!date) continue;
+              const dEc = String(dl.ec).trim();
+              const ym = attGridYmFor(date);
+              const domN = parseInt(String(date).slice(8, 10), 10);   // numeric day-of-month
+              const removing = dl._op === "remove";
+              if (dl.fromBranch) {
+                await patchApprovedSnapshotRow(dl.fromBranch, ym, true, dEc, (srow) => {
+                  if (removing) {
+                    const had = srow[date] === "loan_out" || srow[domN] === "loan_out" || srow[String(domN)] === "loan_out";
+                    if (srow[date] === "loan_out") delete srow[date];
+                    if (srow[domN] === "loan_out") delete srow[domN];
+                    if (srow[String(domN)] === "loan_out") delete srow[String(domN)];
+                    return had;
+                  }
+                  const changed = srow[date] !== "loan_out" || srow[domN] != null || srow[String(domN)] != null;
+                  srow[date] = "loan_out"; delete srow[domN]; delete srow[String(domN)];
+                  return changed;
+                });
+              }
+              if (dl.toBranch) {
+                const destKey = dl.toBranch + "|" + ym;
+                const code = removing ? null
+                  : ((mergedByKey[destKey] && mergedByKey[destKey][dEc]
+                      && (mergedByKey[destKey][dEc][date] || mergedByKey[destKey][dEc][domN] || mergedByKey[destKey][dEc][String(domN)])) || "W");
+                await patchApprovedSnapshotRow(dl.toBranch, ym, true, dEc, (srow) => {
+                  if (removing) {
+                    const had = srow[date] != null || srow[domN] != null || srow[String(domN)] != null;
+                    delete srow[date]; delete srow[domN]; delete srow[String(domN)];
+                    return had;
+                  }
+                  const changed = srow[date] !== code || srow[domN] != null || srow[String(domN)] != null;
+                  srow[date] = code; delete srow[domN]; delete srow[String(domN)];
+                  return changed;
+                });
+              }
             }
             // Commit custom shift-hour overrides.
             if (Object.keys(mgrCustomTimesDraft).length > 0 && window.BOA_DB.saveMgrTimes) {
