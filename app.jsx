@@ -10608,22 +10608,44 @@ async function publishLeaveToSchedule(ec, branch, startDate, endDate) {
     (byYm[ym] = byYm[ym] || []).push(dom);
   }
   const KEEP = { O: 1, R: 1, X: 1, ML: 1, L: 1 };
+  const want = String(ec).trim().toUpperCase();
+  // Stamp "L" into a grid's row for this tech on the given days-of-month,
+  // preserving KEEP cells. Returns true if anything changed. Shared by the
+  // draft and the published-snapshot writes so the two can't drift.
+  const stampLeave = (grid, doms) => {
+    const ecKey = Object.keys(grid).find(k => String(k).trim().toUpperCase() === want) || String(ec).trim();
+    const row = grid[ecKey] || {};
+    let changed = false;
+    for (const dom of doms) {
+      const cur = row[dom] != null ? row[dom] : row[String(dom)];
+      if (cur && KEEP[cur]) continue;
+      row[String(dom)] = "L";
+      changed = true;
+    }
+    if (changed) grid[ecKey] = row;
+    return changed;
+  };
   for (const ym of Object.keys(byYm)) {
     try {
       const sched = await window.BOA_DB.loadSchedule(branch, ym, false);
       const grid = (sched && sched.grid) || {};
-      const want = String(ec).trim().toUpperCase();
-      const ecKey = Object.keys(grid).find(k => String(k).trim().toUpperCase() === want) || String(ec).trim();
-      const row = grid[ecKey] || {};
-      let changed = false;
-      for (const dom of byYm[ym]) {
-        const cur = row[dom] != null ? row[dom] : row[String(dom)];
-        if (cur && KEEP[cur]) continue;
-        row[String(dom)] = "L";
-        changed = true;
-      }
-      if (changed) { grid[ecKey] = row; await window.BOA_DB.saveSchedule(branch, ym, grid, false); }
+      if (stampLeave(grid, byYm[ym])) await window.BOA_DB.saveSchedule(branch, ym, grid, false);
     } catch (e) { console.error("publishLeaveToSchedule " + ym + ":", e); }
+  }
+  // The DRAFT grid (above) is only what the kiosk/My BOA read for the CURRENT
+  // or past cycle. For a PUBLISHED cycle they read the approved snapshot
+  // (boa_schedapproved_<branch>_<ym>) and never fall back to the draft, so the
+  // leave must also be stamped into the latest snapshot or it shows stale
+  // "Work". Best-effort and only when a snapshot exists (cycle is published).
+  for (const ym of Object.keys(byYm)) {
+    try {
+      if (!window.BOA_DB.loadApprovedSchedules || !window.BOA_DB.saveByKey) break;
+      const approved = await window.BOA_DB.loadApprovedSchedules(branch, ym, false);
+      if (!Array.isArray(approved) || !approved.length || !approved[0] || !approved[0].grid) continue;
+      if (stampLeave(approved[0].grid, byYm[ym])) {
+        await window.BOA_DB.saveByKey("boa_schedapproved_" + branch + "_" + ym, approved);
+      }
+    } catch (e) { console.error("publishLeaveToSchedule snapshot " + ym + ":", e); }
   }
 }
 // Days inside an approved request's range that NO existing annual-leave
@@ -15709,7 +15731,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     try {
       const news = (await window.BOA_DB.loadByKey("boa_news_v1")) || [];
       const dLbl = new Date(ymd + "T12:00:00").toLocaleDateString(undefined, { weekday: "short", day: "2-digit", month: "short" });
-      const item = { ts: new Date().toISOString(), body: "✨ Extra day available — " + branch + " on " + dLbl + " (" + form.start + "–" + form.end + "). Open the kiosk to claim." };
+      // Tag the post with the offer id + kind so the kiosk can auto-drop this
+      // announcement once the offer is no longer claimable (filled / cancelled /
+      // expired / deleted) — see listNews() in kiosk/data.js.
+      const item = { ts: new Date().toISOString(), edKind: "offer", edOfferId: offer.id, body: "✨ Extra day available — " + branch + " on " + dLbl + " (" + form.start + "–" + form.end + "). Open the kiosk to claim." };
       await window.BOA_DB.saveByKey("boa_news_v1", [item].concat(Array.isArray(news) ? news : []));
     } catch (_) {}
     await refreshEd();
