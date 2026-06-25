@@ -2149,6 +2149,27 @@
     return res.data || [];
   }
 
+  // Newest entered voucher (Shopify→Fresha) + total count. Powers the
+  // "last uploaded" headline on the Voucher Entry page and the matching card
+  // on Voucher Admin, so there's no confusion about where the last batch ended.
+  async function latestVoucherUpload() {
+    var last = await sb.from("vouchers")
+      .select("created_at,order_number,fresha_code,last4,amount")
+      .order("created_at", { ascending: false }).limit(1);
+    if (last.error) throw last.error;
+    var c = await sb.from("vouchers").select("id", { count: "exact", head: true });
+    if (c.error) throw c.error;
+    var row = (last.data && last.data[0]) || null;
+    return {
+      count:       c.count || 0,
+      createdAt:   row ? row.created_at   : null,
+      orderNumber: row ? row.order_number : null,
+      freshaCode:  row ? row.fresha_code  : null,
+      last4:       row ? row.last4        : null,
+      amount:      row ? row.amount       : null
+    };
+  }
+
   // Import Fresha "Gift Card Transactions". `rows` are objects with keys
   // { id, gift_card, payment_date, location, amount, txn_type }. Upserts in
   // chunks keyed on `id`, so re-uploading the same/extended report only adds
@@ -2322,6 +2343,7 @@
 
     // Vouchers (Shopify→Fresha lookup table; entered via Voucher Entry login)
     bulkInsertVouchers: bulkInsertVouchers,
+    latestVoucherUpload: latestVoucherUpload,
     importGiftCardTransactions: importGiftCardTransactions,
     recomputeVoucherBalancesForCodes: recomputeVoucherBalancesForCodes,
     recomputeAllVoucherBalances: recomputeAllVoucherBalances,
