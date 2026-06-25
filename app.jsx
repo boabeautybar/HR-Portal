@@ -18982,8 +18982,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     if (tab !== "dashboard" && tab !== "mgrclockins" && tab !== "attendance" && tab !== "mgrCoverage") return;
     let cancelled = false;
     window.BOA_DB.loadManagerDayStatuses(60).then(rows => {
-      if (!cancelled) { setMgrDayStatuses(rows || []); setMgrDayStatusesLoaded(true); }
-    });
+      if (cancelled) return;
+      const list = rows || [];
+      // loadManagerDayStatuses returns [] on a transient error, which is
+      // indistinguishable from a genuinely empty set. Don't let such a
+      // background reload WIPE reasons we already have — that's what made
+      // ROM-marked reasons "keep disappearing" (managers flashing back to
+      // a bare "Mark reason" / auto-absent). Explicit save/delete flows
+      // setMgrDayStatuses directly, so a real clear still lands.
+      setMgrDayStatuses(prev => (list.length === 0 && prev && prev.length > 0) ? prev : list);
+      setMgrDayStatusesLoaded(true);
+    }).catch(() => { if (!cancelled) setMgrDayStatusesLoaded(true); });
     return () => { cancelled = true; };
   }, [tab]);
 
@@ -21735,6 +21744,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 const _t = new Date();
                 const _todayYmd = _t.getFullYear() + "-" + String(_t.getMonth() + 1).padStart(2, "0") + "-" + String(_t.getDate()).padStart(2, "0");
                 if (dashTodayMgrClockinEcs == null) return null;     // still loading
+                if (!mgrDayStatusesLoaded) return null;              // reasons not loaded yet — don't list managers who already have one
                 const clockedIn = new Set();
                 (dashTodayMgrClockinEcs || []).forEach(e => clockedIn.add(String(e).trim()));
                 const onLeaveEcs = new Set();
@@ -28451,7 +28461,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const _todayYmdAtt = (() => { const d = new Date(); return d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate()); })();
         const _mgrCheckinFromYmd = (() => {
           const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - (mgrClockinDays || 31));
-          return d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate());
+          let from = d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate());
+          // The attendance tab loads manager clock-ins back to the start of the
+          // VIEWED cycle (25th→24th), not just the rolling 31-day default. Cap
+          // the auto-absent window at that default and a scheduled manager day
+          // earlier in the cycle stays stuck BLANK — neither On Time nor Absent
+          // — because the overlay refuses to flag a day it thinks it has no
+          // clock-in cache for, even though the cache reaches it. Extend the
+          // floor to the first visible day so those cells resolve to Absent
+          // (or the ROM reason) instead of rendering empty.
+          const firstYmd = days && days.length ? days[0].ymd : null;
+          if (firstYmd && firstYmd < from) from = firstYmd;
+          return from;
         })();
         // Is this (ec, ymd) a manager day that should auto-render as 'absent
         // + needs review' because they were scheduled to work but didn't
@@ -28846,11 +28867,31 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // Stored per cell as { status, by, at } so the tooltip can show who
         // set it.
         const _adminOv = (ec, d) => ((((attMeta || {}).adminOverrides) || {})[ec] || {})[d] || null;
+        // A manager auto-absent that an admin "confirmed" stores an admin
+        // override of "absent" (or "no") — but that's just the default the
+        // sheet suggests for a missing clock-in, not a deliberate ruling. When
+        // a ROM later records a real reason for that day (Sick + note, FRL,
+        // leave, …) the override would otherwise bury it, so an uploaded sick
+        // note silently keeps reading "Absent". Let such a ROM reason surface
+        // over an absent/no override. A deliberate override to any OTHER status
+        // (on / late / sick / frl / …) still wins, and a reason on a day the
+        // schedule was since corrected to OFF stays suppressed. Returns the ROM
+        // status that should supersede the override, else null.
+        const _mgrReasonOverObsoleteAbsent = (ec, d) => {
+          const ov = _adminOv(ec, d);
+          if (!ov || (ov.status !== "absent" && ov.status !== "no")) return null;
+          if (!_mgrEcToStaffId[ec]) return null;
+          const _schedV = attSched[ec] && attSched[ec][d];
+          if (_schedV === "O" || _schedV === "R") return null;   // day now OFF — reason is stale
+          const _do = days.find(x => x.d === d);
+          const rom = _do && (_mgrStatusByEcYmd[ec] || {})[_do.ymd];
+          return (rom && rom !== "absent" && rom !== "no") ? rom : null;
+        };
         // Render helper — lets the cell tooltip explain WHY the day reads OFF.
         const _extraDayRemoved = (ec, d) => !_adminOv(ec, d) && _extraDayRemovedBase(ec, d, _statusBeforeExtraRemoval(ec, d));
         const getStatus = (ec, d) => {
           const ov = _adminOv(ec, d);
-          if (ov && ov.status) return ov.status;
+          if (ov && ov.status) return _mgrReasonOverObsoleteAbsent(ec, d) || ov.status;
           const base = _statusBeforeExtraRemoval(ec, d);
           return _extraDayRemovedBase(ec, d, base) ? "off" : base;
         };
@@ -30812,7 +30853,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           if (freshaLine != null) tipLines.push("Fresha:   " + freshaLine);
                           {
                             const _ovTip = _adminOv(s.ec, dy.d);
-                            if (_ovTip) tipLines.push("✋ Set manually by " + (_ovTip.by || "admin") + (_ovTip.at ? " · " + new Date(_ovTip.at).toLocaleString("en-ZA", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "") + " — final for payroll (kiosk / regional records unchanged).");
+                            // Suppress the "final for payroll" override line when a
+                            // ROM reason (sick + note, FRL, …) has since superseded
+                            // an absent/no override — it's no longer the final word.
+                            if (_ovTip && !_mgrReasonOverObsoleteAbsent(s.ec, dy.d)) tipLines.push("✋ Set manually by " + (_ovTip.by || "admin") + (_ovTip.at ? " · " + new Date(_ovTip.at).toLocaleString("en-ZA", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "") + " — final for payroll (kiosk / regional records unchanged).");
                           }
                           if (loanTo) tipLines.push("🔀 Loaned out to " + loanTo + (v === "loan_out" ? " (receiving branch hasn't recorded a status yet)" : ""));
                           if (bareV === "swap_o") tipLines.push("💡 Owes — tech took today off because she worked on a previous off day for a colleague.");
@@ -35725,6 +35769,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             {(() => {
               const isFuture = mgrClockinDay > _mTodayYmd;
               if (isFuture) return null;
+              // Wait for the clock-in AND ROM-reason feeds before drawing the
+              // banner. Both load async from []; rendering early lists managers
+              // who already clocked in (clock-ins not loaded) or already have a
+              // reason (statuses not loaded) as bare "Mark reason" no-shows —
+              // the reasons appear to "keep disappearing" until the data lands.
+              if (!mgrClockinsLoaded || !mgrDayStatusesLoaded) return null;
               const isToday = mgrClockinDay === _mTodayYmd;
               // After 11:00 a "not in yet" today is functionally an absence —
               // escalate the wording (and styling) so the ROM treats it that
