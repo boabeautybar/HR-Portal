@@ -15365,6 +15365,44 @@ function InterviewsView({ interviewList, persistInterviews, trialList, persistTr
   );
 }
 
+// Soft, on-brand replacement for the native window.confirm / window.alert used
+// by the extra-day flows. `data` is null when hidden; otherwise it carries
+// { kind:"confirm"|"alert", title, body, confirmLabel, cancelLabel, tone, icon,
+//  _resolve }. Clicking the backdrop or the secondary button resolves the
+// promise (false for a confirm, true for an alert) so the async handlers that
+// awaited askConfirm/notify continue cleanly.
+function AlertModal({ data, onResolve }) {
+  if (!data) return null;
+  const isConfirm = data.kind === "confirm";
+  const danger = data.tone === "danger";
+  const ok = () => onResolve(true);
+  const dismiss = () => onResolve(isConfirm ? false : true);
+  return (
+    <div onClick={dismiss}
+      style={{ position: "fixed", inset: 0, background: "rgba(76,5,25,0.42)", backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)", zIndex: 100002, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, fontFamily: "'Outfit',system-ui,sans-serif" }}>
+      <div onClick={(e) => e.stopPropagation()}
+        style={{ width: "min(440px,94vw)", background: "#fff", borderRadius: 20, border: "1px solid #FBCFE8", boxShadow: "0 24px 70px rgba(131,24,67,0.30)", overflow: "hidden" }}>
+        <div style={{ height: 5, background: danger ? "linear-gradient(90deg,#F87171,#B91C1C)" : "linear-gradient(90deg,#F9A8D4,#BE185D)" }} />
+        <div style={{ padding: "20px 24px 4px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 11, marginBottom: 10 }}>
+            <span style={{ fontSize: 24, lineHeight: 1 }}>{data.icon || (danger ? "⚠️" : "✨")}</span>
+            <div style={{ fontSize: 18, fontWeight: 800, color: "#831843" }}>{data.title}</div>
+          </div>
+          {data.body && <div style={{ fontSize: 13.5, lineHeight: 1.55, color: "#6B5563", whiteSpace: "pre-wrap" }}>{data.body}</div>}
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, padding: "20px 24px 22px" }}>
+          {isConfirm && (
+            <button onClick={dismiss}
+              style={{ background: "#fff", color: "#831843", border: "1px solid #F3D4E2", borderRadius: 11, padding: "10px 18px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>{data.cancelLabel || "Cancel"}</button>
+          )}
+          <button onClick={ok} autoFocus
+            style={{ background: danger ? "linear-gradient(180deg,#EF4444,#B91C1C)" : "linear-gradient(180deg,#EC4899,#BE185D)", color: "#fff", border: "none", borderRadius: 11, padding: "10px 22px", fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: "inherit", boxShadow: danger ? "0 4px 12px rgba(185,28,28,0.35)" : "0 4px 12px rgba(190,24,93,0.38)" }}>{data.confirmLabel || "OK"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // ── Activity logger — records who did what to the boa_activity_log_v1 row.
   // Failures are swallowed so a logging hiccup never blocks the actual edit.
@@ -15792,7 +15830,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       await window.BOA_DB.saveByKey("boa_news_v1", [item].concat(Array.isArray(news) ? news : []));
     } catch (_) {}
     await refreshEd();
-    window.alert((eligible.length ? "✨ Extra day published" : "⚠ Published, but NO eligible managers were found") + " — " + eligible.length + " eligible for " + branch + " on " + ymd + (eligible.length ? ":\n\n" + eligible.map(e => "• " + e.name + " (" + e.homeBranch + ")").join("\n") : ".\n\nIf you expected managers here, your portal may be running a cached older version — fully reload (clear cache) and try again."));
+    notify({
+      icon: eligible.length ? "✨" : "⚠️", tone: eligible.length ? undefined : "danger",
+      title: eligible.length ? "Extra day published" : "Published — no eligible managers",
+      body: eligible.length + " eligible for " + branch + " on " + ymd + (eligible.length ? ":\n\n" + eligible.map(e => "• " + e.name + " (" + e.homeBranch + ")").join("\n") : ".\n\nIf you expected managers here, your portal may be running a cached older version — fully reload (clear cache) and try again.")
+    });
     return offer;
   };
   // Apply an approved ED to the live schedule: "E" at the offered branch, and for
@@ -15896,7 +15938,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       await window.BOA_DB.saveByKey("boa_mgr_ed_requests_v1", nextReqs);
       await refreshEd();
     } catch (e) {
-      window.alert("Could not cancel: " + ((e && e.message) || e));
+      notify({ tone: "danger", title: "Could not cancel", body: String((e && e.message) || e) });
     } finally { setEdBusy(false); }
   };
 
@@ -15925,9 +15967,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         } : o);
       await window.BOA_DB.saveByKey("boa_mgr_ed_offers_v1", nextOffers);
       await refreshEd();
-      window.alert("Offer updated — " + eligible.length + " eligible manager" + (eligible.length === 1 ? "" : "s") + " for " + targetDate + (eligible.length ? ":\n\n" + eligible.map(e => "• " + e.name + " (" + e.homeBranch + ")").join("\n") : "."));
+      notify({
+        icon: "✎", title: "Offer updated",
+        body: eligible.length + " eligible manager" + (eligible.length === 1 ? "" : "s") + " for " + targetDate + (eligible.length ? ":\n\n" + eligible.map(e => "• " + e.name + " (" + e.homeBranch + ")").join("\n") : ".")
+      });
     } catch (e) {
-      window.alert("Could not amend: " + ((e && e.message) || e));
+      notify({ tone: "danger", title: "Could not amend", body: String((e && e.message) || e) });
     } finally { setEdBusy(false); }
   };
 
@@ -15938,7 +15983,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     if (decision === "approved") {
       const v = await edRevalidate(offer, request);
       if (!v.ok) {
-        const proceed = window.confirm("⚠ Live schedule check failed:\n\n" + v.reason + "\n\nApprove anyway? This will overwrite their current cell with the extra day.");
+        const proceed = await askConfirm({
+          tone: "danger", icon: "⚠️", title: "Live schedule check failed",
+          body: v.reason + "\n\nApprove anyway? This will overwrite their current cell with the extra day.",
+          confirmLabel: "Approve anyway", cancelLabel: "Cancel"
+        });
         if (!proceed) return;
       }
     }
@@ -15965,13 +16014,103 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         try {
           const news = (await window.BOA_DB.loadByKey("boa_news_v1")) || [];
           const dLbl = new Date(offer.date + "T12:00:00").toLocaleDateString(undefined, { weekday: "short", day: "2-digit", month: "short" });
-          const item = { ts: nowIso, body: "✅ Extra day filled — " + (request.name || "A manager") + " at " + offer.branch + " on " + dLbl + "." };
+          // Tag with the offer id so the kiosk auto-drops this once the work
+          // day passes or the fill is reversed — see listNews() in kiosk/data.js.
+          const item = { ts: nowIso, edKind: "filled", edOfferId: offer.id, body: "✅ Extra day filled — " + (request.name || "A manager") + " at " + offer.branch + " on " + dLbl + "." };
           await window.BOA_DB.saveByKey("boa_news_v1", [item].concat(Array.isArray(news) ? news : []));
         } catch (_) {}
       }
       await refreshEd();
     } catch (e) {
-      window.alert("Could not " + decision + ": " + ((e && e.message) || e));
+      notify({ tone: "danger", title: "Could not " + decision, body: String((e && e.message) || e) });
+    } finally { setEdBusy(false); }
+  };
+
+  // Reverse a FILLED extra-day offer — the inverse of edApplyToSchedule. Clears
+  // the dest "E" and the home "loan_out" (on both the live grid AND the
+  // published snapshot), drops the extra-day loan record and the custom hours,
+  // then marks the offer cancelled and its approved claim reversed so it leaves
+  // every dashboard view and the extra-days-worked report counts. Best-effort
+  // per write: we only clear a cell that is still OURS ("E"/"loan_out"), so a
+  // cell the user has since edited by hand is left untouched. Managers are
+  // YMD-keyed; we also strip any day-of-month dup that could shadow it.
+  const edUndoFilled = async (offer) => {
+    if (edBusy || !offer) return;
+    const okUndo = await askConfirm({
+      icon: "↩", tone: "danger", confirmLabel: "Reverse extra day", cancelLabel: "Keep it",
+      title: "Reverse this extra day?",
+      body: "Remove the approved extra day for " + (offer.filledName || offer.filledEc || "this manager") + " at " + offer.branch + " on " + offer.date + "?\n\nThis clears the extra shift from the schedule (and the home loan), the loan record and the custom hours, and drops it from the extra-days report."
+    });
+    if (!okUndo) return;
+    setEdBusy(true);
+    try {
+      const ec = String(offer.filledEc || "").trim();
+      const reqsAll = (await window.BOA_DB.loadByKey("boa_mgr_ed_requests_v1")) || [];
+      const filledReq = (Array.isArray(reqsAll) ? reqsAll : []).find(r => r && r.offerId === offer.id && String(r.ec || "").trim() === ec && r.status === "approved");
+      const rec = (enrichedManagers || []).find(s => s && String(s.ec).trim() === ec);
+      const home = (rec ? (effHomeBranch(rec, offer.date) || rec.branch) : (filledReq && filledReq.homeBranch)) || (filledReq && filledReq.homeBranch) || "";
+      const dest = offer.branch;
+      const ym = attGridYmFor(offer.date);
+      const oDom = parseInt(String(offer.date).slice(8, 10), 10);
+      const wasOurs = (row, code) => row && (row[offer.date] === code || row[oDom] === code || row[String(oDom)] === code);
+      // 1. Dest grid + snapshot: clear our "E" (manager blank = off).
+      if (ec && dest) {
+        const destSched = await window.BOA_DB.loadSchedule(dest, ym, true);
+        const destGrid = (destSched && destSched.grid) ? JSON.parse(JSON.stringify(destSched.grid)) : {};
+        if (wasOurs(destGrid[ec], "E")) {
+          delete destGrid[ec][offer.date]; delete destGrid[ec][oDom]; delete destGrid[ec][String(oDom)];
+          await window.BOA_DB.saveSchedule(dest, ym, destGrid, true, (destSched && destSched.names) || undefined);
+        }
+        await patchApprovedSnapshotRow(dest, ym, true, ec, (srow) => {
+          if (!wasOurs(srow, "E")) return false;
+          delete srow[offer.date]; delete srow[oDom]; delete srow[String(oDom)];
+          return true;
+        });
+      }
+      // 2. Home grid + snapshot: clear our "loan_out" for a cross-store pickup.
+      if (ec && home && home !== dest) {
+        const homeSched = await window.BOA_DB.loadSchedule(home, ym, true);
+        const homeGrid = (homeSched && homeSched.grid) ? JSON.parse(JSON.stringify(homeSched.grid)) : {};
+        if (wasOurs(homeGrid[ec], "loan_out")) {
+          delete homeGrid[ec][offer.date]; delete homeGrid[ec][oDom]; delete homeGrid[ec][String(oDom)];
+          await window.BOA_DB.saveSchedule(home, ym, homeGrid, true, (homeSched && homeSched.names) || undefined);
+        }
+        await patchApprovedSnapshotRow(home, ym, true, ec, (srow) => {
+          if (!wasOurs(srow, "loan_out")) return false;
+          delete srow[offer.date]; delete srow[oDom]; delete srow[String(oDom)];
+          return true;
+        });
+      }
+      // 3. Drop the extra-day loan record for this person + day.
+      if (window.BOA_DB.saveMgrLoans) {
+        const loans = (mgrLoanRows || []).filter(l => !(l && String(l.ec).trim() === ec && l.date === offer.date && (l.extra || String(l.toBranch || "") === dest)));
+        if (loans.length !== (mgrLoanRows || []).length) {
+          await window.BOA_DB.saveMgrLoans(loans);
+          setMgrLoanRows(loans);
+        }
+      }
+      // 4. Drop the custom hours stamped for that day.
+      if (window.BOA_DB.saveMgrTimes && mgrCustomTimes && mgrCustomTimes[ec] && mgrCustomTimes[ec][offer.date] != null) {
+        const times = JSON.parse(JSON.stringify(mgrCustomTimes));
+        delete times[ec][offer.date];
+        if (Object.keys(times[ec]).length === 0) delete times[ec];
+        await window.BOA_DB.saveMgrTimes(times);
+        setMgrCustomTimes(times);
+      }
+      // 5. Reset the offer + its approved claim so it leaves every view/report.
+      const actor = (currentUser && currentUser.name) || "";
+      const nowIso = new Date().toISOString();
+      const offers = (await window.BOA_DB.loadByKey("boa_mgr_ed_offers_v1")) || [];
+      const nextOffers = (Array.isArray(offers) ? offers : []).map(o =>
+        o && o.id === offer.id ? { ...o, status: "cancelled", reversed: true, reversedBy: actor, reversedAt: nowIso, cancelReason: "Approved extra day reversed." } : o);
+      await window.BOA_DB.saveByKey("boa_mgr_ed_offers_v1", nextOffers);
+      const nextReqs = (Array.isArray(reqsAll) ? reqsAll : []).map(r =>
+        (r && r.offerId === offer.id && r.status === "approved")
+          ? { ...r, status: "declined", decidedBy: actor, decidedAt: nowIso, decisionNote: "Extra day reversed." } : r);
+      await window.BOA_DB.saveByKey("boa_mgr_ed_requests_v1", nextReqs);
+      await refreshEd();
+    } catch (e) {
+      notify({ tone: "danger", title: "Could not reverse", body: String((e && e.message) || e) });
     } finally { setEdBusy(false); }
   };
 
@@ -16709,6 +16848,39 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [edPublish, setEdPublish] = useState(null);   // null = closed | { branch, date, shiftCode, start, end, note, busy, err }
   const [edEdit, setEdEdit] = useState(null);         // null = closed | { id, date, shiftCode, start, end, note } — amend an open offer
   const [edBusy, setEdBusy] = useState(false);
+  // Soft in-app confirm/alert driving <AlertModal/> — replaces the native
+  // window.confirm/alert for the extra-day flows. askConfirm/notify return a
+  // Promise so they slot straight into the async handlers; resolveUiDialog
+  // fires the stored resolver and clears the dialog.
+  const [uiDialog, setUiDialog] = useState(null);
+  const askConfirm = (opts) => new Promise((resolve) => setUiDialog({ kind: "confirm", _resolve: resolve, ...opts }));
+  const notify = (opts) => new Promise((resolve) => setUiDialog({ kind: "alert", _resolve: resolve, ...opts }));
+  const resolveUiDialog = (val) => setUiDialog((d) => { if (d && d._resolve) d._resolve(val); return null; });
+  // Kiosk "Daily Updates" feed (boa_news_v1) — loaded so owners can prune stale
+  // posts. null = not yet loaded.
+  const [newsPosts, setNewsPosts] = useState(null);
+  const refreshNews = async () => {
+    if (!window.BOA_DB || !window.BOA_DB.loadByKey) return;
+    try { const v = await window.BOA_DB.loadByKey("boa_news_v1"); setNewsPosts(Array.isArray(v) ? v : []); }
+    catch (e) { console.warn("Failed to load news:", e); setNewsPosts([]); }
+  };
+  useEffect(() => { refreshNews(); }, []);
+  const deleteNewsPost = async (post) => {
+    const ok = await askConfirm({ tone: "danger", icon: "🗑", title: "Remove this update?", body: "Delete this Daily Updates post from the kiosk?\n\n“" + (post.body || "") + "”", confirmLabel: "Remove", cancelLabel: "Keep it" });
+    if (!ok) return;
+    try {
+      const v = (await window.BOA_DB.loadByKey("boa_news_v1")) || [];
+      const next = (Array.isArray(v) ? v : []).filter(n => !(n && n.ts === post.ts && n.body === post.body));
+      await window.BOA_DB.saveByKey("boa_news_v1", next);
+      setNewsPosts(next);
+    } catch (e) { notify({ tone: "danger", title: "Could not remove", body: String((e && e.message) || e) }); }
+  };
+  const clearAllNews = async () => {
+    const ok = await askConfirm({ tone: "danger", icon: "🗑", title: "Clear all updates?", body: "Remove every Daily Updates post from the kiosk feed? This can't be undone.", confirmLabel: "Clear all", cancelLabel: "Cancel" });
+    if (!ok) return;
+    try { await window.BOA_DB.saveByKey("boa_news_v1", []); setNewsPosts([]); }
+    catch (e) { notify({ tone: "danger", title: "Could not clear", body: String((e && e.message) || e) }); }
+  };
   // Manager Coverage DRAFT mode. Drag-and-drop and popover edits write
   // here first; nothing is persisted until the ROM clicks "Apply to live"
   // on the banner at the top of the coverage tab. Shape:
@@ -21087,6 +21259,122 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 );
               })()}
 
+              {/* ── SECTION: EXTRA-DAY REQUESTS (Owner + National Ops) ── */}
+              {(currentUser?.isOwner || (currentUser?.role || "").toLowerCase().includes("national"))
+                && !(new Set(currentUser?.hideTabs || []).has("dashEdRequests"))
+                && (() => {
+                const openOffers = (edOffers || []).filter(o => o && o.status === "open");
+                const pendingByOffer = {};
+                (edRequests || []).forEach(r => { if (r && r.status === "pending") (pendingByOffer[r.offerId] = pendingByOffer[r.offerId] || []).push(r); });
+                // Show EVERY open offer — including ones with no claims yet — so ops
+                // can amend or cancel a stale offer that nobody has picked up.
+                const rows = openOffers
+                  .map(o => ({ offer: o, reqs: pendingByOffer[o.id] || [] }))
+                  .sort((a, b) => String(a.offer.date).localeCompare(String(b.offer.date)));
+                // Recently FILLED offers, newest first — surfaced so an approval
+                // made by mistake (or a test) can be reversed. There's no other
+                // in-app way to undo a filled offer, so we cap at the latest 5.
+                const filledOffers = (edOffers || []).filter(o => o && o.status === "filled")
+                  .sort((a, b) => String(b.approvedAt || "").localeCompare(String(a.approvedAt || "")))
+                  .slice(0, 5);
+                if (!rows.length && !filledOffers.length) return null;
+                const totalReqs = rows.reduce((n, x) => n + x.reqs.length, 0);
+                const fmtD = (d) => { try { return new Date(d + "T12:00:00").toLocaleDateString(undefined, { weekday: "short", day: "2-digit", month: "short" }); } catch (_) { return d; } };
+                const fmtAgo = (iso) => { try { return new Date(iso).toLocaleString(undefined, { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }); } catch (_) { return ""; } };
+                const headLbl = totalReqs > 0 ? (totalReqs + " pending") : (rows.length ? (rows.length + " open") : (filledOffers.length + " filled"));
+                // Shared soft field style for the amend editor (date / shift /
+                // start / end / note) so they read as one cohesive set.
+                const edField = { marginTop: 4, padding: "8px 11px", border: "1px solid #F3D4E2", borderRadius: 10, fontSize: 12.5, color: "#831843", background: "#fff", fontFamily: "inherit", outline: "none", boxSizing: "border-box" };
+                const edLabel = { fontSize: 11, fontWeight: 700, color: "#9D7387", letterSpacing: "0.02em" };
+                const edSelect = { ...edField, cursor: "pointer", appearance: "none", WebkitAppearance: "none", MozAppearance: "none", paddingRight: 26, backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23BE185D' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E\")", backgroundRepeat: "no-repeat", backgroundPosition: "right 9px center" };
+                return (
+                  <div style={{ background: "linear-gradient(180deg,#FFF7FB,#ffffff)", border: "1px solid #FBCFE8", borderRadius: 14, padding: "16px", marginBottom: 18, boxShadow: "0 1px 4px rgba(190,24,93,0.06)" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }} onClick={() => setDashCollapsed(p => ({ ...p, edReq: !p.edReq }))}>
+                        <span style={{ fontSize: 20 }}>✨</span>
+                        <div>
+                          <div style={{ fontSize: 10, fontWeight: 800, color: "#BE185D", letterSpacing: "0.16em", textTransform: "uppercase" }}>Extra-Day Offers</div>
+                          <div style={{ fontSize: 16, fontWeight: 700, color: "#831843", fontFamily: "'Outfit',system-ui,sans-serif" }}>Review · {headLbl} {dashCollapsed.edReq ? "▸" : "▾"}</div>
+                        </div>
+                      </div>
+                    </div>
+                    <div style={{ display: dashCollapsed.edReq ? "none" : "flex", flexDirection: "column", gap: 12 }}>
+                      {rows.map(({ offer, reqs }) => (
+                        <div key={offer.id} style={{ border: "1px solid #FCE7F3", borderRadius: 12, padding: "12px 14px", background: "#fff" }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, flexWrap: "wrap" }}>
+                            <div style={{ minWidth: 0 }}>
+                              <div style={{ fontSize: 14, fontWeight: 800, color: "#831843" }}>{offer.branch} · {fmtD(offer.date)} <span style={{ color: "#9D7387", fontWeight: 600 }}>({offer.startTime}–{offer.endTime})</span></div>
+                              <div style={{ fontSize: 12, color: "#9D7387", marginBottom: 8 }}>{reqs.length} manager{reqs.length === 1 ? "" : "s"} claimed{offer.note ? " · " + offer.note : ""}</div>
+                            </div>
+                            <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                              <button disabled={edBusy} onClick={() => setEdEdit(edEdit && edEdit.id === offer.id ? null : { id: offer.id, date: offer.date, shiftCode: offer.shiftCode, start: offer.startTime, end: offer.endTime, note: offer.note || "" })}
+                                style={{ background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 8, padding: "6px 11px", fontSize: 11.5, fontWeight: 700, cursor: edBusy ? "not-allowed" : "pointer", fontFamily: "inherit" }}>✎ Amend</button>
+                              <button disabled={edBusy} onClick={async () => { if (await askConfirm({ tone: "danger", icon: "✕", title: "Cancel this offer?", body: "Cancel the extra-day offer at " + offer.branch + " on " + fmtD(offer.date) + "?\n\nIt disappears from the kiosk and any pending claims are declined.", confirmLabel: "Cancel offer", cancelLabel: "Keep it" })) edCancelOffer(offer); }}
+                                style={{ background: "#fff", color: "#B91C1C", border: "1px solid #FECACA", borderRadius: 8, padding: "6px 11px", fontSize: 11.5, fontWeight: 700, cursor: edBusy ? "not-allowed" : "pointer", fontFamily: "inherit" }}>✕ Cancel</button>
+                            </div>
+                          </div>
+                          {edEdit && edEdit.id === offer.id && (
+                            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", padding: "12px 14px", margin: "0 0 10px", background: "linear-gradient(180deg,#FFF7FB,#FFFDFE)", border: "1px solid #F8D7E6", borderRadius: 12 }}>
+                              <label style={edLabel}>Date<br/>
+                                <input type="date" value={edEdit.date} onChange={(e) => setEdEdit(p => ({ ...p, date: e.target.value }))} style={edField} /></label>
+                              <label style={edLabel}>Shift<br/>
+                                <select value={edEdit.shiftCode} onChange={(e) => { const sh = ED_SHIFTS.find(x => x.code === e.target.value); setEdEdit(p => ({ ...p, shiftCode: e.target.value, start: sh ? sh.start : p.start, end: sh ? sh.end : p.end })); }} style={edSelect}>
+                                  {ED_SHIFTS.map(sh => <option key={sh.code} value={sh.code}>{sh.code} · {sh.label}</option>)}
+                                </select></label>
+                              <label style={edLabel}>Start<br/>
+                                <input type="time" value={edEdit.start} onChange={(e) => setEdEdit(p => ({ ...p, start: e.target.value }))} style={edField} /></label>
+                              <label style={edLabel}>End<br/>
+                                <input type="time" value={edEdit.end} onChange={(e) => setEdEdit(p => ({ ...p, end: e.target.value }))} style={edField} /></label>
+                              <label style={{ ...edLabel, flex: 1, minWidth: 120 }}>Note<br/>
+                                <input type="text" value={edEdit.note} onChange={(e) => setEdEdit(p => ({ ...p, note: e.target.value }))} style={{ ...edField, width: "100%" }} /></label>
+                              <button disabled={edBusy} onClick={async () => { await edAmendOffer(offer, edEdit); setEdEdit(null); }}
+                                style={{ background: "linear-gradient(180deg,#9D2257,#831843)", color: "#fff", border: "none", borderRadius: 10, padding: "9px 18px", fontSize: 12.5, fontWeight: 800, cursor: edBusy ? "not-allowed" : "pointer", fontFamily: "inherit", boxShadow: "0 3px 10px rgba(131,24,67,0.28)" }}>Save</button>
+                            </div>
+                          )}
+                          {reqs.length === 0 ? (
+                            <div style={{ fontSize: 12, color: "#B58AA0", fontStyle: "italic" }}>Awaiting claims from the kiosk…</div>
+                          ) : (
+                          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                            {reqs.map(r => (
+                              <div key={r.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", padding: "8px 10px", background: "#FFF7FB", border: "1px solid #FBE3EE", borderRadius: 9 }}>
+                                <div style={{ minWidth: 0 }}>
+                                  <span style={{ fontSize: 13, fontWeight: 700, color: "#831843" }}>{r.name || r.ec}</span>
+                                  <span style={{ fontSize: 11.5, color: "#9D7387" }}> · from {r.homeBranch || "—"} · claimed {fmtAgo(r.requestedAt)}</span>
+                                </div>
+                                <div style={{ display: "flex", gap: 6 }}>
+                                  <button disabled={edBusy} onClick={async () => { if (await askConfirm({ icon: "✓", title: "Approve this extra day?", body: "Approve " + (r.name || r.ec) + " for the extra day at " + offer.branch + " on " + fmtD(offer.date) + "?\n\nThis fills the offer and declines the other claims.", confirmLabel: "Approve", cancelLabel: "Not yet" })) edDecide(offer, r, "approved"); }}
+                                    style={{ background: edBusy ? "#A7F3D0" : "#16a34a", color: "#fff", border: "none", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontWeight: 800, cursor: edBusy ? "not-allowed" : "pointer", fontFamily: "inherit" }}>✓ Approve</button>
+                                  <button disabled={edBusy} onClick={() => edDecide(offer, r, "declined")}
+                                    style={{ background: "#fff", color: "#B91C1C", border: "1px solid #FECACA", borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 700, cursor: edBusy ? "not-allowed" : "pointer", fontFamily: "inherit" }}>Decline</button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                          )}
+                        </div>
+                      ))}
+                      {filledOffers.length > 0 && (
+                        <div style={{ borderTop: rows.length ? "1px dashed #FBCFE8" : "none", paddingTop: rows.length ? 12 : 0 }}>
+                          <div style={{ fontSize: 10, fontWeight: 800, color: "#9D7387", letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: 8 }}>Filled — undo if approved by mistake</div>
+                          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                            {filledOffers.map(o => (
+                              <div key={o.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", padding: "8px 12px", background: "#F0FDF4", border: "1px solid #BBF7D0", borderRadius: 9 }}>
+                                <div style={{ minWidth: 0 }}>
+                                  <span style={{ fontSize: 13, fontWeight: 700, color: "#166534" }}>{o.filledName || o.filledEc}</span>
+                                  <span style={{ fontSize: 11.5, color: "#15803d" }}> · {o.branch} · {fmtD(o.date)} ({o.startTime}–{o.endTime}){o.approvedBy ? " · approved by " + o.approvedBy : ""}</span>
+                                </div>
+                                <button disabled={edBusy} onClick={() => edUndoFilled(o)}
+                                  style={{ background: "#fff", color: "#B91C1C", border: "1px solid #FECACA", borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: edBusy ? "not-allowed" : "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>↩ Undo extra day</button>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
+
               {/* ── SECTION: FRESHA — DUE SOON (< 3 days) ──
                   The full Fresha open/close checklist now lives on the Fresha
                   To-Do tab. Here we only surface the URGENT ones as a warning:
@@ -21627,87 +21915,35 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 );
               })()}
 
-              {/* ── SECTION: EXTRA-DAY REQUESTS (Owner + National Ops) ── */}
+              {/* ── SECTION: DAILY UPDATES (kiosk news feed) — Owner + National Ops ──
+                  The kiosk "Daily Updates" feed (boa_news_v1) is auto-posted by
+                  extra-day events. Most ED posts self-expire, but legacy/untagged
+                  ones linger — this card lets an owner prune or clear them. */}
               {(currentUser?.isOwner || (currentUser?.role || "").toLowerCase().includes("national"))
-                && !(new Set(currentUser?.hideTabs || []).has("dashEdRequests"))
-                && (() => {
-                const openOffers = (edOffers || []).filter(o => o && o.status === "open");
-                const pendingByOffer = {};
-                (edRequests || []).forEach(r => { if (r && r.status === "pending") (pendingByOffer[r.offerId] = pendingByOffer[r.offerId] || []).push(r); });
-                // Show EVERY open offer — including ones with no claims yet — so ops
-                // can amend or cancel a stale offer that nobody has picked up.
-                const rows = openOffers
-                  .map(o => ({ offer: o, reqs: pendingByOffer[o.id] || [] }))
-                  .sort((a, b) => String(a.offer.date).localeCompare(String(b.offer.date)));
-                if (!rows.length) return null;
-                const totalReqs = rows.reduce((n, x) => n + x.reqs.length, 0);
-                const fmtD = (d) => { try { return new Date(d + "T12:00:00").toLocaleDateString(undefined, { weekday: "short", day: "2-digit", month: "short" }); } catch (_) { return d; } };
-                const fmtAgo = (iso) => { try { return new Date(iso).toLocaleString(undefined, { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }); } catch (_) { return ""; } };
-                const headLbl = totalReqs > 0 ? (totalReqs + " pending") : (rows.length + " open");
+                && !(new Set(currentUser?.hideTabs || []).has("dashNews"))
+                && Array.isArray(newsPosts) && newsPosts.length > 0 && (() => {
+                const fmtWhen = (iso) => { try { return new Date(iso).toLocaleString(undefined, { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }); } catch (_) { return ""; } };
+                const posts = newsPosts.slice().sort((a, b) => String(b.ts || "").localeCompare(String(a.ts || "")));
                 return (
                   <div style={{ background: "linear-gradient(180deg,#FFF7FB,#ffffff)", border: "1px solid #FBCFE8", borderRadius: 14, padding: "16px", marginBottom: 18, boxShadow: "0 1px 4px rgba(190,24,93,0.06)" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }} onClick={() => setDashCollapsed(p => ({ ...p, edReq: !p.edReq }))}>
-                        <span style={{ fontSize: 20 }}>✨</span>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 10 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", minWidth: 0 }} onClick={() => setDashCollapsed(p => ({ ...p, news: !p.news }))}>
+                        <span style={{ fontSize: 20 }}>📰</span>
                         <div>
-                          <div style={{ fontSize: 10, fontWeight: 800, color: "#BE185D", letterSpacing: "0.16em", textTransform: "uppercase" }}>Extra-Day Offers</div>
-                          <div style={{ fontSize: 16, fontWeight: 700, color: "#831843", fontFamily: "'Outfit',system-ui,sans-serif" }}>Review · {headLbl} {dashCollapsed.edReq ? "▸" : "▾"}</div>
+                          <div style={{ fontSize: 10, fontWeight: 800, color: "#BE185D", letterSpacing: "0.16em", textTransform: "uppercase" }}>Daily Updates</div>
+                          <div style={{ fontSize: 16, fontWeight: 700, color: "#831843", fontFamily: "'Outfit',system-ui,sans-serif" }}>{posts.length} post{posts.length === 1 ? "" : "s"} in the feed {dashCollapsed.news ? "▸" : "▾"}</div>
                         </div>
                       </div>
+                      <button onClick={clearAllNews} style={{ background: "#fff", color: "#B91C1C", border: "1px solid #FECACA", borderRadius: 9, padding: "7px 13px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap", flexShrink: 0 }}>Clear all</button>
                     </div>
-                    <div style={{ display: dashCollapsed.edReq ? "none" : "flex", flexDirection: "column", gap: 12 }}>
-                      {rows.map(({ offer, reqs }) => (
-                        <div key={offer.id} style={{ border: "1px solid #FCE7F3", borderRadius: 12, padding: "12px 14px", background: "#fff" }}>
-                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, flexWrap: "wrap" }}>
-                            <div style={{ minWidth: 0 }}>
-                              <div style={{ fontSize: 14, fontWeight: 800, color: "#831843" }}>{offer.branch} · {fmtD(offer.date)} <span style={{ color: "#9D7387", fontWeight: 600 }}>({offer.startTime}–{offer.endTime})</span></div>
-                              <div style={{ fontSize: 12, color: "#9D7387", marginBottom: 8 }}>{reqs.length} manager{reqs.length === 1 ? "" : "s"} claimed{offer.note ? " · " + offer.note : ""}</div>
-                            </div>
-                            <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-                              <button disabled={edBusy} onClick={() => setEdEdit(edEdit && edEdit.id === offer.id ? null : { id: offer.id, date: offer.date, shiftCode: offer.shiftCode, start: offer.startTime, end: offer.endTime, note: offer.note || "" })}
-                                style={{ background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 8, padding: "6px 11px", fontSize: 11.5, fontWeight: 700, cursor: edBusy ? "not-allowed" : "pointer", fontFamily: "inherit" }}>✎ Amend</button>
-                              <button disabled={edBusy} onClick={() => { if (window.confirm("Cancel this extra-day offer at " + offer.branch + " on " + fmtD(offer.date) + "?\n\nIt disappears from the kiosk and any pending claims are declined.")) edCancelOffer(offer); }}
-                                style={{ background: "#fff", color: "#B91C1C", border: "1px solid #FECACA", borderRadius: 8, padding: "6px 11px", fontSize: 11.5, fontWeight: 700, cursor: edBusy ? "not-allowed" : "pointer", fontFamily: "inherit" }}>✕ Cancel</button>
-                            </div>
+                    <div style={{ display: dashCollapsed.news ? "none" : "flex", flexDirection: "column", gap: 8 }}>
+                      {posts.map((n, i) => (
+                        <div key={(n.ts || "") + "_" + i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "9px 12px", background: "#fff", border: "1px solid #FCE7F3", borderRadius: 10 }}>
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#9D7387", marginBottom: 2 }}>{fmtWhen(n.ts)}</div>
+                            <div style={{ fontSize: 13, color: "#5B2540" }}>{n.body}</div>
                           </div>
-                          {edEdit && edEdit.id === offer.id && (
-                            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end", padding: "10px 12px", margin: "0 0 10px", background: "#FFF7FB", border: "1px dashed #FBCFE8", borderRadius: 9 }}>
-                              <label style={{ fontSize: 11, fontWeight: 700, color: "#9D7387" }}>Date<br/>
-                                <input type="date" value={edEdit.date} onChange={(e) => setEdEdit(p => ({ ...p, date: e.target.value }))} style={{ marginTop: 3, padding: "5px 7px", border: "1px solid #FBCFE8", borderRadius: 7, fontSize: 12 }} /></label>
-                              <label style={{ fontSize: 11, fontWeight: 700, color: "#9D7387" }}>Shift<br/>
-                                <select value={edEdit.shiftCode} onChange={(e) => { const sh = ED_SHIFTS.find(x => x.code === e.target.value); setEdEdit(p => ({ ...p, shiftCode: e.target.value, start: sh ? sh.start : p.start, end: sh ? sh.end : p.end })); }} style={{ marginTop: 3, padding: "5px 7px", border: "1px solid #FBCFE8", borderRadius: 7, fontSize: 12 }}>
-                                  {ED_SHIFTS.map(sh => <option key={sh.code} value={sh.code}>{sh.code} · {sh.label}</option>)}
-                                </select></label>
-                              <label style={{ fontSize: 11, fontWeight: 700, color: "#9D7387" }}>Start<br/>
-                                <input type="time" value={edEdit.start} onChange={(e) => setEdEdit(p => ({ ...p, start: e.target.value }))} style={{ marginTop: 3, padding: "5px 7px", border: "1px solid #FBCFE8", borderRadius: 7, fontSize: 12 }} /></label>
-                              <label style={{ fontSize: 11, fontWeight: 700, color: "#9D7387" }}>End<br/>
-                                <input type="time" value={edEdit.end} onChange={(e) => setEdEdit(p => ({ ...p, end: e.target.value }))} style={{ marginTop: 3, padding: "5px 7px", border: "1px solid #FBCFE8", borderRadius: 7, fontSize: 12 }} /></label>
-                              <label style={{ fontSize: 11, fontWeight: 700, color: "#9D7387", flex: 1, minWidth: 120 }}>Note<br/>
-                                <input type="text" value={edEdit.note} onChange={(e) => setEdEdit(p => ({ ...p, note: e.target.value }))} style={{ marginTop: 3, padding: "5px 7px", border: "1px solid #FBCFE8", borderRadius: 7, fontSize: 12, width: "100%", boxSizing: "border-box" }} /></label>
-                              <button disabled={edBusy} onClick={async () => { await edAmendOffer(offer, edEdit); setEdEdit(null); }}
-                                style={{ background: "#831843", color: "#fff", border: "none", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontWeight: 800, cursor: edBusy ? "not-allowed" : "pointer", fontFamily: "inherit" }}>Save</button>
-                            </div>
-                          )}
-                          {reqs.length === 0 ? (
-                            <div style={{ fontSize: 12, color: "#B58AA0", fontStyle: "italic" }}>Awaiting claims from the kiosk…</div>
-                          ) : (
-                          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                            {reqs.map(r => (
-                              <div key={r.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", padding: "8px 10px", background: "#FFF7FB", border: "1px solid #FBE3EE", borderRadius: 9 }}>
-                                <div style={{ minWidth: 0 }}>
-                                  <span style={{ fontSize: 13, fontWeight: 700, color: "#831843" }}>{r.name || r.ec}</span>
-                                  <span style={{ fontSize: 11.5, color: "#9D7387" }}> · from {r.homeBranch || "—"} · claimed {fmtAgo(r.requestedAt)}</span>
-                                </div>
-                                <div style={{ display: "flex", gap: 6 }}>
-                                  <button disabled={edBusy} onClick={() => { if (window.confirm("Approve " + (r.name || r.ec) + " for the extra day at " + offer.branch + " on " + fmtD(offer.date) + "?\n\nThis fills the offer and declines the other claims.")) edDecide(offer, r, "approved"); }}
-                                    style={{ background: edBusy ? "#A7F3D0" : "#16a34a", color: "#fff", border: "none", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontWeight: 800, cursor: edBusy ? "not-allowed" : "pointer", fontFamily: "inherit" }}>✓ Approve</button>
-                                  <button disabled={edBusy} onClick={() => edDecide(offer, r, "declined")}
-                                    style={{ background: "#fff", color: "#B91C1C", border: "1px solid #FECACA", borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 700, cursor: edBusy ? "not-allowed" : "pointer", fontFamily: "inherit" }}>Decline</button>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                          )}
+                          <button onClick={() => deleteNewsPost(n)} title="Remove from the kiosk feed" style={{ background: "#fff", color: "#B91C1C", border: "1px solid #FECACA", borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap", flexShrink: 0 }}>✕</button>
                         </div>
                       ))}
                     </div>
@@ -38444,7 +38680,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           }
         };
         const lbl = { display: "block", fontSize: 11, fontWeight: 800, color: "#9D2B62", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 5 };
-        const inp = { width: "100%", padding: "9px 11px", fontSize: 13, border: "1.5px solid #F3D4E0", borderRadius: 9, fontFamily: "inherit", color: "#831843", background: "#fff", boxSizing: "border-box" };
+        const inp = { width: "100%", padding: "9px 11px", fontSize: 13, border: "1.5px solid #F3D4E0", borderRadius: 9, fontFamily: "inherit", color: "#831843", background: "#fff", boxSizing: "border-box", outline: "none" };
+        const inpSel = { ...inp, cursor: "pointer", appearance: "none", WebkitAppearance: "none", MozAppearance: "none", paddingRight: 30, backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23BE185D' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E\")", backgroundRepeat: "no-repeat", backgroundPosition: "right 11px center" };
         return (
           <div onClick={() => !f.busy && setEdPublish(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
             <div onClick={ev => ev.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "22px 24px", width: "100%", maxWidth: 460, boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
@@ -38453,7 +38690,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
               <div style={{ marginBottom: 14 }}>
                 <label style={lbl}>Branch</label>
-                <select value={f.branch} onChange={e => upd({ branch: e.target.value })} style={inp}>
+                <select value={f.branch} onChange={e => upd({ branch: e.target.value })} style={inpSel}>
                   <option value="">— Select branch —</option>
                   {branchNames.map(b => <option key={b} value={b}>{b}</option>)}
                 </select>
@@ -38469,7 +38706,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <select value={f.shiftCode} onChange={e => {
                   const sc = ED_SHIFTS.find(x => x.code === e.target.value) || ED_SHIFTS[0];
                   upd({ shiftCode: sc.code, start: sc.start, end: sc.end });
-                }} style={inp}>
+                }} style={inpSel}>
                   {ED_SHIFTS.map(s => <option key={s.code} value={s.code}>{s.code} · {s.label} ({s.start}–{s.end})</option>)}
                 </select>
               </div>
@@ -38965,6 +39202,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       {mgrModal && <ManagerModal m={(() => { const mr = (matRecs || []).find(r => r && r.ec && mgrModal.ec && r.ec.trim() === mgrModal.ec.trim()); return mr ? { ...mgrModal, matStatus: mgrModal.matStatus || mr.matStatus, matStart: mgrModal.matStart || mr.matStart, matEnd: mgrModal.matEnd || mr.matEnd, matReturn: mgrModal.matReturn || mr.returnDate, matNotes: mgrModal.matNotes || mr.notes } : mgrModal; })()} pin={mgrPins[mgrModal.ec] || ""} onClose={() => setMgrModal(null)} onSave={saveMgr} onDelete={delMgr} smTrialActive={!!(smTrialList || []).find(r => r.ec === mgrModal.ec && r.status === "active")} onStartSmTrial={startSmTrialFor} />}
       {transferModal && <TransferModal s={transferModal} onClose={() => setTransferModal(null)} onConfirm={handleTransfer} onCancelTransfer={cancelTransfer} />}
       {matModal && <MatModal rec={matModal} onClose={() => setMatModal(null)} onSave={saveMat} onDelete={delMat} people={matPickerPool} />}
+      <AlertModal data={uiDialog} onResolve={resolveUiDialog} />
     </div>
   );
 }

@@ -1416,23 +1416,28 @@
     if (res.error) { console.error("listNews:", res.error); return []; }
     var v = res.data && res.data.value;
     if (!Array.isArray(v)) return [];
-    // Extra-Day announcements (edKind "offer") auto-expire from the feed once
-    // their offer is no longer claimable — filled, cancelled, expired (date
-    // passed) or deleted entirely. Posts without an edOfferId pass through
-    // untouched. We compute the live "claimable" set ONLY if such a post exists.
-    var hasEdPost = v.some(function (n) { return n && n.edKind === "offer" && n.edOfferId; });
+    // Extra-Day announcements auto-expire from the feed off the live offer:
+    //  • "offer" (✨ available) posts show while the offer is still OPEN,
+    //  • "filled" (✅ filled) posts show while the offer is still FILLED.
+    // Either drops once the work day has passed, the offer was deleted, or its
+    // status changed (cancelled / reversed). Posts without an edOfferId (plain
+    // announcements, and legacy untagged ones) pass through untouched. We only
+    // do the lookup if at least one tagged post exists.
+    var hasEdPost = v.some(function (n) { return n && n.edOfferId; });
     if (!hasEdPost) return v;
-    var claimable = {};
+    var offerById = {};
+    var today;
     try {
       var offers = await loadEdOffers();
-      var today = (function () { var d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); })();
-      (offers || []).forEach(function (o) {
-        if (o && o.id && o.status === "open" && String(o.date || "") >= today) claimable[o.id] = true;
-      });
+      today = (function () { var d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); })();
+      (offers || []).forEach(function (o) { if (o && o.id) offerById[o.id] = o; });
     } catch (e) { return v; }   // on any error, don't hide anything
     return v.filter(function (n) {
-      if (!n || n.edKind !== "offer" || !n.edOfferId) return true;   // not an ED post
-      return !!claimable[n.edOfferId];                               // keep only if still claimable
+      if (!n || !n.edOfferId) return true;                  // not a tagged ED post
+      var o = offerById[n.edOfferId];
+      if (!o) return false;                                 // offer gone → drop
+      if (String(o.date || "") < today) return false;       // work day passed → drop
+      return o.status === (n.edKind === "filled" ? "filled" : "open");
     });
   }
 
