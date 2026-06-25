@@ -7468,6 +7468,14 @@ function VoucherEntryGrid() {
   const [saving, setSaving] = React.useState(false);
   const [result, setResult] = React.useState(null); // { ok, msg }
   const [errorRows, setErrorRows] = React.useState(() => new Set());
+  const [lastUpload, setLastUpload] = React.useState(null); // { createdAt, orderNumber, ... }
+
+  const loadLastUpload = React.useCallback(async () => {
+    try {
+      if (window.BOA_DB && window.BOA_DB.latestVoucherUpload) setLastUpload(await window.BOA_DB.latestVoucherUpload());
+    } catch (_) { /* non-fatal — banner just stays hidden */ }
+  }, []);
+  React.useEffect(() => { loadLastUpload(); }, [loadLastUpload]);
 
   const setCell = (idx, key, val) => {
     setRows(prev => prev.map((r, i) => (i === idx ? { ...r, [key]: val } : r)));
@@ -7513,6 +7521,7 @@ function VoucherEntryGrid() {
       setRows(makeBlankVoucherRows(VOUCHER_BLANK_ROWS));
       setErrorRows(new Set());
       setResult({ ok: true, msg: n + " voucher" + (n === 1 ? "" : "s") + " saved." });
+      loadLastUpload();
     } catch (e) {
       setResult({ ok: false, msg: "Could not save: " + ((e && e.message) || String(e)) });
     } finally {
@@ -7523,8 +7532,36 @@ function VoucherEntryGrid() {
   const th = { ...VA.th, padding: "11px 12px" };
   const cellInput = { ...VA.input, padding: "8px 9px" };
 
+  const fmtUploadedAt = (iso) => {
+    if (!iso) return null;
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return null;
+    return d.toLocaleDateString(undefined, { weekday: "short", day: "2-digit", month: "short", year: "numeric" }) +
+      " at " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  };
+
   return (
     <div>
+      {lastUpload && (lastUpload.createdAt || lastUpload.count) ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 13, padding: "13px 17px", marginBottom: 16, borderRadius: 14,
+          border: "1px solid #FBCFE8", background: "linear-gradient(135deg,#FDE7F1 0%,#FFF4F9 60%,#FFFFFF 100%)",
+          boxShadow: "0 0 0 1px rgba(244,114,182,0.16), 0 6px 18px rgba(190,24,93,0.08)" }}>
+          <div style={{ ...VA.badge("#BE185D", "#F472B6"), color: "#fff", flex: "0 0 auto" }}>🕑</div>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 11, fontWeight: 800, color: "#B86A8B", textTransform: "uppercase", letterSpacing: "0.05em" }}>Last gift card uploaded</div>
+            {lastUpload.createdAt ? (
+              <div style={{ fontSize: 14, fontWeight: 700, color: VA.ink, marginTop: 2, lineHeight: 1.35 }}>
+                {fmtUploadedAt(lastUpload.createdAt)}
+                {lastUpload.orderNumber ? <> · order <span style={VA.codeChip}>{lastUpload.orderNumber}</span></> : null}
+              </div>
+            ) : (
+              <div style={{ fontSize: 14, fontWeight: 700, color: VA.ink, marginTop: 2 }}>No vouchers entered yet</div>
+            )}
+            {lastUpload.count ? <div style={{ fontSize: 12, color: "#9D7387", marginTop: 2 }}>{lastUpload.count.toLocaleString()} voucher{lastUpload.count === 1 ? "" : "s"} stored in total</div> : null}
+          </div>
+        </div>
+      ) : null}
+
       <div style={{ fontSize: 13, color: "#9D7387", lineHeight: 1.5, marginBottom: 14 }}>
         Enter the <strong style={{ color: VA.ink }}>last 4 digits</strong> of the Shopify voucher code, the matching
         <strong style={{ color: VA.ink }}> Fresha code</strong>, the <strong style={{ color: VA.ink }}>amount</strong> and the <strong style={{ color: VA.ink }}>order number</strong>.
@@ -7727,14 +7764,20 @@ function VoucherAdmin({ currentUser }) {
   const [progress, setProgress] = React.useState(null); // { phase, done, total }
   const [result, setResult] = React.useState(null);     // { ok, msg }
   const [stats, setStats] = React.useState(null);       // { count, lastPaymentDate }
+  const [vUpload, setVUpload] = React.useState(null);   // { createdAt, orderNumber, count }
   const fileRef = React.useRef(null);
 
   const loadStats = React.useCallback(async () => {
     try {
       if (window.BOA_DB && window.BOA_DB.giftCardTxnStats) setStats(await window.BOA_DB.giftCardTxnStats());
     } catch (_) { /* table may not exist yet */ }
+    try {
+      if (window.BOA_DB && window.BOA_DB.latestVoucherUpload) setVUpload(await window.BOA_DB.latestVoucherUpload());
+    } catch (_) { /* non-fatal */ }
   }, []);
   React.useEffect(() => { loadStats(); }, [loadStats]);
+  // Refresh when returning from the Voucher Entry sub-tab (new batch may have been entered).
+  React.useEffect(() => { if (sub === "uploads") loadStats(); }, [sub, loadStats]);
 
   const onFile = async (e) => {
     const file = e.target.files && e.target.files[0];
@@ -7782,6 +7825,13 @@ function VoucherAdmin({ currentUser }) {
 
   const pct = progress && progress.total ? Math.round((progress.done / progress.total) * 100) : null;
   const fmtUp = (d) => d ? new Date(d).toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" }) : "—";
+  const fmtUpAt = (d) => {
+    if (!d) return "—";
+    const x = new Date(d);
+    if (isNaN(x.getTime())) return "—";
+    return x.toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" }) +
+      " · " + x.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  };
 
   return (
     <div className="va-root" style={{ fontFamily: "'Outfit',system-ui,sans-serif", color: "#831843", width: "100%" }}>
@@ -7795,16 +7845,30 @@ function VoucherAdmin({ currentUser }) {
         </div>
       </div>
 
-      {stats && (
+      {(stats || vUpload) && (
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
-          <div style={VA.statTile}>
-            <div style={{ fontSize: 11, fontWeight: 800, color: "#B86A8B", textTransform: "uppercase", letterSpacing: "0.05em" }}>Transactions stored</div>
-            <div style={{ fontFamily: "'Outfit',sans-serif", fontSize: 23, fontWeight: 800, color: VA.accent, marginTop: 3 }}>{(stats.count || 0).toLocaleString()}</div>
-          </div>
-          <div style={VA.statTile}>
-            <div style={{ fontSize: 11, fontWeight: 800, color: "#B86A8B", textTransform: "uppercase", letterSpacing: "0.05em" }}>Latest transaction</div>
-            <div style={{ fontFamily: "'Outfit',sans-serif", fontSize: 23, fontWeight: 800, color: VA.accent, marginTop: 3 }}>{fmtUp(stats.lastPaymentDate)}</div>
-          </div>
+          {stats && (
+            <div style={VA.statTile}>
+              <div style={{ fontSize: 11, fontWeight: 800, color: "#B86A8B", textTransform: "uppercase", letterSpacing: "0.05em" }}>Transactions stored</div>
+              <div style={{ fontFamily: "'Outfit',sans-serif", fontSize: 23, fontWeight: 800, color: VA.accent, marginTop: 3 }}>{(stats.count || 0).toLocaleString()}</div>
+            </div>
+          )}
+          {stats && (
+            <div style={VA.statTile}>
+              <div style={{ fontSize: 11, fontWeight: 800, color: "#B86A8B", textTransform: "uppercase", letterSpacing: "0.05em" }}>Latest transaction</div>
+              <div style={{ fontFamily: "'Outfit',sans-serif", fontSize: 23, fontWeight: 800, color: VA.accent, marginTop: 3 }}>{fmtUp(stats.lastPaymentDate)}</div>
+            </div>
+          )}
+          {vUpload && (
+            <div style={VA.statTile}>
+              <div style={{ fontSize: 11, fontWeight: 800, color: "#B86A8B", textTransform: "uppercase", letterSpacing: "0.05em" }}>Latest voucher upload</div>
+              <div style={{ fontFamily: "'Outfit',sans-serif", fontSize: 17, fontWeight: 800, color: VA.accent, marginTop: 3 }}>{vUpload.createdAt ? fmtUpAt(vUpload.createdAt) : "—"}</div>
+              <div style={{ fontSize: 12, color: "#9D7387", marginTop: 3 }}>
+                {vUpload.orderNumber ? <>Order <span style={VA.codeChip}>{vUpload.orderNumber}</span></> : "No vouchers entered yet"}
+                {vUpload.count ? <> · {vUpload.count.toLocaleString()} stored</> : null}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
