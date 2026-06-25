@@ -30121,6 +30121,37 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           ].concat(buildAttCsvRows().map(r => r.map(_csvEscape).join(",")));
           _triggerDownload(_safeFile("attendance_totals_" + attBranch + "_" + attCsvPayYm + "_payroll") + ".csv", lines.join("\r\n"), "text/csv");
         };
+        // Trial people (still on paid trial, not yet promoted to onboarding) are
+        // NOT in attStaff, so they never appear in the payroll CSV above. This
+        // exports JUST them and their paid trial days for THIS store + cycle,
+        // mirroring the 🧪 Trial section of the grid exactly: checkins "on"/"late"
+        // = a paid trial day, dayLocs "ho" = a head-office (paid) day, "absent" =
+        // unpaid. Same filter/maths as the rendered rows so the totals match.
+        const downloadTrialCsv = () => {
+          const cycleYmd = new Set(days.map(d => d.ymd));
+          const STG = { trial_w1: "Week 1", trial_w2: "Week 2", pending_mid_review: "Week 1", pending_final_review: "Week 2", passed: "Passed", failed: "Failed" };
+          const trialRows = (trialList || []).filter(c =>
+            c && c.branch === attBranch
+            && c.status !== "hired" && c.status !== "induction"
+            && c.checkins && typeof c.checkins === "object" && !Array.isArray(c.checkins)
+            && Object.keys(c.checkins).some(y => cycleYmd.has(y) && (c.checkins[y] === "on" || c.checkins[y] === "late" || c.checkins[y] === "absent"))
+          ).sort((a, b) => String(a.role || "nt").localeCompare(String(b.role || "nt")) || (a.name || "").localeCompare(b.name || ""));
+          if (!trialRows.length) { alert("No trial people with paid trial days this cycle for " + attBranch + "."); return; }
+          const head = ["Name", "Role", "Trial Stage", "Start Date", "Paid Trial Days", "Store Days", "Head Office Days", "Absent Days"];
+          const rows = trialRows.map(c => {
+            const ci = c.checkins || {}, locs = c.dayLocs || {};
+            const isAm = String(c.role || "nt").toLowerCase() === "am";
+            let paid = 0, ho = 0, absent = 0;
+            days.forEach(dy => { const s = ci[dy.ymd]; if (s === "on" || s === "late") { paid++; if (locs[dy.ymd] === "ho") ho++; } else if (s === "absent") absent++; });
+            return [c.name || "", isAm ? "AM Trial" : "Trial (NT)", STG[c.status] || c.status || "", c.startDate || "", paid, paid - ho, ho, absent];
+          });
+          const lines = [
+            _csvEscape("Trial paid days · " + attBranch + " · Pay cycle " + cycLabel + " (" + attCsvPayLabel + ")"),
+            "",
+            head.map(_csvEscape).join(",")
+          ].concat(rows.map(r => r.map(_csvEscape).join(",")));
+          _triggerDownload(_safeFile("trial_days_" + attBranch + "_" + attCsvPayYm + "_payroll") + ".csv", lines.join("\r\n"), "text/csv");
+        };
         // Publish this render's row-builder + readiness for the all-stores
         // collector effect (it runs at component scope and can't reach these
         // render-local closures otherwise).
@@ -30136,6 +30167,37 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (!stores.length) return;
           setAllExport({ stores, idx: 0, rows: [], origBranch: attBranch, ym: attYM });
           setAttBranch(stores[0]);
+        };
+        // All-stores trial export. Unlike the payroll all-stores CSV (which has to
+        // walk each branch's attendance grid), trial people live entirely in
+        // trialList — already loaded for EVERY branch — so this is synchronous:
+        // one row per trial person across all stores, with a Branch column. Same
+        // paid-day maths as the per-store trial CSV + the grid's 🧪 section.
+        const downloadAllTrialCsv = () => {
+          if (allExport) return;
+          const cycleYmd = new Set(days.map(d => d.ymd));
+          const STG = { trial_w1: "Week 1", trial_w2: "Week 2", pending_mid_review: "Week 1", pending_final_review: "Week 2", passed: "Passed", failed: "Failed" };
+          const trialRows = (trialList || []).filter(c =>
+            c && c.branch
+            && c.status !== "hired" && c.status !== "induction"
+            && c.checkins && typeof c.checkins === "object" && !Array.isArray(c.checkins)
+            && Object.keys(c.checkins).some(y => cycleYmd.has(y) && (c.checkins[y] === "on" || c.checkins[y] === "late" || c.checkins[y] === "absent"))
+          ).sort((a, b) => String(a.branch || "").localeCompare(String(b.branch || "")) || String(a.role || "nt").localeCompare(String(b.role || "nt")) || (a.name || "").localeCompare(b.name || ""));
+          if (!trialRows.length) { alert("No trial people with paid trial days this cycle in any store."); return; }
+          const head = ["Branch", "Name", "Role", "Trial Stage", "Start Date", "Paid Trial Days", "Store Days", "Head Office Days", "Absent Days"];
+          const rows = trialRows.map(c => {
+            const ci = c.checkins || {}, locs = c.dayLocs || {};
+            const isAm = String(c.role || "nt").toLowerCase() === "am";
+            let paid = 0, ho = 0, absent = 0;
+            days.forEach(dy => { const s = ci[dy.ymd]; if (s === "on" || s === "late") { paid++; if (locs[dy.ymd] === "ho") ho++; } else if (s === "absent") absent++; });
+            return [c.branch || "", c.name || "", isAm ? "AM Trial" : "Trial (NT)", STG[c.status] || c.status || "", c.startDate || "", paid, paid - ho, ho, absent];
+          });
+          const lines = [
+            _csvEscape("Trial paid days · ALL STORES · Pay cycle " + cycLabel + " (" + attCsvPayLabel + ")"),
+            "",
+            head.map(_csvEscape).join(",")
+          ].concat(rows.map(r => r.map(_csvEscape).join(",")));
+          _triggerDownload(_safeFile("trial_days_ALL_STORES_" + attCsvPayYm + "_payroll") + ".csv", lines.join("\r\n"), "text/csv");
         };
 
         // Count warning cells in the current grid view so the dashboard
@@ -30380,7 +30442,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               {allExport && <span style={{ fontSize: 11, color: "#BE185D", fontStyle: "italic", fontWeight: 600 }}>Building all-stores CSV… {allExport.idx + 1}/{allExport.stores.length} ({allExport.stores[allExport.idx]})</span>}
               <button onClick={autoFill} style={{ padding: "7px 14px", background: "#fef3c7", color: "#78350f", border: "1px solid #fbbf24", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Fill empty cells from schedule (faded, still unconfirmed)">✓ Auto-fill from Schedule</button>
               <button onClick={downloadAttendanceCsv} disabled={!!allExport} style={{ padding: "7px 14px", background: "#FFFFFF", color: "#BE185D", border: "1px solid #FBCFE8", borderRadius: 8, cursor: allExport ? "default" : "pointer", opacity: allExport ? 0.5 : 1, fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Download a CSV of the side totals for THIS store — employee code, name, role, new-starter start date, all day counts (incl. sick + note, unpaid) and whether the bonus is lost">⬇ CSV totals</button>
+              <button onClick={downloadTrialCsv} disabled={!!allExport} style={{ padding: "7px 14px", background: "#FEF9C3", color: "#854d0e", border: "1px solid #FDE047", borderRadius: 8, cursor: allExport ? "default" : "pointer", opacity: allExport ? 0.5 : 1, fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Download a CSV of JUST the trial people for THIS store (the 🧪 yellow rows — still on paid trial, not yet promoted to onboarding, so they're excluded from the CSV totals). One row per trial person with their paid trial days, store vs head-office split, and absent days.">🧪 Trial days CSV</button>
               <button onClick={downloadAllStoresCsv} disabled={!!allExport} style={{ padding: "7px 14px", background: "#BE185D", color: "#FFFFFF", border: "1px solid #BE185D", borderRadius: 8, cursor: allExport ? "default" : "pointer", opacity: allExport ? 0.6 : 1, fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Download ONE CSV covering every store for this pay cycle — one row per person, at their current store (transfers and loaned days folded in exactly as on each store's own sheet). Walks each store in turn, so it takes a few seconds.">⬇ All stores CSV</button>
+              <button onClick={downloadAllTrialCsv} disabled={!!allExport} style={{ padding: "7px 14px", background: "#FACC15", color: "#713f12", border: "1px solid #CA8A04", borderRadius: 8, cursor: allExport ? "default" : "pointer", opacity: allExport ? 0.6 : 1, fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Download ONE CSV of every store's trial people (the 🧪 yellow rows, not yet promoted to onboarding) for this pay cycle — one row per trial person with a Branch column, paid trial days, store vs head-office split, and absent days. Instant (no per-store walk).">🧪 Trial — all stores</button>
               <button onClick={importFresha} style={{ padding: "7px 14px", background: "#dbeafe", color: "#1e3a8a", border: "1px solid #93c5fd", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Upload a Fresha appointments CSV — every nail tech with a completed appointment that day is marked On Time">📤 Import Fresha CSV</button>
               <button onClick={importCheckins} style={{ padding: "7px 14px", background: "#dcfce7", color: "#14532d", border: "1px solid #86efac", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Pull every clock-in from the staff check-in app and stamp those days as On Time (or Extra Day if scheduled off). Confirmed cells are preserved. Use ↩ Undo to roll the import back.">✓ Import Check-ins</button>
               {attCheckinSnapshot && (
