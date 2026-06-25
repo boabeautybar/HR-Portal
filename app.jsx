@@ -49,14 +49,20 @@ const APP_USERS_KEY = "boa_app_users_v1";
 // Live PIN → user record store. Seeded from STAFF_USERS on first boot, then
 // edited via the Settings tab. A copy is kept in window.__BOA_APP_USERS so
 // the activity-log / sign-in helpers can resolve names without re-fetching.
+// Returns the stored user map, or null ONLY when the query genuinely succeeds
+// with no row (true first run). THROWS on any read failure (Supabase paused /
+// network blip / client not ready) — the caller must be able to tell "read
+// failed" apart from "no users", because the two used to look identical (both
+// null) and a failed read was wrongly treated as first-run, re-seeding the
+// built-in defaults OVER the real user list. That is exactly how every
+// Settings-added login got wiped during a Supabase outage.
 async function loadAppUsersFromDb() {
-  if (!window.BOA_DB || !window.BOA_DB.sb) return null;
-  try {
-    const r = await window.BOA_DB.sb.from("app_state").select("value").eq("key", APP_USERS_KEY).maybeSingle();
-    const v = r.data && r.data.value;
-    if (v && typeof v === "object" && !Array.isArray(v)) return v;
-    return null;
-  } catch (e) { console.warn("loadAppUsersFromDb:", e); return null; }
+  if (!window.BOA_DB || !window.BOA_DB.sb) throw new Error("Supabase client not ready");
+  const r = await window.BOA_DB.sb.from("app_state").select("value").eq("key", APP_USERS_KEY).maybeSingle();
+  if (r.error) throw r.error;                              // read failed — do NOT treat as empty
+  const v = r.data && r.data.value;
+  if (v && typeof v === "object" && !Array.isArray(v)) return v;
+  return null;                                             // query OK, no/empty row → genuine first run
 }
 async function saveAppUsersToDb(users) {
   if (!window.BOA_DB || !window.BOA_DB.sb) throw new Error("Supabase not ready");
@@ -8447,8 +8453,23 @@ function AppGate() {
       try { await waitDB(); } catch (_) { }
       if (cancelled) return;
 
-      let dynamic = await loadAppUsersFromDb();
-      if (!dynamic || Object.keys(dynamic).length === 0) {
+      let dynamic = null;
+      let usersReadFailed = false;
+      try {
+        dynamic = await loadAppUsersFromDb();
+      } catch (e) {
+        // The users read FAILED (Supabase paused / network blip). Do NOT treat
+        // this as "first run" — re-seeding would overwrite the real user list
+        // with the built-in defaults (how Settings-added logins got wiped on a
+        // Supabase outage). Fall back to in-memory defaults for THIS session
+        // only and never persist them; the real users return on the next good read.
+        usersReadFailed = true;
+        console.error("[BOA] app-users read failed — using in-memory defaults WITHOUT saving (no re-seed):", e);
+        dynamic = JSON.parse(JSON.stringify(STAFF_USERS));
+      }
+      if (usersReadFailed) {
+        // Skip seeding + migrations entirely; never write defaults over real data.
+      } else if (!dynamic || Object.keys(dynamic).length === 0) {
         // First run — seed Supabase from STAFF_USERS so the Settings tab
         // can edit the original accounts too. Failure to write isn't fatal:
         // we'll fall back to the in-memory copy.
