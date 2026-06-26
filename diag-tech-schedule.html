@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>BOA · Tech schedule diagnostic</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 20px; background: #FFF7FB; color: #3b2730; }
+  h1 { font-size: 20px; color: #831843; }
+  .hint { font-size: 13px; color: #9d6a82; margin-bottom: 16px; max-width: 880px; }
+  .bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 18px; }
+  select, button { font: inherit; padding: 7px 12px; border-radius: 8px; border: 1px solid #FBCFE8; background: #fff; }
+  button { background: #BE185D; color: #fff; border: none; cursor: pointer; font-weight: 700; }
+  .src { background: #fff; border: 1px solid #FBCFE8; border-radius: 12px; padding: 14px 16px; margin-bottom: 14px; }
+  .src h2 { font-size: 15px; margin: 0 0 2px; color: #831843; }
+  .src .key { font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: #9d6a82; margin-bottom: 8px; word-break: break-all; }
+  .verdict { font-size: 13px; font-weight: 700; padding: 8px 10px; border-radius: 8px; margin: 6px 0 10px; }
+  .v-dom { background: #F0FDF4; border: 1px solid #BBF7D0; color: #166534; }
+  .v-ymd { background: #FEF2F2; border: 1px solid #FECACA; color: #B91C1C; }
+  .v-mix { background: #FEF3C7; border: 1px solid #FDE68A; color: #92400E; }
+  .v-empty { background: #F3F4F6; border: 1px solid #E5E7EB; color: #6B7280; }
+  .row { font-family: ui-monospace, Menlo, monospace; font-size: 12px; line-height: 1.7; word-break: break-all; border-top: 1px dashed #FCE7F3; padding: 5px 0; }
+  .row b { color: #9F1239; }
+  .row .k-ymd { background: #FEE2E2; padding: 1px 4px; border-radius: 4px; }
+  .row .k-dom { background: #DCFCE7; padding: 1px 4px; border-radius: 4px; }
+  .row .k-other { background: #FEF3C7; padding: 1px 4px; border-radius: 4px; }
+  .err { color: #B91C1C; font-weight: 700; }
+  .leg { font-size: 12px; color: #6B7280; margin-bottom: 12px; }
+  .leg span { padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<h1>🔎 Tech schedule — raw key diagnostic</h1>
+<div class="hint">Read-only. Dumps exactly what is saved for THIS cycle's <b>tech</b> schedule (live draft + newest approved snapshot) and the manager schedule, showing each row's raw cell keys so we can see whether they're <b>day-of-month</b> ("25") or <b>full-date</b> ("2026-06-25"). The attendance sheet reads tech cells by day-of-month; full-date keys would make the schedule strip render blank. Pick the branch in question and screenshot the result.</div>
+<div class="leg">Key colours: <span class="k-dom">day-of-month</span> &nbsp; <span class="k-ymd">full-date (YYYY-MM-DD)</span> &nbsp; <span class="k-other">other</span></div>
+<div class="bar">
+  <label>Branch <select id="branch"></select></label>
+  <label>Cycle <select id="cycle">
+    <option value="-1">Previous (last month)</option>
+    <option value="0" selected>This cycle (contains today)</option>
+    <option value="1">Next (following month)</option>
+  </select></label>
+  <button id="go">Load</button>
+  <span id="status"></span>
+</div>
+<div id="out"></div>
+<script>
+(function () {
+  var SUPA = "https://kcinqpwkwpzbosxtkwyl.supabase.co";
+  var KEY  = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtjaW5xcHdrd3B6Ym9zeHRrd3lsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc3MjIwMTYsImV4cCI6MjA5MzI5ODAxNn0.AGL2hXQ5N3uQikqSbWFsZ1uxBlWZUm9o1ipMFlAFjBg";
+  var BRANCHES = ["Ballito","Betty","Bree","Cape Gate","Claremont","Durbanville","Eastgate","Fourways","Green Point","Kloof","Kuils River","Mall of the South","Mushroom Farm","Plumstead","Riverlands","Rondebosch","Sandown","Sea Point","Somerset West","Table Bay","Verdi","Westlake","Winelands"];
+  var selB = document.getElementById("branch");
+  BRANCHES.forEach(function (b) { var o = document.createElement("option"); o.textContent = b; selB.appendChild(o); });
+
+  function pad(n) { return String(n).padStart(2, "0"); }
+  function shiftYm(ym, delta) { var p = ym.split("-"), y = +p[0], m = +p[1] + delta; while (m > 12) { m -= 12; y += 1; } while (m < 1) { m += 12; y -= 1; } return y + "-" + pad(m); }
+  // END-month ym (tech schedule convention): the cycle containing today, shifted by `off` cycles.
+  function techEndYm(off) { var d = new Date(), y = d.getFullYear(), m = d.getMonth() + 1; if (d.getDate() > 24) { m += 1; if (m > 12) { m = 1; y += 1; } } return shiftYm(y + "-" + pad(m), off || 0); }
+  // START-month ym (manager / attendance convention).
+  function attStartYm(off) { var d = new Date(), y = d.getFullYear(), m = d.getMonth() + 1; if (d.getDate() <= 24) { m -= 1; if (m < 1) { m = 12; y -= 1; } } return shiftYm(y + "-" + pad(m), off || 0); }
+
+  async function fetchRows(keys) {
+    var url = SUPA + "/rest/v1/app_state?select=key,value&key=in.(" + keys.map(encodeURIComponent).join(",") + ")";
+    var r = await fetch(url, { headers: { apikey: KEY, Authorization: "Bearer " + KEY } });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return r.json();
+  }
+
+  var RE_YMD = /^\d{4}-\d{2}-\d{2}$/;
+  var RE_DOM = /^\d{1,2}$/;
+  function classify(k) { return RE_YMD.test(k) ? "ymd" : (RE_DOM.test(k) ? "dom" : "other"); }
+
+  function renderGrid(title, key, grid) {
+    var ecs = grid ? Object.keys(grid) : [];
+    var card = '<div class="src"><h2>' + title + '</h2><div class="key">' + key + '</div>';
+    if (!grid) { card += '<div class="verdict v-empty">No row found at this key (never saved).</div></div>'; return card; }
+    if (!ecs.length) { card += '<div class="verdict v-empty">Row exists but the grid is EMPTY (0 people).</div></div>'; return card; }
+    // Tally key formats across all rows.
+    var nYmd = 0, nDom = 0, nOther = 0;
+    ecs.forEach(function (ec) { Object.keys(grid[ec] || {}).forEach(function (k) { var c = classify(k); if (c === "ymd") nYmd++; else if (c === "dom") nDom++; else nOther++; }); });
+    var vcls = "v-empty", vtxt = "no cells";
+    if (nYmd && !nDom) { vcls = "v-ymd"; vtxt = "Keyed by FULL-DATE (YYYY-MM-DD) — the attendance sheet reads day-of-month, so this renders BLANK without re-keying."; }
+    else if (nDom && !nYmd) { vcls = "v-dom"; vtxt = "Keyed by DAY-OF-MONTH — the attendance sheet reads this directly."; }
+    else if (nDom && nYmd) { vcls = "v-mix"; vtxt = "MIXED keys (" + nDom + " day-of-month, " + nYmd + " full-date) — full-date cells would be missed."; }
+    card += '<div class="verdict ' + vcls + '">' + ecs.length + ' people · ' + vtxt + '</div>';
+    ecs.slice(0, 6).forEach(function (ec) {
+      var row = grid[ec] || {};
+      var keys = Object.keys(row).sort();
+      card += '<div class="row"><b>' + ec + '</b>: ' + keys.map(function (k) {
+        return '<span class="k-' + classify(k) + '">' + k + '</span>=' + String(row[k]);
+      }).join(" ") + '</div>';
+    });
+    if (ecs.length > 6) card += '<div class="row">… and ' + (ecs.length - 6) + ' more rows (same key shape).</div>';
+    card += '</div>';
+    return card;
+  }
+
+  document.getElementById("go").onclick = load;
+  async function load() {
+    var off = parseInt(document.getElementById("cycle").value, 10) || 0;
+    var br = selB.value, tYm = techEndYm(off), mYm = attStartYm(off);
+    var st = document.getElementById("status"), out = document.getElementById("out");
+    st.textContent = "Loading…"; out.innerHTML = "";
+    try {
+      var kTechDraft = "boa_sched_" + br + "_" + tYm;
+      var kTechAppr  = "boa_schedapproved_" + br + "_" + tYm;
+      var kMgrDraft  = "boa_mgrsched_" + br + "_" + mYm;
+      var kMgrAppr   = "boa_mgrschedapproved_" + br + "_" + mYm;
+      var rows = await fetchRows([kTechDraft, kTechAppr, kMgrDraft, kMgrAppr]);
+      var byKey = {}; rows.forEach(function (r) { byKey[r.key] = r.value; });
+      st.textContent = "Cycle 25th→24th · tech ym " + tYm + " · mgr ym " + mYm;
+
+      function gridOfDraft(v) { return (v && v.grid) || null; }
+      function gridOfAppr(v) { return (Array.isArray(v) && v.length && v[0] && v[0].grid) ? v[0].grid : null; }
+
+      var html = "";
+      html += renderGrid("TECH · live draft", kTechDraft, gridOfDraft(byKey[kTechDraft]));
+      html += renderGrid("TECH · newest approved snapshot", kTechAppr, gridOfAppr(byKey[kTechAppr]));
+      html += renderGrid("MANAGER · live draft", kMgrDraft, gridOfDraft(byKey[kMgrDraft]));
+      html += renderGrid("MANAGER · newest approved snapshot", kMgrAppr, gridOfAppr(byKey[kMgrAppr]));
+      out.innerHTML = html;
+    } catch (e) { st.innerHTML = '<span class="err">Failed: ' + (e && e.message || e) + "</span>"; }
+  }
+  // Default to the first branch and load.
+  selB.selectedIndex = 0; load();
+})();
+</script>
+</body>
+</html>
