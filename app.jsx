@@ -17906,7 +17906,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const scheduleSaysOff = hint === "off" || hint === "al" || hint === "el" || hint === "ph" || hint === "mat";
               const isExtraDayCell = bareV === "ext";
               const apptVsKioskAbsentWarn = cellShowsAbsent && freshaWorkedCell;
-              const presentNoApptWarn = cellSaysPresent && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
+              const presentNoApptWarn = cellSaysPresent && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent && isPastOrToday;
               const workedOnOffDay = scheduleSaysOff && cellSaysPresent && !cellShowsAbsent && !isExtraDayCell && isPastOrToday;
               const unaccountedScheduledDay = scheduleSaysWork && !cellSaysPresent && !cellShowsAbsent && !freshaWorkedCell && freshaCoversThisDay && !bareV && isPastOrToday;
               const offButFreshaWorked = scheduleSaysOff && !cellSaysPresent && freshaWorkedCell && isPastOrToday;
@@ -30053,8 +30053,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         let effectiveFreshaThrough = (attMeta && attMeta.freshaCoverage && attMeta.freshaCoverage.through) || null;
         let effectiveFreshaInferred = false;
         if (!effectiveFreshaThrough && attGrid) {
+          const _nowFC = new Date();
+          const _todayYmdFC = _nowFC.getFullYear() + "-" + p2(_nowFC.getMonth() + 1) + "-" + p2(_nowFC.getDate());
           for (let _i = days.length - 1; _i >= 0; _i--) {
             const _d = days[_i];
+            if (_d.ymd > _todayYmdFC) continue;   // never let a future-dated stray cell extend Fresha coverage into the future
             let _has = false;
             for (const _ec in attGrid) {
               const _v = attGrid[_ec] && attGrid[_ec][_d.d];
@@ -30243,7 +30246,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const extDayRecorded = (override && bareV === "ext") || (!!kioskAbs && kioskAbs.status === "ext");
               const cellSaysPresent = isWorking || isLate || checkinHasIn;
               const apptVsKioskAbsentWarn = s.role === "NT" && cellShowsAbsent && freshaWorkedCell;
-              const presentNoApptWarn = s.role === "NT" && cellSaysPresent && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
+              const presentNoApptWarn = s.role === "NT" && cellSaysPresent && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent && isPastOrToday;
               const workedOnOffDay = s.role === "NT" && scheduleOffish && cellSaysPresent && !cellShowsAbsent && !isExtraDayCell && isPastOrToday;
               const unaccountedScheduledDay = s.role === "NT" && scheduleSaysWork && !cellSaysPresent && !cellShowsAbsent && !freshaWorkedCell && freshaCoversThisDay && !bareV && isPastOrToday;
               const offButFreshaWorked = s.role === "NT" && scheduleOffish && !cellSaysPresent && freshaWorkedCell && isPastOrToday;
@@ -30465,6 +30468,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <button onClick={resetCycle} style={{ padding: "7px 14px", background: "#fee2e2", color: "#7f1d1d", border: "1px solid #fca5a5", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Clear every cell for this branch + cycle (with confirmation)">↺ Reset Cycle</button>
               <button onClick={totalResetCycle} style={{ padding: "7px 14px", background: "#7f1d1d", color: "#fff", border: "1px solid #7f1d1d", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }} title="Permanently delete the attendance grid, kiosk audit log, proofs and absence sidecars for this branch + cycle">⚠ Total Reset</button>
             </div>
+
+            {mirrorSuppressed && (
+              <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 8, padding: "11px 15px", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8, fontSize: 12.5, color: "#854d0e", fontWeight: 600 }}>
+                <span style={{ fontSize: 16 }}>⚠</span>
+                <span>Schedule mirror is <strong>OFF</strong> for {attBranch} · {cycLabel} — a <strong>Total Reset</strong> cleared this sheet, so off-days and the kiosk/Fresha checks are hidden until you rebuild from the schedule.</span>
+                <button onClick={autoFill} style={{ marginLeft: "auto", padding: "6px 13px", background: "#854d0e", color: "#fff", border: "none", borderRadius: 7, cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, whiteSpace: "nowrap" }}>✓ Auto-fill from Schedule</button>
+              </div>
+            )}
 
             {warningCounts.total > 0 && (
               <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", fontSize: 12, color: warningCounts.open > 0 ? "#7f1d1d" : "#166534", marginBottom: 8, padding: "10px 14px", background: warningCounts.open > 0 ? "#fef2f2" : "#f0fdf4", border: warningCounts.open > 0 ? "1px solid #fecaca" : "1px solid #bbf7d0", borderRadius: 8, fontWeight: 700 }}>
@@ -30777,7 +30788,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           const isExtraDayCell = bareV === "ext";
                           // presentNoApptWarn — schedule wants work, the cell or
                           // kiosk says present, but Fresha has no appointment.
-                          const presentNoApptWarn = s.role === "NT" && cellSaysPresent && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent;
+                          const presentNoApptWarn = s.role === "NT" && cellSaysPresent && scheduleSaysWork && !freshaWorkedCell && freshaCoversThisDay && !cellShowsAbsent && isPastOrToday;
                           // workedOnOffDay — schedule wants off but the cell
                           // or kiosk says present (and the cell isn't already
                           // marked Extra Day). Fires regardless of Fresha so a
