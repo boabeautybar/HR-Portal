@@ -865,6 +865,7 @@ textarea.input { resize: vertical; min-height: 64px; }
 .sched-st-R  { background: #FFF1F2; color: #E11D48; }                     /* REQUESTED OFF      */
 .sched-st-L  { background: #FECDD3; color: #9F1239; }                     /* LEAVE              */
 .sched-st-ML { background: #EDE9FE; color: #6D28D9; }                     /* MATERNITY LEAVE    */
+.sched-st-EL { background: #FFEDD5; color: #9A3412; }                     /* UNPAID LEAVE (LEGAL) */
 .sched-st-X  { background: #F3F4F6; color: #6B7280; }                     /* Pre-start (n/a)    */
 .sched-legend {
   display: flex; flex-wrap: wrap; gap: 12px; padding: 12px 4px; align-items: center;

@@ -814,6 +814,20 @@
         });
       } catch (_matErr) { /* overlay only */ }
     }
+    // Legal unpaid leave (Compliance "Unpaid Leave (Legal)") — overlay EL the
+    // same way as maternity so someone HR puts on it reads as EL straight away
+    // instead of their stale saved shifts. status "on_leave"; start/end may be
+    // null (open-ended). Keyed by trimmed/upper employee code.
+    var legalRangeByEc = {};
+    if (window.APP_DATA.listUnpaidLegal) {
+      try {
+        var _legal = (await window.APP_DATA.listUnpaidLegal()) || [];
+        _legal.forEach(function (r) {
+          if (!r || r.status !== "on_leave" || !r.ec) return;
+          legalRangeByEc[String(r.ec).trim().toUpperCase()] = { start: r.startDate || null, end: r.endDate || null };
+        });
+      } catch (_legalErr) { /* overlay only */ }
+    }
     // Canonicalise grid rows onto each person's CURRENT employee code — an
     // employee-code change (or a "B872 " vs "B872" variant) leaves a
     // duplicate/legacy row in the saved grid; without this the kiosk reads the
@@ -979,6 +993,9 @@
           // when no date yet) — same precedence as My BOA / the portal grid.
           var _matStart = matStartByEc[_ecT.toUpperCase()];
           if (_matStart !== undefined && (!_matStart || _ymd >= _matStart)) cell = "ML";
+          // Legal unpaid leave wins over the saved cell too (same precedence).
+          var _legalR = legalRangeByEc[_ecT.toUpperCase()];
+          if (_legalR && (!_legalR.start || _ymd >= _legalR.start) && (!_legalR.end || _ymd <= _legalR.end)) cell = "EL";
         }
         var classes = '';
         if (d.isToday) classes += ' sched-today';
@@ -1048,6 +1065,7 @@
               '<span><span class="sched-st-R">R</span> Requested off</span>' +
               '<span><span class="sched-st-L">L</span> Leave</span>' +
               '<span><span class="sched-st-ML">ML</span> Maternity</span>' +
+              '<span><span class="sched-st-EL">EL</span> Unpaid (legal)</span>' +
               (!isMgr && trialGhostRows.length ? '<span><span class="sched-cell-trial">T</span> Trial day</span>' : '') +
               '<span class="sched-legend-note">Today highlighted</span>' +
               (isMgr && customList.length ? '<span class="sched-legend-note">★ custom hours</span>' : '') +

@@ -120,6 +120,16 @@
     return res.data || [];
   }
 
+  // Legal unpaid-leave records (HR Compliance → "Unpaid Leave (Legal)") so the
+  // kiosk schedule overlays EL the same way it overlays ML — global key, matched
+  // by employee code (not branch-filtered).
+  async function listUnpaidLegal() {
+    var c = client(); if (!c) return [];
+    var res = await c.from("app_state").select("value").eq("key", "boa_unpaid_legal_v1").maybeSingle();
+    if (res.error) { console.error("listUnpaidLegal:", res.error); return []; }
+    return (res.data && res.data.value) || [];
+  }
+
   async function listLeaveRecords() {
     var c = client(); if (!c) return [];
     var res = await c.from("app_state").select("value").eq("key", "boa_leave_v1").maybeSingle();
@@ -1769,7 +1779,7 @@
     isConfigured: isConfigured,
     isManagerRow: isManagerRow,
     branch: branch, branchDisplay: branchDisplay, todayStr: todayStr,
-    listStaff: listStaff, listMaternity: listMaternity, listLeaveRecords: listLeaveRecords, loadOffboarding: loadOffboarding,
+    listStaff: listStaff, listMaternity: listMaternity, listUnpaidLegal: listUnpaidLegal, listLeaveRecords: listLeaveRecords, loadOffboarding: loadOffboarding,
     listTechLoans: listTechLoans, saveTechLoan: saveTechLoan, listStaffAllBranches: listStaffAllBranches,
     calledInTodayForBranch: calledInTodayForBranch,
     listTransfersInto: listTransfersInto,

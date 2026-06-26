@@ -507,6 +507,19 @@
   }
   var ML_INFO = { kind: "leave", label: "Maternity leave", sub: "" };
 
+  // Legal unpaid-leave overlay (Compliance "Unpaid Leave (Legal)") — staff kept
+  // off the roster while documents (e.g. work permits) are sorted. Like
+  // maternity, it wins over the saved grid cell so the schedule reflects it the
+  // instant HR sets it. start/end may be null (open-ended → whole period).
+  function legalUnpaidOn(dt) {
+    if (!state.legalOn) return false;
+    var ymd = dt.getFullYear() + "-" + pad(dt.getMonth() + 1) + "-" + pad(dt.getDate());
+    if (state.legalStart && ymd < state.legalStart) return false;
+    if (state.legalEnd && ymd > state.legalEnd) return false;
+    return true;
+  }
+  var LEGAL_INFO = { kind: "leave", label: "Unpaid leave (legal)", sub: "" };
+
   // Cross-store day-loans (boa_mgr_loans_v1 / boa_tech_loans_v1) for this person,
   // keyed by date. A loan day means they're borrowed to loan.toBranch.
   function loanForDate(dt) {
@@ -526,6 +539,7 @@
   function cellStatus(row, dt, branch) {
     branch = branch || state.store;
     if (matMlOn(dt)) return ML_INFO;
+    if (legalUnpaidOn(dt)) return LEGAL_INFO;
     // Cross-store day-loan (swap/borrow): borrowed to ANOTHER branch this day.
     var loan = loanForDate(dt);
     if (loan && loan.toBranch && loan.toBranch !== branch) return loanInfo(loan);
@@ -780,6 +794,9 @@
       state.transferDate = "";
       state.matStatus = "";
       state.matStart = null;
+      state.legalOn = false;
+      state.legalStart = null;
+      state.legalEnd = null;
       state.custom = {};
       state.cache = {};
       state.awayMap = {};
@@ -807,7 +824,11 @@
           // Maternity record — so the schedule flips to ML straight from the
           // start date the moment HR sets it, without waiting for the roster
           // to be regenerated.
-          sb.from("maternity").select("employee_code,mat_status,mat_start").ilike("employee_code", ecTrim + "%").limit(10)
+          sb.from("maternity").select("employee_code,mat_status,mat_start").ilike("employee_code", ecTrim + "%").limit(10),
+          // Legal unpaid-leave records (Compliance → "Unpaid Leave (Legal)") so
+          // EL shows the moment HR puts someone on it — same as maternity, no
+          // roster regenerate needed.
+          sb.from("app_state").select("value").eq("key", "boa_unpaid_legal_v1").maybeSingle()
         ]);
         var rows = (rr[0] && rr[0].data) || [];
         var row = rows.filter(function (x) { return String(x.employee_code || "").trim().toUpperCase() === ecUp; })[0];
@@ -845,6 +866,19 @@
         if (matRow) {
           state.matStatus = matRow.mat_status || "";
           state.matStart = matRow.mat_start || null;
+        }
+        // Legal unpaid leave (status "on_leave"; start/end may be null = open).
+        // Trim/upper-tolerant EC match, same as the others.
+        var legalRecs = (rr[4] && rr[4].data && rr[4].data.value);
+        if (Array.isArray(legalRecs)) {
+          var legalRow = legalRecs.filter(function (r) {
+            return r && r.status === "on_leave" && String(r.ec || "").trim().toUpperCase() === ecUp;
+          })[0];
+          if (legalRow) {
+            state.legalOn = true;
+            state.legalStart = legalRow.startDate || null;
+            state.legalEnd = legalRow.endDate || null;
+          }
         }
       } catch (_e) {}
 
