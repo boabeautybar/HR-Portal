@@ -17997,17 +17997,37 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const incoming = (staff || []).filter(_isIncomingHere);
     const incomingMgrs = (managers || []).filter(_isIncomingHere);
     const srcBranches = Array.from(new Set(incoming.concat(incomingMgrs).map(s => s.branch)));
+    // Resolve the schedule the SAME way My BOA / the kiosk do: for a PUBLISHED
+    // cycle they read ONLY the approved snapshot (boa_(mgr)schedapproved_), never
+    // the live draft. The attendance sheet used to read the draft directly, so a
+    // published cycle whose draft was emptied / re-started for the next roster
+    // showed a blank schedule strip — no green "on" top line, "Schedule: —" in
+    // the tooltip — even though the published roster existed. Prefer the newest
+    // approved snapshot; fall back to the live draft only when nothing has been
+    // published (stores that don't formally publish, and history, keep working).
+    const loadPublishedSchedule = async (branch, ym, isManager) => {
+      try {
+        if (window.BOA_DB.loadApprovedSchedules) {
+          const approved = await window.BOA_DB.loadApprovedSchedules(branch, ym, isManager);
+          if (Array.isArray(approved) && approved.length && approved[0] && approved[0].grid) {
+            return { grid: approved[0].grid };
+          }
+        }
+      } catch (_e) { /* fall through to the live draft */ }
+      const draft = await safe(window.BOA_DB.loadSchedule(branch, ym, isManager));
+      return { grid: (draft && draft.grid) || {} };
+    };
     Promise.all([
       safe(window.BOA_DB.loadAttendance(attBranch, attYM)),
-      safe(window.BOA_DB.loadSchedule(attBranch, techYm, false)),
-      safe(window.BOA_DB.loadSchedule(attBranch, attYM, true)),
+      safe(loadPublishedSchedule(attBranch, techYm, false)),
+      safe(loadPublishedSchedule(attBranch, attYM, true)),
       window.BOA_DB.loadEarlyLeaves ? safe(window.BOA_DB.loadEarlyLeaves(attBranch, attYM)) : Promise.resolve({}),
       window.BOA_DB.loadExtras ? safe(window.BOA_DB.loadExtras(attBranch, attYM)) : Promise.resolve({}),
       Promise.all(srcBranches.map(async (br) => {
         const [sAtt, sSch, sMgrSch] = await Promise.all([
           safe(window.BOA_DB.loadAttendance(br, attYM)),
-          safe(window.BOA_DB.loadSchedule(br, techYm, false)),
-          safe(window.BOA_DB.loadSchedule(br, attYM, true))
+          safe(loadPublishedSchedule(br, techYm, false)),
+          safe(loadPublishedSchedule(br, attYM, true))
         ]);
         return [br, (sAtt && sAtt.grid) || {}, (sSch && sSch.grid) || {}, (sAtt && sAtt.freshaWorked) || {}, (sMgrSch && sMgrSch.grid) || {}];
       }))
