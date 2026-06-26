@@ -18033,7 +18033,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       }))
     ]).then(([att, sch, mgrSch, early, extras, srcData]) => {
       const mergedGrid = { ...((att && att.grid) || {}) };
-      const techGrid = (sch && sch.grid) || {};
+      // Re-key the tech grid (ymd → day-of-month) the same way the manager grid
+      // is. Tech DRAFTS are day-of-month keyed, but the published snapshot we now
+      // prefer can carry full-date (YYYY-MM-DD) cells — which the schedule strip,
+      // reading attSched[ec][dayOfMonth], would otherwise miss entirely (all-white
+      // cells, "Schedule: —"). ymdReKey passes day-of-month keys through unchanged,
+      // and a 25th-24th cycle never collides (Jun days 25-30, Jul days 1-24).
+      const techGrid = ymdReKey((sch && sch.grid) || {});
       const mgrGrid = ymdReKey((mgrSch && mgrSch.grid) || {});
       const mergedSched = { ...techGrid, ...mgrGrid };
       const mergedFresha = { ...((att && att.freshaWorked) || {}) };
@@ -18041,9 +18047,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       // grid, schedule AND the Fresha-worked flags, so a later Fresha check
       // validates her earlier (old-branch) cells the same as everyone else.
       if (incoming.length || incomingMgrs.length) {
-        const srcMap = {}; (srcData || []).forEach(([br, g, sg, fw, msg]) => { srcMap[br] = { g: g || {}, sg: sg || {}, fw: fw || {}, msg: ymdReKey(msg || {}) }; });
-        // schedKey: "sg" (tech schedule) for techs, "msg" (manager schedule,
-        // re-keyed from ymd to day-of-month) for managers.
+        const srcMap = {}; (srcData || []).forEach(([br, g, sg, fw, msg]) => { srcMap[br] = { g: g || {}, sg: ymdReKey(sg || {}), fw: fw || {}, msg: ymdReKey(msg || {}) }; });
+        // schedKey: "sg" (tech schedule) for techs, "msg" (manager schedule) for
+        // managers — both re-keyed from ymd to day-of-month (the published
+        // snapshot can carry full-date cells; overlayPreTransfer reads by dom).
         const overlayPreTransfer = (s, schedKey) => {
           const src = srcMap[s.branch]; if (!src) return;
           const ec = s.ec, ecT = String(ec).trim();
