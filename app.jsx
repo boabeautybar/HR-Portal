@@ -33686,7 +33686,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // approval is to not reshuffle people who already signed off
         // on their cycle. Removed managers' rows are dropped; new
         // managers' rows are filled from a fresh mgrSched run.
-        const syncRoster = () => {
+        const syncRoster = async () => {
           if (rosterChangeCount === 0) { alert("Roster matches the schedule — nothing to sync."); return; }
           const base = mgrSchedDraft ? JSON.parse(JSON.stringify(mgrSchedDraft)) : JSON.parse(JSON.stringify(_sourceGridForDiff || {}));
           // Drop departed mgrs
@@ -33708,6 +33708,31 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 if (k >= from && (!until || k < until) && base[m.ec][k] === "L") base[m.ec][k] = "ML";
               });
             });
+            // Re-apply approved extra days for the NEWLY-ADDED managers only —
+            // their rows were just rebuilt from a fresh mgrSched run (existing
+            // managers' cells, incl. their extra days, are deliberately left
+            // untouched by the sync). Without this a just-added manager who
+            // already has an approved extra day this cycle would lose it.
+            // YMD-keyed; never clobbers leave/maternity/ghost; fails safe.
+            try {
+              const _addedSet = new Set(rosterAdded.map(x => String(x).trim().toUpperCase()));
+              const _approvedExtras = (window.BOA_DB && window.BOA_DB.loadExtraDayRequests)
+                ? (await window.BOA_DB.loadExtraDayRequests()) : [];
+              const KEEP_SYNC = { ML: 1, L: 1, X: 1 };
+              (_approvedExtras || []).forEach(r => {
+                if (!r || r.status !== "approved" || !r.ec || !r.work_date) return;
+                if (!isManagerEc(r.ec)) return;
+                if (String(r.store || "").trim() !== branch) return;
+                const _ecU = String(r.ec).trim().toUpperCase();
+                if (!_addedSet.has(_ecU)) return;                          // only just-added managers
+                const wd = String(r.work_date).slice(0, 10);
+                if (wd < cycleStart || wd > cycleEndStr) return;           // outside this cycle
+                const ecKey = Object.keys(base).find(k => String(k).trim().toUpperCase() === _ecU);
+                if (!ecKey) return;
+                if (KEEP_SYNC[base[ecKey][wd]]) return;                    // don't clobber leave / maternity / ghost
+                base[ecKey][wd] = "E";
+              });
+            } catch (e) { console.warn("syncRoster: re-stamp approved extra days failed (continuing):", e); }
           }
           setMgrSchedDraft(base);
           setMgrSchedDirty(true);
@@ -33733,7 +33758,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               "OK → Sync only the changed managers (keep everyone else's cells as approved).\n" +
               "Cancel → Full regenerate (overwrites the approved schedule for every manager)."
             );
-            if (useSync) { syncRoster(); return; }
+            if (useSync) { await syncRoster(); return; }
             if (!window.confirm("Confirm full regenerate? This will overwrite the approved schedule for ALL managers.")) return;
           } else if (hasApprovedFinal) {
             if (!window.confirm("A final approved schedule exists. Regenerate will overwrite every manager's cells. Continue?")) return;
