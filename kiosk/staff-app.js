@@ -3453,7 +3453,27 @@
         out[ec][d.day] = up;
       });
     });
-    applyBranchShiftRules(out, dates, mgrs, branch);
+    // Trust the PUBLISHED snapshot's resolved labels (WE/WM/WL/WB). The portal
+    // bakes the rotation AND the manual shift pins into the snapshot at publish,
+    // so a resolved cell is authoritative. Only run the rotation to fill cells the
+    // snapshot left as a bare "W" (legacy / pre-resolution), then restore the
+    // resolved cells — re-deriving a resolved cell dropped the manual pins and
+    // showed the wrong hours (e.g. a pinned WE opener rendered as WM).
+    var _resolved = {}, _hasBareW = false;
+    Object.keys(out).forEach(function (ec) {
+      _resolved[ec] = {};
+      Object.keys(out[ec]).forEach(function (day) {
+        var v = out[ec][day];
+        if (v === "WE" || v === "WM" || v === "WL" || v === "WB") _resolved[ec][day] = v;
+        else if (v === "W") _hasBareW = true;
+      });
+    });
+    if (_hasBareW) {
+      applyBranchShiftRules(out, dates, mgrs, branch);
+      Object.keys(_resolved).forEach(function (ec) {
+        Object.keys(_resolved[ec]).forEach(function (day) { out[ec][day] = _resolved[ec][day]; });
+      });
+    }
     return out;
   }
 
