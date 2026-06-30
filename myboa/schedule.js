@@ -567,10 +567,15 @@
     // Working (incl. Extra / Pre-start). Public holidays pay double — same hours
     // as whatever weekday they fall on, flagged with 💰💰 and the holiday name.
     var hol = holidayName(dt);
-    // Split-store managers: show the shift TIME for the label Coverage re-derives
-    // (WE/WM/WL) rather than the raw saved cell. Custom hours win inside workSub.
+    // Split-store managers: trust the PUBLISHED snapshot's resolved label
+    // (WE/WM/WL). The portal bakes the rotation AND the manual shift pins into the
+    // snapshot at publish, so the saved cell IS the authoritative shift. Only
+    // re-derive when the snapshot left a bare "W" (legacy / pre-resolution cell).
+    // Re-deriving an already-resolved cell dropped the manual pins and showed the
+    // wrong hours (e.g. a pinned WE opener rendered as WM). Custom hours still win
+    // inside workSub.
     var timeCode = c;
-    if (working && state.isManager && SPLIT_SHIFT_STORES[branch] && !(state.custom && state.custom[ymdStr(dt)])) {
+    if (working && state.isManager && SPLIT_SHIFT_STORES[branch] && c === "W" && !(state.custom && state.custom[ymdStr(dt)])) {
       var dc = derivedMgrCode(dt, branch);
       if (dc) timeCode = dc;
     }
