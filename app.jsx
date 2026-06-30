@@ -5247,6 +5247,31 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
       });
     });
 
+    // Re-apply approved extra days (E) — runs LAST, like the overlays above. A
+    // full regenerate wipes the grid, and UNLIKE leave/maternity nothing else
+    // restores approved extra-day requests onto a fresh grid. Without this an
+    // approved extra day silently vanishes from the roster after a regenerate:
+    // the tech then shows "Off" on My BOA / kiosk and may not come in (this bit
+    // a Kuils River tech on 2026-06-28). Mirrors applyExtraDayToSchedule's "E".
+    // Never overrides a leave / maternity / ghost cell. Fails safe — on any
+    // load error nothing is stamped and behaviour is exactly as before.
+    try {
+      const approvedExtras = (window.BOA_DB && window.BOA_DB.loadExtraDayRequests)
+        ? (await window.BOA_DB.loadExtraDayRequests()) : [];
+      const KEEP_EXTRA = { ML: 1, L: 1, X: 1 };
+      (approvedExtras || []).forEach(r => {
+        if (!r || r.status !== "approved" || !r.ec || !r.work_date) return;
+        if (String(r.store || "").trim() !== branch) return;             // belongs to another store
+        const wd = String(r.work_date).slice(0, 10);
+        const day = days.find(d => (d.year + "-" + String(d.monthIdx + 1).padStart(2, "0") + "-" + String(d.d).padStart(2, "0")) === wd);
+        if (!day) return;                                                // not in this cycle's days
+        const ecKey = Object.keys(newGrid).find(k => String(k).trim().toUpperCase() === String(r.ec).trim().toUpperCase());
+        if (!ecKey) return;                                              // tech not on this branch's roster
+        if (KEEP_EXTRA[newGrid[ecKey][day.d]]) return;                   // don't clobber leave / maternity / ghost
+        newGrid[ecKey][day.d] = "E";
+      });
+    } catch (e) { console.warn("autoFill: re-stamp approved extra days failed (continuing):", e); }
+
     setGrid(newGrid);
     setDirty(true);
     setUnhonouredRequests(stillUnhonoured);
