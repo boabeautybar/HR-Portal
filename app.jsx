@@ -33725,7 +33725,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // approved final version exists and the roster has only minor
         // changes, route to the safer sync flow that keeps everyone
         // else's cells intact.
-        const generate = () => {
+        const generate = async () => {
           if (hasApprovedFinal && rosterChangeCount > 0) {
             const useSync = window.confirm(
               "A final approved schedule exists for this cycle.\n\n" +
@@ -33754,6 +33754,31 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               });
             });
           }
+          // Re-apply approved MANAGER extra days (E) — mirrors the tech autoFill
+          // fix. mgrSched + the ML overlay above rebuild the grid, but nothing
+          // restores approved extra-day requests, so a full regenerate would
+          // silently drop a manager's approved extra day (she'd then show Off on
+          // My BOA / coverage). Manager grids are keyed by full YMD. Only the
+          // plain "E" cell is restamped here — cross-store coverage offers
+          // (filled loans + custom hours) are a separate subsystem with their
+          // own records and are not touched. Never overrides leave/maternity;
+          // fails safe (load error → nothing stamped, behaviour unchanged).
+          try {
+            const approvedExtras = (window.BOA_DB && window.BOA_DB.loadExtraDayRequests)
+              ? (await window.BOA_DB.loadExtraDayRequests()) : [];
+            const KEEP_MGR = { ML: 1, L: 1, X: 1 };
+            (approvedExtras || []).forEach(r => {
+              if (!r || r.status !== "approved" || !r.ec || !r.work_date) return;
+              if (!isManagerEc(r.ec)) return;
+              if (String(r.store || "").trim() !== branch) return;          // belongs to another store
+              const wd = String(r.work_date).slice(0, 10);
+              if (wd < cycleStart || wd > cycleEndStr) return;              // outside this cycle
+              const ecKey = Object.keys(fresh.grid).find(k => String(k).trim().toUpperCase() === String(r.ec).trim().toUpperCase());
+              if (!ecKey) return;                                          // manager not on this roster
+              if (KEEP_MGR[fresh.grid[ecKey][wd]]) return;                 // don't clobber leave / maternity / ghost
+              fresh.grid[ecKey][wd] = "E";
+            });
+          } catch (e) { console.warn("mgr generate: re-stamp approved extra days failed (continuing):", e); }
           setMgrSchedDraft(JSON.parse(JSON.stringify(fresh.grid)));
           setMgrSchedDirty(true);
           setMgrSchedHist(h => { const n = { ...h }; delete n[editKey]; return n; });
