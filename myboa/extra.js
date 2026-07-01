@@ -17,7 +17,7 @@
   var sb = window.supabase.createClient(cfg.url, cfg.anonKey, { auth: { persistSession: false } });
 
   var STORES = [
-    "Sea Point", "Bree", "Kloof", "Claremont", "Rondebosch", "Durbanville",
+    "Sea Point", "Bree", "Kloof", "Claremont", "Rondebosch", "Durbanville", "Cobble Walk",
     "Table Bay", "Somerset West", "Riverlands", "Kuils River", "Westlake",
     "Green Point", "Plumstead", "Sandown", "Cape Gate", "Winelands", "Betty",
     "Fourways", "Eastgate", "Mall of the South", "Mushroom Farm", "Verdi", "Ballito"
