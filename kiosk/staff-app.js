@@ -966,14 +966,18 @@
       days.forEach(function (d, i) {
         var _ymd = _ymdOf(d);
         var blanked = (_outgoing && _ymd >= _xfer) || (_incoming && _ymd < _xfer);
-        // Same precedence as the portal's Manager Coverage readWithFallback:
-        // Leave-Planner overlay wins, then the live grid, then the newest
-        // approved snapshot for any day the live grid leaves empty.
+        // Leave-Planner overlay wins, then the PUBLISHED snapshot, then the live
+        // draft only for a day the snapshot leaves empty. (Coverage on the portal
+        // is the producer and reads live-first + re-derives; consumer surfaces
+        // like this one render the published truth verbatim instead.)
         var cell = false;
         if (!blanked) {
           var _ecT = String(s.employee_code || "").trim();
-          var _raw = (grid[s.employee_code] && grid[s.employee_code][d.day])
-                  || (approvedGrid[s.employee_code] && approvedGrid[s.employee_code][d.day]);
+          // Read the PUBLISHED snapshot first, then the live draft only for a day
+          // the snapshot leaves empty (unpublished cycle). Managers render the
+          // published truth verbatim — the draft can carry a stale raw code.
+          var _raw = (approvedGrid[s.employee_code] && approvedGrid[s.employee_code][d.day])
+                  || (grid[s.employee_code] && grid[s.employee_code][d.day]);
           // Leave-Planner overlay wins for a working/blank day, but a scheduled
           // OFF / ghost day inside the leave window stays as-is (matches the
           // portal schedule + attendance — you don't "take leave" on a day off).
@@ -3434,13 +3438,23 @@
     });
     var mgrs = [];
     var out = {};
-    Object.keys(grid || {}).forEach(function (ec) {
+    // Enumerate the UNION of the published snapshot and the draft, and read the
+    // PUBLISHED snapshot FIRST per cell. The snapshot is the resolved truth
+    // (WE/WM/WL rotation + manual shift pins baked at publish); the draft
+    // (boa_mgrsched_*) is a stale working copy whose raw rotation can disagree
+    // with what was actually published, so a pinned/re-drafted manager rendered
+    // the wrong hours (e.g. WL 11–20 for a published WM 09–18). The draft only
+    // fills cells the snapshot lacks (a cycle that was never published).
+    var _ecUnion = {};
+    Object.keys(grid || {}).forEach(function (ec) { _ecUnion[ec] = true; });
+    Object.keys(approvedGrid || {}).forEach(function (ec) { if (!(ec in _ecUnion)) _ecUnion[ec] = true; });
+    Object.keys(_ecUnion).forEach(function (ec) {
       mgrs.push({ ec: ec, role: roleByNorm[_mgrCodeNorm(ec)] || "" });
       out[ec] = {};
       var _ect = String(ec).trim();
       (days || []).forEach(function (d) {
-        var raw = (grid[ec] && grid[ec][d.day]) ||
-                  (approvedGrid && approvedGrid[ec] && approvedGrid[ec][d.day]) || "";
+        var raw = (approvedGrid && approvedGrid[ec] && approvedGrid[ec][d.day]) ||
+                  (grid[ec] && grid[ec][d.day]) || "";
         var up = String(raw).toUpperCase();
         // A manager on Leave-Planner leave is OFF that day, so seed "L" — this
         // keeps them OUT of the day's working lineup (matches the portal, which
