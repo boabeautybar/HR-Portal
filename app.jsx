@@ -18791,6 +18791,39 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         && x.transferTo !== x.branch
         && String(x.transferDate).replace(/\//g, "-").slice(0, 10) <= _xfCycleStart);
       const _xfSettle = (x) => ({ ...x, branch: x.transferTo, transferring: false, transferTo: null });
+      // When a transfer finalizes, the person's cells linger in the OLD branch's
+      // schedule (they were scheduled there before moving) — Manager Coverage then
+      // surfaces them as a phantom "🔄 guest from <new branch>". Remove their row
+      // from the old branch's grid (draft + published snapshot) for the current
+      // cycle so they appear ONLY at the new store. Managers key by START-month,
+      // techs by END-month. Fails safe — a cleanup error never blocks the settle.
+      const _xfP = _xfCycleStart.split("-").map(Number);
+      const _xfStartYm = _xfP[0] + "-" + String(_xfP[1]).padStart(2, "0");
+      let _xfEy = _xfP[0], _xfEm = _xfP[1] + 1; if (_xfEm > 12) { _xfEm = 1; _xfEy += 1; }
+      const _xfEndYm = _xfEy + "-" + String(_xfEm).padStart(2, "0");
+      const _xfCleanOldBranch = async (ec, oldBranch, isManager) => {
+        if (!ec || !oldBranch) return;
+        const ecU = String(ec).trim().toUpperCase();
+        const ym = isManager ? _xfStartYm : _xfEndYm;
+        const key = (isManager ? "boa_mgrsched_" : "boa_sched_") + oldBranch + "_" + ym;
+        const _delRow = (grid) => {
+          if (!grid) return false;
+          const k = Object.keys(grid).find(x => String(x).trim().toUpperCase() === ecU);
+          if (!k) return false;
+          delete grid[k];
+          return true;
+        };
+        try {
+          const draft = window.BOA_DB.loadByKey ? await window.BOA_DB.loadByKey(key) : null;
+          if (draft && draft.grid && _delRow(draft.grid)) {
+            if (draft.names) { const nk = Object.keys(draft.names).find(x => String(x).trim().toUpperCase() === ecU); if (nk) delete draft.names[nk]; }
+            await window.BOA_DB.saveByKey(key, draft);
+          }
+          if (typeof patchApprovedSnapshotGrid === "function") {
+            await patchApprovedSnapshotGrid(oldBranch, ym, isManager, (grid) => _delRow(grid));
+          }
+        } catch (e) { console.warn("[transfer finalize] old-branch cleanup failed " + ecU + "@" + oldBranch + ":", e); }
+      };
       const _xfTechs = (d.staff || []).filter(_xfNeeds);
       const _xfMgrs = (d.managers || []).filter(_xfNeeds);
       setStaff(_xfTechs.length ? d.staff.map(s => _xfNeeds(s) ? _xfSettle(s) : s) : d.staff);
@@ -18798,8 +18831,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       if (_xfTechs.length || _xfMgrs.length) {
         (async () => {
           try {
-            for (const s of _xfTechs) await window.BOA_DB.saveStaff(_xfSettle(s));
-            for (const m of _xfMgrs) await window.BOA_DB.saveManager(_xfSettle(m));
+            for (const s of _xfTechs) { await window.BOA_DB.saveStaff(_xfSettle(s)); await _xfCleanOldBranch(s.ec, s.branch, false); }
+            for (const m of _xfMgrs) { await window.BOA_DB.saveManager(_xfSettle(m)); await _xfCleanOldBranch(m.ec, m.branch, true); }
             console.log("[transfer finalize] settled " + _xfTechs.length + " tech + " + _xfMgrs.length + " mgr transfer(s) dated on/before " + _xfCycleStart);
           } catch (e) { console.warn("[transfer finalize] persist failed (continuing):", e); }
         })();
