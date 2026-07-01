@@ -18771,8 +18771,39 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       window.BOA_DB.loadFreshaBlocks ? window.BOA_DB.loadFreshaBlocks() : Promise.resolve({}),
       window.BOA_DB.loadInterviews ? window.BOA_DB.loadInterviews() : Promise.resolve([])
     ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess, cuReviewAccess, lvOpsAccess, lvPayrollAccess, lvBalancesAccess, incidents, leaveReqs, extraReqs, freshaExtraOpenMap, freshaBlocksMap, interviews]) => {
-      setStaff(d.staff);
-      setManagers(d.managers);
+      // Auto-finalize transfers that completed in a PRIOR pay period. A transfer
+      // keeps branch=OLD + transferring=true until it's "settled"; nothing ever
+      // wrote that back, so someone who moved last cycle kept showing a lingering
+      // "🔄 → moving to X" line at their old store (and an "arriving from" tag at
+      // the new one) indefinitely. Once the transfer date is ON or BEFORE the
+      // current 25th→24th cycle start — i.e. the whole current period is at the
+      // new store — flip the record to its new branch and clear the flag, so the
+      // person appears ONLY at the new store everywhere (portal, My BOA, kiosk all
+      // read `branch`). A transfer dated AFTER the cycle start still has pre-move
+      // days this period, so it stays flagged (the mid-cycle line is expected).
+      // The prior cycle's attendance grids keep the historical split, so payroll
+      // is unaffected. Idempotent — settled records no longer match.
+      const _xfNow = new Date();
+      let _xfY = _xfNow.getFullYear(), _xfM = _xfNow.getMonth();
+      if (_xfNow.getDate() < 25) { _xfM -= 1; if (_xfM < 0) { _xfM = 11; _xfY -= 1; } }
+      const _xfCycleStart = _xfY + "-" + String(_xfM + 1).padStart(2, "0") + "-25";
+      const _xfNeeds = (x) => !!(x && x.transferring && x.transferTo && x.transferDate
+        && x.transferTo !== x.branch
+        && String(x.transferDate).replace(/\//g, "-").slice(0, 10) <= _xfCycleStart);
+      const _xfSettle = (x) => ({ ...x, branch: x.transferTo, transferring: false, transferTo: null });
+      const _xfTechs = (d.staff || []).filter(_xfNeeds);
+      const _xfMgrs = (d.managers || []).filter(_xfNeeds);
+      setStaff(_xfTechs.length ? d.staff.map(s => _xfNeeds(s) ? _xfSettle(s) : s) : d.staff);
+      setManagers(_xfMgrs.length ? d.managers.map(m => _xfNeeds(m) ? _xfSettle(m) : m) : d.managers);
+      if (_xfTechs.length || _xfMgrs.length) {
+        (async () => {
+          try {
+            for (const s of _xfTechs) await window.BOA_DB.saveStaff(_xfSettle(s));
+            for (const m of _xfMgrs) await window.BOA_DB.saveManager(_xfSettle(m));
+            console.log("[transfer finalize] settled " + _xfTechs.length + " tech + " + _xfMgrs.length + " mgr transfer(s) dated on/before " + _xfCycleStart);
+          } catch (e) { console.warn("[transfer finalize] persist failed (continuing):", e); }
+        })();
+      }
       setMatRecs(d.matRecs);
       setObList(Array.isArray(ob) ? ob : []);
       setOffList(Array.isArray(off) ? off : []);
