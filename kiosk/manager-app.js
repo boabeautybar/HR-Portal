@@ -1918,10 +1918,26 @@
       smTrialEcs = _stage1[2];
       trialCand  = _stage1[3];
       var _mgrIds = (mgrs || []).map(function (m) { return m.id; }).filter(Boolean);
+      // Consumer surfaces render the PUBLISHED schedule verbatim. The draft
+      // (boa_mgrsched_*) holds a stale raw rotation WITHOUT the manual shift pins,
+      // so a pinned manager (or any re-drafted cell) shows the wrong hours here —
+      // e.g. Table Bay Neliwe read as WL 11:00–20:00 when the published snapshot
+      // (and Manager Coverage) say WM 09:00–18:00. Prefer the approved snapshot
+      // [0]; fall back to the draft only for a cycle that was never published.
+      var _loadMgrSched = async function (endYm) {
+        if (window.APP_DATA.getApprovedSchedule) {
+          try {
+            var ap = await window.APP_DATA.getApprovedSchedule(endYm, "mgr");
+            if (ap && ap.grid && Object.keys(ap.grid).length) return ap;
+          } catch (_e) { /* fall through to draft */ }
+        }
+        if (!window.APP_DATA.getSchedule) return null;
+        try { return await window.APP_DATA.getSchedule(endYm, "mgr"); } catch (_e2) { return null; }
+      };
       var _stage2 = await Promise.all([
         window.APP_DATA.listRecentManagerClockins(2, _mgrIds),
-        window.APP_DATA.getSchedule ? window.APP_DATA.getSchedule(_curEndYm, "mgr").catch(function () { return null; }) : Promise.resolve(null),
-        window.APP_DATA.getSchedule ? window.APP_DATA.getSchedule(_prevEndYm, "mgr").catch(function () { return null; }) : Promise.resolve(null),
+        _loadMgrSched(_curEndYm),
+        _loadMgrSched(_prevEndYm),
         window.APP_DATA.listManagerDayStatusesToday ? window.APP_DATA.listManagerDayStatusesToday().catch(function () { return []; }) : Promise.resolve([]),
         _onLeaveEcsToday(false).catch(function () { return {}; }),   // ec → al/el on approved leave today
         window.APP_DATA.getMgrTimes ? window.APP_DATA.getMgrTimes().catch(function () { return {}; }) : Promise.resolve({})

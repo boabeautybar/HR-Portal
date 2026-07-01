@@ -40,6 +40,9 @@
     { name: "Claremont",       pin: "0004", geo: { lat: -33.9810, lng: 18.4720 }, radiusMeters: 1000, enforceGeo: false },
     { name: "Rondebosch",      pin: "0005", geo: { lat: -33.9610, lng: 18.4730 }, radiusMeters: 1000, enforceGeo: false },
     { name: "Durbanville",     pin: "0006", geo: { lat: -33.8260, lng: 18.6510 }, radiusMeters: 1000, enforceGeo: false },
+    // Opened 1 Jul 2026 (Sonstraal Heights / Durbanville). PIN 0024 keeps existing
+    // store PINs unchanged; geo copied from the HR portal's store-geo map.
+    { name: "Cobble Walk",     pin: "0024", geo: { lat: -33.8230, lng: 18.6530 }, radiusMeters: 1000, enforceGeo: false },
     { name: "Table Bay",       pin: "0007", geo: { lat: -33.9020, lng: 18.4290 }, radiusMeters: 1000, enforceGeo: false },
     { name: "Somerset West",   pin: "0008", geo: { lat: -34.0820, lng: 18.8290 }, radiusMeters: 1000, enforceGeo: false },
     { name: "Riverlands",      pin: "0009", geo: { lat: -33.9000, lng: 18.6300 }, radiusMeters: 1000, enforceGeo: false },
