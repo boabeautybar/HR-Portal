@@ -18022,17 +18022,30 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const incoming = (staff || []).filter(_isIncomingHere);
     const incomingMgrs = (managers || []).filter(_isIncomingHere);
     const srcBranches = Array.from(new Set(incoming.concat(incomingMgrs).map(s => s.branch)));
+    // Manager schedule for PAYROLL: prefer the PUBLISHED snapshot (rotation +
+    // manual shift pins baked in = the shift the manager actually worked to), so
+    // early-leave / late are measured against the right hours. The draft
+    // (loadSchedule) holds the raw rotation WITHOUT the pins, which mis-deducted a
+    // pinned manager (a pinned WE 08:00-17:00 read as the draft's WM 09:00-18:00,
+    // so an on-time 17:00 clock-out looked like a phantom 1h-short leave). Fall
+    // back to the draft only when the cycle has no published snapshot yet. The
+    // tech schedule (no pins) stays on the draft.
+    const _loadMgrSchedResolved = async (branchName) => {
+      const snaps = window.BOA_DB.loadApprovedSchedules ? await safe(window.BOA_DB.loadApprovedSchedules(branchName, attYM, true)) : null;
+      if (Array.isArray(snaps) && snaps[0] && snaps[0].grid) return { grid: snaps[0].grid, names: snaps[0].names || {} };
+      return await safe(window.BOA_DB.loadSchedule(branchName, attYM, true));
+    };
     Promise.all([
       safe(window.BOA_DB.loadAttendance(attBranch, attYM)),
       safe(window.BOA_DB.loadSchedule(attBranch, techYm, false)),
-      safe(window.BOA_DB.loadSchedule(attBranch, attYM, true)),
+      _loadMgrSchedResolved(attBranch),
       window.BOA_DB.loadEarlyLeaves ? safe(window.BOA_DB.loadEarlyLeaves(attBranch, attYM)) : Promise.resolve({}),
       window.BOA_DB.loadExtras ? safe(window.BOA_DB.loadExtras(attBranch, attYM)) : Promise.resolve({}),
       Promise.all(srcBranches.map(async (br) => {
         const [sAtt, sSch, sMgrSch] = await Promise.all([
           safe(window.BOA_DB.loadAttendance(br, attYM)),
           safe(window.BOA_DB.loadSchedule(br, techYm, false)),
-          safe(window.BOA_DB.loadSchedule(br, attYM, true))
+          _loadMgrSchedResolved(br)
         ]);
         return [br, (sAtt && sAtt.grid) || {}, (sSch && sSch.grid) || {}, (sAtt && sAtt.freshaWorked) || {}, (sMgrSch && sMgrSch.grid) || {}];
       }))
