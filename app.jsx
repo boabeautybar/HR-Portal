@@ -233,11 +233,11 @@ function compressImageDataUrl(file, maxDim, quality) {
 // Codes map straight onto STAT entries on the attendance grid so the
 // reason renders the same colour & label that the tech statuses use.
 const MGR_REASON_OPTIONS = [
-  { code: "sick_n", label: "🤒 Sick + note",  needsProof: true,  needsNote: false, payroll: "Paid sick" },
-  { code: "sick",   label: "🤒 Sick NO note", needsProof: false, needsNote: false, payroll: "Unpaid sick" },
-  { code: "frl",    label: "👪 FRL + proof",  needsProof: true,  needsNote: false, payroll: "Paid Family Responsibility Leave" },
-  { code: "absent", label: "🚫 Absent",       needsProof: false, needsNote: true,  payroll: "Unpaid" },
-  { code: "no",     label: "⛔ NO SHOW",      needsProof: false, needsNote: false, payroll: "Unpaid" }
+  { code: "sick_n", label: "🤒 Sick + note", needsProof: true, needsNote: false, payroll: "Paid sick" },
+  { code: "sick", label: "🤒 Sick NO note", needsProof: false, needsNote: false, payroll: "Unpaid sick" },
+  { code: "frl", label: "👪 FRL + proof", needsProof: true, needsNote: false, payroll: "Paid Family Responsibility Leave" },
+  { code: "absent", label: "🚫 Absent", needsProof: false, needsNote: true, payroll: "Unpaid" },
+  { code: "no", label: "⛔ NO SHOW", needsProof: false, needsNote: false, payroll: "Unpaid" }
 ];
 // Payroll cycle (25th → 24th) helper. Used to lock editing for closed
 // cycles so payroll figures don't shift after a run.
@@ -267,8 +267,8 @@ function MgrReasonModalBody({ modal, personStartDate, existing, locked, currentU
   const [saving, setSaving] = useState(false);
   const opt = MGR_REASON_OPTIONS.find(o => o.code === status);
   const needsProof = !!(opt && opt.needsProof);
-  const needsNote  = !!(opt && opt.needsNote);
-  const noteTrim   = (note || "").trim();
+  const needsNote = !!(opt && opt.needsNote);
+  const noteTrim = (note || "").trim();
   // For "Sick + note" specifically we no longer block save when there's
   // no proof — we just downgrade to "Sick NO note" (unpaid) on save.
   // FRL still requires its proof photo to qualify for paid Family
@@ -1972,7 +1972,7 @@ function shiftTimes(role, code, branch, dow) {
   if (code === "WE") return "08:30 - 18:00";
   if (code === "WM") return "09:00 - 13:00";
   if (code === "WB") return "08:00 - 19:00";
-  if (code === "E")  return "09:00 - 18:30";
+  if (code === "E") return "09:00 - 18:30";
   return "09:00 - 18:30";
 }
 
@@ -3305,7 +3305,7 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete, smTrialActive, onStar
               <div style={{ fontSize: 11, color: smTrialActive ? "#475569" : "#9A3412", lineHeight: 1.4 }}>
                 {smTrialActive
                   ? <>⭐ <strong>Already on SM trial</strong> — view progress and evaluations in the SM Trials tab.</>
-                  : <><strong>⭐ Store Manager trial</strong><br/><span style={{ color: "#9A3412" }}>3-month trial with mid + final evaluations. Outcome auto-promotes to SM.</span></>}
+                  : <><strong>⭐ Store Manager trial</strong><br /><span style={{ color: "#9A3412" }}>3-month trial with mid + final evaluations. Outcome auto-promotes to SM.</span></>}
               </div>
               {!smTrialActive && (
                 <button type="button"
@@ -6912,7 +6912,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                         // stays as-is (matches the auto-stamp + attendance — you
                         // don't take leave on a day off).
                         if (v !== "O" && v !== "R" && v !== "X" && v !== "ML" && v !== "L"
-                            && plannerLeaveSet.has(String(s.ec).trim() + "|" + dYmd)) v = "L";
+                          && plannerLeaveSet.has(String(s.ec).trim() + "|" + dYmd)) v = "L";
                         const weekEnd = d.dow === 0;
                         const requested = requestedSet.has(s.ec + "|" + d.d);
                         const requestUnapplied = requested && v !== "R" && v !== "O";
@@ -6994,20 +6994,20 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                         const cellTitle = cellMat
                           ? `${s.name} · on maternity leave${matFromYmd && !fullMat ? " (from " + matFromYmd + ")" : ""}`
                           : cellLegal
-                          ? `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · unpaid legal leave (shown as Emergency / unpaid)`
-                          : isPreStart
-                            ? `${s.name} · starts ${s.startDate} — not on the schedule until then`
-                            : isPastLeft
-                            ? `${s.name} · left ${s.leftDate} — no longer scheduled`
-                            : transferEdge === "out"
-                              ? `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · transferring to ${transferOtherBranch} on ${_xferDate} — fill remaining days on the destination schedule`
-                              : transferEdge === "in"
-                                ? `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · arriving from ${transferOtherBranch} on ${_xferDate} — pre-transfer days are still on the source schedule`
-                                : _loanCell
-                                  ? `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · working at ${_outgoingLoan.toBranch} (cross-store)`
-                                  : isEmergLeave
-                                    ? `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · Emergency leave (unpaid)`
-                                    : `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · click to cycle, drag to swap within the week${requested ? ' · 📝 day-off requested' + (requestUnapplied ? ' (not yet on grid)' : '') : ''}`;
+                            ? `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · unpaid legal leave (shown as Emergency / unpaid)`
+                            : isPreStart
+                              ? `${s.name} · starts ${s.startDate} — not on the schedule until then`
+                              : isPastLeft
+                                ? `${s.name} · left ${s.leftDate} — no longer scheduled`
+                                : transferEdge === "out"
+                                  ? `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · transferring to ${transferOtherBranch} on ${_xferDate} — fill remaining days on the destination schedule`
+                                  : transferEdge === "in"
+                                    ? `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · arriving from ${transferOtherBranch} on ${_xferDate} — pre-transfer days are still on the source schedule`
+                                    : _loanCell
+                                      ? `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · working at ${_outgoingLoan.toBranch} (cross-store)`
+                                      : isEmergLeave
+                                        ? `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · Emergency leave (unpaid)`
+                                        : `${s.name} · ${d.d} ${monthAbbr[d.monthIdx]} · click to cycle, drag to swap within the week${requested ? ' · 📝 day-off requested' + (requestUnapplied ? ' (not yet on grid)' : '') : ''}`;
                         return (
                           <td key={s.ec + '-' + d.d}
                             draggable={!cellLocked && !!v}
@@ -7020,23 +7020,23 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                             style={{ ...matCell, padding: 0, height: 30, textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: "1px solid #FCE7F3", borderRight: weekEnd ? "3px solid #BE185D" : "none", cursor: dragCursor, fontSize: 11, fontWeight: 700, userSelect: "none", outline: dropOutline, outlineOffset: -1, opacity: isSrc ? 0.4 : undefined, position: "relative" }}>
                             {cellMat ? "ML"
                               : cellLegal ? "EL"
-                              : (isPastLeft || isPreStart) ? "—"
-                                : transferEdge === "out" ? (
-                                  <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: "0.04em" }}>
-                                    →{transferOtherBranch === "Green Point" ? "GP" : transferOtherBranch.slice(0, 4)}
-                                  </span>
-                                )
-                                  : transferEdge === "in" ? (
+                                : (isPastLeft || isPreStart) ? "—"
+                                  : transferEdge === "out" ? (
                                     <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: "0.04em" }}>
-                                      ←{transferOtherBranch === "Green Point" ? "GP" : transferOtherBranch.slice(0, 4)}
+                                      →{transferOtherBranch === "Green Point" ? "GP" : transferOtherBranch.slice(0, 4)}
                                     </span>
                                   )
-                                    : _loanCell ? (
+                                    : transferEdge === "in" ? (
                                       <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: "0.04em" }}>
-                                        →{_outgoingLoan.toBranch === "Green Point" ? "GP" : _outgoingLoan.toBranch.slice(0, 4)}
+                                        ←{transferOtherBranch === "Green Point" ? "GP" : transferOtherBranch.slice(0, 4)}
                                       </span>
                                     )
-                                      : isEmergLeave ? "EL" : v}
+                                      : _loanCell ? (
+                                        <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: "0.04em" }}>
+                                          →{_outgoingLoan.toBranch === "Green Point" ? "GP" : _outgoingLoan.toBranch.slice(0, 4)}
+                                        </span>
+                                      )
+                                        : isEmergLeave ? "EL" : v}
                             {requestUnapplied && !cellLocked && (
                               <span style={{ position: "absolute", top: 1, right: 2, fontSize: 8, lineHeight: 1, color: "#BE185D", pointerEvents: "none" }}>📝</span>
                             )}
@@ -7450,8 +7450,10 @@ const VA = {
     width: "100%", padding: "9px 11px", fontSize: 13, border: "1.5px solid #F3D4E0",
     borderRadius: 9, fontFamily: "inherit", color: "#831843", background: "#fff", boxSizing: "border-box"
   },
-  th: { textAlign: "left", padding: "9px 12px", fontSize: 11, fontWeight: 800, color: "#9D2B62",
-    textTransform: "uppercase", letterSpacing: "0.05em", whiteSpace: "nowrap" },
+  th: {
+    textAlign: "left", padding: "9px 12px", fontSize: 11, fontWeight: 800, color: "#9D2B62",
+    textTransform: "uppercase", letterSpacing: "0.05em", whiteSpace: "nowrap"
+  },
   td: { padding: "8px 12px", fontSize: 12.5, color: "#3f3f46", borderTop: "1px solid #FCE7F3" },
   pill: (tone) => {
     const t = {
@@ -7460,11 +7462,15 @@ const VA = {
       red: { bg: "#FEF2F2", fg: "#B91C1C", bd: "#FECACA" },
       green: { bg: "#ECFDF5", fg: "#15803D", bd: "#A7F3D0" }
     }[tone] || { bg: "#FCE7F3", fg: "#9D2B62", bd: "#FBCFE8" };
-    return { display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 11px",
-      borderRadius: 999, fontSize: 12, fontWeight: 700, background: t.bg, color: t.fg, border: "1px solid " + t.bd };
+    return {
+      display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 11px",
+      borderRadius: 999, fontSize: 12, fontWeight: 700, background: t.bg, color: t.fg, border: "1px solid " + t.bd
+    };
   },
-  codeChip: { fontFamily: "ui-monospace,SFMono-Regular,Menlo,monospace", fontSize: 11.5, fontWeight: 700,
-    color: "#9D2B62", background: "#FCF0F6", border: "1px solid #FBCFE8", borderRadius: 6, padding: "1px 7px" }
+  codeChip: {
+    fontFamily: "ui-monospace,SFMono-Regular,Menlo,monospace", fontSize: 11.5, fontWeight: 700,
+    color: "#9D2B62", background: "#FCF0F6", border: "1px solid #FBCFE8", borderRadius: 6, padding: "1px 7px"
+  }
 };
 // Section header: a small gradient icon badge + title (+ optional sub).
 function VaSectionHead({ icon, title, sub, g1, g2 }) {
@@ -7574,9 +7580,11 @@ function VoucherEntryGrid() {
   return (
     <div>
       {lastUpload && (lastUpload.createdAt || lastUpload.count) ? (
-        <div style={{ display: "flex", alignItems: "center", gap: 13, padding: "13px 17px", marginBottom: 16, borderRadius: 14,
+        <div style={{
+          display: "flex", alignItems: "center", gap: 13, padding: "13px 17px", marginBottom: 16, borderRadius: 14,
           border: "1px solid #FBCFE8", background: "linear-gradient(135deg,#FDE7F1 0%,#FFF4F9 60%,#FFFFFF 100%)",
-          boxShadow: "0 0 0 1px rgba(244,114,182,0.16), 0 6px 18px rgba(190,24,93,0.08)" }}>
+          boxShadow: "0 0 0 1px rgba(244,114,182,0.16), 0 6px 18px rgba(190,24,93,0.08)"
+        }}>
           <div style={{ ...VA.badge("#BE185D", "#F472B6"), color: "#fff", flex: "0 0 auto" }}>🕑</div>
           <div style={{ minWidth: 0 }}>
             <div style={{ fontSize: 11, fontWeight: 800, color: "#B86A8B", textTransform: "uppercase", letterSpacing: "0.05em" }}>Last gift card uploaded</div>
@@ -7640,9 +7648,11 @@ function VoucherEntryGrid() {
       </div>
 
       {result && (
-        <div style={{ marginTop: 14, display: "inline-flex", alignItems: "center", gap: 8, padding: "10px 16px", borderRadius: 12, fontSize: 13, fontWeight: 700,
+        <div style={{
+          marginTop: 14, display: "inline-flex", alignItems: "center", gap: 8, padding: "10px 16px", borderRadius: 12, fontSize: 13, fontWeight: 700,
           background: result.ok ? "#ECFDF5" : "#FEF2F2", border: "1px solid " + (result.ok ? "#A7F3D0" : "#FECACA"),
-          color: result.ok ? "#15803D" : "#B91C1C" }}>
+          color: result.ok ? "#15803D" : "#B91C1C"
+        }}>
           {result.ok ? "✓ " : "⚠️ "}{result.msg}
         </div>
       )}
@@ -7920,53 +7930,55 @@ function VoucherAdmin({ currentUser }) {
       )}
 
       {sub === "uploads" && (<>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 16, marginBottom: 16, alignItems: "start" }}>
-      <div style={{ ...VA.card, marginBottom: 0 }}>
-        <VaSectionHead icon="📤" title="Upload Gift Card Transactions" sub="Keep voucher balances up to date" g1="#FCE7F3" g2="#FBCFE8" />
-        <div style={{ fontSize: 12.5, color: "#9D7387", marginBottom: 14, lineHeight: 1.5 }}>
-          Export from Fresha → Gift Card Transactions, then choose the CSV here. Existing transactions are skipped automatically — re-uploads only add new rows.
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 16, marginBottom: 16, alignItems: "start" }}>
+          <div style={{ ...VA.card, marginBottom: 0 }}>
+            <VaSectionHead icon="📤" title="Upload Gift Card Transactions" sub="Keep voucher balances up to date" g1="#FCE7F3" g2="#FBCFE8" />
+            <div style={{ fontSize: 12.5, color: "#9D7387", marginBottom: 14, lineHeight: 1.5 }}>
+              Export from Fresha → Gift Card Transactions, then choose the CSV here. Existing transactions are skipped automatically — re-uploads only add new rows.
+            </div>
+            <label className="va-drop" style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", border: "1.5px dashed #F4A8CC", borderRadius: 13, background: "#FFF7FB", cursor: busy ? "not-allowed" : "pointer", transition: "all .15s" }}>
+              <span style={VA.badge("#FCE7F3", "#FBCFE8")}>⬆️</span>
+              <span style={{ fontSize: 13, fontWeight: 700, color: VA.ink }}>{busy ? "Working…" : "Choose CSV file…"}</span>
+              <input ref={fileRef} type="file" accept=".csv,text/csv" disabled={busy} onChange={onFile} style={{ display: "none" }} />
+            </label>
+            {stats && (
+              <div style={{ fontSize: 12, color: "#9D7387", marginTop: 12 }}>
+                Stored <strong style={{ color: VA.ink }}>{(stats.count || 0).toLocaleString()}</strong> transactions
+                {stats.lastPaymentDate ? <> · latest payment <strong style={{ color: VA.ink }}>{fmtUp(stats.lastPaymentDate)}</strong></> : null}
+              </div>
+            )}
+          </div>
+
+          <div style={{ ...VA.card, marginBottom: 0 }}>
+            <VaSectionHead icon="♻️" title="Recompute balances" g1="#FCE7F3" g2="#FBCFE8" />
+            <div style={{ fontSize: 12.5, color: "#9D7387", marginBottom: 14, lineHeight: 1.5 }}>
+              Balances refresh automatically on upload and when vouchers are entered. Use this only if you need to rebuild every voucher's balance from scratch.
+            </div>
+            <button className="va-btn" onClick={recomputeAll} disabled={busy} style={VA.ghostBtn}>
+              Recompute all balances
+            </button>
+          </div>
         </div>
-        <label className="va-drop" style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", border: "1.5px dashed #F4A8CC", borderRadius: 13, background: "#FFF7FB", cursor: busy ? "not-allowed" : "pointer", transition: "all .15s" }}>
-          <span style={VA.badge("#FCE7F3", "#FBCFE8")}>⬆️</span>
-          <span style={{ fontSize: 13, fontWeight: 700, color: VA.ink }}>{busy ? "Working…" : "Choose CSV file…"}</span>
-          <input ref={fileRef} type="file" accept=".csv,text/csv" disabled={busy} onChange={onFile} style={{ display: "none" }} />
-        </label>
-        {stats && (
-          <div style={{ fontSize: 12, color: "#9D7387", marginTop: 12 }}>
-            Stored <strong style={{ color: VA.ink }}>{(stats.count || 0).toLocaleString()}</strong> transactions
-            {stats.lastPaymentDate ? <> · latest payment <strong style={{ color: VA.ink }}>{fmtUp(stats.lastPaymentDate)}</strong></> : null}
+
+        {progress && (
+          <div style={VA.card}>
+            <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10, color: VA.ink }}>{progress.phase}{pct != null ? " · " + pct + "%" : ""}</div>
+            <div style={{ height: 10, background: "#FCE7F3", borderRadius: 999, overflow: "hidden" }}>
+              <div style={{ height: "100%", width: (pct != null ? pct : 100) + "%", background: "linear-gradient(90deg,#BE185D,#F472B6)", borderRadius: 999, transition: "width 0.2s", opacity: pct != null ? 1 : 0.5 }} />
+            </div>
+            {progress.total ? <div style={{ fontSize: 11, color: "#B86A8B", marginTop: 7 }}>{progress.done.toLocaleString()} / {progress.total.toLocaleString()}</div> : null}
           </div>
         )}
-      </div>
 
-      <div style={{ ...VA.card, marginBottom: 0 }}>
-        <VaSectionHead icon="♻️" title="Recompute balances" g1="#FCE7F3" g2="#FBCFE8" />
-        <div style={{ fontSize: 12.5, color: "#9D7387", marginBottom: 14, lineHeight: 1.5 }}>
-          Balances refresh automatically on upload and when vouchers are entered. Use this only if you need to rebuild every voucher's balance from scratch.
-        </div>
-        <button className="va-btn" onClick={recomputeAll} disabled={busy} style={VA.ghostBtn}>
-          Recompute all balances
-        </button>
-      </div>
-      </div>
-
-      {progress && (
-        <div style={VA.card}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10, color: VA.ink }}>{progress.phase}{pct != null ? " · " + pct + "%" : ""}</div>
-          <div style={{ height: 10, background: "#FCE7F3", borderRadius: 999, overflow: "hidden" }}>
-            <div style={{ height: "100%", width: (pct != null ? pct : 100) + "%", background: "linear-gradient(90deg,#BE185D,#F472B6)", borderRadius: 999, transition: "width 0.2s", opacity: pct != null ? 1 : 0.5 }} />
+        {result && (
+          <div style={{
+            display: "inline-flex", alignItems: "center", gap: 8, padding: "11px 16px", borderRadius: 12, fontSize: 13, fontWeight: 700,
+            background: result.ok ? "#ECFDF5" : "#FEF2F2", border: "1px solid " + (result.ok ? "#A7F3D0" : "#FECACA"),
+            color: result.ok ? "#15803D" : "#B91C1C"
+          }}>
+            {result.ok ? "✓ " : "⚠️ "}{result.msg}
           </div>
-          {progress.total ? <div style={{ fontSize: 11, color: "#B86A8B", marginTop: 7 }}>{progress.done.toLocaleString()} / {progress.total.toLocaleString()}</div> : null}
-        </div>
-      )}
-
-      {result && (
-        <div style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "11px 16px", borderRadius: 12, fontSize: 13, fontWeight: 700,
-          background: result.ok ? "#ECFDF5" : "#FEF2F2", border: "1px solid " + (result.ok ? "#A7F3D0" : "#FECACA"),
-          color: result.ok ? "#15803D" : "#B91C1C" }}>
-          {result.ok ? "✓ " : "⚠️ "}{result.msg}
-        </div>
-      )}
+        )}
       </>)}
     </div>
   );
@@ -8338,9 +8350,11 @@ function BonusConfig() {
       </button>
 
       {result && (
-        <div style={{ marginTop: 14, padding: "11px 14px", borderRadius: 9, fontSize: 13, fontWeight: 600,
+        <div style={{
+          marginTop: 14, padding: "11px 14px", borderRadius: 9, fontSize: 13, fontWeight: 600,
           background: result.ok ? "#dcfce7" : "#fef2f2", border: "1px solid " + (result.ok ? "#86efac" : "#fecaca"),
-          color: result.ok ? "#14532d" : "#991b1b" }}>
+          color: result.ok ? "#14532d" : "#991b1b"
+        }}>
           {result.ok ? "✓ " : "⚠️ "}{result.msg}
         </div>
       )}
@@ -8821,8 +8835,8 @@ function canSeeIncidents(user) {
   if (user.isOwner) return true;
   const r = (user.role || "").toLowerCase();
   return r === "master admin" ||
-         r.includes("hr") || r.includes("human res") ||
-         r.includes("national") || isRomRole(user.role);
+    r.includes("hr") || r.includes("human res") ||
+    r.includes("national") || isRomRole(user.role);
 }
 
 // ─── RECRUITMENT / INTERVIEW ROLE GATES ──────────────────────────────────────
@@ -10166,20 +10180,20 @@ function DailyTasksAdmin({ tasks, onSave, appUsers, currentUser, readOnly }) {
 // (reached by the printed QR in the staff room). Only the Owner / HR / senior
 // ops see this tab — store managers use the kiosk, never the portal.
 const INCIDENT_CAT = {
-  Safety:       { label: "Safety / injury",        emoji: "⚠️",  color: "#b45309", bg: "#fef3c7" },
-  Harassment:   { label: "Harassment / bullying",  emoji: "🚫",  color: "#9d174d", bg: "#fce7f3" },
-  Management:   { label: "Management conduct",      emoji: "👔",  color: "#6b21a8", bg: "#ede9fe" },
-  StaffConduct: { label: "Staff member's conduct", emoji: "🙍",  color: "#9a3412", bg: "#ffedd5" },
-  Customer:     { label: "Customer / client",      emoji: "🧍",  color: "#1d4ed8", bg: "#dbeafe" },
-  Theft:        { label: "Theft / money / till",   emoji: "💰",  color: "#92400e", bg: "#fef3c7" },
-  Stock:        { label: "Stock / equipment / damage", emoji: "📦", color: "#374151", bg: "#f3f4f6" },
-  Hygiene:      { label: "Hygiene",                emoji: "🧼",  color: "#0e7490", bg: "#cffafe" },
-  Other:        { label: "Other",                  emoji: "📋",  color: "#374151", bg: "#f3f4f6" }
+  Safety: { label: "Safety / injury", emoji: "⚠️", color: "#b45309", bg: "#fef3c7" },
+  Harassment: { label: "Harassment / bullying", emoji: "🚫", color: "#9d174d", bg: "#fce7f3" },
+  Management: { label: "Management conduct", emoji: "👔", color: "#6b21a8", bg: "#ede9fe" },
+  StaffConduct: { label: "Staff member's conduct", emoji: "🙍", color: "#9a3412", bg: "#ffedd5" },
+  Customer: { label: "Customer / client", emoji: "🧍", color: "#1d4ed8", bg: "#dbeafe" },
+  Theft: { label: "Theft / money / till", emoji: "💰", color: "#92400e", bg: "#fef3c7" },
+  Stock: { label: "Stock / equipment / damage", emoji: "📦", color: "#374151", bg: "#f3f4f6" },
+  Hygiene: { label: "Hygiene", emoji: "🧼", color: "#0e7490", bg: "#cffafe" },
+  Other: { label: "Other", emoji: "📋", color: "#374151", bg: "#f3f4f6" }
 };
 const INCIDENT_STATUS = {
-  new:       { label: "New",       color: "#b91c1c", bg: "#fee2e2" },
+  new: { label: "New", color: "#b91c1c", bg: "#fee2e2" },
   reviewing: { label: "Reviewing", color: "#b45309", bg: "#fef3c7" },
-  resolved:  { label: "Resolved",  color: "#15803d", bg: "#dcfce7" }
+  resolved: { label: "Resolved", color: "#15803d", bg: "#dcfce7" }
 };
 function fmtIncidentTime(iso) {
   if (!iso) return "";
@@ -10244,7 +10258,7 @@ function IncidentReportsTab({ reports, setReports, currentUser }) {
     const next = openId === r.id ? null : r.id;
     setOpenId(next);
     if (next && !r.reviewed) {
-      try { await window.BOA_DB.markIncidentReviewed(r.id); patchLocal(r.id, { reviewed: true }); } catch (_e) {}
+      try { await window.BOA_DB.markIncidentReviewed(r.id); patchLocal(r.id, { reviewed: true }); } catch (_e) { }
     }
   };
   const changeStatus = async (r, status) => {
@@ -10528,7 +10542,7 @@ function linkifyText(text) {
   );
 }
 const LEAVE_STATUS = {
-  pending:  { label: "Pending",  color: "#b45309", bg: "#fef3c7" },
+  pending: { label: "Pending", color: "#b45309", bg: "#fef3c7" },
   approved: { label: "Approved", color: "#15803d", bg: "#dcfce7" },
   declined: { label: "Declined", color: "#b91c1c", bg: "#fee2e2" }
 };
@@ -10974,7 +10988,7 @@ function findLeaveOverlaps(r, leaveRecs, requests) {
       const iso = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
       if (ranges.some(rg => iso >= rg.s && iso <= rg.e)) coveredDays++;
     }
-  } catch (_e) {}
+  } catch (_e) { }
   return { calOverlaps, reqOverlaps, coveredDays };
 }
 
@@ -12161,11 +12175,13 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
                                   <div style={{ fontSize: 12, color: "#9d6a82", fontStyle: "italic" }}>No annual-leave days planned for the past part of this cycle.</div>
                                 ) : (
                                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                                    {r.recon.map(x => { const m = reconMeta(x.status); return (
-                                      <span key={x.ymd} title={m.label} style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 9px", borderRadius: 999, fontSize: 11.5, fontWeight: 600, color: m.color, background: m.bg }}>
-                                        <span style={{ fontWeight: 800 }}>{m.icon}</span>{fmtDayShort(x.ymd)}
-                                      </span>
-                                    ); })}
+                                    {r.recon.map(x => {
+                                      const m = reconMeta(x.status); return (
+                                        <span key={x.ymd} title={m.label} style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 9px", borderRadius: 999, fontSize: 11.5, fontWeight: 600, color: m.color, background: m.bg }}>
+                                          <span style={{ fontWeight: 800 }}>{m.icon}</span>{fmtDayShort(x.ymd)}
+                                        </span>
+                                      );
+                                    })}
                                   </div>
                                 )}
                                 {r.workedCount > 0 && (
@@ -12373,9 +12389,9 @@ function CalledInSickTab({ requests, setRequests, currentUser }) {
               <div style={{ marginTop: 10, display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
                 {!r.reviewed
                   ? <button disabled={busy} onClick={() => markDone(r)} title="Mark this absence as actioned — clears it off the dashboard"
-                      style={{ border: "none", background: "#16a34a", color: "#fff", borderRadius: 8, padding: "6px 14px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: busy ? "default" : "pointer" }}>
-                      ✓ Mark done
-                    </button>
+                    style={{ border: "none", background: "#16a34a", color: "#fff", borderRadius: 8, padding: "6px 14px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: busy ? "default" : "pointer" }}>
+                    ✓ Mark done
+                  </button>
                   : <span style={{ alignSelf: "center", fontSize: 12, color: "#15803d", fontWeight: 700 }}>✓ Done — actioned</span>}
                 {isOwner && (
                   <button disabled={busy} onClick={() => removeReq(r)} title="Owner: permanently delete this absence mark"
@@ -12581,7 +12597,7 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
   const mgrReqs = filtered.filter(isMgrReq);
   const techReqs = filtered.filter(r => !isMgrReq(r));
   const groups = [
-    { key: "mgr",  label: "👑 Managers",  items: mgrReqs,  bg: "#faf5ff", border: "#e9d5ff", headBg: "#7c3aed", headFg: "#fff" },
+    { key: "mgr", label: "👑 Managers", items: mgrReqs, bg: "#faf5ff", border: "#e9d5ff", headBg: "#7c3aed", headFg: "#fff" },
     { key: "tech", label: "💅 Nail Techs", items: techReqs, bg: "#fdf2f8", border: "#fbcfe8", headBg: "#BE185D", headFg: "#fff" }
   ];
 
@@ -12608,71 +12624,71 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
       {filtered.length === 0 && <div style={{ ...card, textAlign: "center", color: "#9d6a82" }}>No requests here.</div>}
 
       <div style={{ display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
-      {filtered.length > 0 && groups.map(g => (
-        <div key={g.key} style={{ flex: "1 1 360px", minWidth: 300, background: g.bg, border: "1px solid " + g.border, borderRadius: 14, padding: 12 }}>
-          <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase", color: g.headFg, background: g.headBg, borderRadius: 9, padding: "8px 12px", marginBottom: 12 }}>{g.label} · {g.items.length}</div>
-          {g.items.length === 0 && <div style={{ textAlign: "center", color: "#9d6a82", fontSize: 12.5, padding: "10px 0 14px" }}>None in this view.</div>}
-          {g.items.map(r => {
-        const st = LEAVE_STATUS[r.status] || LEAVE_STATUS.pending;
-        const isCatch = r.purpose === "catch_up";
-        const dw = dowInfo(r.work_date);
-        return (
-          <div key={r.id} style={card}>
-            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-              {!r.reviewed && <span style={{ width: 9, height: 9, borderRadius: 999, background: "#BE185D", display: "inline-block" }} title="Not yet reviewed" />}
-              <strong style={{ color: "#111827", fontSize: 14 }}>{r.name}</strong>
-              <span style={chip(isCatch ? { color: "#9a3412", bg: "#ffedd5" } : { color: "#075985", bg: "#e0f2fe" })}>{isCatch ? "Catch-up" : "Extra"}</span>
-              <span style={{ color: "#374151", fontSize: 13 }}>{fmtIncidentDate(r.work_date)}</span>
-              {dw.name && <span title={dw.busy ? "High-demand day — extra cover almost always needed" : ""} style={{ fontSize: 11, fontWeight: 800, padding: "2px 8px", borderRadius: 6, color: dw.busy ? "#9a3412" : "#6b7280", background: dw.busy ? "#ffedd5" : "#f3f4f6" }}>{dw.busy ? "🔥 " : ""}{dw.name}</span>}
-              <span style={{ color: "#9ca3af", fontSize: 12 }}>{r.store ? "· " + r.store : ""}{r.ec ? " · " + r.ec : ""}</span>
-              <span style={{ marginLeft: "auto", ...chip(st) }}>{st.label}</span>
-            </div>
-            {r.note && <div style={{ marginTop: 8, fontSize: 13.5, color: "#374151", whiteSpace: "pre-wrap" }}>{linkifyText(r.note)}</div>}
-            <div style={{ marginTop: 6, fontSize: 11, color: "#9d6a82" }}>Ref {r.ref_code} · {fmtIncidentTime(r.created_at)}</div>
+        {filtered.length > 0 && groups.map(g => (
+          <div key={g.key} style={{ flex: "1 1 360px", minWidth: 300, background: g.bg, border: "1px solid " + g.border, borderRadius: 14, padding: 12 }}>
+            <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase", color: g.headFg, background: g.headBg, borderRadius: 9, padding: "8px 12px", marginBottom: 12 }}>{g.label} · {g.items.length}</div>
+            {g.items.length === 0 && <div style={{ textAlign: "center", color: "#9d6a82", fontSize: 12.5, padding: "10px 0 14px" }}>None in this view.</div>}
+            {g.items.map(r => {
+              const st = LEAVE_STATUS[r.status] || LEAVE_STATUS.pending;
+              const isCatch = r.purpose === "catch_up";
+              const dw = dowInfo(r.work_date);
+              return (
+                <div key={r.id} style={card}>
+                  <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                    {!r.reviewed && <span style={{ width: 9, height: 9, borderRadius: 999, background: "#BE185D", display: "inline-block" }} title="Not yet reviewed" />}
+                    <strong style={{ color: "#111827", fontSize: 14 }}>{r.name}</strong>
+                    <span style={chip(isCatch ? { color: "#9a3412", bg: "#ffedd5" } : { color: "#075985", bg: "#e0f2fe" })}>{isCatch ? "Catch-up" : "Extra"}</span>
+                    <span style={{ color: "#374151", fontSize: 13 }}>{fmtIncidentDate(r.work_date)}</span>
+                    {dw.name && <span title={dw.busy ? "High-demand day — extra cover almost always needed" : ""} style={{ fontSize: 11, fontWeight: 800, padding: "2px 8px", borderRadius: 6, color: dw.busy ? "#9a3412" : "#6b7280", background: dw.busy ? "#ffedd5" : "#f3f4f6" }}>{dw.busy ? "🔥 " : ""}{dw.name}</span>}
+                    <span style={{ color: "#9ca3af", fontSize: 12 }}>{r.store ? "· " + r.store : ""}{r.ec ? " · " + r.ec : ""}</span>
+                    <span style={{ marginLeft: "auto", ...chip(st) }}>{st.label}</span>
+                  </div>
+                  {r.note && <div style={{ marginTop: 8, fontSize: 13.5, color: "#374151", whiteSpace: "pre-wrap" }}>{linkifyText(r.note)}</div>}
+                  <div style={{ marginTop: 6, fontSize: 11, color: "#9d6a82" }}>Ref {r.ref_code} · {fmtIncidentTime(r.created_at)}</div>
 
-            {r.status !== "pending" && r.decided_by && (
-              <div style={{ marginTop: 10, background: r.status === "approved" ? "#f0fdf4" : "#fef2f2", border: "1px solid " + (r.status === "approved" ? "#bbf7d0" : "#fecaca"), borderRadius: 11, padding: "10px 13px" }}>
-                <div style={{ fontSize: 12, fontWeight: 800, color: r.status === "approved" ? "#15803d" : "#b91c1c" }}>{r.status === "approved" ? "✅ Approved" : "✕ Declined"}</div>
-                {r.status === "approved" && <div style={{ fontSize: 11.5, color: "#15803d", marginTop: 2 }}>📅 Published to {(r.name || "the").split(" ")[0]}'s {isManagerEc(r.ec) ? "manager schedule & coverage" : "schedule"} as an extra day ({fmtIncidentDate(r.work_date)}).</div>}
-                {r.decision_note && <div style={{ fontSize: 13.5, color: "#374151", whiteSpace: "pre-wrap" }}>{r.decision_note}</div>}
-                <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>{r.decided_by}{r.decided_at ? " · " + fmtIncidentTime(r.decided_at) : ""}</div>
-              </div>
-            )}
+                  {r.status !== "pending" && r.decided_by && (
+                    <div style={{ marginTop: 10, background: r.status === "approved" ? "#f0fdf4" : "#fef2f2", border: "1px solid " + (r.status === "approved" ? "#bbf7d0" : "#fecaca"), borderRadius: 11, padding: "10px 13px" }}>
+                      <div style={{ fontSize: 12, fontWeight: 800, color: r.status === "approved" ? "#15803d" : "#b91c1c" }}>{r.status === "approved" ? "✅ Approved" : "✕ Declined"}</div>
+                      {r.status === "approved" && <div style={{ fontSize: 11.5, color: "#15803d", marginTop: 2 }}>📅 Published to {(r.name || "the").split(" ")[0]}'s {isManagerEc(r.ec) ? "manager schedule & coverage" : "schedule"} as an extra day ({fmtIncidentDate(r.work_date)}).</div>}
+                      {r.decision_note && <div style={{ fontSize: 13.5, color: "#374151", whiteSpace: "pre-wrap" }}>{r.decision_note}</div>}
+                      <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>{r.decided_by}{r.decided_at ? " · " + fmtIncidentTime(r.decided_at) : ""}</div>
+                    </div>
+                  )}
 
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
-              <button disabled={busy || r.status === "approved"} onClick={() => setStatus(r, "approved")}
-                style={{ border: "1.5px solid #15803d", background: r.status === "approved" ? "#15803d" : "#fff", color: r.status === "approved" ? "#fff" : "#15803d", borderRadius: 9, padding: "7px 16px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: r.status === "approved" ? "default" : "pointer" }}>
-                {r.status === "approved" ? "● Approved" : "Approve"}
-              </button>
-              <button disabled={busy || r.status === "declined"} onClick={() => { setDeclineId(r.id); setDeclineText(r.decision_note || ""); }}
-                style={{ border: "1.5px solid #b91c1c", background: r.status === "declined" ? "#b91c1c" : "#fff", color: r.status === "declined" ? "#fff" : "#b91c1c", borderRadius: 9, padding: "7px 16px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: r.status === "declined" ? "default" : "pointer" }}>
-                {r.status === "declined" ? "● Declined" : "Decline"}
-              </button>
-              <button disabled={busy} onClick={() => removeReq(r)} title="Delete this request"
-                style={{ marginLeft: "auto", border: "1px solid #e5e7eb", background: "#fff", color: "#9ca3af", borderRadius: 9, padding: "7px 12px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: "pointer" }}>
-                🗑 Delete
-              </button>
-            </div>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+                    <button disabled={busy || r.status === "approved"} onClick={() => setStatus(r, "approved")}
+                      style={{ border: "1.5px solid #15803d", background: r.status === "approved" ? "#15803d" : "#fff", color: r.status === "approved" ? "#fff" : "#15803d", borderRadius: 9, padding: "7px 16px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: r.status === "approved" ? "default" : "pointer" }}>
+                      {r.status === "approved" ? "● Approved" : "Approve"}
+                    </button>
+                    <button disabled={busy || r.status === "declined"} onClick={() => { setDeclineId(r.id); setDeclineText(r.decision_note || ""); }}
+                      style={{ border: "1.5px solid #b91c1c", background: r.status === "declined" ? "#b91c1c" : "#fff", color: r.status === "declined" ? "#fff" : "#b91c1c", borderRadius: 9, padding: "7px 16px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: r.status === "declined" ? "default" : "pointer" }}>
+                      {r.status === "declined" ? "● Declined" : "Decline"}
+                    </button>
+                    <button disabled={busy} onClick={() => removeReq(r)} title="Delete this request"
+                      style={{ marginLeft: "auto", border: "1px solid #e5e7eb", background: "#fff", color: "#9ca3af", borderRadius: 9, padding: "7px 12px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: "pointer" }}>
+                      🗑 Delete
+                    </button>
+                  </div>
 
-            {declineId === r.id && (
-              <div style={{ marginTop: 12, background: "#fef2f2", border: "1.5px solid #fecaca", borderRadius: 11, padding: "12px 13px" }}>
-                <div style={{ fontSize: 12.5, fontWeight: 800, color: "#b91c1c", marginBottom: 6 }}>Reason for declining (required)</div>
-                <textarea value={declineText} onChange={e => setDeclineText(e.target.value)} autoFocus
-                  placeholder="Why is this being declined…"
-                  style={{ width: "100%", boxSizing: "border-box", minHeight: 64, fontFamily: "inherit", fontSize: 13.5, padding: "10px 12px", borderRadius: 9, border: "1.5px solid #fecaca", resize: "vertical" }} />
-                <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                  <button disabled={busy || !declineText.trim()} onClick={() => setStatus(r, "declined", declineText)}
-                    style={{ background: "#b91c1c", color: "#fff", border: "none", borderRadius: 9, padding: "8px 16px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: declineText.trim() ? "pointer" : "default", opacity: declineText.trim() ? 1 : 0.5 }}>Confirm decline</button>
-                  <button onClick={() => { setDeclineId(null); setDeclineText(""); }}
-                    style={{ background: "#f3f4f6", color: "#6b7280", border: "none", borderRadius: 9, padding: "8px 14px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: "pointer" }}>Cancel</button>
+                  {declineId === r.id && (
+                    <div style={{ marginTop: 12, background: "#fef2f2", border: "1.5px solid #fecaca", borderRadius: 11, padding: "12px 13px" }}>
+                      <div style={{ fontSize: 12.5, fontWeight: 800, color: "#b91c1c", marginBottom: 6 }}>Reason for declining (required)</div>
+                      <textarea value={declineText} onChange={e => setDeclineText(e.target.value)} autoFocus
+                        placeholder="Why is this being declined…"
+                        style={{ width: "100%", boxSizing: "border-box", minHeight: 64, fontFamily: "inherit", fontSize: 13.5, padding: "10px 12px", borderRadius: 9, border: "1.5px solid #fecaca", resize: "vertical" }} />
+                      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                        <button disabled={busy || !declineText.trim()} onClick={() => setStatus(r, "declined", declineText)}
+                          style={{ background: "#b91c1c", color: "#fff", border: "none", borderRadius: 9, padding: "8px 16px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: declineText.trim() ? "pointer" : "default", opacity: declineText.trim() ? 1 : 0.5 }}>Confirm decline</button>
+                        <button onClick={() => { setDeclineId(null); setDeclineText(""); }}
+                          style={{ background: "#f3f4f6", color: "#6b7280", border: "none", borderRadius: 9, padding: "8px 14px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: "pointer" }}>Cancel</button>
+                      </div>
+                    </div>
+                  )}
                 </div>
-              </div>
-            )}
+              );
+            })}
           </div>
-        );
-          })}
-        </div>
-      ))}
+        ))}
       </div>
     </div>
   );
@@ -12948,19 +12964,19 @@ function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen,
           {trialOpen.map(c => {
             const tw = _trialWindow(c);
             return (
-            <div key={"t-" + c._id} style={card}>
-              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                <strong style={{ color: "#581c87", fontSize: 14 }}>{c.name}</strong>
-                {c.branch && <span style={{ color: "#9ca3af", fontSize: 12 }}>📍 {c.branch}</span>}
-                {chip("#ede9fe", "#6b21a8", "Trial opening")}
-                <span style={{ marginLeft: "auto" }}>{openBtn("Mark opened on Fresha", () => setTrialFresha(c._id, "freshaTrialOpened", true))}</span>
+              <div key={"t-" + c._id} style={card}>
+                <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                  <strong style={{ color: "#581c87", fontSize: 14 }}>{c.name}</strong>
+                  {c.branch && <span style={{ color: "#9ca3af", fontSize: 12 }}>📍 {c.branch}</span>}
+                  {chip("#ede9fe", "#6b21a8", "Trial opening")}
+                  <span style={{ marginLeft: "auto" }}>{openBtn("Mark opened on Fresha", () => setTrialFresha(c._id, "freshaTrialOpened", true))}</span>
+                </div>
+                <div style={{ marginTop: 6, fontSize: 12, color: "#6b21a8", fontWeight: 600 }}>
+                  {c.startDate
+                    ? <>🗓️ Trial starts <strong>{fmtIncidentDate(c.startDate)}</strong>{tw ? <> → <strong>{fmtIncidentDate(tw.lastYmd)}</strong> <span style={{ color: "#9ca3af", fontWeight: 500 }}>· {tw.days} working day{tw.days === 1 ? "" : "s"} (Mon–Fri, excl. public holidays)</span></> : null} — open them on Fresha for these dates</>
+                    : <span style={{ color: "#9ca3af", fontWeight: 500 }}>🗓️ No in-store trial start date set yet — add one on the Trial tab to see the dates.</span>}
+                </div>
               </div>
-              <div style={{ marginTop: 6, fontSize: 12, color: "#6b21a8", fontWeight: 600 }}>
-                {c.startDate
-                  ? <>🗓️ Trial starts <strong>{fmtIncidentDate(c.startDate)}</strong>{tw ? <> → <strong>{fmtIncidentDate(tw.lastYmd)}</strong> <span style={{ color: "#9ca3af", fontWeight: 500 }}>· {tw.days} working day{tw.days === 1 ? "" : "s"} (Mon–Fri, excl. public holidays)</span></> : null} — open them on Fresha for these dates</>
-                  : <span style={{ color: "#9ca3af", fontWeight: 500 }}>🗓️ No in-store trial start date set yet — add one on the Trial tab to see the dates.</span>}
-              </div>
-            </div>
             );
           })}
           {monthOpen.map(c => (
@@ -13492,9 +13508,11 @@ function FamilyResponsibilityTab({ enriched, managers, currentUser, logActivity 
                   <td style={{ ...td, textAlign: "right" }}>
                     {!r.eligible || r.pendingCount === 0
                       ? <span style={{ color: "#cbb1bd" }}>—</span>
-                      : (() => { const prov = r.pendingDates.filter(d => d.prov).length; return (
+                      : (() => {
+                        const prov = r.pendingDates.filter(d => d.prov).length; return (
                           <span title={"Planned deduction this payroll cycle:\n" + r.pendingDates.map(d => fmtD(d.ymd) + (d.prov ? " (planned)" : "")).join("\n")} style={{ display: "inline-block", fontSize: 11.5, fontWeight: 800, color: prov ? "#b45309" : "#9333ea", background: prov ? "#FEF3C7" : "#F3E8FF", borderRadius: 6, padding: "2px 8px", cursor: "help", whiteSpace: "nowrap" }}>−{r.pendingCount}{prov ? " ⏳" : ""}</span>
-                        ); })()}
+                        );
+                      })()}
                   </td>
                   <td style={{ ...td, textAlign: "right", color: !r.eligible ? "#cbb1bd" : r.used > 0 ? "#b45309" : "#9d6a82" }}>
                     {r.eligible ? r.used : "—"}
@@ -13503,9 +13521,9 @@ function FamilyResponsibilityTab({ enriched, managers, currentUser, logActivity 
                   <td style={{ ...td, textAlign: "right" }}>
                     {r.eligible
                       ? <span style={{ display: "inline-flex", alignItems: "center", gap: 6, justifyContent: "flex-end" }}>
-                          <input type="number" min="0" max={r.entitlement} step="1" value={r.available} onChange={e => setAvailable(r, e.target.value)} title={"Days they currently have left this employment year." + (r.autoUsed > 0 ? "\n" + r.autoUsed + " FRL day(s) auto-deducted from attendance/check-ins on:\n" + r.autoDates.map(d => fmtD(d)).join("\n") : "") + "\nEditing re-sets the balance from today."} style={{ width: 56, textAlign: "right", ...inp, padding: "5px 7px", fontWeight: 800, color: r.available === 0 ? "#b91c1c" : "#15803d" }} />
-                          <span style={{ fontSize: 11, color: "#9d6a82" }}>/ {FRL_DAYS_PER_YEAR}</span>
-                        </span>
+                        <input type="number" min="0" max={r.entitlement} step="1" value={r.available} onChange={e => setAvailable(r, e.target.value)} title={"Days they currently have left this employment year." + (r.autoUsed > 0 ? "\n" + r.autoUsed + " FRL day(s) auto-deducted from attendance/check-ins on:\n" + r.autoDates.map(d => fmtD(d)).join("\n") : "") + "\nEditing re-sets the balance from today."} style={{ width: 56, textAlign: "right", ...inp, padding: "5px 7px", fontWeight: 800, color: r.available === 0 ? "#b91c1c" : "#15803d" }} />
+                        <span style={{ fontSize: 11, color: "#9d6a82" }}>/ {FRL_DAYS_PER_YEAR}</span>
+                      </span>
                       : <span style={{ color: "#cbb1bd" }}>0</span>}
                   </td>
                 </tr>
@@ -13682,7 +13700,7 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
   const onOpen = async (r) => {
     const next = openId === r.id ? null : r.id;
     setOpenId(next);
-    if (next && !r.reviewed) { try { await window.BOA_DB.markLeaveReviewed(r.id); patchLocal(r.id, { reviewed: true }); } catch (_e) {} }
+    if (next && !r.reviewed) { try { await window.BOA_DB.markLeaveReviewed(r.id); patchLocal(r.id, { reviewed: true }); } catch (_e) { } }
   };
   const doDecline = async (r) => {
     const text = (declineText || "").trim();
@@ -13750,7 +13768,7 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
   const mgrReqs = filtered.filter(isMgrReq);
   const techReqs = filtered.filter(r => !isMgrReq(r));
   const groups = [
-    { key: "mgr",  label: "👑 Managers",   items: mgrReqs,  bg: "#faf5ff", border: "#e9d5ff", headBg: "#7c3aed", headFg: "#fff" },
+    { key: "mgr", label: "👑 Managers", items: mgrReqs, bg: "#faf5ff", border: "#e9d5ff", headBg: "#7c3aed", headFg: "#fff" },
     { key: "tech", label: "💅 Nail Techs", items: techReqs, bg: "#fdf2f8", border: "#fbcfe8", headBg: "#BE185D", headFg: "#fff" }
   ];
 
@@ -13859,260 +13877,260 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
       {filtered.length === 0 && <div style={{ ...card, textAlign: "center", color: "#9d6a82" }}>No requests here.</div>}
 
       <div style={{ display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
-      {filtered.length > 0 && groups.map(g => (
-        <div key={g.key} style={{ flex: "1 1 360px", minWidth: 300, background: g.bg, border: "1px solid " + g.border, borderRadius: 14, padding: 12 }}>
-          <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase", color: g.headFg, background: g.headBg, borderRadius: 9, padding: "8px 12px", marginBottom: 12 }}>{g.label} · {g.items.length}</div>
-          {g.items.length === 0 && <div style={{ textAlign: "center", color: "#9d6a82", fontSize: 12.5, padding: "10px 0 14px" }}>None in this view.</div>}
-          {g.items.map(r => {
-        const st = LEAVE_STATUS[r.status] || LEAVE_STATUS.pending;
-        const open = openId === r.id;
-        const notes = Array.isArray(r.internal_notes) ? r.internal_notes : [];
-        const days = leaveDays(r.start_date, r.end_date);
-        const thisCycle = isCurrentCycleReq(r);
-        return (
-          <div key={r.id} style={{ ...card, marginBottom: 12, ...(thisCycle ? { borderLeft: "5px solid #f59e0b" } : {}) }}>
-            <div onClick={() => onOpen(r)} style={{ display: "flex", gap: 8, alignItems: "center", cursor: "pointer", flexWrap: "wrap" }}>
-              {!r.reviewed && <span style={{ width: 9, height: 9, borderRadius: 999, background: "#BE185D", display: "inline-block" }} title="Not yet opened" />}
-              <strong style={{ color: "#111827", fontSize: 14 }}>{r.name}</strong>
-              <span style={chip({ color: "#6b21a8", bg: "#ede9fe" })}>{LEAVE_TYPE[r.leave_type] || r.leave_type}</span>
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "#fdf2f8", border: "1px solid #f9a8d4", color: "#9d174d", fontWeight: 800, fontSize: 14, padding: "4px 11px", borderRadius: 9 }}>📅 {fmtIncidentDate(r.start_date)} → {fmtIncidentDate(r.end_date)}</span>
-              <span style={{ color: "#9ca3af", fontSize: 12 }}>· {days} day{days === 1 ? "" : "s"}{r.store ? " · " + r.store : ""}</span>
-              {thisCycle && <span style={{ display: "inline-flex", alignItems: "center", gap: 4, background: "#fef3c7", border: "1px solid #f59e0b", color: "#92400e", fontWeight: 800, fontSize: 11, padding: "3px 9px", borderRadius: 999, letterSpacing: "0.02em" }} title={"This leave falls in the CURRENT pay cycle (" + fmtIncidentDate(cycleStartYmd) + " – " + fmtIncidentDate(cycleEndYmd) + "). Leave should be booked in advance — you can still approve it."}>⚠ THIS CYCLE · short notice</span>}
-              <span style={{ marginLeft: "auto", ...chip(st) }}>{st.label}</span>
-              <span style={{ color: "#cbb1bd", fontSize: 18, lineHeight: 1 }}>{open ? "▾" : "▸"}</span>
-            </div>
-
-            {open && (() => {
-              const bd = leaveDayBreakdown(r.start_date, r.end_date, isMgrReq(r), schedOpts(r));
-              const ov = findLeaveOverlaps(r, leaveRecs, requests);
+        {filtered.length > 0 && groups.map(g => (
+          <div key={g.key} style={{ flex: "1 1 360px", minWidth: 300, background: g.bg, border: "1px solid " + g.border, borderRadius: 14, padding: 12 }}>
+            <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase", color: g.headFg, background: g.headBg, borderRadius: 9, padding: "8px 12px", marginBottom: 12 }}>{g.label} · {g.items.length}</div>
+            {g.items.length === 0 && <div style={{ textAlign: "center", color: "#9d6a82", fontSize: 12.5, padding: "10px 0 14px" }}>None in this view.</div>}
+            {g.items.map(r => {
+              const st = LEAVE_STATUS[r.status] || LEAVE_STATUS.pending;
+              const open = openId === r.id;
+              const notes = Array.isArray(r.internal_notes) ? r.internal_notes : [];
+              const days = leaveDays(r.start_date, r.end_date);
+              const thisCycle = isCurrentCycleReq(r);
               return (
-              <div style={{ marginTop: 14, borderTop: "1px dashed #f3d4e0", paddingTop: 14 }}>
-                {thisCycle && (
-                  <div style={{ background: "#fef3c7", border: "1.5px solid #f59e0b", borderRadius: 11, padding: "10px 13px", marginBottom: 14, fontSize: 12.5, color: "#92400e", lineHeight: 1.5 }}>
-                    <strong>⚠ Short notice — this leave is in the current pay cycle</strong> ({fmtIncidentDate(cycleStartYmd)} – {fmtIncidentDate(cycleEndYmd)}). Leave is meant to be requested in advance, not during the month. You can still approve it below.
+                <div key={r.id} style={{ ...card, marginBottom: 12, ...(thisCycle ? { borderLeft: "5px solid #f59e0b" } : {}) }}>
+                  <div onClick={() => onOpen(r)} style={{ display: "flex", gap: 8, alignItems: "center", cursor: "pointer", flexWrap: "wrap" }}>
+                    {!r.reviewed && <span style={{ width: 9, height: 9, borderRadius: 999, background: "#BE185D", display: "inline-block" }} title="Not yet opened" />}
+                    <strong style={{ color: "#111827", fontSize: 14 }}>{r.name}</strong>
+                    <span style={chip({ color: "#6b21a8", bg: "#ede9fe" })}>{LEAVE_TYPE[r.leave_type] || r.leave_type}</span>
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "#fdf2f8", border: "1px solid #f9a8d4", color: "#9d174d", fontWeight: 800, fontSize: 14, padding: "4px 11px", borderRadius: 9 }}>📅 {fmtIncidentDate(r.start_date)} → {fmtIncidentDate(r.end_date)}</span>
+                    <span style={{ color: "#9ca3af", fontSize: 12 }}>· {days} day{days === 1 ? "" : "s"}{r.store ? " · " + r.store : ""}</span>
+                    {thisCycle && <span style={{ display: "inline-flex", alignItems: "center", gap: 4, background: "#fef3c7", border: "1px solid #f59e0b", color: "#92400e", fontWeight: 800, fontSize: 11, padding: "3px 9px", borderRadius: 999, letterSpacing: "0.02em" }} title={"This leave falls in the CURRENT pay cycle (" + fmtIncidentDate(cycleStartYmd) + " – " + fmtIncidentDate(cycleEndYmd) + "). Leave should be booked in advance — you can still approve it."}>⚠ THIS CYCLE · short notice</span>}
+                    <span style={{ marginLeft: "auto", ...chip(st) }}>{st.label}</span>
+                    <span style={{ color: "#cbb1bd", fontSize: 18, lineHeight: 1 }}>{open ? "▾" : "▸"}</span>
                   </div>
-                )}
-                <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "6px 16px", fontSize: 13.5, color: "#374151", marginBottom: 12 }}>
-                  <span style={{ color: "#9d6a82", fontWeight: 700 }}>Ref</span><span>{r.ref_code}</span>
-                  <span style={{ color: "#9d6a82", fontWeight: 700 }}>Requested</span><span>{fmtIncidentTime(r.created_at)}</span>
-                  <span style={{ color: "#9d6a82", fontWeight: 700 }}>Leave days</span>
-                  <span><strong>{bd.cal}</strong> calendar day{bd.cal === 1 ? "" : "s"} · <strong style={{ color: "#0f766e" }}>{bd.fromSchedule ? "" : "≈ "}{bd.real} actual leave day{bd.real === 1 ? "" : "s"}</strong> <span style={{ color: "#9ca3af", fontSize: 12 }}>({bd.off} off-day{bd.off === 1 ? "" : "s"} excluded — {bd.fromSchedule ? "read from the roster" : "est. ~2/week"})</span></span>
-                  <span style={{ color: "#9d6a82", fontWeight: 700 }}>Employee code</span><span>{r.ec || "—"}</span>
-                  <span style={{ color: "#9d6a82", fontWeight: 700 }}>Contact</span><span>{r.contact || "—"}</span>
-                  {r.reason && (<><span style={{ color: "#9d6a82", fontWeight: 700 }}>Reason</span><span style={{ whiteSpace: "pre-wrap" }}>{linkifyText(r.reason)}</span></>)}
-                </div>
 
-                {(ov.calOverlaps.length > 0 || ov.reqOverlaps.length > 0) && (
-                  <div style={{ background: "#fffbeb", border: "1.5px solid #fde68a", borderRadius: 11, padding: "10px 13px", marginBottom: 14 }}>
-                    <div style={{ fontSize: 12.5, fontWeight: 800, color: "#92400e", marginBottom: 4 }}>⚠ Already has leave overlapping these dates — {ov.coveredDays} of {bd.cal} requested day{bd.cal === 1 ? "" : "s"} already covered</div>
-                    {ov.calOverlaps.map((lv, i) => (
-                      <div key={"c" + i} style={{ fontSize: 12, color: "#78350f" }}>• On the calendar: {fmtIncidentDate(lv.startDate)} → {fmtIncidentDate(lv.endDate)}{lv.type && lv.type !== "Annual leave" ? " (" + lv.type + ")" : ""}{lv.emergency ? " · emergency" : ""}</div>
-                    ))}
-                    {ov.reqOverlaps.map((o, i) => (
-                      <div key={"r" + i} style={{ fontSize: 12, color: "#78350f" }}>• Another request ({(LEAVE_STATUS[o.status] || {}).label || o.status}): {fmtIncidentDate(o.start_date)} → {fmtIncidentDate(o.end_date)}{o.ref_code ? " · " + o.ref_code : ""}</div>
-                    ))}
-                    <div style={{ fontSize: 11, color: "#9a7b3a", marginTop: 4 }}>Check this isn't a duplicate before approving.</div>
-                  </div>
-                )}
-
-                {r.status === "approved" && (() => {
-                  const g = plannerGap(r);
-                  if (!g) return null;
-                  const amber = { background: "#fef3c7", border: "1.5px solid #f59e0b", borderRadius: 11, padding: "10px 13px", marginBottom: 14, fontSize: 12.5, color: "#92400e", lineHeight: 1.5 };
-                  if (!g.person) return (
-                    <div style={amber}>
-                      <strong>⚠ Approved, but NOT on the Leave Planner</strong> — no staff member or manager matches employee code "{r.ec || "—"}", so it can't be added automatically. Add it on the Leave Planner manually (it won't show there, or block Fresha, until you do).
-                    </div>
-                  );
-                  if (g.days > 0) return (
-                    <div style={amber}>
-                      <strong>⚠ Approved, but {g.days} day{g.days === 1 ? "" : "s"} of this leave {g.days === 1 ? "is" : "are"} not on the Leave Planner.</strong> It may show on the schedule (the grid was stamped at approval) while the planner — which drives the 20% cap, balances and Fresha blocking — doesn't know about it.
-                      <div style={{ marginTop: 8 }}>
-                        <button onClick={() => repairPlanner(r)} disabled={busy} style={{ background: "#b45309", color: "#fff", border: "none", borderRadius: 8, padding: "7px 14px", fontWeight: 800, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>➕ Add to Leave Planner now</button>
-                      </div>
-                    </div>
-                  );
-                  const effBr = effHomeBranch(g.person, _today);
-                  if (effBr && r.store && effBr !== r.store) return (
-                    <div style={{ background: "#f0fdfa", border: "1px solid #99f6e4", borderRadius: 11, padding: "9px 13px", marginBottom: 14, fontSize: 12.5, color: "#0f766e" }}>
-                      ✓ On the Leave Planner — but listed under <strong>{effBr}</strong> ({g.person.name ? g.person.name.split(" ")[0] + "'s" : "their"} current home store, e.g. after a transfer), not {r.store}. Switch the planner to {effBr} to see it.
-                    </div>
-                  );
-                  return null;
-                })()}
-
-                {r.status !== "pending" && r.decided_by && (
-                  <div style={{ background: r.status === "approved" ? "#f0fdf4" : "#fef2f2", border: "1px solid " + (r.status === "approved" ? "#bbf7d0" : "#fecaca"), borderRadius: 11, padding: "10px 13px", marginBottom: 14 }}>
-                    <div style={{ fontSize: 12, fontWeight: 800, color: r.status === "approved" ? "#15803d" : "#b91c1c", marginBottom: 3 }}>
-                      {r.status === "approved" ? "✅ Approved" : "✕ Declined"}{r.decision_note ? "" : ""}
-                    </div>
-                    {r.decision_note && <div style={{ fontSize: 13.5, color: "#374151", whiteSpace: "pre-wrap" }}>{r.decision_note}</div>}
-                    <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>{r.decided_by}{r.decided_at ? " · " + fmtIncidentTime(r.decided_at) : ""}</div>
-                  </div>
-                )}
-
-                {/* ── Approval workflow: operational gate → balance gate → auto-approve ── */}
-                {r.status !== "declined" && (() => {
-                  const opsDone = !!r.ops_cleared_at;
-                  const balDone = !!r.balance_checked_at;
-                  const approved = r.status === "approved";
-                  const oa = assessOps(r);
-                  const peopleLabel = oa.isMgr ? "managers" : "techs";
-                  const pill = (done, n, label) => (
-                    <span style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 10px", borderRadius: 999, fontSize: 11, fontWeight: 700, color: done ? "#15803d" : "#9d6a82", background: done ? "#dcfce7" : "#f6e8ef" }}>
-                      <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 15, height: 15, borderRadius: "50%", background: done ? "#15803d" : "#cbb1bd", color: "#fff", fontSize: 9 }}>{done ? "✓" : n}</span>
-                      {label}
-                    </span>
-                  );
-                  const gateBox = { border: "1px solid #f3d4e0", borderRadius: 11, padding: "11px 13px", marginBottom: 10, background: "#fffdfe" };
-                  const gateHead = { fontSize: 12.5, fontWeight: 800, color: "#831843", marginBottom: 7, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" };
-                  const stampS = { fontSize: 11, color: "#15803d", fontWeight: 600 };
-                  const btn = (bg, fg, bd) => ({ border: "1.5px solid " + bd, background: bg, color: fg, borderRadius: 9, padding: "6px 13px", fontWeight: 700, fontSize: 12, fontFamily: "inherit", cursor: "pointer" });
-                  const verdict = (bg, bd, col) => ({ background: bg, border: "1px solid " + bd, color: col, borderRadius: 8, padding: "7px 10px", fontSize: 12.5, marginBottom: 8, lineHeight: 1.45 });
-                  return (
-                    <div style={{ marginBottom: 14 }}>
-                      {/* Progress dots — mirror the 3-step overview at the top of the tab */}
-                      <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginBottom: 11, alignItems: "center" }}>
-                        {pill(true, 1, "Requested")}
-                        {pill(opsDone, 2, "Operational")}
-                        {pill(approved, 3, "Balance & approved")}
-                        {balDone && !approved && <span style={{ fontSize: 11, color: "#0f766e", fontWeight: 600 }}>· balance ✓, awaiting operational</span>}
-                      </div>
-
-                      {/* Gate 1 — operational */}
-                      <div style={gateBox}>
-                        <div style={gateHead}>
-                          <span>1 · Operational check</span>
-                          {opsDone && <span style={stampS}>✓ {r.ops_cleared_by || "—"}{r.ops_cleared_at ? " · " + fmtIncidentTime(r.ops_cleared_at) : ""}</span>}
-                        </div>
-                        {oa.matched ? (
-                          oa.clashDays.length > 0 ? (
-                            <div style={verdict("#fef2f2", "#fecaca", "#b91c1c")}>
-                              ⚠ <strong>Over the limit</strong> on {oa.clashDays.length} day{oa.clashDays.length === 1 ? "" : "s"} (e.g. {oa.clashDays.slice(0, 3).map(fmtIncidentDate).join(", ")}{oa.clashDays.length > 3 ? "…" : ""}). Max <strong>{oa.maxOff}</strong> of {oa.headcount} {peopleLabel} off at {oa.branch}{oa.isMgr ? "" : " (20%)"}.
-                            </div>
-                          ) : (
-                            <div style={verdict("#f0fdf4", "#bbf7d0", "#15803d")}>
-                              ✓ <strong>Within limit</strong> — max {oa.maxOff} of {oa.headcount} {peopleLabel} off at {oa.branch}{oa.isMgr ? " (1 at a time)" : " (20%)"}.{oa.peakDays > 0 ? " ⚠ " + oa.peakDays + " day(s) fall in peak season (Oct–Mar)." : ""}
-                            </div>
-                          )
-                        ) : (
-                          <div style={verdict("#fffbeb", "#fde68a", "#92400e")}>Can't auto-check — no matching employee code{r.ec ? " (" + r.ec + ")" : ""}. Confirm operationally by hand.</div>
+                  {open && (() => {
+                    const bd = leaveDayBreakdown(r.start_date, r.end_date, isMgrReq(r), schedOpts(r));
+                    const ov = findLeaveOverlaps(r, leaveRecs, requests);
+                    return (
+                      <div style={{ marginTop: 14, borderTop: "1px dashed #f3d4e0", paddingTop: 14 }}>
+                        {thisCycle && (
+                          <div style={{ background: "#fef3c7", border: "1.5px solid #f59e0b", borderRadius: 11, padding: "10px 13px", marginBottom: 14, fontSize: 12.5, color: "#92400e", lineHeight: 1.5 }}>
+                            <strong>⚠ Short notice — this leave is in the current pay cycle</strong> ({fmtIncidentDate(cycleStartYmd)} – {fmtIncidentDate(cycleEndYmd)}). Leave is meant to be requested in advance, not during the month. You can still approve it below.
+                          </div>
                         )}
-                        {canOps ? (
-                          opsDone
-                            ? <button disabled={busy} onClick={() => toggleOps(r, false)} style={btn("#fff", "#9d6a82", "#e7c6d4")}>Undo operational check</button>
-                            : <button disabled={busy} onClick={() => toggleOps(r, true)} style={btn("#fff", "#15803d", "#15803d")}>✓ Operationally clear</button>
-                        ) : (!opsDone && <span style={{ fontSize: 12, color: "#9d6a82", fontStyle: "italic" }}>Awaiting operational reviewer.</span>)}
-                      </div>
-
-                      {/* Gate 2 — leave balance (Sage) */}
-                      <div style={gateBox}>
-                        <div style={gateHead}>
-                          <span>2 · Leave balance <span style={{ fontWeight: 600, color: "#9d6a82" }}>(check on Sage)</span></span>
-                          {balDone && <span style={stampS}>✓ {r.balance_checked_by || "—"}{r.balance_days != null ? " · " + r.balance_days + " days available" : ""}</span>}
+                        <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "6px 16px", fontSize: 13.5, color: "#374151", marginBottom: 12 }}>
+                          <span style={{ color: "#9d6a82", fontWeight: 700 }}>Ref</span><span>{r.ref_code}</span>
+                          <span style={{ color: "#9d6a82", fontWeight: 700 }}>Requested</span><span>{fmtIncidentTime(r.created_at)}</span>
+                          <span style={{ color: "#9d6a82", fontWeight: 700 }}>Leave days</span>
+                          <span><strong>{bd.cal}</strong> calendar day{bd.cal === 1 ? "" : "s"} · <strong style={{ color: "#0f766e" }}>{bd.fromSchedule ? "" : "≈ "}{bd.real} actual leave day{bd.real === 1 ? "" : "s"}</strong> <span style={{ color: "#9ca3af", fontSize: 12 }}>({bd.off} off-day{bd.off === 1 ? "" : "s"} excluded — {bd.fromSchedule ? "read from the roster" : "est. ~2/week"})</span></span>
+                          <span style={{ color: "#9d6a82", fontWeight: 700 }}>Employee code</span><span>{r.ec || "—"}</span>
+                          <span style={{ color: "#9d6a82", fontWeight: 700 }}>Contact</span><span>{r.contact || "—"}</span>
+                          {r.reason && (<><span style={{ color: "#9d6a82", fontWeight: 700 }}>Reason</span><span style={{ whiteSpace: "pre-wrap" }}>{linkifyText(r.reason)}</span></>)}
                         </div>
-                        {/* Available days from the uploaded balance sheet vs what this request needs. */}
-                        {(() => {
-                          const bal = availableForEc(r.ec);
-                          const need = leaveDayBreakdown(r.start_date, r.end_date, isMgrReq(r), schedOpts(r)).real;
-                          if (!bal) return <div style={verdict("#fffbeb", "#fde68a", "#92400e")}>No balance on the uploaded sheet for {r.ec || "this person"} yet — verify on Sage.</div>;
-                          const enough = bal.available + 1e-9 >= need;
+
+                        {(ov.calOverlaps.length > 0 || ov.reqOverlaps.length > 0) && (
+                          <div style={{ background: "#fffbeb", border: "1.5px solid #fde68a", borderRadius: 11, padding: "10px 13px", marginBottom: 14 }}>
+                            <div style={{ fontSize: 12.5, fontWeight: 800, color: "#92400e", marginBottom: 4 }}>⚠ Already has leave overlapping these dates — {ov.coveredDays} of {bd.cal} requested day{bd.cal === 1 ? "" : "s"} already covered</div>
+                            {ov.calOverlaps.map((lv, i) => (
+                              <div key={"c" + i} style={{ fontSize: 12, color: "#78350f" }}>• On the calendar: {fmtIncidentDate(lv.startDate)} → {fmtIncidentDate(lv.endDate)}{lv.type && lv.type !== "Annual leave" ? " (" + lv.type + ")" : ""}{lv.emergency ? " · emergency" : ""}</div>
+                            ))}
+                            {ov.reqOverlaps.map((o, i) => (
+                              <div key={"r" + i} style={{ fontSize: 12, color: "#78350f" }}>• Another request ({(LEAVE_STATUS[o.status] || {}).label || o.status}): {fmtIncidentDate(o.start_date)} → {fmtIncidentDate(o.end_date)}{o.ref_code ? " · " + o.ref_code : ""}</div>
+                            ))}
+                            <div style={{ fontSize: 11, color: "#9a7b3a", marginTop: 4 }}>Check this isn't a duplicate before approving.</div>
+                          </div>
+                        )}
+
+                        {r.status === "approved" && (() => {
+                          const g = plannerGap(r);
+                          if (!g) return null;
+                          const amber = { background: "#fef3c7", border: "1.5px solid #f59e0b", borderRadius: 11, padding: "10px 13px", marginBottom: 14, fontSize: 12.5, color: "#92400e", lineHeight: 1.5 };
+                          if (!g.person) return (
+                            <div style={amber}>
+                              <strong>⚠ Approved, but NOT on the Leave Planner</strong> — no staff member or manager matches employee code "{r.ec || "—"}", so it can't be added automatically. Add it on the Leave Planner manually (it won't show there, or block Fresha, until you do).
+                            </div>
+                          );
+                          if (g.days > 0) return (
+                            <div style={amber}>
+                              <strong>⚠ Approved, but {g.days} day{g.days === 1 ? "" : "s"} of this leave {g.days === 1 ? "is" : "are"} not on the Leave Planner.</strong> It may show on the schedule (the grid was stamped at approval) while the planner — which drives the 20% cap, balances and Fresha blocking — doesn't know about it.
+                              <div style={{ marginTop: 8 }}>
+                                <button onClick={() => repairPlanner(r)} disabled={busy} style={{ background: "#b45309", color: "#fff", border: "none", borderRadius: 8, padding: "7px 14px", fontWeight: 800, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>➕ Add to Leave Planner now</button>
+                              </div>
+                            </div>
+                          );
+                          const effBr = effHomeBranch(g.person, _today);
+                          if (effBr && r.store && effBr !== r.store) return (
+                            <div style={{ background: "#f0fdfa", border: "1px solid #99f6e4", borderRadius: 11, padding: "9px 13px", marginBottom: 14, fontSize: 12.5, color: "#0f766e" }}>
+                              ✓ On the Leave Planner — but listed under <strong>{effBr}</strong> ({g.person.name ? g.person.name.split(" ")[0] + "'s" : "their"} current home store, e.g. after a transfer), not {r.store}. Switch the planner to {effBr} to see it.
+                            </div>
+                          );
+                          return null;
+                        })()}
+
+                        {r.status !== "pending" && r.decided_by && (
+                          <div style={{ background: r.status === "approved" ? "#f0fdf4" : "#fef2f2", border: "1px solid " + (r.status === "approved" ? "#bbf7d0" : "#fecaca"), borderRadius: 11, padding: "10px 13px", marginBottom: 14 }}>
+                            <div style={{ fontSize: 12, fontWeight: 800, color: r.status === "approved" ? "#15803d" : "#b91c1c", marginBottom: 3 }}>
+                              {r.status === "approved" ? "✅ Approved" : "✕ Declined"}{r.decision_note ? "" : ""}
+                            </div>
+                            {r.decision_note && <div style={{ fontSize: 13.5, color: "#374151", whiteSpace: "pre-wrap" }}>{r.decision_note}</div>}
+                            <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>{r.decided_by}{r.decided_at ? " · " + fmtIncidentTime(r.decided_at) : ""}</div>
+                          </div>
+                        )}
+
+                        {/* ── Approval workflow: operational gate → balance gate → auto-approve ── */}
+                        {r.status !== "declined" && (() => {
+                          const opsDone = !!r.ops_cleared_at;
+                          const balDone = !!r.balance_checked_at;
+                          const approved = r.status === "approved";
+                          const oa = assessOps(r);
+                          const peopleLabel = oa.isMgr ? "managers" : "techs";
+                          const pill = (done, n, label) => (
+                            <span style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 10px", borderRadius: 999, fontSize: 11, fontWeight: 700, color: done ? "#15803d" : "#9d6a82", background: done ? "#dcfce7" : "#f6e8ef" }}>
+                              <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 15, height: 15, borderRadius: "50%", background: done ? "#15803d" : "#cbb1bd", color: "#fff", fontSize: 9 }}>{done ? "✓" : n}</span>
+                              {label}
+                            </span>
+                          );
+                          const gateBox = { border: "1px solid #f3d4e0", borderRadius: 11, padding: "11px 13px", marginBottom: 10, background: "#fffdfe" };
+                          const gateHead = { fontSize: 12.5, fontWeight: 800, color: "#831843", marginBottom: 7, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" };
+                          const stampS = { fontSize: 11, color: "#15803d", fontWeight: 600 };
+                          const btn = (bg, fg, bd) => ({ border: "1.5px solid " + bd, background: bg, color: fg, borderRadius: 9, padding: "6px 13px", fontWeight: 700, fontSize: 12, fontFamily: "inherit", cursor: "pointer" });
+                          const verdict = (bg, bd, col) => ({ background: bg, border: "1px solid " + bd, color: col, borderRadius: 8, padding: "7px 10px", fontSize: 12.5, marginBottom: 8, lineHeight: 1.45 });
                           return (
-                            <div style={verdict(enough ? "#f0fdf4" : "#fef2f2", enough ? "#bbf7d0" : "#fecaca", enough ? "#15803d" : "#b91c1c")}>
-                              {enough ? "✓" : "⚠"} <strong>{fmtDays(bal.available)} day{bal.available === 1 ? "" : "s"} available</strong> on the sheet · needs <strong>{fmtDays(need)}</strong> → {enough ? "enough" : "SHORT by " + fmtDays(need - bal.available)}
-                              <div style={{ fontSize: 10.5, fontWeight: 400, marginTop: 2, opacity: 0.85 }}>opening {fmtDays(bal.opening)}{bal.adj ? " · adj " + (bal.adj > 0 ? "+" : "") + fmtDays(bal.adj) : ""}{bal.accrued ? " · +" + fmtDays(bal.accrued) + " earned" : ""}{bal.used ? " · −" + fmtDays(bal.used) + " already on calendar" : ""} <span style={{ fontStyle: "italic" }}>· still confirm on Sage</span></div>
+                            <div style={{ marginBottom: 14 }}>
+                              {/* Progress dots — mirror the 3-step overview at the top of the tab */}
+                              <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginBottom: 11, alignItems: "center" }}>
+                                {pill(true, 1, "Requested")}
+                                {pill(opsDone, 2, "Operational")}
+                                {pill(approved, 3, "Balance & approved")}
+                                {balDone && !approved && <span style={{ fontSize: 11, color: "#0f766e", fontWeight: 600 }}>· balance ✓, awaiting operational</span>}
+                              </div>
+
+                              {/* Gate 1 — operational */}
+                              <div style={gateBox}>
+                                <div style={gateHead}>
+                                  <span>1 · Operational check</span>
+                                  {opsDone && <span style={stampS}>✓ {r.ops_cleared_by || "—"}{r.ops_cleared_at ? " · " + fmtIncidentTime(r.ops_cleared_at) : ""}</span>}
+                                </div>
+                                {oa.matched ? (
+                                  oa.clashDays.length > 0 ? (
+                                    <div style={verdict("#fef2f2", "#fecaca", "#b91c1c")}>
+                                      ⚠ <strong>Over the limit</strong> on {oa.clashDays.length} day{oa.clashDays.length === 1 ? "" : "s"} (e.g. {oa.clashDays.slice(0, 3).map(fmtIncidentDate).join(", ")}{oa.clashDays.length > 3 ? "…" : ""}). Max <strong>{oa.maxOff}</strong> of {oa.headcount} {peopleLabel} off at {oa.branch}{oa.isMgr ? "" : " (20%)"}.
+                                    </div>
+                                  ) : (
+                                    <div style={verdict("#f0fdf4", "#bbf7d0", "#15803d")}>
+                                      ✓ <strong>Within limit</strong> — max {oa.maxOff} of {oa.headcount} {peopleLabel} off at {oa.branch}{oa.isMgr ? " (1 at a time)" : " (20%)"}.{oa.peakDays > 0 ? " ⚠ " + oa.peakDays + " day(s) fall in peak season (Oct–Mar)." : ""}
+                                    </div>
+                                  )
+                                ) : (
+                                  <div style={verdict("#fffbeb", "#fde68a", "#92400e")}>Can't auto-check — no matching employee code{r.ec ? " (" + r.ec + ")" : ""}. Confirm operationally by hand.</div>
+                                )}
+                                {canOps ? (
+                                  opsDone
+                                    ? <button disabled={busy} onClick={() => toggleOps(r, false)} style={btn("#fff", "#9d6a82", "#e7c6d4")}>Undo operational check</button>
+                                    : <button disabled={busy} onClick={() => toggleOps(r, true)} style={btn("#fff", "#15803d", "#15803d")}>✓ Operationally clear</button>
+                                ) : (!opsDone && <span style={{ fontSize: 12, color: "#9d6a82", fontStyle: "italic" }}>Awaiting operational reviewer.</span>)}
+                              </div>
+
+                              {/* Gate 2 — leave balance (Sage) */}
+                              <div style={gateBox}>
+                                <div style={gateHead}>
+                                  <span>2 · Leave balance <span style={{ fontWeight: 600, color: "#9d6a82" }}>(check on Sage)</span></span>
+                                  {balDone && <span style={stampS}>✓ {r.balance_checked_by || "—"}{r.balance_days != null ? " · " + r.balance_days + " days available" : ""}</span>}
+                                </div>
+                                {/* Available days from the uploaded balance sheet vs what this request needs. */}
+                                {(() => {
+                                  const bal = availableForEc(r.ec);
+                                  const need = leaveDayBreakdown(r.start_date, r.end_date, isMgrReq(r), schedOpts(r)).real;
+                                  if (!bal) return <div style={verdict("#fffbeb", "#fde68a", "#92400e")}>No balance on the uploaded sheet for {r.ec || "this person"} yet — verify on Sage.</div>;
+                                  const enough = bal.available + 1e-9 >= need;
+                                  return (
+                                    <div style={verdict(enough ? "#f0fdf4" : "#fef2f2", enough ? "#bbf7d0" : "#fecaca", enough ? "#15803d" : "#b91c1c")}>
+                                      {enough ? "✓" : "⚠"} <strong>{fmtDays(bal.available)} day{bal.available === 1 ? "" : "s"} available</strong> on the sheet · needs <strong>{fmtDays(need)}</strong> → {enough ? "enough" : "SHORT by " + fmtDays(need - bal.available)}
+                                      <div style={{ fontSize: 10.5, fontWeight: 400, marginTop: 2, opacity: 0.85 }}>opening {fmtDays(bal.opening)}{bal.adj ? " · adj " + (bal.adj > 0 ? "+" : "") + fmtDays(bal.adj) : ""}{bal.accrued ? " · +" + fmtDays(bal.accrued) + " earned" : ""}{bal.used ? " · −" + fmtDays(bal.used) + " already on calendar" : ""} <span style={{ fontStyle: "italic" }}>· still confirm on Sage</span></div>
+                                    </div>
+                                  );
+                                })()}
+                                {canPayroll ? (
+                                  balDone ? (
+                                    <button disabled={busy} onClick={() => setBalance(r, false)} style={btn("#fff", "#9d6a82", "#e7c6d4")}>Undo balance check</button>
+                                  ) : (() => {
+                                    const bal = availableForEc(r.ec);
+                                    const need = leaveDayBreakdown(r.start_date, r.end_date, isMgrReq(r), schedOpts(r)).real;
+                                    const enough = bal && bal.available + 1e-9 >= need;
+                                    const avail = bal ? Math.round(bal.available * 100) / 100 : null;
+                                    return (
+                                      <div>
+                                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                                          {enough && <button disabled={busy} onClick={() => setBalance(r, true, avail)} title={"Records " + fmtDays(avail) + " days available (from the sheet) and clears this gate — no typing needed."} style={btn("#15803d", "#fff", "#15803d")}>✓ Enough — confirm ({fmtDays(avail)} available)</button>}
+                                          <input type="number" min="0" step="0.5" placeholder={avail != null ? "or type (sheet: " + fmtDays(avail) + ")" : "days available"}
+                                            value={balDraft[r.id] != null ? balDraft[r.id] : (r.balance_days != null ? r.balance_days : "")}
+                                            onChange={e => setBalDraft({ ...balDraft, [r.id]: e.target.value })}
+                                            style={{ width: 150, fontFamily: "inherit", fontSize: 13, padding: "7px 10px", borderRadius: 9, border: "1.5px solid #e7c6d4" }} />
+                                          <button disabled={busy} onClick={() => setBalance(r, true)} style={btn(enough ? "#fff" : "#0f766e", enough ? "#0f766e" : "#fff", "#0f766e")}>✓ Balance OK</button>
+                                          <span style={{ fontSize: 11, color: "#9d6a82" }}>Needs {need} leave day(s)</span>
+                                        </div>
+                                        {!enough && (
+                                          <div style={{ marginTop: 9, background: "#fffbeb", border: "1px dashed #f59e0b", borderRadius: 9, padding: "9px 11px" }}>
+                                            <button disabled={busy} onClick={() => splitApprove(r)}
+                                              title="Approves paid annual leave up to the day the balance runs out; the remaining days are logged as unpaid emergency leave. You'll see the exact split and be asked to confirm before anything is saved."
+                                              style={btn("#b45309", "#fff", "#b45309")}>✂️ Not enough balance? Approve as paid + unpaid emergency split</button>
+                                            <div style={{ fontSize: 11.5, color: "#92400e", marginTop: 6, lineHeight: 1.5 }}>
+                                              Pays annual leave until the balance runs out{r.ops_cleared_at ? "" : " (operational check required first)"}; the remaining days become <strong>unpaid emergency leave</strong>. The Leave Planner and schedules show the unpaid stretch in orange (E / EL) and the attendance sheet pays it as unpaid. Uses the balance typed above (or the sheet figure).
+                                            </div>
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  })()
+                                ) : (!balDone && <span style={{ fontSize: 12, color: "#9d6a82", fontStyle: "italic" }}>Awaiting payroll officer.</span>)}
+                              </div>
+
+                              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                                {!approved && opsDone && balDone && <span style={{ fontSize: 12, color: "#15803d", fontWeight: 700 }}>Both checks done — approving…</span>}
+                                {!approved && <button disabled={busy} onClick={() => { setDeclineId(r.id); setDeclineText(r.decision_note || ""); }} style={btn("#fff", "#b91c1c", "#b91c1c")}>Decline</button>}
+                              </div>
                             </div>
                           );
                         })()}
-                        {canPayroll ? (
-                          balDone ? (
-                            <button disabled={busy} onClick={() => setBalance(r, false)} style={btn("#fff", "#9d6a82", "#e7c6d4")}>Undo balance check</button>
-                          ) : (() => {
-                            const bal = availableForEc(r.ec);
-                            const need = leaveDayBreakdown(r.start_date, r.end_date, isMgrReq(r), schedOpts(r)).real;
-                            const enough = bal && bal.available + 1e-9 >= need;
-                            const avail = bal ? Math.round(bal.available * 100) / 100 : null;
-                            return (
-                              <div>
-                                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                                  {enough && <button disabled={busy} onClick={() => setBalance(r, true, avail)} title={"Records " + fmtDays(avail) + " days available (from the sheet) and clears this gate — no typing needed."} style={btn("#15803d", "#fff", "#15803d")}>✓ Enough — confirm ({fmtDays(avail)} available)</button>}
-                                  <input type="number" min="0" step="0.5" placeholder={avail != null ? "or type (sheet: " + fmtDays(avail) + ")" : "days available"}
-                                    value={balDraft[r.id] != null ? balDraft[r.id] : (r.balance_days != null ? r.balance_days : "")}
-                                    onChange={e => setBalDraft({ ...balDraft, [r.id]: e.target.value })}
-                                    style={{ width: 150, fontFamily: "inherit", fontSize: 13, padding: "7px 10px", borderRadius: 9, border: "1.5px solid #e7c6d4" }} />
-                                  <button disabled={busy} onClick={() => setBalance(r, true)} style={btn(enough ? "#fff" : "#0f766e", enough ? "#0f766e" : "#fff", "#0f766e")}>✓ Balance OK</button>
-                                  <span style={{ fontSize: 11, color: "#9d6a82" }}>Needs {need} leave day(s)</span>
-                                </div>
-                                {!enough && (
-                                  <div style={{ marginTop: 9, background: "#fffbeb", border: "1px dashed #f59e0b", borderRadius: 9, padding: "9px 11px" }}>
-                                    <button disabled={busy} onClick={() => splitApprove(r)}
-                                      title="Approves paid annual leave up to the day the balance runs out; the remaining days are logged as unpaid emergency leave. You'll see the exact split and be asked to confirm before anything is saved."
-                                      style={btn("#b45309", "#fff", "#b45309")}>✂️ Not enough balance? Approve as paid + unpaid emergency split</button>
-                                    <div style={{ fontSize: 11.5, color: "#92400e", marginTop: 6, lineHeight: 1.5 }}>
-                                      Pays annual leave until the balance runs out{r.ops_cleared_at ? "" : " (operational check required first)"}; the remaining days become <strong>unpaid emergency leave</strong>. The Leave Planner and schedules show the unpaid stretch in orange (E / EL) and the attendance sheet pays it as unpaid. Uses the balance typed above (or the sheet figure).
-                                    </div>
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          })()
-                        ) : (!balDone && <span style={{ fontSize: 12, color: "#9d6a82", fontStyle: "italic" }}>Awaiting payroll officer.</span>)}
+
+                        {r.status === "declined" && (
+                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+                            <button disabled={busy} onClick={() => { setDeclineId(r.id); setDeclineText(r.decision_note || ""); }}
+                              style={{ border: "1.5px solid #b91c1c", background: "#b91c1c", color: "#fff", borderRadius: 9, padding: "7px 16px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: "pointer" }}>
+                              ● Declined — edit reason
+                            </button>
+                          </div>
+                        )}
+
+                        {declineId === r.id && (
+                          <div style={{ background: "#fef2f2", border: "1.5px solid #fecaca", borderRadius: 11, padding: "12px 13px", marginBottom: 14 }}>
+                            <div style={{ fontSize: 12.5, fontWeight: 800, color: "#b91c1c", marginBottom: 6 }}>Reason for declining (required — the staff member can be told)</div>
+                            <textarea value={declineText} onChange={e => setDeclineText(e.target.value)} autoFocus
+                              placeholder="Why is this being declined…"
+                              style={{ width: "100%", boxSizing: "border-box", minHeight: 70, fontFamily: "inherit", fontSize: 13.5, padding: "10px 12px", borderRadius: 9, border: "1.5px solid #fecaca", resize: "vertical" }} />
+                            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                              <button disabled={busy || !declineText.trim()} onClick={() => doDecline(r)}
+                                style={{ background: "#b91c1c", color: "#fff", border: "none", borderRadius: 9, padding: "8px 16px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: declineText.trim() ? "pointer" : "default", opacity: declineText.trim() ? 1 : 0.5 }}>Confirm decline</button>
+                              <button onClick={() => { setDeclineId(null); setDeclineText(""); }}
+                                style={{ background: "#f3f4f6", color: "#6b7280", border: "none", borderRadius: 9, padding: "8px 14px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: "pointer" }}>Cancel</button>
+                            </div>
+                          </div>
+                        )}
+
+                        <div style={{ fontWeight: 700, color: "#831843", fontSize: 12.5, marginBottom: 6 }}>HR notes (internal)</div>
+                        {notes.map((n, i) => (
+                          <div key={i} style={{ background: "#faf5f7", borderRadius: 9, padding: "8px 11px", fontSize: 13, marginBottom: 6 }}>
+                            <span style={{ whiteSpace: "pre-wrap" }}>{n.note}</span>
+                            <div style={{ fontSize: 11, color: "#9d6a82", marginTop: 3 }}>{n.by || "HR"} · {fmtIncidentTime(n.at)}</div>
+                          </div>
+                        ))}
+                        <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                          <input value={noteDraft[r.id] || ""} onChange={e => setNoteDraft({ ...noteDraft, [r.id]: e.target.value })}
+                            placeholder="Add an internal note…" onKeyDown={e => { if (e.key === "Enter") addNote(r); }}
+                            style={{ flex: 1, fontFamily: "inherit", fontSize: 13, padding: "8px 11px", borderRadius: 9, border: "1.5px solid #e7c6d4" }} />
+                          <button disabled={busy || !(noteDraft[r.id] || "").trim()} onClick={() => addNote(r)}
+                            style={{ background: "#831843", color: "#fff", border: "none", borderRadius: 9, padding: "8px 14px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: "pointer", opacity: (noteDraft[r.id] || "").trim() ? 1 : 0.5 }}>Add</button>
+                        </div>
                       </div>
-
-                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                        {!approved && opsDone && balDone && <span style={{ fontSize: 12, color: "#15803d", fontWeight: 700 }}>Both checks done — approving…</span>}
-                        {!approved && <button disabled={busy} onClick={() => { setDeclineId(r.id); setDeclineText(r.decision_note || ""); }} style={btn("#fff", "#b91c1c", "#b91c1c")}>Decline</button>}
-                      </div>
-                    </div>
-                  );
-                })()}
-
-                {r.status === "declined" && (
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
-                    <button disabled={busy} onClick={() => { setDeclineId(r.id); setDeclineText(r.decision_note || ""); }}
-                      style={{ border: "1.5px solid #b91c1c", background: "#b91c1c", color: "#fff", borderRadius: 9, padding: "7px 16px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: "pointer" }}>
-                      ● Declined — edit reason
-                    </button>
-                  </div>
-                )}
-
-                {declineId === r.id && (
-                  <div style={{ background: "#fef2f2", border: "1.5px solid #fecaca", borderRadius: 11, padding: "12px 13px", marginBottom: 14 }}>
-                    <div style={{ fontSize: 12.5, fontWeight: 800, color: "#b91c1c", marginBottom: 6 }}>Reason for declining (required — the staff member can be told)</div>
-                    <textarea value={declineText} onChange={e => setDeclineText(e.target.value)} autoFocus
-                      placeholder="Why is this being declined…"
-                      style={{ width: "100%", boxSizing: "border-box", minHeight: 70, fontFamily: "inherit", fontSize: 13.5, padding: "10px 12px", borderRadius: 9, border: "1.5px solid #fecaca", resize: "vertical" }} />
-                    <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                      <button disabled={busy || !declineText.trim()} onClick={() => doDecline(r)}
-                        style={{ background: "#b91c1c", color: "#fff", border: "none", borderRadius: 9, padding: "8px 16px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: declineText.trim() ? "pointer" : "default", opacity: declineText.trim() ? 1 : 0.5 }}>Confirm decline</button>
-                      <button onClick={() => { setDeclineId(null); setDeclineText(""); }}
-                        style={{ background: "#f3f4f6", color: "#6b7280", border: "none", borderRadius: 9, padding: "8px 14px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: "pointer" }}>Cancel</button>
-                    </div>
-                  </div>
-                )}
-
-                <div style={{ fontWeight: 700, color: "#831843", fontSize: 12.5, marginBottom: 6 }}>HR notes (internal)</div>
-                {notes.map((n, i) => (
-                  <div key={i} style={{ background: "#faf5f7", borderRadius: 9, padding: "8px 11px", fontSize: 13, marginBottom: 6 }}>
-                    <span style={{ whiteSpace: "pre-wrap" }}>{n.note}</span>
-                    <div style={{ fontSize: 11, color: "#9d6a82", marginTop: 3 }}>{n.by || "HR"} · {fmtIncidentTime(n.at)}</div>
-                  </div>
-                ))}
-                <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
-                  <input value={noteDraft[r.id] || ""} onChange={e => setNoteDraft({ ...noteDraft, [r.id]: e.target.value })}
-                    placeholder="Add an internal note…" onKeyDown={e => { if (e.key === "Enter") addNote(r); }}
-                    style={{ flex: 1, fontFamily: "inherit", fontSize: 13, padding: "8px 11px", borderRadius: 9, border: "1.5px solid #e7c6d4" }} />
-                  <button disabled={busy || !(noteDraft[r.id] || "").trim()} onClick={() => addNote(r)}
-                    style={{ background: "#831843", color: "#fff", border: "none", borderRadius: 9, padding: "8px 14px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: "pointer", opacity: (noteDraft[r.id] || "").trim() ? 1 : 0.5 }}>Add</button>
+                    );
+                  })()}
                 </div>
-              </div>
               );
-            })()}
+            })}
           </div>
-        );
-          })}
-        </div>
-      ))}
+        ))}
       </div>
     </div>
   );
@@ -14466,14 +14484,14 @@ function StoreReportsTab({ extraDayRequests, managers }) {
 // (induction stage). Lives under Recruitment → Interviews.
 const INTERVIEW_SOURCES = { indeed: "Indeed", linkedin: "LinkedIn", social_media: "Social Media", referral: "Referral", agency: "Agency", walk_in: "Walk In", other: "Other" };
 const INTERVIEW_STAGE = {
-  new:              { label: "Draft",                  bg: "#f3f4f6", color: "#374151" },
-  scheduled:        { label: "Interview booked",       bg: "#dbeafe", color: "#1e40af" },
-  no_show:          { label: "No-show",                bg: "#fee2e2", color: "#991b1b" },
-  interviewed:      { label: "Awaiting outcome",       bg: "#fef9c3", color: "#854d0e" },
-  passed:           { label: "Passed · book induction", bg: "#dcfce7", color: "#14532d" },
-  induction_booked: { label: "Induction booked",       bg: "#cffafe", color: "#0e7490" },
-  to_trial:         { label: "In Trial Period",        bg: "#ede9fe", color: "#5b21b6" },
-  failed:           { label: "Not successful",         bg: "#f3f4f6", color: "#6b7280" },
+  new: { label: "Draft", bg: "#f3f4f6", color: "#374151" },
+  scheduled: { label: "Interview booked", bg: "#dbeafe", color: "#1e40af" },
+  no_show: { label: "No-show", bg: "#fee2e2", color: "#991b1b" },
+  interviewed: { label: "Awaiting outcome", bg: "#fef9c3", color: "#854d0e" },
+  passed: { label: "Passed · book induction", bg: "#dcfce7", color: "#14532d" },
+  induction_booked: { label: "Induction booked", bg: "#cffafe", color: "#0e7490" },
+  to_trial: { label: "In Trial Period", bg: "#ede9fe", color: "#5b21b6" },
+  failed: { label: "Not successful", bg: "#f3f4f6", color: "#6b7280" },
 };
 function interviewStage(r) {
   if (!r) return "new";
@@ -14510,23 +14528,23 @@ function _waDigits(phone) {
 // These are seed defaults — the owner corrects them in the portal editor.
 const STORE_HOURS_FALLBACK = { open: "08:00", byDow: { "0": "09:00" } };
 const STORE_HOURS_DEFAULT = {
-  "Sea Point":     { open: "08:00", byDow: { "0": "09:00" } },
-  "Bree":          { open: "08:00", byDow: { "0": "09:00" } },
-  "Kloof":         { open: "08:00", byDow: { "0": "09:00" } },
-  "Claremont":     { open: "08:00", byDow: { "0": "09:00" } },
-  "Rondebosch":    { open: "08:00", byDow: { "0": "09:00" } },
-  "Durbanville":   { open: "08:00", byDow: { "0": "09:00" } },
-  "Table Bay":     { open: "09:00", byDow: { "0": "09:00" } },  // mall hours
+  "Sea Point": { open: "08:00", byDow: { "0": "09:00" } },
+  "Bree": { open: "08:00", byDow: { "0": "09:00" } },
+  "Kloof": { open: "08:00", byDow: { "0": "09:00" } },
+  "Claremont": { open: "08:00", byDow: { "0": "09:00" } },
+  "Rondebosch": { open: "08:00", byDow: { "0": "09:00" } },
+  "Durbanville": { open: "08:00", byDow: { "0": "09:00" } },
+  "Table Bay": { open: "09:00", byDow: { "0": "09:00" } },  // mall hours
   "Somerset West": { open: "08:00", byDow: { "0": "09:00" } },
-  "Riverlands":    { open: "09:00", byDow: { "0": "08:30" } },
-  "Kuils River":   { open: "08:00", byDow: { "0": "09:00" } },
-  "Westlake":      { open: "08:00", byDow: { "0": "09:00" } },
-  "Green Point":   { open: "08:00", byDow: { "0": "09:00" } },
-  "Plumstead":     { open: "08:00", byDow: { "0": "09:00" } },
-  "Sandown":       { open: "08:00", byDow: { "0": "09:00" } },
-  "Cape Gate":     { open: "09:00", byDow: { "0": "09:00" } },  // mall hours
-  "Winelands":     { open: "08:00", byDow: { "0": "09:00" } },
-  "Betty":         { open: "08:00", byDow: { "0": "09:00" } }   // closed Sun/Mon (closedDow)
+  "Riverlands": { open: "09:00", byDow: { "0": "08:30" } },
+  "Kuils River": { open: "08:00", byDow: { "0": "09:00" } },
+  "Westlake": { open: "08:00", byDow: { "0": "09:00" } },
+  "Green Point": { open: "08:00", byDow: { "0": "09:00" } },
+  "Plumstead": { open: "08:00", byDow: { "0": "09:00" } },
+  "Sandown": { open: "08:00", byDow: { "0": "09:00" } },
+  "Cape Gate": { open: "09:00", byDow: { "0": "09:00" } },  // mall hours
+  "Winelands": { open: "08:00", byDow: { "0": "09:00" } },
+  "Betty": { open: "08:00", byDow: { "0": "09:00" } }   // closed Sun/Mon (closedDow)
 };
 function _ctHmToMin(hm) {
   const m = /^(\d{1,2}):(\d{2})$/.exec(String(hm || "").trim());
@@ -14566,24 +14584,24 @@ function nextOpenArrival(branch, hours, fromDate) {
 
 // Branch keys match the app's SALON names. Coordinates are approximate.
 const CT_STORE_GEO = {
-  "Bree":          { lat: -33.9205, lng: 18.4190, region: "CBD / Atlantic Seaboard", corridors: ["atlantic", "westcoast", "southern_line", "northern_line", "central_line", "cbd_hub"] },
-  "Kloof":         { lat: -33.9290, lng: 18.4080, region: "CBD / Atlantic Seaboard", corridors: ["atlantic", "cbd_hub", "southern_line"] },
-  "Green Point":   { lat: -33.9062, lng: 18.4070, region: "CBD / Atlantic Seaboard", corridors: ["atlantic", "cbd_hub"] },
-  "Sea Point":     { lat: -33.9190, lng: 18.3850, region: "CBD / Atlantic Seaboard", corridors: ["atlantic"] },
-  "Riverlands":    { lat: -33.9370, lng: 18.4720, region: "Southern Suburbs", corridors: ["southern_line", "central_line"] },
-  "Rondebosch":    { lat: -33.9625, lng: 18.4760, region: "Southern Suburbs", corridors: ["southern_line"] },
-  "Claremont":     { lat: -33.9840, lng: 18.4647, region: "Southern Suburbs", corridors: ["southern_line"] },
-  "Plumstead":     { lat: -34.0190, lng: 18.4690, region: "Southern Suburbs", corridors: ["southern_line"] },
-  "Westlake":      { lat: -34.0760, lng: 18.4250, region: "Southern Suburbs", corridors: ["southern_line"] },
-  "Kuils River":   { lat: -33.9300, lng: 18.6770, region: "Northern Suburbs", corridors: ["northern_line"] },
-  "Durbanville":   { lat: -33.8310, lng: 18.6470, region: "Northern Suburbs", corridors: ["northern_line"] },
-  "Sandown":       { lat: -33.8090, lng: 18.4920, region: "Northern Suburbs", corridors: ["westcoast"] },
-  "Table Bay":     { lat: -33.7870, lng: 18.4790, region: "Northern Suburbs", corridors: ["westcoast"] },
-  "Cape Gate":     { lat: -33.8690, lng: 18.6960, region: "Northern Suburbs", corridors: ["northern_line"] },
+  "Bree": { lat: -33.9205, lng: 18.4190, region: "CBD / Atlantic Seaboard", corridors: ["atlantic", "westcoast", "southern_line", "northern_line", "central_line", "cbd_hub"] },
+  "Kloof": { lat: -33.9290, lng: 18.4080, region: "CBD / Atlantic Seaboard", corridors: ["atlantic", "cbd_hub", "southern_line"] },
+  "Green Point": { lat: -33.9062, lng: 18.4070, region: "CBD / Atlantic Seaboard", corridors: ["atlantic", "cbd_hub"] },
+  "Sea Point": { lat: -33.9190, lng: 18.3850, region: "CBD / Atlantic Seaboard", corridors: ["atlantic"] },
+  "Riverlands": { lat: -33.9370, lng: 18.4720, region: "Southern Suburbs", corridors: ["southern_line", "central_line"] },
+  "Rondebosch": { lat: -33.9625, lng: 18.4760, region: "Southern Suburbs", corridors: ["southern_line"] },
+  "Claremont": { lat: -33.9840, lng: 18.4647, region: "Southern Suburbs", corridors: ["southern_line"] },
+  "Plumstead": { lat: -34.0190, lng: 18.4690, region: "Southern Suburbs", corridors: ["southern_line"] },
+  "Westlake": { lat: -34.0760, lng: 18.4250, region: "Southern Suburbs", corridors: ["southern_line"] },
+  "Kuils River": { lat: -33.9300, lng: 18.6770, region: "Northern Suburbs", corridors: ["northern_line"] },
+  "Durbanville": { lat: -33.8310, lng: 18.6470, region: "Northern Suburbs", corridors: ["northern_line"] },
+  "Sandown": { lat: -33.8090, lng: 18.4920, region: "Northern Suburbs", corridors: ["westcoast"] },
+  "Table Bay": { lat: -33.7870, lng: 18.4790, region: "Northern Suburbs", corridors: ["westcoast"] },
+  "Cape Gate": { lat: -33.8690, lng: 18.6960, region: "Northern Suburbs", corridors: ["northern_line"] },
   "Somerset West": { lat: -34.0840, lng: 18.8490, region: "Winelands", corridors: ["winelands"] },
-  "Winelands":     { lat: -33.7340, lng: 18.9620, region: "Winelands", corridors: ["winelands", "northern_line"] },
-  "Betty":         { lat: -33.9190, lng: 18.4140, region: "CBD / Atlantic Seaboard", corridors: ["atlantic", "westcoast", "southern_line", "northern_line", "central_line", "cbd_hub"] },
-  "Cobble Walk":   { lat: -33.8230, lng: 18.6530, region: "Northern Suburbs", corridors: ["northern_line"] }   // Sonstraal Heights / Durbanville — opens Jul 2026
+  "Winelands": { lat: -33.7340, lng: 18.9620, region: "Winelands", corridors: ["winelands", "northern_line"] },
+  "Betty": { lat: -33.9190, lng: 18.4140, region: "CBD / Atlantic Seaboard", corridors: ["atlantic", "westcoast", "southern_line", "northern_line", "central_line", "cbd_hub"] },
+  "Cobble Walk": { lat: -33.8230, lng: 18.6530, region: "Northern Suburbs", corridors: ["northern_line"] }   // Sonstraal Heights / Durbanville — opens Jul 2026
 };
 // Common Cape Town suburbs + region keywords → coordinates + corridors.
 const CT_AREAS = {
@@ -14887,14 +14905,14 @@ function CtStorePicker({ value, onChange, selectedBranch, onPickStore, salonName
     const dests = names.map(n => { const g = ctGeoForStore(n); return g ? { name: n, lat: g.lat, lng: g.lng } : null; }).filter(Boolean);
     if (!dests.length) { setErr("No mappable branches to compare."); return; }
     const cacheKey = "ctlive|" + text.toLowerCase() + "|transit";
-    try { const c = JSON.parse(sessionStorage.getItem(cacheKey) || "null"); if (c && c.byName) { setLive(c); return; } } catch (_e) {}
+    try { const c = JSON.parse(sessionStorage.getItem(cacheKey) || "null"); if (c && c.byName) { setLive(c); return; } } catch (_e) { }
     setBusy(true); setErr("");
     try {
       const d = await ctMapsProxy({ action: "distances", origin: text, destinations: dests, mode: "transit" });
       const byName = {}; (d.results || []).forEach(r => { byName[r.name] = r; });
       const payload = { byName, mode: d.mode || "transit" };
       setLive(payload);
-      try { sessionStorage.setItem(cacheKey, JSON.stringify(payload)); } catch (_e) {}
+      try { sessionStorage.setItem(cacheKey, JSON.stringify(payload)); } catch (_e) { }
     } catch (e) {
       setErr("Live times unavailable (" + ((e && e.message) || e) + ") — showing the offline estimate.");
     } finally { setBusy(false); }
@@ -14915,18 +14933,18 @@ function CtStorePicker({ value, onChange, selectedBranch, onPickStore, salonName
     try {
       const c = JSON.parse(sessionStorage.getItem(cacheKey) || "null");
       if (c && c.route) { setDetail(d => ({ ...d, [name]: { loading: false, ...c, arr } })); return; }
-    } catch (_e) {}
+    } catch (_e) { }
     setDetail(d => ({ ...d, [name]: { loading: true } }));
     try {
       const route = await ctMapsProxy({ action: "directions", origin: text, destination: { lat: g.lat, lng: g.lng }, mode: "transit", arrivalTime });
       let taxi = null;
       const sl = route.startLocation;
       if (sl && typeof sl.lat === "number") {
-        try { const t = await ctMapsProxy({ action: "nearbyTaxi", lat: sl.lat, lng: sl.lng }); taxi = t.taxi || null; } catch (_e) {}
+        try { const t = await ctMapsProxy({ action: "nearbyTaxi", lat: sl.lat, lng: sl.lng }); taxi = t.taxi || null; } catch (_e) { }
       }
       const payload = { route, taxi };
       setDetail(d => ({ ...d, [name]: { loading: false, route, taxi, arr } }));
-      try { sessionStorage.setItem(cacheKey, JSON.stringify(payload)); } catch (_e) {}
+      try { sessionStorage.setItem(cacheKey, JSON.stringify(payload)); } catch (_e) { }
     } catch (e) {
       setDetail(d => ({ ...d, [name]: { loading: false, err: (e && e.message) || String(e), arr } }));
     }
@@ -15866,10 +15884,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // apply-on-approval both work off the PUBLISHED manager grids. Defined here but
   // only CALLED from handlers (after `enriched` etc. are initialised).
   const ED_SHIFTS = [
-    { code: "W",  label: "Standard", start: "09:00", end: "18:00" },
-    { code: "WE", label: "Early",    start: "08:00", end: "17:00" },
-    { code: "WL", label: "Late",     start: "10:00", end: "19:00" },
-    { code: "WM", label: "Middle",   start: "09:30", end: "18:30" }
+    { code: "W", label: "Standard", start: "09:00", end: "18:00" },
+    { code: "WE", label: "Early", start: "08:00", end: "17:00" },
+    { code: "WL", label: "Late", start: "10:00", end: "19:00" },
+    { code: "WM", label: "Middle", start: "09:30", end: "18:30" }
   ];
   // Managers do NOT go through `enriched` (that's techs) — they live in their
   // own flat array surfaced as `enrichedManagers`. Every entry there IS a
@@ -15938,7 +15956,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       // expired / deleted) — see listNews() in kiosk/data.js.
       const item = { ts: new Date().toISOString(), edKind: "offer", edOfferId: offer.id, body: "✨ Extra day available — " + branch + " on " + dLbl + " (" + form.start + "–" + form.end + "). Open the kiosk to claim." };
       await window.BOA_DB.saveByKey("boa_news_v1", [item].concat(Array.isArray(news) ? news : []));
-    } catch (_) {}
+    } catch (_) { }
     await refreshEd();
     notify({
       icon: eligible.length ? "✨" : "⚠️", tone: eligible.length ? undefined : "danger",
@@ -16128,7 +16146,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // day passes or the fill is reversed — see listNews() in kiosk/data.js.
           const item = { ts: nowIso, edKind: "filled", edOfferId: offer.id, body: "✅ Extra day filled — " + (request.name || "A manager") + " at " + offer.branch + " on " + dLbl + "." };
           await window.BOA_DB.saveByKey("boa_news_v1", [item].concat(Array.isArray(news) ? news : []));
-        } catch (_) {}
+        } catch (_) { }
       }
       await refreshEd();
     } catch (e) {
@@ -17418,7 +17436,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     let cancelled = false;
     window.BOA_DB.loadAttendanceUndo(attBranch, attYM)
       .then(s => { if (!cancelled) setAttPersistUndo(s && s.grid ? s : null); })
-      .catch(() => {});
+      .catch(() => { });
     return () => { cancelled = true; };
   }, [tab, attBranch, attYM]);
   const [attLoading, setAttLoading] = useState(false);
@@ -19988,83 +20006,83 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     // trial records now carry once a transfer is scheduled).
     const effTrials = (trialList || []).map(settle);
     return SALONS.map(salon => {
-    // .offHidden hides leavers older than 31 days post-leftDate from the cards.
-    const all = eff.filter(s => s.branch === salon.name && !s.offHidden).sort(ecSort);
-    // Off-boarded + maternity + unpaid-legal staff are visually present (greyed) but
-    // excluded from the active count and from urgency/fillRate — their seat is OPEN.
-    const active = all.filter(s => !s.onMat && !s.onUnpaidLegal && !s.isShadow && !s.offboarded);
-    const onMat = all.filter(s => s.onMat);
-    const onUnpaidLegal = all.filter(s => s.onUnpaidLegal);    // greyed at the bottom
-    const offboarded = all.filter(s => s.offboarded);          // greyed in UI, only those within the 31-day window
-    // Pending incoming transfers — derived live from any real record
-    // whose transferring flag points HERE. Shown but not counted.
-    // Derived (rather than read from in-state shadow records) so the
-    // arriving row survives a page refresh and so it doesn't pollute
-    // the staff / manager lists with an undeletable duplicate row.
-    const arriving = enriched
-      .filter(s => !s.isShadow && s.transferring && s.transferTo === salon.name && s.transferDate && s.transferDate >= _ymd)
-      .map(s => ({ ...s, _id: "shadow-" + s.ec, branch: salon.name, transferFrom: s.branch, isShadow: true }));
-    // Same idea for managers — incoming SM/SSM/AM appear on the
-    // destination card with an 'arriving from X on <date>' chip.
-    // Drives off enrichedManagers so off-boarded managers don't appear
-    // as arriving and so the shadow row picks up the same flags as the
-    // MANAGEMENT TEAM card.
-    const arrivingMgrs = (enrichedManagers || [])
-      .filter(m => m && !m.isShadow && m.transferring && m.transferTo === salon.name && m.transferDate && m.transferDate >= _ymd && !m.offHidden)
-      .map(m => ({ ...m, _id: "shadow-mgr-" + (m.ec || m._id), branch: salon.name, transferFrom: m.branch, isShadow: true }));
+      // .offHidden hides leavers older than 31 days post-leftDate from the cards.
+      const all = eff.filter(s => s.branch === salon.name && !s.offHidden).sort(ecSort);
+      // Off-boarded + maternity + unpaid-legal staff are visually present (greyed) but
+      // excluded from the active count and from urgency/fillRate — their seat is OPEN.
+      const active = all.filter(s => !s.onMat && !s.onUnpaidLegal && !s.isShadow && !s.offboarded);
+      const onMat = all.filter(s => s.onMat);
+      const onUnpaidLegal = all.filter(s => s.onUnpaidLegal);    // greyed at the bottom
+      const offboarded = all.filter(s => s.offboarded);          // greyed in UI, only those within the 31-day window
+      // Pending incoming transfers — derived live from any real record
+      // whose transferring flag points HERE. Shown but not counted.
+      // Derived (rather than read from in-state shadow records) so the
+      // arriving row survives a page refresh and so it doesn't pollute
+      // the staff / manager lists with an undeletable duplicate row.
+      const arriving = enriched
+        .filter(s => !s.isShadow && s.transferring && s.transferTo === salon.name && s.transferDate && s.transferDate >= _ymd)
+        .map(s => ({ ...s, _id: "shadow-" + s.ec, branch: salon.name, transferFrom: s.branch, isShadow: true }));
+      // Same idea for managers — incoming SM/SSM/AM appear on the
+      // destination card with an 'arriving from X on <date>' chip.
+      // Drives off enrichedManagers so off-boarded managers don't appear
+      // as arriving and so the shadow row picks up the same flags as the
+      // MANAGEMENT TEAM card.
+      const arrivingMgrs = (enrichedManagers || [])
+        .filter(m => m && !m.isShadow && m.transferring && m.transferTo === salon.name && m.transferDate && m.transferDate >= _ymd && !m.offHidden)
+        .map(m => ({ ...m, _id: "shadow-mgr-" + (m.ec || m._id), branch: salon.name, transferFrom: m.branch, isShadow: true }));
 
-    // Trial candidates assigned to this branch who are still pre-onboarding.
-    // Keep "passed" candidates on the strip: they've cleared the trial but
-    // haven't been promoted to onboarding yet, so they should still show under
-    // the branch (with a green "passed" pill) until that happens. We drop
-    // "failed", "hired", and anyone already promoted to onboarding — those have
-    // left the trial strip. Split by role: nail-tech trials sit with the techs;
-    // AM trials belong in the management-team box.
-    // Trial transfers mirror staff transfers. A candidate whose transfer date
-    // has passed sits at the destination (effTrials applied settle); a pending
-    // transfer keeps them at the origin (still counted there) AND surfaces an
-    // "arriving" row on the destination card. The driving use case: a new hire
-    // / trial candidate works at an existing store while their new store is
-    // still being built, then moves across on the opening date.
-    const trialAll = effTrials.filter(c => c.branch === salon.name && c.status !== "failed" && c.status !== "hired" && !c.promotedToOnboarding);
-    const trial = trialAll.filter(c => (c.role || "nt") !== "am");
-    const trialMgrs = trialAll.filter(c => (c.role || "nt") === "am");
-    // Pending incoming trial transfers pointing at this branch.
-    const arrivingTrialAll = (trialList || [])
-      .filter(c => c.transferring && c.transferTo === salon.name && c.transferDate && c.transferDate >= _ymd && c.status !== "failed" && c.status !== "hired" && !c.promotedToOnboarding)
-      .map(c => ({ ...c, branch: salon.name, transferFrom: c.branch, _shadow: true }));
-    const trialArriving = arrivingTrialAll.filter(c => (c.role || "nt") !== "am");
-    const trialMgrsArriving = arrivingTrialAll.filter(c => (c.role || "nt") === "am");
-    // Trial candidates leaving this branch on a pending transfer.
-    const trialLeaving = trial.filter(c => c.transferring && c.transferTo && c.transferTo !== salon.name);
-    const trialMgrsLeaving = trialMgrs.filter(c => c.transferring && c.transferTo && c.transferTo !== salon.name);
-    // Projected nail-tech trial headcount once every pending trial move settles.
-    const projectedTrial = trial.length - trialLeaving.length + trialArriving.length;
+      // Trial candidates assigned to this branch who are still pre-onboarding.
+      // Keep "passed" candidates on the strip: they've cleared the trial but
+      // haven't been promoted to onboarding yet, so they should still show under
+      // the branch (with a green "passed" pill) until that happens. We drop
+      // "failed", "hired", and anyone already promoted to onboarding — those have
+      // left the trial strip. Split by role: nail-tech trials sit with the techs;
+      // AM trials belong in the management-team box.
+      // Trial transfers mirror staff transfers. A candidate whose transfer date
+      // has passed sits at the destination (effTrials applied settle); a pending
+      // transfer keeps them at the origin (still counted there) AND surfaces an
+      // "arriving" row on the destination card. The driving use case: a new hire
+      // / trial candidate works at an existing store while their new store is
+      // still being built, then moves across on the opening date.
+      const trialAll = effTrials.filter(c => c.branch === salon.name && c.status !== "failed" && c.status !== "hired" && !c.promotedToOnboarding);
+      const trial = trialAll.filter(c => (c.role || "nt") !== "am");
+      const trialMgrs = trialAll.filter(c => (c.role || "nt") === "am");
+      // Pending incoming trial transfers pointing at this branch.
+      const arrivingTrialAll = (trialList || [])
+        .filter(c => c.transferring && c.transferTo === salon.name && c.transferDate && c.transferDate >= _ymd && c.status !== "failed" && c.status !== "hired" && !c.promotedToOnboarding)
+        .map(c => ({ ...c, branch: salon.name, transferFrom: c.branch, _shadow: true }));
+      const trialArriving = arrivingTrialAll.filter(c => (c.role || "nt") !== "am");
+      const trialMgrsArriving = arrivingTrialAll.filter(c => (c.role || "nt") === "am");
+      // Trial candidates leaving this branch on a pending transfer.
+      const trialLeaving = trial.filter(c => c.transferring && c.transferTo && c.transferTo !== salon.name);
+      const trialMgrsLeaving = trialMgrs.filter(c => c.transferring && c.transferTo && c.transferTo !== salon.name);
+      // Projected nail-tech trial headcount once every pending trial move settles.
+      const projectedTrial = trial.length - trialLeaving.length + trialArriving.length;
 
-    // Use targetCapacity for low-demand stores (e.g. Betty), full capacity otherwise
-    const goal = salon.targetCapacity || salon.capacity;
-    const fillRate = active.length / goal;
-    // Pre-opening: if the store has an openingDate in the future, suppress
-    // the staffing urgency (the store isn't actually trading yet) and
-    // surface a "PRE-OPENING · opens in Xd" label instead.
-    const _today = new Date();
-    const _t0 = new Date(_today.getFullYear(), _today.getMonth(), _today.getDate());
-    const od = salon.openingDate ? new Date(salon.openingDate + "T00:00:00") : null;
-    const preOpen = !!(od && od > _t0);
-    const daysToOpen = od ? Math.ceil((od - _t0) / 86400000) : null;
-    const urgency = preOpen
-      ? "preopen"
-      : (active.length === 0 ? "critical" : fillRate < 0.5 ? "high" : fillRate < 1 ? "low" : "full");
-    // Forward staffing planning. `active` still counts people who are LEAVING
-    // (a pending outgoing transfer keeps the stale `branch` until the date
-    // arrives) and EXCLUDES people who are ARRIVING (shown as `arriving` but
-    // not counted). `leaving` are the active techs with a pending move to
-    // another branch; `projectedActive` is the headcount once every pending
-    // transfer has settled: current − leaving + arriving. Lets the team plan
-    // for the future instead of only seeing the snapshot of who's here today.
-    const leaving = active.filter(s => s.transferring && s.transferTo && s.transferTo !== salon.name);
-    const projectedActive = active.length - leaving.length + arriving.length;
-    return { ...salon, all, active, onMat, onUnpaidLegal, offboarded, arriving, arrivingMgrs, trial, trialMgrs, trialArriving, trialMgrsArriving, trialLeaving, trialMgrsLeaving, projectedTrial, urgency, goal, preOpen, daysToOpen, leaving, projectedActive };
+      // Use targetCapacity for low-demand stores (e.g. Betty), full capacity otherwise
+      const goal = salon.targetCapacity || salon.capacity;
+      const fillRate = active.length / goal;
+      // Pre-opening: if the store has an openingDate in the future, suppress
+      // the staffing urgency (the store isn't actually trading yet) and
+      // surface a "PRE-OPENING · opens in Xd" label instead.
+      const _today = new Date();
+      const _t0 = new Date(_today.getFullYear(), _today.getMonth(), _today.getDate());
+      const od = salon.openingDate ? new Date(salon.openingDate + "T00:00:00") : null;
+      const preOpen = !!(od && od > _t0);
+      const daysToOpen = od ? Math.ceil((od - _t0) / 86400000) : null;
+      const urgency = preOpen
+        ? "preopen"
+        : (active.length === 0 ? "critical" : fillRate < 0.5 ? "high" : fillRate < 1 ? "low" : "full");
+      // Forward staffing planning. `active` still counts people who are LEAVING
+      // (a pending outgoing transfer keeps the stale `branch` until the date
+      // arrives) and EXCLUDES people who are ARRIVING (shown as `arriving` but
+      // not counted). `leaving` are the active techs with a pending move to
+      // another branch; `projectedActive` is the headcount once every pending
+      // transfer has settled: current − leaving + arriving. Lets the team plan
+      // for the future instead of only seeing the snapshot of who's here today.
+      const leaving = active.filter(s => s.transferring && s.transferTo && s.transferTo !== salon.name);
+      const projectedActive = active.length - leaving.length + arriving.length;
+      return { ...salon, all, active, onMat, onUnpaidLegal, offboarded, arriving, arrivingMgrs, trial, trialMgrs, trialArriving, trialMgrsArriving, trialLeaving, trialMgrsLeaving, projectedTrial, urgency, goal, preOpen, daysToOpen, leaving, projectedActive };
     });
   }, [enriched, enrichedManagers, managers, trialList, _customSalonsTick]);
 
@@ -20283,7 +20301,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     // what tells the DB router whether to hit the staff or managers table.
     const role = (staff && staff.role) || "";
     const isMgr =
-         !!(managers || []).find(m => m && m._id === staff._id)
+      !!(managers || []).find(m => m && m._id === staff._id)
       || !!(staff && staff.ec && (managers || []).find(m => m && m.ec === staff.ec))
       || /^(SSM|SM|AM)$/i.test(role);
     const setList = isMgr ? setManagers : setStaff;
@@ -20334,7 +20352,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     }
     const role = (staff && staff.role) || "";
     const isMgr =
-         !!(managers || []).find(m => m && m._id === staff._id)
+      !!(managers || []).find(m => m && m._id === staff._id)
       || !!(staff && staff.ec && (managers || []).find(m => m && m.ec === staff.ec))
       || /^(SSM|SM|AM)$/i.test(role);
     const setList = isMgr ? setManagers : setStaff;
@@ -20462,7 +20480,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       // Mid + Final evaluations (per HR choice). Mid at ~6 weeks, final at the
       // end of the 3-month trial.
       evaluations: [
-        { key: "mid",   dueOffset: 45, doneAt: null, notes: "" },
+        { key: "mid", dueOffset: 45, doneAt: null, notes: "" },
         { key: "final", dueOffset: 90, doneAt: null, notes: "" }
       ],
       status: "active",
@@ -21450,117 +21468,117 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               {(currentUser?.isOwner || (currentUser?.role || "").toLowerCase().includes("national"))
                 && !(new Set(currentUser?.hideTabs || []).has("dashEdRequests"))
                 && (() => {
-                const openOffers = (edOffers || []).filter(o => o && o.status === "open");
-                const pendingByOffer = {};
-                (edRequests || []).forEach(r => { if (r && r.status === "pending") (pendingByOffer[r.offerId] = pendingByOffer[r.offerId] || []).push(r); });
-                // Show EVERY open offer — including ones with no claims yet — so ops
-                // can amend or cancel a stale offer that nobody has picked up.
-                const rows = openOffers
-                  .map(o => ({ offer: o, reqs: pendingByOffer[o.id] || [] }))
-                  .sort((a, b) => String(a.offer.date).localeCompare(String(b.offer.date)));
-                // Recently FILLED offers, newest first — surfaced so an approval
-                // made by mistake (or a test) can be reversed. There's no other
-                // in-app way to undo a filled offer, so we cap at the latest 5.
-                const filledOffers = (edOffers || []).filter(o => o && o.status === "filled")
-                  .sort((a, b) => String(b.approvedAt || "").localeCompare(String(a.approvedAt || "")))
-                  .slice(0, 5);
-                if (!rows.length && !filledOffers.length) return null;
-                const totalReqs = rows.reduce((n, x) => n + x.reqs.length, 0);
-                const fmtD = (d) => { try { return new Date(d + "T12:00:00").toLocaleDateString(undefined, { weekday: "short", day: "2-digit", month: "short" }); } catch (_) { return d; } };
-                const fmtAgo = (iso) => { try { return new Date(iso).toLocaleString(undefined, { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }); } catch (_) { return ""; } };
-                const headLbl = totalReqs > 0 ? (totalReqs + " pending") : (rows.length ? (rows.length + " open") : (filledOffers.length + " filled"));
-                // Shared soft field style for the amend editor (date / shift /
-                // start / end / note) so they read as one cohesive set.
-                const edField = { marginTop: 4, padding: "8px 11px", border: "1px solid #F3D4E2", borderRadius: 10, fontSize: 12.5, color: "#831843", background: "#fff", fontFamily: "inherit", outline: "none", boxSizing: "border-box" };
-                const edLabel = { fontSize: 11, fontWeight: 700, color: "#9D7387", letterSpacing: "0.02em" };
-                const edSelect = { ...edField, cursor: "pointer", appearance: "none", WebkitAppearance: "none", MozAppearance: "none", paddingRight: 26, backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23BE185D' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E\")", backgroundRepeat: "no-repeat", backgroundPosition: "right 9px center" };
-                return (
-                  <div style={{ background: "linear-gradient(180deg,#FFF7FB,#ffffff)", border: "1px solid #FBCFE8", borderRadius: 14, padding: "16px", marginBottom: 18, boxShadow: "0 1px 4px rgba(190,24,93,0.06)" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }} onClick={() => setDashCollapsed(p => ({ ...p, edReq: !p.edReq }))}>
-                        <span style={{ fontSize: 20 }}>✨</span>
-                        <div>
-                          <div style={{ fontSize: 10, fontWeight: 800, color: "#BE185D", letterSpacing: "0.16em", textTransform: "uppercase" }}>Extra-Day Offers</div>
-                          <div style={{ fontSize: 16, fontWeight: 700, color: "#831843", fontFamily: "'Outfit',system-ui,sans-serif" }}>Review · {headLbl} {dashCollapsed.edReq ? "▸" : "▾"}</div>
+                  const openOffers = (edOffers || []).filter(o => o && o.status === "open");
+                  const pendingByOffer = {};
+                  (edRequests || []).forEach(r => { if (r && r.status === "pending") (pendingByOffer[r.offerId] = pendingByOffer[r.offerId] || []).push(r); });
+                  // Show EVERY open offer — including ones with no claims yet — so ops
+                  // can amend or cancel a stale offer that nobody has picked up.
+                  const rows = openOffers
+                    .map(o => ({ offer: o, reqs: pendingByOffer[o.id] || [] }))
+                    .sort((a, b) => String(a.offer.date).localeCompare(String(b.offer.date)));
+                  // Recently FILLED offers, newest first — surfaced so an approval
+                  // made by mistake (or a test) can be reversed. There's no other
+                  // in-app way to undo a filled offer, so we cap at the latest 5.
+                  const filledOffers = (edOffers || []).filter(o => o && o.status === "filled")
+                    .sort((a, b) => String(b.approvedAt || "").localeCompare(String(a.approvedAt || "")))
+                    .slice(0, 5);
+                  if (!rows.length && !filledOffers.length) return null;
+                  const totalReqs = rows.reduce((n, x) => n + x.reqs.length, 0);
+                  const fmtD = (d) => { try { return new Date(d + "T12:00:00").toLocaleDateString(undefined, { weekday: "short", day: "2-digit", month: "short" }); } catch (_) { return d; } };
+                  const fmtAgo = (iso) => { try { return new Date(iso).toLocaleString(undefined, { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }); } catch (_) { return ""; } };
+                  const headLbl = totalReqs > 0 ? (totalReqs + " pending") : (rows.length ? (rows.length + " open") : (filledOffers.length + " filled"));
+                  // Shared soft field style for the amend editor (date / shift /
+                  // start / end / note) so they read as one cohesive set.
+                  const edField = { marginTop: 4, padding: "8px 11px", border: "1px solid #F3D4E2", borderRadius: 10, fontSize: 12.5, color: "#831843", background: "#fff", fontFamily: "inherit", outline: "none", boxSizing: "border-box" };
+                  const edLabel = { fontSize: 11, fontWeight: 700, color: "#9D7387", letterSpacing: "0.02em" };
+                  const edSelect = { ...edField, cursor: "pointer", appearance: "none", WebkitAppearance: "none", MozAppearance: "none", paddingRight: 26, backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23BE185D' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E\")", backgroundRepeat: "no-repeat", backgroundPosition: "right 9px center" };
+                  return (
+                    <div style={{ background: "linear-gradient(180deg,#FFF7FB,#ffffff)", border: "1px solid #FBCFE8", borderRadius: 14, padding: "16px", marginBottom: 18, boxShadow: "0 1px 4px rgba(190,24,93,0.06)" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }} onClick={() => setDashCollapsed(p => ({ ...p, edReq: !p.edReq }))}>
+                          <span style={{ fontSize: 20 }}>✨</span>
+                          <div>
+                            <div style={{ fontSize: 10, fontWeight: 800, color: "#BE185D", letterSpacing: "0.16em", textTransform: "uppercase" }}>Extra-Day Offers</div>
+                            <div style={{ fontSize: 16, fontWeight: 700, color: "#831843", fontFamily: "'Outfit',system-ui,sans-serif" }}>Review · {headLbl} {dashCollapsed.edReq ? "▸" : "▾"}</div>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                    <div style={{ display: dashCollapsed.edReq ? "none" : "flex", flexDirection: "column", gap: 12 }}>
-                      {rows.map(({ offer, reqs }) => (
-                        <div key={offer.id} style={{ border: "1px solid #FCE7F3", borderRadius: 12, padding: "12px 14px", background: "#fff" }}>
-                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, flexWrap: "wrap" }}>
-                            <div style={{ minWidth: 0 }}>
-                              <div style={{ fontSize: 14, fontWeight: 800, color: "#831843" }}>{offer.branch} · {fmtD(offer.date)} <span style={{ color: "#9D7387", fontWeight: 600 }}>({offer.startTime}–{offer.endTime})</span></div>
-                              <div style={{ fontSize: 12, color: "#9D7387", marginBottom: 8 }}>{reqs.length} manager{reqs.length === 1 ? "" : "s"} claimed{offer.note ? " · " + offer.note : ""}</div>
-                            </div>
-                            <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-                              <button disabled={edBusy} onClick={() => setEdEdit(edEdit && edEdit.id === offer.id ? null : { id: offer.id, date: offer.date, shiftCode: offer.shiftCode, start: offer.startTime, end: offer.endTime, note: offer.note || "" })}
-                                style={{ background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 8, padding: "6px 11px", fontSize: 11.5, fontWeight: 700, cursor: edBusy ? "not-allowed" : "pointer", fontFamily: "inherit" }}>✎ Amend</button>
-                              <button disabled={edBusy} onClick={async () => { if (await askConfirm({ tone: "danger", icon: "✕", title: "Cancel this offer?", body: "Cancel the extra-day offer at " + offer.branch + " on " + fmtD(offer.date) + "?\n\nIt disappears from the kiosk and any pending claims are declined.", confirmLabel: "Cancel offer", cancelLabel: "Keep it" })) edCancelOffer(offer); }}
-                                style={{ background: "#fff", color: "#B91C1C", border: "1px solid #FECACA", borderRadius: 8, padding: "6px 11px", fontSize: 11.5, fontWeight: 700, cursor: edBusy ? "not-allowed" : "pointer", fontFamily: "inherit" }}>✕ Cancel</button>
-                            </div>
-                          </div>
-                          {edEdit && edEdit.id === offer.id && (
-                            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", padding: "12px 14px", margin: "0 0 10px", background: "linear-gradient(180deg,#FFF7FB,#FFFDFE)", border: "1px solid #F8D7E6", borderRadius: 12 }}>
-                              <label style={edLabel}>Date<br/>
-                                <input type="date" value={edEdit.date} onChange={(e) => setEdEdit(p => ({ ...p, date: e.target.value }))} style={edField} /></label>
-                              <label style={edLabel}>Shift<br/>
-                                <select value={edEdit.shiftCode} onChange={(e) => { const sh = ED_SHIFTS.find(x => x.code === e.target.value); setEdEdit(p => ({ ...p, shiftCode: e.target.value, start: sh ? sh.start : p.start, end: sh ? sh.end : p.end })); }} style={edSelect}>
-                                  {ED_SHIFTS.map(sh => <option key={sh.code} value={sh.code}>{sh.code} · {sh.label}</option>)}
-                                </select></label>
-                              <label style={edLabel}>Start<br/>
-                                <input type="time" value={edEdit.start} onChange={(e) => setEdEdit(p => ({ ...p, start: e.target.value }))} style={edField} /></label>
-                              <label style={edLabel}>End<br/>
-                                <input type="time" value={edEdit.end} onChange={(e) => setEdEdit(p => ({ ...p, end: e.target.value }))} style={edField} /></label>
-                              <label style={{ ...edLabel, flex: 1, minWidth: 120 }}>Note<br/>
-                                <input type="text" value={edEdit.note} onChange={(e) => setEdEdit(p => ({ ...p, note: e.target.value }))} style={{ ...edField, width: "100%" }} /></label>
-                              <button disabled={edBusy} onClick={async () => { await edAmendOffer(offer, edEdit); setEdEdit(null); }}
-                                style={{ background: "linear-gradient(180deg,#9D2257,#831843)", color: "#fff", border: "none", borderRadius: 10, padding: "9px 18px", fontSize: 12.5, fontWeight: 800, cursor: edBusy ? "not-allowed" : "pointer", fontFamily: "inherit", boxShadow: "0 3px 10px rgba(131,24,67,0.28)" }}>Save</button>
-                            </div>
-                          )}
-                          {reqs.length === 0 ? (
-                            <div style={{ fontSize: 12, color: "#B58AA0", fontStyle: "italic" }}>Awaiting claims from the kiosk…</div>
-                          ) : (
-                          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                            {reqs.map(r => (
-                              <div key={r.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", padding: "8px 10px", background: "#FFF7FB", border: "1px solid #FBE3EE", borderRadius: 9 }}>
-                                <div style={{ minWidth: 0 }}>
-                                  <span style={{ fontSize: 13, fontWeight: 700, color: "#831843" }}>{r.name || r.ec}</span>
-                                  <span style={{ fontSize: 11.5, color: "#9D7387" }}> · from {r.homeBranch || "—"} · claimed {fmtAgo(r.requestedAt)}</span>
-                                </div>
-                                <div style={{ display: "flex", gap: 6 }}>
-                                  <button disabled={edBusy} onClick={async () => { if (await askConfirm({ icon: "✓", title: "Approve this extra day?", body: "Approve " + (r.name || r.ec) + " for the extra day at " + offer.branch + " on " + fmtD(offer.date) + "?\n\nThis fills the offer and declines the other claims.", confirmLabel: "Approve", cancelLabel: "Not yet" })) edDecide(offer, r, "approved"); }}
-                                    style={{ background: edBusy ? "#A7F3D0" : "#16a34a", color: "#fff", border: "none", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontWeight: 800, cursor: edBusy ? "not-allowed" : "pointer", fontFamily: "inherit" }}>✓ Approve</button>
-                                  <button disabled={edBusy} onClick={() => edDecide(offer, r, "declined")}
-                                    style={{ background: "#fff", color: "#B91C1C", border: "1px solid #FECACA", borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 700, cursor: edBusy ? "not-allowed" : "pointer", fontFamily: "inherit" }}>Decline</button>
-                                </div>
+                      <div style={{ display: dashCollapsed.edReq ? "none" : "flex", flexDirection: "column", gap: 12 }}>
+                        {rows.map(({ offer, reqs }) => (
+                          <div key={offer.id} style={{ border: "1px solid #FCE7F3", borderRadius: 12, padding: "12px 14px", background: "#fff" }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, flexWrap: "wrap" }}>
+                              <div style={{ minWidth: 0 }}>
+                                <div style={{ fontSize: 14, fontWeight: 800, color: "#831843" }}>{offer.branch} · {fmtD(offer.date)} <span style={{ color: "#9D7387", fontWeight: 600 }}>({offer.startTime}–{offer.endTime})</span></div>
+                                <div style={{ fontSize: 12, color: "#9D7387", marginBottom: 8 }}>{reqs.length} manager{reqs.length === 1 ? "" : "s"} claimed{offer.note ? " · " + offer.note : ""}</div>
                               </div>
-                            ))}
-                          </div>
-                          )}
-                        </div>
-                      ))}
-                      {filledOffers.length > 0 && (
-                        <div style={{ borderTop: rows.length ? "1px dashed #FBCFE8" : "none", paddingTop: rows.length ? 12 : 0 }}>
-                          <div style={{ fontSize: 10, fontWeight: 800, color: "#9D7387", letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: 8 }}>Filled — undo if approved by mistake</div>
-                          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                            {filledOffers.map(o => (
-                              <div key={o.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", padding: "8px 12px", background: "#F0FDF4", border: "1px solid #BBF7D0", borderRadius: 9 }}>
-                                <div style={{ minWidth: 0 }}>
-                                  <span style={{ fontSize: 13, fontWeight: 700, color: "#166534" }}>{o.filledName || o.filledEc}</span>
-                                  <span style={{ fontSize: 11.5, color: "#15803d" }}> · {o.branch} · {fmtD(o.date)} ({o.startTime}–{o.endTime}){o.approvedBy ? " · approved by " + o.approvedBy : ""}</span>
-                                </div>
-                                <button disabled={edBusy} onClick={() => edUndoFilled(o)}
-                                  style={{ background: "#fff", color: "#B91C1C", border: "1px solid #FECACA", borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: edBusy ? "not-allowed" : "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>↩ Undo extra day</button>
+                              <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                                <button disabled={edBusy} onClick={() => setEdEdit(edEdit && edEdit.id === offer.id ? null : { id: offer.id, date: offer.date, shiftCode: offer.shiftCode, start: offer.startTime, end: offer.endTime, note: offer.note || "" })}
+                                  style={{ background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 8, padding: "6px 11px", fontSize: 11.5, fontWeight: 700, cursor: edBusy ? "not-allowed" : "pointer", fontFamily: "inherit" }}>✎ Amend</button>
+                                <button disabled={edBusy} onClick={async () => { if (await askConfirm({ tone: "danger", icon: "✕", title: "Cancel this offer?", body: "Cancel the extra-day offer at " + offer.branch + " on " + fmtD(offer.date) + "?\n\nIt disappears from the kiosk and any pending claims are declined.", confirmLabel: "Cancel offer", cancelLabel: "Keep it" })) edCancelOffer(offer); }}
+                                  style={{ background: "#fff", color: "#B91C1C", border: "1px solid #FECACA", borderRadius: 8, padding: "6px 11px", fontSize: 11.5, fontWeight: 700, cursor: edBusy ? "not-allowed" : "pointer", fontFamily: "inherit" }}>✕ Cancel</button>
                               </div>
-                            ))}
+                            </div>
+                            {edEdit && edEdit.id === offer.id && (
+                              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", padding: "12px 14px", margin: "0 0 10px", background: "linear-gradient(180deg,#FFF7FB,#FFFDFE)", border: "1px solid #F8D7E6", borderRadius: 12 }}>
+                                <label style={edLabel}>Date<br />
+                                  <input type="date" value={edEdit.date} onChange={(e) => setEdEdit(p => ({ ...p, date: e.target.value }))} style={edField} /></label>
+                                <label style={edLabel}>Shift<br />
+                                  <select value={edEdit.shiftCode} onChange={(e) => { const sh = ED_SHIFTS.find(x => x.code === e.target.value); setEdEdit(p => ({ ...p, shiftCode: e.target.value, start: sh ? sh.start : p.start, end: sh ? sh.end : p.end })); }} style={edSelect}>
+                                    {ED_SHIFTS.map(sh => <option key={sh.code} value={sh.code}>{sh.code} · {sh.label}</option>)}
+                                  </select></label>
+                                <label style={edLabel}>Start<br />
+                                  <input type="time" value={edEdit.start} onChange={(e) => setEdEdit(p => ({ ...p, start: e.target.value }))} style={edField} /></label>
+                                <label style={edLabel}>End<br />
+                                  <input type="time" value={edEdit.end} onChange={(e) => setEdEdit(p => ({ ...p, end: e.target.value }))} style={edField} /></label>
+                                <label style={{ ...edLabel, flex: 1, minWidth: 120 }}>Note<br />
+                                  <input type="text" value={edEdit.note} onChange={(e) => setEdEdit(p => ({ ...p, note: e.target.value }))} style={{ ...edField, width: "100%" }} /></label>
+                                <button disabled={edBusy} onClick={async () => { await edAmendOffer(offer, edEdit); setEdEdit(null); }}
+                                  style={{ background: "linear-gradient(180deg,#9D2257,#831843)", color: "#fff", border: "none", borderRadius: 10, padding: "9px 18px", fontSize: 12.5, fontWeight: 800, cursor: edBusy ? "not-allowed" : "pointer", fontFamily: "inherit", boxShadow: "0 3px 10px rgba(131,24,67,0.28)" }}>Save</button>
+                              </div>
+                            )}
+                            {reqs.length === 0 ? (
+                              <div style={{ fontSize: 12, color: "#B58AA0", fontStyle: "italic" }}>Awaiting claims from the kiosk…</div>
+                            ) : (
+                              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                                {reqs.map(r => (
+                                  <div key={r.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", padding: "8px 10px", background: "#FFF7FB", border: "1px solid #FBE3EE", borderRadius: 9 }}>
+                                    <div style={{ minWidth: 0 }}>
+                                      <span style={{ fontSize: 13, fontWeight: 700, color: "#831843" }}>{r.name || r.ec}</span>
+                                      <span style={{ fontSize: 11.5, color: "#9D7387" }}> · from {r.homeBranch || "—"} · claimed {fmtAgo(r.requestedAt)}</span>
+                                    </div>
+                                    <div style={{ display: "flex", gap: 6 }}>
+                                      <button disabled={edBusy} onClick={async () => { if (await askConfirm({ icon: "✓", title: "Approve this extra day?", body: "Approve " + (r.name || r.ec) + " for the extra day at " + offer.branch + " on " + fmtD(offer.date) + "?\n\nThis fills the offer and declines the other claims.", confirmLabel: "Approve", cancelLabel: "Not yet" })) edDecide(offer, r, "approved"); }}
+                                        style={{ background: edBusy ? "#A7F3D0" : "#16a34a", color: "#fff", border: "none", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontWeight: 800, cursor: edBusy ? "not-allowed" : "pointer", fontFamily: "inherit" }}>✓ Approve</button>
+                                      <button disabled={edBusy} onClick={() => edDecide(offer, r, "declined")}
+                                        style={{ background: "#fff", color: "#B91C1C", border: "1px solid #FECACA", borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 700, cursor: edBusy ? "not-allowed" : "pointer", fontFamily: "inherit" }}>Decline</button>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
                           </div>
-                        </div>
-                      )}
+                        ))}
+                        {filledOffers.length > 0 && (
+                          <div style={{ borderTop: rows.length ? "1px dashed #FBCFE8" : "none", paddingTop: rows.length ? 12 : 0 }}>
+                            <div style={{ fontSize: 10, fontWeight: 800, color: "#9D7387", letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: 8 }}>Filled — undo if approved by mistake</div>
+                            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                              {filledOffers.map(o => (
+                                <div key={o.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", padding: "8px 12px", background: "#F0FDF4", border: "1px solid #BBF7D0", borderRadius: 9 }}>
+                                  <div style={{ minWidth: 0 }}>
+                                    <span style={{ fontSize: 13, fontWeight: 700, color: "#166534" }}>{o.filledName || o.filledEc}</span>
+                                    <span style={{ fontSize: 11.5, color: "#15803d" }}> · {o.branch} · {fmtD(o.date)} ({o.startTime}–{o.endTime}){o.approvedBy ? " · approved by " + o.approvedBy : ""}</span>
+                                  </div>
+                                  <button disabled={edBusy} onClick={() => edUndoFilled(o)}
+                                    style={{ background: "#fff", color: "#B91C1C", border: "1px solid #FECACA", borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: edBusy ? "not-allowed" : "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>↩ Undo extra day</button>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                );
-              })()}
+                  );
+                })()}
 
               {/* ── SECTION: FRESHA — DUE SOON (< 3 days) ──
                   The full Fresha open/close checklist now lives on the Fresha
@@ -22014,8 +22032,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 if (!list.length) return null;
                 const todayList = list.filter(r => r.start_date <= today && r.end_date >= today);
                 const tomorrowList = list.filter(r => r.start_date <= tomorrow && r.end_date >= tomorrow);
-                const typeChip = (t) => ({ display: "inline-flex", padding: "1px 8px", borderRadius: 999, fontSize: 10.5, fontWeight: 700,
-                  color: t === "Sick" ? "#b45309" : "#6b21a8", background: t === "Sick" ? "#fef3c7" : "#ede9fe" });
+                const typeChip = (t) => ({
+                  display: "inline-flex", padding: "1px 8px", borderRadius: 999, fontSize: 10.5, fontWeight: 700,
+                  color: t === "Sick" ? "#b45309" : "#6b21a8", background: t === "Sick" ? "#fef3c7" : "#ede9fe"
+                });
                 const row = (r) => (
                   <div key={r.id} onClick={() => tryChangeTab("calledInSick")}
                     style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderTop: "1px dashed #FBCFE8", cursor: "pointer" }}>
@@ -22109,34 +22129,34 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               {(currentUser?.isOwner || (currentUser?.role || "").toLowerCase().includes("national"))
                 && !(new Set(currentUser?.hideTabs || []).has("dashNews"))
                 && Array.isArray(newsPosts) && newsPosts.length > 0 && (() => {
-                const fmtWhen = (iso) => { try { return new Date(iso).toLocaleString(undefined, { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }); } catch (_) { return ""; } };
-                const posts = newsPosts.slice().sort((a, b) => String(b.ts || "").localeCompare(String(a.ts || "")));
-                return (
-                  <div style={{ background: "linear-gradient(180deg,#FFF7FB,#ffffff)", border: "1px solid #FBCFE8", borderRadius: 14, padding: "16px", marginBottom: 18, boxShadow: "0 1px 4px rgba(190,24,93,0.06)" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 10 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", minWidth: 0 }} onClick={() => setDashCollapsed(p => ({ ...p, news: !p.news }))}>
-                        <span style={{ fontSize: 20 }}>📰</span>
-                        <div>
-                          <div style={{ fontSize: 10, fontWeight: 800, color: "#BE185D", letterSpacing: "0.16em", textTransform: "uppercase" }}>Daily Updates</div>
-                          <div style={{ fontSize: 16, fontWeight: 700, color: "#831843", fontFamily: "'Outfit',system-ui,sans-serif" }}>{posts.length} post{posts.length === 1 ? "" : "s"} in the feed {dashCollapsed.news ? "▸" : "▾"}</div>
-                        </div>
-                      </div>
-                      <button onClick={clearAllNews} style={{ background: "#fff", color: "#B91C1C", border: "1px solid #FECACA", borderRadius: 9, padding: "7px 13px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap", flexShrink: 0 }}>Clear all</button>
-                    </div>
-                    <div style={{ display: dashCollapsed.news ? "none" : "flex", flexDirection: "column", gap: 8 }}>
-                      {posts.map((n, i) => (
-                        <div key={(n.ts || "") + "_" + i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "9px 12px", background: "#fff", border: "1px solid #FCE7F3", borderRadius: 10 }}>
-                          <div style={{ minWidth: 0 }}>
-                            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#9D7387", marginBottom: 2 }}>{fmtWhen(n.ts)}</div>
-                            <div style={{ fontSize: 13, color: "#5B2540" }}>{n.body}</div>
+                  const fmtWhen = (iso) => { try { return new Date(iso).toLocaleString(undefined, { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }); } catch (_) { return ""; } };
+                  const posts = newsPosts.slice().sort((a, b) => String(b.ts || "").localeCompare(String(a.ts || "")));
+                  return (
+                    <div style={{ background: "linear-gradient(180deg,#FFF7FB,#ffffff)", border: "1px solid #FBCFE8", borderRadius: 14, padding: "16px", marginBottom: 18, boxShadow: "0 1px 4px rgba(190,24,93,0.06)" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 10 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", minWidth: 0 }} onClick={() => setDashCollapsed(p => ({ ...p, news: !p.news }))}>
+                          <span style={{ fontSize: 20 }}>📰</span>
+                          <div>
+                            <div style={{ fontSize: 10, fontWeight: 800, color: "#BE185D", letterSpacing: "0.16em", textTransform: "uppercase" }}>Daily Updates</div>
+                            <div style={{ fontSize: 16, fontWeight: 700, color: "#831843", fontFamily: "'Outfit',system-ui,sans-serif" }}>{posts.length} post{posts.length === 1 ? "" : "s"} in the feed {dashCollapsed.news ? "▸" : "▾"}</div>
                           </div>
-                          <button onClick={() => deleteNewsPost(n)} title="Remove from the kiosk feed" style={{ background: "#fff", color: "#B91C1C", border: "1px solid #FECACA", borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap", flexShrink: 0 }}>✕</button>
                         </div>
-                      ))}
+                        <button onClick={clearAllNews} style={{ background: "#fff", color: "#B91C1C", border: "1px solid #FECACA", borderRadius: 9, padding: "7px 13px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap", flexShrink: 0 }}>Clear all</button>
+                      </div>
+                      <div style={{ display: dashCollapsed.news ? "none" : "flex", flexDirection: "column", gap: 8 }}>
+                        {posts.map((n, i) => (
+                          <div key={(n.ts || "") + "_" + i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "9px 12px", background: "#fff", border: "1px solid #FCE7F3", borderRadius: 10 }}>
+                            <div style={{ minWidth: 0 }}>
+                              <div style={{ fontSize: 10.5, fontWeight: 700, color: "#9D7387", marginBottom: 2 }}>{fmtWhen(n.ts)}</div>
+                              <div style={{ fontSize: 13, color: "#5B2540" }}>{n.body}</div>
+                            </div>
+                            <button onClick={() => deleteNewsPost(n)} title="Remove from the kiosk feed" style={{ background: "#fff", color: "#B91C1C", border: "1px solid #FECACA", borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap", flexShrink: 0 }}>✕</button>
+                          </div>
+                        ))}
+                      </div>
                     </div>
-                  </div>
-                );
-              })()}
+                  );
+                })()}
 
               {/* ── SECTION: SECURITY ALERTS ── */}
               {/* Only visible to users who have the dashSecurityAlerts permission (not in hideTabs) */}
@@ -23424,13 +23444,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               {(salon.trialMgrs || []).map(t => {
                                 const isPassed = t.status === "passed";
                                 return (
-                                <div key={t._id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 7px", borderRadius: 7, background: isPassed ? "#F0FDF4" : "#FFFBEB", border: "1.5px dashed " + (isPassed ? "#86EFAC" : "#FCD34D") }}>
-                                  <span style={{ fontSize: 13 }}>{isPassed ? "✅" : "⏳"}</span>
-                                  <span style={{ flex: 1, fontSize: 11, fontWeight: 600, color: isPassed ? "#14532d" : "#78350f", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.name}{t.boaPathways && <> <BoaPathwaysBadge size={11} /></>}</span>
-                                  {t.transferring && t.transferTo && <span style={{ fontSize: 9, color: "#1d4ed8", background: "#dbeafe", border: "1px solid #bfdbfe", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>🔄 → {t.transferTo}{t.transferDate ? ` · ${new Date(t.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}` : ""}</span>}
-                                  <span style={{ fontSize: 9, background: isPassed ? "#86EFAC" : "#FCD34D", color: isPassed ? "#14532d" : "#78350f", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>{isPassed ? "passed" : t.status}</span>
-                                  <span style={{ fontSize: 9, background: "#FED7AA", color: "#9A3412", border: "1px solid #FDBA74", borderRadius: 4, padding: "1px 6px", fontWeight: 700, letterSpacing: "0.04em" }}>AM · TRIAL</span>
-                                </div>
+                                  <div key={t._id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 7px", borderRadius: 7, background: isPassed ? "#F0FDF4" : "#FFFBEB", border: "1.5px dashed " + (isPassed ? "#86EFAC" : "#FCD34D") }}>
+                                    <span style={{ fontSize: 13 }}>{isPassed ? "✅" : "⏳"}</span>
+                                    <span style={{ flex: 1, fontSize: 11, fontWeight: 600, color: isPassed ? "#14532d" : "#78350f", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.name}{t.boaPathways && <> <BoaPathwaysBadge size={11} /></>}</span>
+                                    {t.transferring && t.transferTo && <span style={{ fontSize: 9, color: "#1d4ed8", background: "#dbeafe", border: "1px solid #bfdbfe", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>🔄 → {t.transferTo}{t.transferDate ? ` · ${new Date(t.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}` : ""}</span>}
+                                    <span style={{ fontSize: 9, background: isPassed ? "#86EFAC" : "#FCD34D", color: isPassed ? "#14532d" : "#78350f", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>{isPassed ? "passed" : t.status}</span>
+                                    <span style={{ fontSize: 9, background: "#FED7AA", color: "#9A3412", border: "1px solid #FDBA74", borderRadius: 4, padding: "1px 6px", fontWeight: 700, letterSpacing: "0.04em" }}>AM · TRIAL</span>
+                                  </div>
                                 );
                               })}
                               {/* Arriving AM trial candidates — scheduled to move
@@ -23523,26 +23543,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           const nowCount = salon.active.length + (salon.trial ? salon.trial.length : 0);
                           const afterCount = salon.projectedActive + (salon.projectedTrial != null ? salon.projectedTrial : (salon.trial ? salon.trial.length : 0));
                           return (<>
-                        <Meter current={nowCount} capacity={salon.capacity} goal={salon.goal} lowDemand={salon.lowDemand} projected={(inMoves || outMoves) ? afterCount : undefined} />
-                        {/* After-transfers planning — only when a pending move
+                            <Meter current={nowCount} capacity={salon.capacity} goal={salon.goal} lowDemand={salon.lowDemand} projected={(inMoves || outMoves) ? afterCount : undefined} />
+                            {/* After-transfers planning — only when a pending move
                         touches this branch. Two numbers side by side (Now →
                         After), with the +arriving / −leaving breakdown beneath.
                         Both counts include trial/induction candidates so they
                         match the meter above (active + trial). */}
-                        {(inMoves > 0 || outMoves > 0) && (
-                          <div style={{ marginTop: 6, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 8, padding: "4px 10px" }}>
-                            <span style={{ fontSize: 8, fontWeight: 800, color: "#6b7280", letterSpacing: "0.06em" }}>NOW</span>
-                            <span style={{ fontSize: 15, fontWeight: 800, color: "#111827", lineHeight: 1 }}>{nowCount}</span>
-                            <span style={{ color: "#9ca3af", fontSize: 13, fontWeight: 800 }}>→</span>
-                            <span style={{ fontSize: 8, fontWeight: 800, color: "#1d4ed8", letterSpacing: "0.06em" }}>AFTER</span>
-                            <span style={{ fontSize: 15, fontWeight: 800, color: "#1d4ed8", lineHeight: 1 }}>{afterCount}</span>
-                            <span style={{ fontSize: 9, fontWeight: 700 }}>
-                              {inMoves > 0 && <span style={{ color: "#15803d" }}>+{inMoves}</span>}
-                              {inMoves > 0 && outMoves > 0 && <span style={{ color: "#9ca3af" }}> · </span>}
-                              {outMoves > 0 && <span style={{ color: "#b45309" }}>−{outMoves}</span>}
-                            </span>
-                          </div>
-                        )}
+                            {(inMoves > 0 || outMoves > 0) && (
+                              <div style={{ marginTop: 6, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 8, padding: "4px 10px" }}>
+                                <span style={{ fontSize: 8, fontWeight: 800, color: "#6b7280", letterSpacing: "0.06em" }}>NOW</span>
+                                <span style={{ fontSize: 15, fontWeight: 800, color: "#111827", lineHeight: 1 }}>{nowCount}</span>
+                                <span style={{ color: "#9ca3af", fontSize: 13, fontWeight: 800 }}>→</span>
+                                <span style={{ fontSize: 8, fontWeight: 800, color: "#1d4ed8", letterSpacing: "0.06em" }}>AFTER</span>
+                                <span style={{ fontSize: 15, fontWeight: 800, color: "#1d4ed8", lineHeight: 1 }}>{afterCount}</span>
+                                <span style={{ fontSize: 9, fontWeight: 700 }}>
+                                  {inMoves > 0 && <span style={{ color: "#15803d" }}>+{inMoves}</span>}
+                                  {inMoves > 0 && outMoves > 0 && <span style={{ color: "#9ca3af" }}> · </span>}
+                                  {outMoves > 0 && <span style={{ color: "#b45309" }}>−{outMoves}</span>}
+                                </span>
+                              </div>
+                            )}
                           </>);
                         })()}
                       </div>
@@ -23642,12 +23662,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         {salon.trial && salon.trial.map(m => {
                           const isPassed = m.status === "passed";
                           return (
-                          <div key={m._id} style={{ padding: "5px 7px", borderRadius: 7, background: isPassed ? "#F0FDF4" : "#FFFBEB", border: "1px dashed " + (isPassed ? "#86EFAC" : "#FCD34D"), display: "flex", alignItems: "center", gap: 6 }}>
-                            <span style={{ fontSize: 12 }}>{m.transferring ? "🔄" : isPassed ? "✅" : "⏳"}</span>
-                            <span style={{ flex: 1, fontSize: 11, fontWeight: 600, color: "#111827" }}>{m.name}{m.boaPathways && <> <BoaPathwaysBadge size={11} /></>}</span>
-                            {m.transferring && m.transferTo && <span style={{ fontSize: 9, color: "#1d4ed8", background: "#dbeafe", border: "1px solid #bfdbfe", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>🔄 → {m.transferTo}{m.transferDate ? ` · ${new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}` : ""}</span>}
-                            <span style={{ fontSize: 9, background: isPassed ? "#86EFAC" : "#FCD34D", color: isPassed ? "#14532d" : "#78350f", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>{isPassed ? "passed" : m.status}</span>
-                          </div>
+                            <div key={m._id} style={{ padding: "5px 7px", borderRadius: 7, background: isPassed ? "#F0FDF4" : "#FFFBEB", border: "1px dashed " + (isPassed ? "#86EFAC" : "#FCD34D"), display: "flex", alignItems: "center", gap: 6 }}>
+                              <span style={{ fontSize: 12 }}>{m.transferring ? "🔄" : isPassed ? "✅" : "⏳"}</span>
+                              <span style={{ flex: 1, fontSize: 11, fontWeight: 600, color: "#111827" }}>{m.name}{m.boaPathways && <> <BoaPathwaysBadge size={11} /></>}</span>
+                              {m.transferring && m.transferTo && <span style={{ fontSize: 9, color: "#1d4ed8", background: "#dbeafe", border: "1px solid #bfdbfe", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>🔄 → {m.transferTo}{m.transferDate ? ` · ${new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })}` : ""}</span>}
+                              <span style={{ fontSize: 9, background: isPassed ? "#86EFAC" : "#FCD34D", color: isPassed ? "#14532d" : "#78350f", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>{isPassed ? "passed" : m.status}</span>
+                            </div>
                           );
                         })}
                         {/* Arriving trial candidates (pending incoming transfer) —
@@ -25813,25 +25833,35 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // 26 criteria across 5 sections, scored 1–5 each (max 130). Items
         // flagged `key:true` are the form's "Key Indicators".
         const EVAL_SECTIONS = [
-          { title: "Customer Service & Experience", max: 50, items: [
-            { k: "greeting", label: "Client Greeting & Warmth" }, { k: "consultation", label: "Consultation Clarity" },
-            { k: "comfort", label: "Client Comfort", key: true }, { k: "quality", label: "Service Quality", key: true },
-            { k: "time", label: "Time Management" }, { k: "complaints", label: "Handling Complaints" },
-            { k: "presentation", label: "Professional Presentation" }, { k: "aftercare", label: "Aftercare Education" },
-            { k: "retail", label: "Retail & Upgrades" }, { k: "feedback", label: "Client Feedback" } ] },
-          { title: "Teamwork & Workplace Conduct", max: 25, items: [
-            { k: "communication", label: "Communication", key: true }, { k: "support", label: "Support & Collaboration" },
-            { k: "reliability", label: "Reliability", key: true }, { k: "attitude", label: "Professional Attitude" },
-            { k: "leadership", label: "Respect for Leadership", key: true } ] },
-          { title: "Cleanliness & Hygiene Compliance", max: 25, items: [
-            { k: "toolsan", label: "Tool Sanitation" }, { k: "workstation", label: "Workstation Cleanliness" },
-            { k: "towel", label: "Towel & Product Use" }, { k: "hygiene", label: "Personal Hygiene" },
-            { k: "infection", label: "Infection Control" } ] },
-          { title: "Policy & Operational Compliance", max: 20, items: [
-            { k: "timekeeping", label: "Time Keeping", key: true }, { k: "phone", label: "Phone Rules" },
-            { k: "language", label: "Language" }, { k: "procedure", label: "Procedure Following" } ] },
-          { title: "Brand Ambassadorship & Professionalism", max: 10, items: [
-            { k: "brand", label: "Brand Image" }, { k: "community", label: "Community Presence" } ] }
+          {
+            title: "Customer Service & Experience", max: 50, items: [
+              { k: "greeting", label: "Client Greeting & Warmth" }, { k: "consultation", label: "Consultation Clarity" },
+              { k: "comfort", label: "Client Comfort", key: true }, { k: "quality", label: "Service Quality", key: true },
+              { k: "time", label: "Time Management" }, { k: "complaints", label: "Handling Complaints" },
+              { k: "presentation", label: "Professional Presentation" }, { k: "aftercare", label: "Aftercare Education" },
+              { k: "retail", label: "Retail & Upgrades" }, { k: "feedback", label: "Client Feedback" }]
+          },
+          {
+            title: "Teamwork & Workplace Conduct", max: 25, items: [
+              { k: "communication", label: "Communication", key: true }, { k: "support", label: "Support & Collaboration" },
+              { k: "reliability", label: "Reliability", key: true }, { k: "attitude", label: "Professional Attitude" },
+              { k: "leadership", label: "Respect for Leadership", key: true }]
+          },
+          {
+            title: "Cleanliness & Hygiene Compliance", max: 25, items: [
+              { k: "toolsan", label: "Tool Sanitation" }, { k: "workstation", label: "Workstation Cleanliness" },
+              { k: "towel", label: "Towel & Product Use" }, { k: "hygiene", label: "Personal Hygiene" },
+              { k: "infection", label: "Infection Control" }]
+          },
+          {
+            title: "Policy & Operational Compliance", max: 20, items: [
+              { k: "timekeeping", label: "Time Keeping", key: true }, { k: "phone", label: "Phone Rules" },
+              { k: "language", label: "Language" }, { k: "procedure", label: "Procedure Following" }]
+          },
+          {
+            title: "Brand Ambassadorship & Professionalism", max: 10, items: [
+              { k: "brand", label: "Brand Image" }, { k: "community", label: "Community Presence" }]
+          }
         ];
         const EVAL_MAX = 130, EVAL_PASS = 91, EVAL_KEY_MIN = 3;
 
@@ -25839,38 +25869,48 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // 27 criteria across 5 sections, scored 1–5 (max 135). Pass = 70%
         // (95/135) AND every Key Indicator ≥4 (per the form's extension rule).
         const AM_EVAL_SECTIONS = [
-          { title: "Customer Service Excellence", max: 50, items: [
-            { k: "greeting_ssco", label: "Client Greeting – SSCO", key: true, desc: "Greets all clients warmly using Stand–Smile–Confirm–Offer." },
-            { k: "booking_conf", label: "Booking Confirmation", desc: "Confirms booking and treatment details before the appointment time." },
-            { k: "proactive", label: "Proactive Service", desc: "Anticipates client needs and ensures comfort." },
-            { k: "recovery", label: "Service Recovery", desc: "Handles complaints effectively, maintains calmness." },
-            { k: "presentation", label: "Professional Presentation", key: true, desc: "Displays neat grooming and welcoming demeanor. Wears full BOA uniform." },
-            { k: "wait_mgmt", label: "Wait Management", desc: "Informs clients of delays courteously." },
-            { k: "product_know", label: "Product Knowledge", desc: "Explains services and retail confidently." },
-            { k: "feedback", label: "Feedback Collection", desc: "Encourages positive Google Reviews." },
-            { k: "upsell", label: "Upselling & Retail", desc: "Suggests appropriate upgrades and aftercare." },
-            { k: "brand_rep", label: "Brand Representation", desc: "Creates a calm, elegant atmosphere in line with BOA." } ] },
-          { title: "Leadership & Team Management", max: 25, items: [
-            { k: "team_comm", label: "Team Communication", desc: "Holds regular briefings and maintains professionalism." },
-            { k: "fairness", label: "Fairness & Discipline", desc: "Applies HR policies consistently and fairly." },
-            { k: "motivation", label: "Motivation & Recognition", desc: "Supports and recognizes team effort." },
-            { k: "scheduling", label: "Scheduling", key: true, desc: "Manages shifts, off-days, and attendance accurately." },
-            { k: "conflict", label: "Conflict Resolution", desc: "Resolves disputes respectfully and promptly." } ] },
-          { title: "Cleanliness & Hygiene Compliance", max: 20, items: [
-            { k: "tool_san", label: "Tool Sanitation Checks", desc: "Verifies clean tools and sends photo proof on Basket Check Day before 10 a.m." },
-            { k: "salon_appear", label: "Salon Appearance", key: true, desc: "Maintains spotless and inviting salon atmosphere." },
-            { k: "product_mgmt", label: "Product Management", desc: "Prevents waste, monitors stock use." },
-            { k: "staff_hygiene", label: "Staff Hygiene", desc: "Ensures uniforms and grooming standards are met." } ] },
-          { title: "Operational & Policy Adherence", max: 25, items: [
-            { k: "hr_policy", label: "HR Policy Compliance", key: true, desc: "Enforces attendance, cellphone and language rules." },
-            { k: "cash_digital", label: "Cash & Digital Handling", key: true, desc: "Enforces only accepted payment methods." },
-            { k: "report_sub", label: "Report Submission", desc: "Submits accurate End-Day-Reports." },
-            { k: "fresha_usage", label: "Fresha Usage", key: true, desc: "Uses Fresha accurately and efficiently." },
-            { k: "stock_takes", label: "Stock Takes", key: true, desc: "Conducts accurate stock takes and places orders timely." } ] },
-          { title: "Brand Ambassadorship & Professionalism", max: 15, items: [
-            { k: "brand_image", label: "Brand Image", key: true, desc: "Acts as the face of BOA in demeanor and attitude." },
-            { k: "community", label: "Community Presence", desc: "Promotes BOA positively in local and online spaces." },
-            { k: "ethical", label: "Ethical Leadership", desc: "Displays honesty, fairness, and discretion." } ] }
+          {
+            title: "Customer Service Excellence", max: 50, items: [
+              { k: "greeting_ssco", label: "Client Greeting – SSCO", key: true, desc: "Greets all clients warmly using Stand–Smile–Confirm–Offer." },
+              { k: "booking_conf", label: "Booking Confirmation", desc: "Confirms booking and treatment details before the appointment time." },
+              { k: "proactive", label: "Proactive Service", desc: "Anticipates client needs and ensures comfort." },
+              { k: "recovery", label: "Service Recovery", desc: "Handles complaints effectively, maintains calmness." },
+              { k: "presentation", label: "Professional Presentation", key: true, desc: "Displays neat grooming and welcoming demeanor. Wears full BOA uniform." },
+              { k: "wait_mgmt", label: "Wait Management", desc: "Informs clients of delays courteously." },
+              { k: "product_know", label: "Product Knowledge", desc: "Explains services and retail confidently." },
+              { k: "feedback", label: "Feedback Collection", desc: "Encourages positive Google Reviews." },
+              { k: "upsell", label: "Upselling & Retail", desc: "Suggests appropriate upgrades and aftercare." },
+              { k: "brand_rep", label: "Brand Representation", desc: "Creates a calm, elegant atmosphere in line with BOA." }]
+          },
+          {
+            title: "Leadership & Team Management", max: 25, items: [
+              { k: "team_comm", label: "Team Communication", desc: "Holds regular briefings and maintains professionalism." },
+              { k: "fairness", label: "Fairness & Discipline", desc: "Applies HR policies consistently and fairly." },
+              { k: "motivation", label: "Motivation & Recognition", desc: "Supports and recognizes team effort." },
+              { k: "scheduling", label: "Scheduling", key: true, desc: "Manages shifts, off-days, and attendance accurately." },
+              { k: "conflict", label: "Conflict Resolution", desc: "Resolves disputes respectfully and promptly." }]
+          },
+          {
+            title: "Cleanliness & Hygiene Compliance", max: 20, items: [
+              { k: "tool_san", label: "Tool Sanitation Checks", desc: "Verifies clean tools and sends photo proof on Basket Check Day before 10 a.m." },
+              { k: "salon_appear", label: "Salon Appearance", key: true, desc: "Maintains spotless and inviting salon atmosphere." },
+              { k: "product_mgmt", label: "Product Management", desc: "Prevents waste, monitors stock use." },
+              { k: "staff_hygiene", label: "Staff Hygiene", desc: "Ensures uniforms and grooming standards are met." }]
+          },
+          {
+            title: "Operational & Policy Adherence", max: 25, items: [
+              { k: "hr_policy", label: "HR Policy Compliance", key: true, desc: "Enforces attendance, cellphone and language rules." },
+              { k: "cash_digital", label: "Cash & Digital Handling", key: true, desc: "Enforces only accepted payment methods." },
+              { k: "report_sub", label: "Report Submission", desc: "Submits accurate End-Day-Reports." },
+              { k: "fresha_usage", label: "Fresha Usage", key: true, desc: "Uses Fresha accurately and efficiently." },
+              { k: "stock_takes", label: "Stock Takes", key: true, desc: "Conducts accurate stock takes and places orders timely." }]
+          },
+          {
+            title: "Brand Ambassadorship & Professionalism", max: 15, items: [
+              { k: "brand_image", label: "Brand Image", key: true, desc: "Acts as the face of BOA in demeanor and attitude." },
+              { k: "community", label: "Community Presence", desc: "Promotes BOA positively in local and online spaces." },
+              { k: "ethical", label: "Ethical Leadership", desc: "Displays honesty, fairness, and discretion." }]
+          }
         ];
         const AM_EVAL_MAX = 135, AM_EVAL_PASS = 95, AM_EVAL_KEY_MIN = 4;
         // Resolve the right evaluation form for a role, and score a set of marks.
@@ -26734,70 +26774,70 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             {/* Add / Edit Trainee — modal popup */}
             {tForm._open && (
               <div onClick={() => setTForm(f => ({ ...f, _open: false, _editId: null }))} style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.5)", zIndex: 100000, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "24px 20px", overflowY: "auto" }}>
-              <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, border: "2px solid #7c3aed", padding: "24px 28px", width: "100%", maxWidth: 1200, maxHeight: "94vh", overflowY: "auto", boxShadow: "0 24px 70px rgba(0,0,0,0.35)" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-                  <div style={{ fontSize: 16, fontWeight: 800, color: "#7c3aed" }}>{tForm._editId ? "✏️ Edit Trial Candidate" : "➕ New Trial Candidate"}</div>
-                  <button onClick={() => setTForm(f => ({ ...f, _open: false, _editId: null }))} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af", fontSize: 20, lineHeight: 1, padding: 0 }}>✕</button>
-                </div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 12, marginBottom: 12 }}>
-                  <div><label style={lbl}>Full Name *</label><input style={{ ...inp, width: "100%", boxSizing: "border-box" }} value={tForm.name || ""} onChange={e => setTForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Thandi Mokoena" /></div>
-                  <div><label style={lbl}>Phone</label><input style={{ ...inp, width: "100%", boxSizing: "border-box" }} value={tForm.phone || ""} onChange={e => setTForm(f => ({ ...f, phone: e.target.value }))} placeholder="+27 ..." /></div>
-                  <div><label style={lbl}>Email</label><input type="email" style={{ ...inp, width: "100%", boxSizing: "border-box" }} value={tForm.email || ""} onChange={e => setTForm(f => ({ ...f, email: e.target.value }))} /></div>
-                  {trialSubTab === "nt" && (
-                    <div><label style={lbl}>Trainer Name</label><input style={{ ...inp, width: "100%", boxSizing: "border-box" }} value={tForm.trainerName || ""} onChange={e => setTForm(f => ({ ...f, trainerName: e.target.value }))} /></div>
-                  )}
-                  {trialSubTab === "nt" && (
-                    <div><label style={lbl}>Induction Pass Date</label><input type="date" style={{ ...inp, width: "100%", boxSizing: "border-box" }} value={tForm.inductionPassDate || ""} onChange={e => setTForm(f => ({ ...f, inductionPassDate: e.target.value }))} /></div>
-                  )}
-                  <div><label style={lbl}>Assigned Branch *</label>
-                    <select style={{ ...inp, width: "100%", boxSizing: "border-box" }} value={tForm.branch || ""} onChange={e => setTForm(f => ({ ...f, branch: e.target.value }))}>
-                      {SALONS.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
-                    </select>
+                <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, border: "2px solid #7c3aed", padding: "24px 28px", width: "100%", maxWidth: 1200, maxHeight: "94vh", overflowY: "auto", boxShadow: "0 24px 70px rgba(0,0,0,0.35)" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+                    <div style={{ fontSize: 16, fontWeight: 800, color: "#7c3aed" }}>{tForm._editId ? "✏️ Edit Trial Candidate" : "➕ New Trial Candidate"}</div>
+                    <button onClick={() => setTForm(f => ({ ...f, _open: false, _editId: null }))} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af", fontSize: 20, lineHeight: 1, padding: 0 }}>✕</button>
                   </div>
-                  <div><label style={lbl}>Trial Start Date</label><input type="date" style={{ ...inp, width: "100%", boxSizing: "border-box" }} value={tForm.startDate || ""} onChange={e => setTForm(f => ({ ...f, startDate: e.target.value }))} /></div>
-                </div>
-                <div style={{ marginBottom: 16 }}>
-                  <CtStorePicker
-                    value={tForm.homeAddress}
-                    onChange={(v) => setTForm(f => ({ ...f, homeAddress: v }))}
-                    selectedBranch={tForm.branch}
-                    onPickStore={(name) => setTForm(f => ({ ...f, branch: name }))}
-                    salonNames={SALONS.map(s => s.name)}
-                    label="Home Address"
-                    hint="(helps assign nearest branch)"
-                    showInput={true}
-                    startDate={tForm.startDate}
-                    branchNeed={recruitFuture.perBranch}
-                  />
-                </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 12, marginBottom: 12 }}>
+                    <div><label style={lbl}>Full Name *</label><input style={{ ...inp, width: "100%", boxSizing: "border-box" }} value={tForm.name || ""} onChange={e => setTForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Thandi Mokoena" /></div>
+                    <div><label style={lbl}>Phone</label><input style={{ ...inp, width: "100%", boxSizing: "border-box" }} value={tForm.phone || ""} onChange={e => setTForm(f => ({ ...f, phone: e.target.value }))} placeholder="+27 ..." /></div>
+                    <div><label style={lbl}>Email</label><input type="email" style={{ ...inp, width: "100%", boxSizing: "border-box" }} value={tForm.email || ""} onChange={e => setTForm(f => ({ ...f, email: e.target.value }))} /></div>
+                    {trialSubTab === "nt" && (
+                      <div><label style={lbl}>Trainer Name</label><input style={{ ...inp, width: "100%", boxSizing: "border-box" }} value={tForm.trainerName || ""} onChange={e => setTForm(f => ({ ...f, trainerName: e.target.value }))} /></div>
+                    )}
+                    {trialSubTab === "nt" && (
+                      <div><label style={lbl}>Induction Pass Date</label><input type="date" style={{ ...inp, width: "100%", boxSizing: "border-box" }} value={tForm.inductionPassDate || ""} onChange={e => setTForm(f => ({ ...f, inductionPassDate: e.target.value }))} /></div>
+                    )}
+                    <div><label style={lbl}>Assigned Branch *</label>
+                      <select style={{ ...inp, width: "100%", boxSizing: "border-box" }} value={tForm.branch || ""} onChange={e => setTForm(f => ({ ...f, branch: e.target.value }))}>
+                        {SALONS.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+                      </select>
+                    </div>
+                    <div><label style={lbl}>Trial Start Date</label><input type="date" style={{ ...inp, width: "100%", boxSizing: "border-box" }} value={tForm.startDate || ""} onChange={e => setTForm(f => ({ ...f, startDate: e.target.value }))} /></div>
+                  </div>
+                  <div style={{ marginBottom: 16 }}>
+                    <CtStorePicker
+                      value={tForm.homeAddress}
+                      onChange={(v) => setTForm(f => ({ ...f, homeAddress: v }))}
+                      selectedBranch={tForm.branch}
+                      onPickStore={(name) => setTForm(f => ({ ...f, branch: name }))}
+                      salonNames={SALONS.map(s => s.name)}
+                      label="Home Address"
+                      hint="(helps assign nearest branch)"
+                      showInput={true}
+                      startDate={tForm.startDate}
+                      branchNeed={recruitFuture.perBranch}
+                    />
+                  </div>
 
-                <div style={{ marginBottom: 16 }}>
-                  <label style={lbl}>Notes</label>
-                  <textarea rows={2} style={{ ...inp, width: "100%", boxSizing: "border-box", resize: "vertical" }} value={tForm.notes || ""} onChange={e => setTForm(f => ({ ...f, notes: e.target.value }))} />
-                </div>
-                {/* BOA Pathways — carries through onto the staff record when the
+                  <div style={{ marginBottom: 16 }}>
+                    <label style={lbl}>Notes</label>
+                    <textarea rows={2} style={{ ...inp, width: "100%", boxSizing: "border-box", resize: "vertical" }} value={tForm.notes || ""} onChange={e => setTForm(f => ({ ...f, notes: e.target.value }))} />
+                  </div>
+                  {/* BOA Pathways — carries through onto the staff record when the
                     candidate is later converted in onboarding, so the 🎓 badge
                     follows them from trial to active staff. */}
-                <label style={{ marginBottom: 16, display: "flex", alignItems: "center", gap: 10, padding: "11px 14px", borderRadius: 10, border: `2px solid ${tForm.boaPathways ? "#6EE7B7" : "#e5e7eb"}`, background: tForm.boaPathways ? "#ECFDF5" : "#fff", cursor: "pointer" }}>
-                  <input type="checkbox" checked={!!tForm.boaPathways} onChange={e => setTForm(f => ({ ...f, boaPathways: e.target.checked }))} style={{ width: 17, height: 17, accentColor: "#059669", cursor: "pointer" }} />
-                  <span style={{ fontSize: 18 }}>🎓</span>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: tForm.boaPathways ? "#065F46" : "#374151" }}>BOA Pathways graduate</span>
-                </label>
-                {/* Trial days & dates — edit the actual days she was in, right here. */}
-                {tForm._editId && (() => {
-                  const rec = trialList.find(x => x._id === tForm._editId);
-                  return rec ? (
-                    <div>
-                      <div style={{ fontSize: 12, fontWeight: 800, color: "#7c3aed", borderTop: "1px solid #ede9fe", paddingTop: 14 }}>🗓 Trial days &amp; dates</div>
-                      {dayEditorPanel(rec, "edit")}
-                    </div>
-                  ) : null;
-                })()}
-                <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
-                  <button onClick={submitTrial} style={{ padding: "9px 22px", borderRadius: 9, border: "none", background: "#7c3aed", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 }}>{tForm._editId ? "💾 Save Changes" : "🧪 Add to " + (trialSubTab === "am" ? "AM Trial" : "Trial Pipeline")}</button>
-                  <button onClick={() => setTForm(f => ({ ...f, _open: false, _editId: null }))} style={{ padding: "9px 16px", borderRadius: 9, border: "1px solid #e5e7eb", background: "#fff", color: "#6b7280", cursor: "pointer", fontFamily: "inherit", fontSize: 13 }}>Cancel</button>
+                  <label style={{ marginBottom: 16, display: "flex", alignItems: "center", gap: 10, padding: "11px 14px", borderRadius: 10, border: `2px solid ${tForm.boaPathways ? "#6EE7B7" : "#e5e7eb"}`, background: tForm.boaPathways ? "#ECFDF5" : "#fff", cursor: "pointer" }}>
+                    <input type="checkbox" checked={!!tForm.boaPathways} onChange={e => setTForm(f => ({ ...f, boaPathways: e.target.checked }))} style={{ width: 17, height: 17, accentColor: "#059669", cursor: "pointer" }} />
+                    <span style={{ fontSize: 18 }}>🎓</span>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: tForm.boaPathways ? "#065F46" : "#374151" }}>BOA Pathways graduate</span>
+                  </label>
+                  {/* Trial days & dates — edit the actual days she was in, right here. */}
+                  {tForm._editId && (() => {
+                    const rec = trialList.find(x => x._id === tForm._editId);
+                    return rec ? (
+                      <div>
+                        <div style={{ fontSize: 12, fontWeight: 800, color: "#7c3aed", borderTop: "1px solid #ede9fe", paddingTop: 14 }}>🗓 Trial days &amp; dates</div>
+                        {dayEditorPanel(rec, "edit")}
+                      </div>
+                    ) : null;
+                  })()}
+                  <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+                    <button onClick={submitTrial} style={{ padding: "9px 22px", borderRadius: 9, border: "none", background: "#7c3aed", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 }}>{tForm._editId ? "💾 Save Changes" : "🧪 Add to " + (trialSubTab === "am" ? "AM Trial" : "Trial Pipeline")}</button>
+                    <button onClick={() => setTForm(f => ({ ...f, _open: false, _editId: null }))} style={{ padding: "9px 16px", borderRadius: 9, border: "1px solid #e5e7eb", background: "#fff", color: "#6b7280", cursor: "pointer", fontFamily: "inherit", fontSize: 13 }}>Cancel</button>
+                  </div>
                 </div>
-              </div>
               </div>
             )}
 
@@ -26866,8 +26906,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // loop below (it uses each eval's own dueOffset and falls back to
         // the def label only when matched).
         const EVAL_DEFS = [
-          { key: "mid",   label: "Mid-Trial Check-in",  dueOffset: 45 },
-          { key: "final", label: "Final Evaluation",    dueOffset: 90 }
+          { key: "mid", label: "Mid-Trial Check-in", dueOffset: 45 },
+          { key: "final", label: "Final Evaluation", dueOffset: 90 }
         ];
         const TRIAL_DAYS = 90;
 
@@ -26881,14 +26921,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           persistSmTrial((smTrialList || []).map(r =>
             r._id === id
               ? {
-                  ...r,
-                  evaluations: (r.evaluations || []).map(e =>
-                    e.key === evalKey
-                      ? { ...e, doneAt: new Date().toISOString(), notes: doneNotes || e.notes || "" }
-                      : e
-                  ),
-                  updatedAt: new Date().toISOString()
-                }
+                ...r,
+                evaluations: (r.evaluations || []).map(e =>
+                  e.key === evalKey
+                    ? { ...e, doneAt: new Date().toISOString(), notes: doneNotes || e.notes || "" }
+                    : e
+                ),
+                updatedAt: new Date().toISOString()
+              }
               : r
           ));
         };
@@ -26897,12 +26937,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           persistSmTrial((smTrialList || []).map(r =>
             r._id === id
               ? {
-                  ...r,
-                  evaluations: (r.evaluations || []).map(e =>
-                    e.key === evalKey ? { ...e, doneAt: null } : e
-                  ),
-                  updatedAt: new Date().toISOString()
-                }
+                ...r,
+                evaluations: (r.evaluations || []).map(e =>
+                  e.key === evalKey ? { ...e, doneAt: null } : e
+                ),
+                updatedAt: new Date().toISOString()
+              }
               : r
           ));
         };
@@ -28556,7 +28596,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const custom = (mgrCustomTimes[s.ec] || mgrCustomTimes[ec] || {})[ymd];
           const isWork = code === "W" || code === "WE" || code === "WL" || code === "WM" || code === "WB" || code === "E";
           if (!custom && !isWork) return 0;                       // not a scheduled working day
-          let dow = -1; try { dow = new Date(ymd + "T12:00:00").getDay(); } catch (_) {}
+          let dow = -1; try { dow = new Date(ymd + "T12:00:00").getDay(); } catch (_) { }
           // Use the EFFECTIVE role so an AM on an SM trial is measured against SM
           // hours (08:00-17:00) — the same shift Manager Coverage shows via
           // _effectiveRole. Reading the raw "AM" role charged them the late AM
@@ -29106,7 +29146,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // reload or from another user's session (per branch + cycle).
           setAttPersistUndo(snap);
           if (window.BOA_DB.saveAttendanceUndo) {
-            try { window.BOA_DB.saveAttendanceUndo(attBranch, attYM, snap).catch(() => {}); } catch (_e) {}
+            try { window.BOA_DB.saveAttendanceUndo(attBranch, attYM, snap).catch(() => { }); } catch (_e) { }
           }
         };
         const undoLastEdit = async () => {
@@ -29135,7 +29175,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           try {
             if (nextTop && window.BOA_DB.saveAttendanceUndo) await window.BOA_DB.saveAttendanceUndo(attBranch, attYM, nextTop);
             else if (window.BOA_DB.clearAttendanceUndo) await window.BOA_DB.clearAttendanceUndo(attBranch, attYM);
-          } catch (_e) {}
+          } catch (_e) { }
           logActivity("Undid " + (last.label || "edit"), attBranch + " · " + cycLabel, "Restored to " + new Date(last.ts).toLocaleString("en-ZA"), "Attendance");
         };
 
@@ -30939,16 +30979,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           const mismatchReason = (
                             mgrClockedInUnscheduled ? "Manager clocked in but was NOT scheduled to work this day — review and mark as Extra Day, or correct the record. Extra days aren't auto-approved."
                               : apptVsKioskAbsentWarn ? "Kiosk marked the tech absent but Fresha has a completed appointment that day."
-                              : extDayNoApptWarn ? "Extra Day recorded but Fresha shows no appointments — did they actually do any service?"
-                                : absentNeedsReview ? ("Absent day — admin must confirm " + ((STAT[bareV] || {}).lbl || bareV) + " for payroll.")
-                                  : missingCheckin ? "Fresha shows appointments and tech was scheduled to work, but no kiosk check-in was recorded."
-                                    : workedOnOffDay ? "Scheduled OFF/Annual/Public Holiday/Maternity but the tech checked in or the cell shows present — confirm if this should be Extra Day or correct the schedule."
-                                      : unaccountedScheduledDay ? "Scheduled to work but NO kiosk check-in, NO Fresha appointments and no absence recorded — confirm what happened (sick / no-show / left early / etc.)."
-                                        : offButFreshaWorked ? "Scheduled OFF but Fresha has completed appointments — probably an unrecorded Extra Day."
-                                          : presentNoApptWarn ? (checkinHasIn
-                                            ? "Tech checked in and was scheduled to work, but Fresha shows no appointments."
-                                            : "Scheduled to work but no kiosk check-in was recorded AND Fresha shows no appointments — confirm what happened (sick / no-show / left early / etc.).")
-                                            : "Cell needs review — admin should verify the day's status."
+                                : extDayNoApptWarn ? "Extra Day recorded but Fresha shows no appointments — did they actually do any service?"
+                                  : absentNeedsReview ? ("Absent day — admin must confirm " + ((STAT[bareV] || {}).lbl || bareV) + " for payroll.")
+                                    : missingCheckin ? "Fresha shows appointments and tech was scheduled to work, but no kiosk check-in was recorded."
+                                      : workedOnOffDay ? "Scheduled OFF/Annual/Public Holiday/Maternity but the tech checked in or the cell shows present — confirm if this should be Extra Day or correct the schedule."
+                                        : unaccountedScheduledDay ? "Scheduled to work but NO kiosk check-in, NO Fresha appointments and no absence recorded — confirm what happened (sick / no-show / left early / etc.)."
+                                          : offButFreshaWorked ? "Scheduled OFF but Fresha has completed appointments — probably an unrecorded Extra Day."
+                                            : presentNoApptWarn ? (checkinHasIn
+                                              ? "Tech checked in and was scheduled to work, but Fresha shows no appointments."
+                                              : "Scheduled to work but no kiosk check-in was recorded AND Fresha shows no appointments — confirm what happened (sick / no-show / left early / etc.).")
+                                              : "Cell needs review — admin should verify the day's status."
                           );
 
                           // Build the structured tooltip body.
@@ -31615,123 +31655,123 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             </div>
 
             {reportsView === "snapshot" && (<div>
-            {/* Range selector + load */}
-            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
-              {["cycle", "week", "mtd"].map(k => (
-                <button key={k} onClick={() => { setReportRange(k); loadAttendanceReports(k); }}
-                  style={{ background: reportRange === k ? "#831843" : "#fff", color: reportRange === k ? "#fff" : "#831843", border: "1px solid #F9A8D4", borderRadius: 8, padding: "7px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>
-                  {rangeLabel(k)}
+              {/* Range selector + load */}
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
+                {["cycle", "week", "mtd"].map(k => (
+                  <button key={k} onClick={() => { setReportRange(k); loadAttendanceReports(k); }}
+                    style={{ background: reportRange === k ? "#831843" : "#fff", color: reportRange === k ? "#fff" : "#831843", border: "1px solid #F9A8D4", borderRadius: 8, padding: "7px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>
+                    {rangeLabel(k)}
+                  </button>
+                ))}
+                <button onClick={() => loadAttendanceReports(reportRange)} style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 8, padding: "7px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700, marginLeft: 4 }}>
+                  {rd && rd.loading ? "Loading…" : (ready ? "↻ Refresh" : "Load now")}
                 </button>
-              ))}
-              <button onClick={() => loadAttendanceReports(reportRange)} style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 8, padding: "7px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700, marginLeft: 4 }}>
-                {rd && rd.loading ? "Loading…" : (ready ? "↻ Refresh" : "Load now")}
-              </button>
-              {ready && <span style={{ fontSize: 11, color: "#9d4d6e" }}>{fmtD(rd.startYmd)} → {fmtD(rd.endYmd)} · {rd.techCount + rd.mgrCount} active staff</span>}
-            </div>
+                {ready && <span style={{ fontSize: 11, color: "#9d4d6e" }}>{fmtD(rd.startYmd)} → {fmtD(rd.endYmd)} · {rd.techCount + rd.mgrCount} active staff</span>}
+              </div>
 
-            {!rd && <div style={{ padding: "16px", background: "#fff", border: "1px solid #F9A8D4", borderRadius: 10, fontSize: 13, color: "#831843" }}>Pick a range and click <strong>Load now</strong> to pull every branch.</div>}
-            {rd && rd.loading && <div style={{ padding: "16px", background: "#fff", border: "1px solid #F9A8D4", borderRadius: 10, fontSize: 13, color: "#831843" }}>Crunching attendance across {SALONS.length} branches…</div>}
-            {rd && rd.error && <div style={{ padding: "16px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 10, fontSize: 13, color: "#7f1d1d" }}>Couldn’t load: {rd.error}</div>}
+              {!rd && <div style={{ padding: "16px", background: "#fff", border: "1px solid #F9A8D4", borderRadius: 10, fontSize: 13, color: "#831843" }}>Pick a range and click <strong>Load now</strong> to pull every branch.</div>}
+              {rd && rd.loading && <div style={{ padding: "16px", background: "#fff", border: "1px solid #F9A8D4", borderRadius: 10, fontSize: 13, color: "#831843" }}>Crunching attendance across {SALONS.length} branches…</div>}
+              {rd && rd.error && <div style={{ padding: "16px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 10, fontSize: 13, color: "#7f1d1d" }}>Couldn’t load: {rd.error}</div>}
 
-            {ready && (() => {
-              const t = rd.totals;
-              const sp = rd.split || { techMissed: 0, mgrMissed: 0, techExtra: 0, mgrExtra: 0 };
-              // Headline split card: one metric, nail-tech vs manager vs total.
-              const splitCard = (title, icon, ntN, mgrN, accent, bg) => (
-                <div style={{ flex: "1 1 240px", background: bg, border: "1px solid " + accent + "33", borderRadius: 12, padding: "14px 16px" }}>
-                  <div style={{ fontSize: 11, fontWeight: 800, color: accent, letterSpacing: "0.05em", marginBottom: 10 }}>{icon} {title}</div>
-                  <div style={{ display: "flex", alignItems: "flex-end", gap: 18 }}>
-                    <div><div style={{ fontSize: 26, fontWeight: 800, color: accent, lineHeight: 1 }}>{ntN}</div><div style={{ fontSize: 10, fontWeight: 700, color: accent, opacity: 0.8, marginTop: 3 }}>💅 Nail techs</div></div>
-                    <div><div style={{ fontSize: 26, fontWeight: 800, color: accent, lineHeight: 1 }}>{mgrN}</div><div style={{ fontSize: 10, fontWeight: 700, color: accent, opacity: 0.8, marginTop: 3 }}>👑 Managers</div></div>
-                    <div style={{ marginLeft: "auto", textAlign: "right" }}><div style={{ fontSize: 26, fontWeight: 800, color: accent, lineHeight: 1 }}>{ntN + mgrN}</div><div style={{ fontSize: 10, fontWeight: 700, color: accent, opacity: 0.8, marginTop: 3 }}>Total</div></div>
-                  </div>
-                </div>
-              );
-              return (
-                <div>
-                  {/* Headline totals — missed vs extra days, split by role */}
-                  <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
-                    {splitCard("MISSED DAYS", "🚫", sp.techMissed, sp.mgrMissed, "#9d174d", "#FDF2F8")}
-                    {splitCard("EXTRA DAYS WORKED", "➕", sp.techExtra, sp.mgrExtra, "#166534", "#f0fdf4")}
-                  </div>
-
-                  {/* Manager attendance-bonus forfeit for this range */}
-                  <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 12, padding: "14px 18px", marginBottom: 16 }}>
-                    <div style={{ fontSize: 13, fontWeight: 800, color: "#166534" }}>👑 Managers forfeiting the R1,000 attendance bonus{rd.range === "cycle" ? " this cycle" : " in this range"}</div>
-                    <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginLeft: "auto" }}>
-                      <span style={{ fontSize: 28, fontWeight: 800, color: "#166534", lineHeight: 1 }}>{sp.mgrWithMissed}</span>
-                      <span style={{ fontSize: 12, fontWeight: 700, color: "#15803d" }}>of {rd.mgrCount} manager{rd.mgrCount === 1 ? "" : "s"}</span>
+              {ready && (() => {
+                const t = rd.totals;
+                const sp = rd.split || { techMissed: 0, mgrMissed: 0, techExtra: 0, mgrExtra: 0 };
+                // Headline split card: one metric, nail-tech vs manager vs total.
+                const splitCard = (title, icon, ntN, mgrN, accent, bg) => (
+                  <div style={{ flex: "1 1 240px", background: bg, border: "1px solid " + accent + "33", borderRadius: 12, padding: "14px 16px" }}>
+                    <div style={{ fontSize: 11, fontWeight: 800, color: accent, letterSpacing: "0.05em", marginBottom: 10 }}>{icon} {title}</div>
+                    <div style={{ display: "flex", alignItems: "flex-end", gap: 18 }}>
+                      <div><div style={{ fontSize: 26, fontWeight: 800, color: accent, lineHeight: 1 }}>{ntN}</div><div style={{ fontSize: 10, fontWeight: 700, color: accent, opacity: 0.8, marginTop: 3 }}>💅 Nail techs</div></div>
+                      <div><div style={{ fontSize: 26, fontWeight: 800, color: accent, lineHeight: 1 }}>{mgrN}</div><div style={{ fontSize: 10, fontWeight: 700, color: accent, opacity: 0.8, marginTop: 3 }}>👑 Managers</div></div>
+                      <div style={{ marginLeft: "auto", textAlign: "right" }}><div style={{ fontSize: 26, fontWeight: 800, color: accent, lineHeight: 1 }}>{ntN + mgrN}</div><div style={{ fontSize: 10, fontWeight: 700, color: accent, opacity: 0.8, marginTop: 3 }}>Total</div></div>
                     </div>
-                    <div style={{ background: "#166534", color: "#fff", borderRadius: 9, padding: "8px 16px", fontSize: 16, fontWeight: 800 }}>R{(sp.mgrWithMissed * 1000).toLocaleString("en-ZA")} saved</div>
                   </div>
-
-                  {/* Breakdown of missed-day categories (all staff) */}
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
-                    {totalCard("No-shows", t.noShow, "#f5f3ff", "#581c87")}
-                    {totalCard("Sick · no note", t.sickNoNote, "#fef2f2", "#7f1d1d")}
-                    {totalCard("Sick · +note", t.sickNote, "#f0fdf4", "#166534")}
-                    {totalCard("Absent", t.absent, "#fef2f2", "#7f1d1d")}
-                    {totalCard("FRL", t.frl, "#fff7ed", "#7c2d12")}
-                    {totalCard("Unpaid", t.unpaid, "#f5f3ff", "#5b21b6")}
-                    {totalCard("Extra days", t.extra, "#f0fdf4", "#166534")}
-                    {totalCard("Late", t.late, "#f9fafb", "#374151")}
-                  </div>
-
-                  {/* Pattern insights */}
-                  <div style={{ background: rd.flagged.length ? "#fffbeb" : "#f0fdf4", border: "1px solid " + (rd.flagged.length ? "#fcd34d" : "#bbf7d0"), borderRadius: 11, padding: "12px 16px", marginBottom: 16 }}>
-                    <div style={{ fontSize: 13, fontWeight: 800, color: rd.flagged.length ? "#92400e" : "#166534", marginBottom: rd.flagged.length ? 8 : 0 }}>
-                      {rd.flagged.length ? "⚠ " + rd.flagged.length + " staff with attendance patterns to review" : "✓ No recurring absence patterns detected in this range"}
+                );
+                return (
+                  <div>
+                    {/* Headline totals — missed vs extra days, split by role */}
+                    <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
+                      {splitCard("MISSED DAYS", "🚫", sp.techMissed, sp.mgrMissed, "#9d174d", "#FDF2F8")}
+                      {splitCard("EXTRA DAYS WORKED", "➕", sp.techExtra, sp.mgrExtra, "#166534", "#f0fdf4")}
                     </div>
-                    {rd.flagged.length > 0 && (
-                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 8 }}>
-                        {rd.flagged.slice(0, 12).map((r, i) => (
-                          <div key={r.ec + i} style={{ background: "#fff", border: "1px solid #fcd34d", borderRadius: 8, padding: "8px 10px" }}>
-                            <div style={{ fontSize: 12, fontWeight: 700, color: "#831843" }}>{r.name} <span style={{ fontSize: 10, fontWeight: 500, color: "#9d4d6e" }}>· {r.branch}{r.role && r.role !== "NT" ? " · " + r.role : ""}</span></div>
-                            <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 5 }}>{r.flags.map(flagChip)}</div>
-                            <div style={{ fontSize: 10, color: "#9d4d6e", marginTop: 5 }}>{r.concerning} concerning day{r.concerning === 1 ? "" : "s"} (sick-no-note + no-show + absent) of {r.missed} missed</div>
-                          </div>
-                        ))}
+
+                    {/* Manager attendance-bonus forfeit for this range */}
+                    <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 12, padding: "14px 18px", marginBottom: 16 }}>
+                      <div style={{ fontSize: 13, fontWeight: 800, color: "#166534" }}>👑 Managers forfeiting the R1,000 attendance bonus{rd.range === "cycle" ? " this cycle" : " in this range"}</div>
+                      <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginLeft: "auto" }}>
+                        <span style={{ fontSize: 28, fontWeight: 800, color: "#166534", lineHeight: 1 }}>{sp.mgrWithMissed}</span>
+                        <span style={{ fontSize: 12, fontWeight: 700, color: "#15803d" }}>of {rd.mgrCount} manager{rd.mgrCount === 1 ? "" : "s"}</span>
                       </div>
-                    )}
-                  </div>
-
-                  {/* Top absentees: managers + techs */}
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16, marginBottom: 16 }}>
-                    <div style={{ background: "#fff", border: "1px solid #F9A8D4", borderRadius: 11, overflow: "hidden" }}>
-                      <div style={{ background: "#F5F3FF", padding: "10px 14px", fontSize: 12, fontWeight: 800, color: "#5b21b6", letterSpacing: "0.04em" }}>👑 MANAGERS · MOST MISSED DAYS</div>
-                      {rd.topMgrs.length === 0 ? <div style={{ padding: "14px", fontSize: 12, color: "#9d4d6e", fontStyle: "italic" }}>No manager absences in this range.</div> : rd.topMgrs.map((r, i) => personRow(r, i, "#7c3aed"))}
+                      <div style={{ background: "#166534", color: "#fff", borderRadius: 9, padding: "8px 16px", fontSize: 16, fontWeight: 800 }}>R{(sp.mgrWithMissed * 1000).toLocaleString("en-ZA")} saved</div>
                     </div>
-                    <div style={{ background: "#fff", border: "1px solid #F9A8D4", borderRadius: 11, overflow: "hidden" }}>
-                      <div style={{ background: "#FDEEF5", padding: "10px 14px", fontSize: 12, fontWeight: 800, color: "#831843", letterSpacing: "0.04em" }}>💅 NAIL TECHS · MOST MISSED DAYS</div>
-                      {rd.topTechs.length === 0 ? <div style={{ padding: "14px", fontSize: 12, color: "#9d4d6e", fontStyle: "italic" }}>No nail-tech absences in this range.</div> : rd.topTechs.map((r, i) => personRow(r, i, "#BE185D"))}
-                    </div>
-                  </div>
 
-                  {/* Best attendance */}
-                  <div style={{ background: "#fff", border: "1px solid #bbf7d0", borderRadius: 11, overflow: "hidden" }}>
-                    <div style={{ background: "#f0fdf4", padding: "10px 14px", fontSize: 12, fontWeight: 800, color: "#166534", letterSpacing: "0.04em" }}>🏆 ATTENDING BEST (most days worked, fewest missed)</div>
-                    {rd.bestAttenders.length === 0 ? <div style={{ padding: "14px", fontSize: 12, color: "#9d4d6e", fontStyle: "italic" }}>Not enough recorded days yet to rank.</div> : (
-                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 0 }}>
-                        {rd.bestAttenders.map((r, i) => (
-                          <div key={r.ec + i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", borderBottom: "1px solid #f0fdf4" }}>
-                            <div style={{ fontSize: 13, fontWeight: 800, color: "#16a34a", minWidth: 20 }}>{i + 1}</div>
-                            <div style={{ flex: 1, minWidth: 0 }}>
-                              <div style={{ fontSize: 12, fontWeight: 700, color: "#831843" }}>{r.name}</div>
-                              <div style={{ fontSize: 10, color: "#9d4d6e" }}>{r.branch}{r.role && r.role !== "NT" ? " · " + r.role : ""} · {r.worked} worked{r.missed > 0 ? " · " + r.missed + " missed" : ""}</div>
+                    {/* Breakdown of missed-day categories (all staff) */}
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+                      {totalCard("No-shows", t.noShow, "#f5f3ff", "#581c87")}
+                      {totalCard("Sick · no note", t.sickNoNote, "#fef2f2", "#7f1d1d")}
+                      {totalCard("Sick · +note", t.sickNote, "#f0fdf4", "#166534")}
+                      {totalCard("Absent", t.absent, "#fef2f2", "#7f1d1d")}
+                      {totalCard("FRL", t.frl, "#fff7ed", "#7c2d12")}
+                      {totalCard("Unpaid", t.unpaid, "#f5f3ff", "#5b21b6")}
+                      {totalCard("Extra days", t.extra, "#f0fdf4", "#166534")}
+                      {totalCard("Late", t.late, "#f9fafb", "#374151")}
+                    </div>
+
+                    {/* Pattern insights */}
+                    <div style={{ background: rd.flagged.length ? "#fffbeb" : "#f0fdf4", border: "1px solid " + (rd.flagged.length ? "#fcd34d" : "#bbf7d0"), borderRadius: 11, padding: "12px 16px", marginBottom: 16 }}>
+                      <div style={{ fontSize: 13, fontWeight: 800, color: rd.flagged.length ? "#92400e" : "#166534", marginBottom: rd.flagged.length ? 8 : 0 }}>
+                        {rd.flagged.length ? "⚠ " + rd.flagged.length + " staff with attendance patterns to review" : "✓ No recurring absence patterns detected in this range"}
+                      </div>
+                      {rd.flagged.length > 0 && (
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 8 }}>
+                          {rd.flagged.slice(0, 12).map((r, i) => (
+                            <div key={r.ec + i} style={{ background: "#fff", border: "1px solid #fcd34d", borderRadius: 8, padding: "8px 10px" }}>
+                              <div style={{ fontSize: 12, fontWeight: 700, color: "#831843" }}>{r.name} <span style={{ fontSize: 10, fontWeight: 500, color: "#9d4d6e" }}>· {r.branch}{r.role && r.role !== "NT" ? " · " + r.role : ""}</span></div>
+                              <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 5 }}>{r.flags.map(flagChip)}</div>
+                              <div style={{ fontSize: 10, color: "#9d4d6e", marginTop: 5 }}>{r.concerning} concerning day{r.concerning === 1 ? "" : "s"} (sick-no-note + no-show + absent) of {r.missed} missed</div>
                             </div>
-                            <div style={{ fontSize: 13, fontWeight: 800, color: "#16a34a" }}>{Math.round(r.attendanceRate * 100)}%</div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
 
-                  <div style={{ marginTop: 14, fontSize: 11, color: "#9d4d6e", lineHeight: 1.5 }}>
-                    Missed days exclude annual leave and maternity. Manager absences are read from the regional-recorded reasons; nail-tech absences from the attendance grid. Patterns flag when ≥3 concerning days cluster on a weekday/weekend/month-end (≥40–50% share). “Concerning” = sick-without-note + no-show + absent.
+                    {/* Top absentees: managers + techs */}
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16, marginBottom: 16 }}>
+                      <div style={{ background: "#fff", border: "1px solid #F9A8D4", borderRadius: 11, overflow: "hidden" }}>
+                        <div style={{ background: "#F5F3FF", padding: "10px 14px", fontSize: 12, fontWeight: 800, color: "#5b21b6", letterSpacing: "0.04em" }}>👑 MANAGERS · MOST MISSED DAYS</div>
+                        {rd.topMgrs.length === 0 ? <div style={{ padding: "14px", fontSize: 12, color: "#9d4d6e", fontStyle: "italic" }}>No manager absences in this range.</div> : rd.topMgrs.map((r, i) => personRow(r, i, "#7c3aed"))}
+                      </div>
+                      <div style={{ background: "#fff", border: "1px solid #F9A8D4", borderRadius: 11, overflow: "hidden" }}>
+                        <div style={{ background: "#FDEEF5", padding: "10px 14px", fontSize: 12, fontWeight: 800, color: "#831843", letterSpacing: "0.04em" }}>💅 NAIL TECHS · MOST MISSED DAYS</div>
+                        {rd.topTechs.length === 0 ? <div style={{ padding: "14px", fontSize: 12, color: "#9d4d6e", fontStyle: "italic" }}>No nail-tech absences in this range.</div> : rd.topTechs.map((r, i) => personRow(r, i, "#BE185D"))}
+                      </div>
+                    </div>
+
+                    {/* Best attendance */}
+                    <div style={{ background: "#fff", border: "1px solid #bbf7d0", borderRadius: 11, overflow: "hidden" }}>
+                      <div style={{ background: "#f0fdf4", padding: "10px 14px", fontSize: 12, fontWeight: 800, color: "#166534", letterSpacing: "0.04em" }}>🏆 ATTENDING BEST (most days worked, fewest missed)</div>
+                      {rd.bestAttenders.length === 0 ? <div style={{ padding: "14px", fontSize: 12, color: "#9d4d6e", fontStyle: "italic" }}>Not enough recorded days yet to rank.</div> : (
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 0 }}>
+                          {rd.bestAttenders.map((r, i) => (
+                            <div key={r.ec + i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", borderBottom: "1px solid #f0fdf4" }}>
+                              <div style={{ fontSize: 13, fontWeight: 800, color: "#16a34a", minWidth: 20 }}>{i + 1}</div>
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ fontSize: 12, fontWeight: 700, color: "#831843" }}>{r.name}</div>
+                                <div style={{ fontSize: 10, color: "#9d4d6e" }}>{r.branch}{r.role && r.role !== "NT" ? " · " + r.role : ""} · {r.worked} worked{r.missed > 0 ? " · " + r.missed + " missed" : ""}</div>
+                              </div>
+                              <div style={{ fontSize: 13, fontWeight: 800, color: "#16a34a" }}>{Math.round(r.attendanceRate * 100)}%</div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    <div style={{ marginTop: 14, fontSize: 11, color: "#9d4d6e", lineHeight: 1.5 }}>
+                      Missed days exclude annual leave and maternity. Manager absences are read from the regional-recorded reasons; nail-tech absences from the attendance grid. Patterns flag when ≥3 concerning days cluster on a weekday/weekend/month-end (≥40–50% share). “Concerning” = sick-without-note + no-show + absent.
+                    </div>
                   </div>
-                </div>
-              );
-            })()}
+                );
+              })()}
             </div>)}
 
             {reportsView === "trend" && (<div>
@@ -31860,7 +31900,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             // attYM is the START-month of the 25th→24th cycle (e.g. "2026-05"
             // = 25 May → 24 Jun), matching the attendance sheet — NOT end-month.
             const startD = new Date(yy, mm - 1, 25);
-            const endD   = new Date(yy, mm, 24);
+            const endD = new Date(yy, mm, 24);
             const f = d => d.toLocaleDateString("en-ZA", { day: "2-digit", month: "short" });
             return f(startD) + " → " + f(endD) + " " + endD.getFullYear();
           } catch (_) { return ym; }
@@ -31986,7 +32026,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         };
 
         const cycleRows = overtimeReqs.filter(inCycle);
-        const pending  = cycleRows.filter(r => r.status === "pending");
+        const pending = cycleRows.filter(r => r.status === "pending");
         const approved = cycleRows.filter(r => r.status === "approved");
         const rejected = cycleRows.filter(r => r.status === "rejected");
         const pendingAll = overtimeReqs.filter(r => r.status === "pending");
@@ -32067,33 +32107,33 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               </div>
             )}
             {canRecordOvertime && (
-            <div style={{ padding: "14px 16px", background: "#fff", border: "1px solid #F9A8D4", borderRadius: 10, marginBottom: 14 }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "#831843", marginBottom: 10 }}>Record overtime for a manager</div>
-              <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 2fr auto", gap: 8, alignItems: "end" }}>
-                <div>
-                  <div style={{ fontSize: 10, color: "#9d4d6e", marginBottom: 3, fontWeight: 700, letterSpacing: "0.04em" }}>MANAGER</div>
-                  <select value={f.ec} onChange={e => setOtForm({ ...f, ec: e.target.value })} style={{ width: "100%", padding: "6px 8px", border: "1px solid #F9A8D4", borderRadius: 6, fontSize: 12 }}>
-                    <option value="">Pick a manager…</option>
-                    {managers.slice().sort((a, b) => (a.branch || "").localeCompare(b.branch || "") || a.name.localeCompare(b.name)).map(m => (
-                      <option key={m.ec} value={m.ec}>{m.name} · {m.branch}</option>
-                    ))}
-                  </select>
+              <div style={{ padding: "14px 16px", background: "#fff", border: "1px solid #F9A8D4", borderRadius: 10, marginBottom: 14 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#831843", marginBottom: 10 }}>Record overtime for a manager</div>
+                <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 2fr auto", gap: 8, alignItems: "end" }}>
+                  <div>
+                    <div style={{ fontSize: 10, color: "#9d4d6e", marginBottom: 3, fontWeight: 700, letterSpacing: "0.04em" }}>MANAGER</div>
+                    <select value={f.ec} onChange={e => setOtForm({ ...f, ec: e.target.value })} style={{ width: "100%", padding: "6px 8px", border: "1px solid #F9A8D4", borderRadius: 6, fontSize: 12 }}>
+                      <option value="">Pick a manager…</option>
+                      {managers.slice().sort((a, b) => (a.branch || "").localeCompare(b.branch || "") || a.name.localeCompare(b.name)).map(m => (
+                        <option key={m.ec} value={m.ec}>{m.name} · {m.branch}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 10, color: "#9d4d6e", marginBottom: 3, fontWeight: 700, letterSpacing: "0.04em" }}>DATE</div>
+                    <input type="date" value={f.date} onChange={e => setOtForm({ ...f, date: e.target.value })} style={{ width: "100%", padding: "6px 8px", border: "1px solid #F9A8D4", borderRadius: 6, fontSize: 12 }} />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 10, color: "#9d4d6e", marginBottom: 3, fontWeight: 700, letterSpacing: "0.04em" }}>HOURS</div>
+                    <input type="number" step="0.5" min="0.5" max="12" value={f.hours} onChange={e => setOtForm({ ...f, hours: e.target.value })} placeholder="e.g. 2" style={{ width: "100%", padding: "6px 8px", border: "1px solid #F9A8D4", borderRadius: 6, fontSize: 12 }} />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 10, color: "#9d4d6e", marginBottom: 3, fontWeight: 700, letterSpacing: "0.04em" }}>REASON</div>
+                    <input type="text" value={f.reason} onChange={e => setOtForm({ ...f, reason: e.target.value })} placeholder="Why was extra time needed?" style={{ width: "100%", padding: "6px 8px", border: "1px solid #F9A8D4", borderRadius: 6, fontSize: 12 }} />
+                  </div>
+                  <button onClick={submitOvertime} style={{ background: "#831843", color: "#fff", border: "none", borderRadius: 6, padding: "7px 14px", cursor: "pointer", fontWeight: 700, fontSize: 12 }}>+ Record</button>
                 </div>
-                <div>
-                  <div style={{ fontSize: 10, color: "#9d4d6e", marginBottom: 3, fontWeight: 700, letterSpacing: "0.04em" }}>DATE</div>
-                  <input type="date" value={f.date} onChange={e => setOtForm({ ...f, date: e.target.value })} style={{ width: "100%", padding: "6px 8px", border: "1px solid #F9A8D4", borderRadius: 6, fontSize: 12 }} />
-                </div>
-                <div>
-                  <div style={{ fontSize: 10, color: "#9d4d6e", marginBottom: 3, fontWeight: 700, letterSpacing: "0.04em" }}>HOURS</div>
-                  <input type="number" step="0.5" min="0.5" max="12" value={f.hours} onChange={e => setOtForm({ ...f, hours: e.target.value })} placeholder="e.g. 2" style={{ width: "100%", padding: "6px 8px", border: "1px solid #F9A8D4", borderRadius: 6, fontSize: 12 }} />
-                </div>
-                <div>
-                  <div style={{ fontSize: 10, color: "#9d4d6e", marginBottom: 3, fontWeight: 700, letterSpacing: "0.04em" }}>REASON</div>
-                  <input type="text" value={f.reason} onChange={e => setOtForm({ ...f, reason: e.target.value })} placeholder="Why was extra time needed?" style={{ width: "100%", padding: "6px 8px", border: "1px solid #F9A8D4", borderRadius: 6, fontSize: 12 }} />
-                </div>
-                <button onClick={submitOvertime} style={{ background: "#831843", color: "#fff", border: "none", borderRadius: 6, padding: "7px 14px", cursor: "pointer", fontWeight: 700, fontSize: 12 }}>+ Record</button>
               </div>
-            </div>
             )}
 
             {/* Cycle summary */}
@@ -34098,6 +34138,37 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               await window.BOA_DB.saveMgrShiftPins(mergedPins);
               setMgrShiftPins(mergedPins);
               setMgrShiftPinsDraft({});
+              // Keep the PUBLISHED snapshot's shift labels in lock-step with the
+              // pins we just saved, so staff surfaces (My BOA, kiosk) match Manager
+              // Coverage without waiting for the next Approve & Publish — this is
+              // the recurring "pin set after publish drifts" gap. We overlay ONLY
+              // pinned WORKING cells onto the newest snapshot's own grid: off /
+              // leave / draft work-off structure is never read or touched, so no
+              // unpublished draft change can leak to staff (a pin only relabels
+              // WE/WM/WL among days already published as working). No-op if the
+              // cycle isn't published yet, or if nothing actually changed.
+              if (typeof patchApprovedSnapshotGrid === "function") {
+                try {
+                  await patchApprovedSnapshotGrid(branch, ymKey, true, (grid) => {
+                    if (!grid) return false;
+                    let changed = false;
+                    Object.entries(mergedPins).forEach(([ec, prow]) => {
+                      const grow = grid[ec]; if (!grow || !prow) return;
+                      Object.entries(prow).forEach(([ymd, code]) => {
+                        if (!code) return;
+                        const dom = String(parseInt(String(ymd).slice(8, 10), 10));
+                        const k = (grow[ymd] !== undefined) ? ymd : (grow[dom] !== undefined ? dom : null);
+                        if (k === null) return;
+                        const cur = grow[k];
+                        if ((cur === "W" || cur === "WE" || cur === "WM" || cur === "WL" || cur === "WB") && cur !== code) {
+                          grow[k] = code; changed = true;
+                        }
+                      });
+                    });
+                    return changed;
+                  });
+                } catch (e) { console.warn("[saveDraft] snapshot pin re-sync failed (non-fatal):", e); }
+              }
             }
             setMgrSchedSaved(mgrSchedDraft);
             setMgrSchedSavedAt((v && v.savedAt) || new Date().toISOString());
@@ -34750,11 +34821,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         const bg = xferEdge === "out" ? "#fef3c7"
                           : xferEdge === "in" ? "#dbeafe"
                             : isLoanOut ? "#dbeafe"
-                            : (cellBg[v] || "#fff");
+                              : (cellBg[v] || "#fff");
                         const fg = xferEdge === "out" ? "#92400e"
                           : xferEdge === "in" ? "#1e40af"
                             : isLoanOut ? "#1e40af"
-                            : (cellColor[v] || "#9ca3af");
+                              : (cellColor[v] || "#9ca3af");
                         const txt = xferEdge || isLoanOut ? null : (cellTxt[v] || "");
                         const isMon = dy.dow === 1;
                         // WE / WM / WL (Sandown early / middle / late) are
@@ -34782,13 +34853,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             title={xferEdge === "out" ? `${mg.name} · ${dy.d} · transferring to ${xferOther} on ${_xferDate} — fill remaining days on the destination schedule`
                               : xferEdge === "in" ? `${mg.name} · ${dy.d} · arriving from ${xferOther} on ${_xferDate} — pre-transfer days are still on the source schedule`
                                 : isLoanOut ? `${mg.name} · ${dy.d} · loaned to ${loanToBranch} this day — manage from Manager Coverage tab`
-                                : mg._guestFromBranch ? `${mg.name} · ${dy.d} · on loan from ${mg._guestFromBranch} — edit on Manager Coverage tab`
-                                : dy.d + ": " + (txt || "—") + " · double-click to set the shift (WE/WM/WL/Off…)" + (draggable ? " · drag to swap days" : "")}
+                                  : mg._guestFromBranch ? `${mg.name} · ${dy.d} · on loan from ${mg._guestFromBranch} — edit on Manager Coverage tab`
+                                    : dy.d + ": " + (txt || "—") + " · double-click to set the shift (WE/WM/WL/Off…)" + (draggable ? " · drag to swap days" : "")}
                             style={{ padding: "4px 0", textAlign: "center", borderBottom: "1px solid #FCE7F3", borderLeft: isMon ? "3px solid #E84B9B" : "1px solid #FCE7F3", background: bg, color: fg, fontSize: 10, fontWeight: 700, cursor: draggable ? "grab" : "default", userSelect: "none" }}>
                             {xferEdge === "out" ? <span style={{ fontSize: 9, fontWeight: 800 }}>→{xferOther === "Green Point" ? "GP" : (xferOther || "").slice(0, 4)}</span>
                               : xferEdge === "in" ? <span style={{ fontSize: 9, fontWeight: 800 }}>←{xferOther === "Green Point" ? "GP" : (xferOther || "").slice(0, 4)}</span>
                                 : isLoanOut ? <span style={{ fontSize: 9, fontWeight: 800 }}>→{loanToBranch === "Green Point" ? "GP" : (loanToBranch || "").slice(0, 4)}{_loanRec && _loanRec.extra ? <span style={{ color: "#047857" }} title="Extra Day — home pays the extra"> ·E</span> : null}</span>
-                                : txt}
+                                  : txt}
                           </td>
                         );
                       })}
@@ -35279,15 +35350,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   );
                 })()}
                 {!pinsViewOnly && (
-                <button onClick={async () => {
-                  const next = { ...kioskSecurityConfig, disableDeviceVerification: !kioskSecurityConfig.disableDeviceVerification };
-                  setKioskSecurityConfig(next);
-                  if (window.BOA_DB && window.BOA_DB.sb) {
-                    await window.BOA_DB.sb.from("app_state").upsert({ key: "boa_kiosk_security_config_v1", value: next });
-                  }
-                }} style={{ background: kioskSecurityConfig.disableDeviceVerification ? "#fee2e2" : "#e0f2fe", border: "none", borderRadius: 6, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700, color: kioskSecurityConfig.disableDeviceVerification ? "#991b1b" : "#0369a1" }}>
-                  {kioskSecurityConfig.disableDeviceVerification ? "🔴 Device Verification Disabled" : "🟢 Device Verification Enabled"}
-                </button>
+                  <button onClick={async () => {
+                    const next = { ...kioskSecurityConfig, disableDeviceVerification: !kioskSecurityConfig.disableDeviceVerification };
+                    setKioskSecurityConfig(next);
+                    if (window.BOA_DB && window.BOA_DB.sb) {
+                      await window.BOA_DB.sb.from("app_state").upsert({ key: "boa_kiosk_security_config_v1", value: next });
+                    }
+                  }} style={{ background: kioskSecurityConfig.disableDeviceVerification ? "#fee2e2" : "#e0f2fe", border: "none", borderRadius: 6, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700, color: kioskSecurityConfig.disableDeviceVerification ? "#991b1b" : "#0369a1" }}>
+                    {kioskSecurityConfig.disableDeviceVerification ? "🔴 Device Verification Disabled" : "🟢 Device Verification Enabled"}
+                  </button>
                 )}
                 <div style={{ fontSize: 11, color: "#9ca3af" }}>{kioskPinsLoaded ? Object.keys(kioskPins).length + " custom · " + SALONS.length + " branches total" : "Loading…"}</div>
               </div>
@@ -35337,9 +35408,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             ? <span style={{ fontSize: 11, color: "#9ca3af" }}>Loading…</span>
                             : dev
                               ? <div>
-                                  <span style={{ background: "#dcfce7", color: "#166534", fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 999, letterSpacing: "0.04em" }}>✓ Enrolled</span>
-                                  <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 3 }}>last seen {fmtSeen(dev.last_seen)}</div>
-                                </div>
+                                <span style={{ background: "#dcfce7", color: "#166534", fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 999, letterSpacing: "0.04em" }}>✓ Enrolled</span>
+                                <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 3 }}>last seen {fmtSeen(dev.last_seen)}</div>
+                              </div>
                               : <span style={{ fontSize: 11, fontStyle: "italic", color: "#9ca3af" }}>Not enrolled</span>}
                         </td>
                         <td style={{ padding: "10px 14px" }}>
@@ -35369,9 +35440,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             >Copy</button>
                           )}
                           {!pinsViewOnly && (
-                          <button onClick={() => resetKioskPin(s.name)} disabled={saving}
-                            style={{ background: PINK.accent, color: "#fff", border: "none", borderRadius: 7, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700, opacity: saving ? 0.6 : 1 }}
-                          >{saving ? "Saving…" : (hasPin ? "Reset" : "Set PIN")}</button>
+                            <button onClick={() => resetKioskPin(s.name)} disabled={saving}
+                              style={{ background: PINK.accent, color: "#fff", border: "none", borderRadius: 7, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700, opacity: saving ? 0.6 : 1 }}
+                            >{saving ? "Saving…" : (hasPin ? "Reset" : "Set PIN")}</button>
                           )}
                         </td>
                       </tr>
@@ -35397,7 +35468,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       {secsLeft > 0 ? `Expires in ${Math.floor(secsLeft / 60)}:${String(secsLeft % 60).padStart(2, "0")}` : "Expired — generate a new code."}
                     </div>
                     <div style={{ display: "flex", gap: 10, justifyContent: "center" }}>
-                      <button onClick={() => { try { navigator.clipboard.writeText(enrolModal.code); } catch (_e) {} }}
+                      <button onClick={() => { try { navigator.clipboard.writeText(enrolModal.code); } catch (_e) { } }}
                         style={{ background: "#f3f4f6", color: "#374151", border: "none", borderRadius: 9, padding: "9px 18px", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>Copy</button>
                       <button onClick={() => setEnrolModal(null)}
                         style={{ background: PINK.accent, color: "#fff", border: "none", borderRadius: 9, padding: "9px 18px", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>Close</button>
@@ -35516,9 +35587,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                     >Copy</button>
                                   )}
                                   {!pinsViewOnly && (
-                                  <button onClick={() => resetMgrPin(m)} disabled={saving || !m.ec}
-                                    style={{ background: PINK.accent, color: "#fff", border: "none", borderRadius: 7, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700, opacity: (saving || !m.ec) ? 0.6 : 1 }}
-                                  >{saving ? "Saving…" : (hasPin ? "Reset" : "Set PIN")}</button>
+                                    <button onClick={() => resetMgrPin(m)} disabled={saving || !m.ec}
+                                      style={{ background: PINK.accent, color: "#fff", border: "none", borderRadius: 7, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700, opacity: (saving || !m.ec) ? 0.6 : 1 }}
+                                    >{saving ? "Saving…" : (hasPin ? "Reset" : "Set PIN")}</button>
                                   )}
                                 </td>
                               </tr>
@@ -35763,41 +35834,41 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </button>
               </div>
               {checkinShowDiag && (
-              <div style={{ background: "#FFFFFF", borderRadius: 13, padding: "10px 14px", border: "1px solid #FBCFE8", marginBottom: 14, fontSize: 12 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, gap: 10 }}>
-                  <div style={{ fontWeight: 700, color: "#831843" }}>
-                    Fetched in the last {techClockinDays} days · {(techClockinRows || []).length} row{(techClockinRows || []).length === 1 ? "" : "s"} total
+                <div style={{ background: "#FFFFFF", borderRadius: 13, padding: "10px 14px", border: "1px solid #FBCFE8", marginBottom: 14, fontSize: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, gap: 10 }}>
+                    <div style={{ fontWeight: 700, color: "#831843" }}>
+                      Fetched in the last {techClockinDays} days · {(techClockinRows || []).length} row{(techClockinRows || []).length === 1 ? "" : "s"} total
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    {Object.keys(fetchedByBranch).sort().map(b => (
+                      <span key={b} style={{ background: "#FCE7F3", color: "#831843", padding: "3px 9px", borderRadius: 6, fontSize: 11.5 }}>
+                        📍 {b}: <strong>{fetchedByBranch[b]}</strong>
+                      </span>
+                    ))}
+                    {orphanFetched > 0 && (
+                      <span style={{ background: "#fee2e2", color: "#7f1d1d", padding: "3px 9px", borderRadius: 6, fontSize: 11.5 }}>
+                        ⚠ orphan (no staff link): <strong>{orphanFetched}</strong>
+                      </span>
+                    )}
+                    {Object.keys(fetchedByBranch).length === 0 && orphanFetched === 0 && (
+                      <span style={{ color: "#9ca3af", fontStyle: "italic" }}>No clockins rows fetched.</span>
+                    )}
+                  </div>
+                  <div style={{ marginTop: 8, fontSize: 11.5, color: "#155e75", fontWeight: 600 }}>
+                    Kiosk submissions (boa_kiosk_log_*): {(attCheckinRows || []).length} entr{(attCheckinRows || []).length === 1 ? "y" : "ies"} fetched
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 6 }}>
+                    {Object.keys(attFetchedByBranch).sort().map(b => (
+                      <span key={"att-" + b} style={{ background: "#cffafe", color: "#155e75", padding: "3px 9px", borderRadius: 6, fontSize: 11.5 }}>
+                        📍 {b}: <strong>{attFetchedByBranch[b]}</strong>
+                      </span>
+                    ))}
+                    {Object.keys(attFetchedByBranch).length === 0 && (
+                      <span style={{ color: "#9ca3af", fontStyle: "italic" }}>No kiosk-log rows yet. Once you redeploy the kiosk app with the audit-log change, every kiosk submission will land here.</span>
+                    )}
                   </div>
                 </div>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                  {Object.keys(fetchedByBranch).sort().map(b => (
-                    <span key={b} style={{ background: "#FCE7F3", color: "#831843", padding: "3px 9px", borderRadius: 6, fontSize: 11.5 }}>
-                      📍 {b}: <strong>{fetchedByBranch[b]}</strong>
-                    </span>
-                  ))}
-                  {orphanFetched > 0 && (
-                    <span style={{ background: "#fee2e2", color: "#7f1d1d", padding: "3px 9px", borderRadius: 6, fontSize: 11.5 }}>
-                      ⚠ orphan (no staff link): <strong>{orphanFetched}</strong>
-                    </span>
-                  )}
-                  {Object.keys(fetchedByBranch).length === 0 && orphanFetched === 0 && (
-                    <span style={{ color: "#9ca3af", fontStyle: "italic" }}>No clockins rows fetched.</span>
-                  )}
-                </div>
-                <div style={{ marginTop: 8, fontSize: 11.5, color: "#155e75", fontWeight: 600 }}>
-                  Kiosk submissions (boa_kiosk_log_*): {(attCheckinRows || []).length} entr{(attCheckinRows || []).length === 1 ? "y" : "ies"} fetched
-                </div>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 6 }}>
-                  {Object.keys(attFetchedByBranch).sort().map(b => (
-                    <span key={"att-" + b} style={{ background: "#cffafe", color: "#155e75", padding: "3px 9px", borderRadius: 6, fontSize: 11.5 }}>
-                      📍 {b}: <strong>{attFetchedByBranch[b]}</strong>
-                    </span>
-                  ))}
-                  {Object.keys(attFetchedByBranch).length === 0 && (
-                    <span style={{ color: "#9ca3af", fontStyle: "italic" }}>No kiosk-log rows yet. Once you redeploy the kiosk app with the audit-log change, every kiosk submission will land here.</span>
-                  )}
-                </div>
-              </div>
               )}
 
               <div style={{ background: "#FFFFFF", border: "1px solid #FBCFE8", borderRadius: 13, overflow: "hidden" }}>
@@ -35817,87 +35888,87 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       const rowsOut = [];
                       let _lastBranch = null;
                       visibleRows.forEach(r => {
-                      const _b = _branchOf(r);
-                      if (_b !== _lastBranch) {
-                        _lastBranch = _b;
-                        rowsOut.push(
-                          <tr key={"grp-" + _b} style={{ background: "#FCE7F3" }}>
-                            <td colSpan={5} style={{ padding: "9px 12px", fontWeight: 800, color: "#831843", fontSize: 12.5 }}>
-                              📍 {_b} · {_countByBranch[_b]} record{_countByBranch[_b] !== 1 ? "s" : ""}
-                              {_signedOffByBranch[_b] && (
-                                <button
-                                  onClick={async () => {
-                                    if (!window.confirm("Reopen " + _b + "'s check-in for " + dayLabel(checkinDay) + "?\n\nThis unlocks the day on the kiosk so the manager can add the remaining techs and submit again. Statuses already tagged on the kiosk are kept.")) return;
-                                    try {
-                                      await window.BOA_DB.reopenDailyCheckin(_b, checkinDay);
-                                      setCheckinsTick(t => t + 1);
-                                    } catch (e) { alert("Could not reopen: " + ((e && e.message) || e)); }
-                                  }}
-                                  style={{ marginLeft: 10, background: "#fff", color: "#9d174d", border: "1px solid #FBCFE8", borderRadius: 6, padding: "3px 9px", cursor: "pointer", fontSize: 10.5, fontWeight: 700 }}>
-                                  🔓 Reopen check-in
-                                </button>
-                              )}
-                            </td>
-                          </tr>
-                        );
-                      }
-                      const STATUS_BADGE = {
-                        on: { lbl: "ON TIME", bg: "#dcfce7", fg: "#14532d" },
-                        late: { lbl: "LATE", bg: "#fef3c7", fg: "#92400e" },
-                        ext: { lbl: "EXTRA", bg: "#dbeafe", fg: "#1e3a8a" },
-                        trial: { lbl: "TRIAL", bg: "#e0e7ff", fg: "#3730a3" },
-                        swap_o: { lbl: "SWAP", bg: "#cffafe", fg: "#155e75" },
-                        swap_i: { lbl: "SWAP-IN", bg: "#cffafe", fg: "#155e75" },
-                        off: { lbl: "OFF", bg: "#f3f4f6", fg: "#374151" },
-                        sick: { lbl: "SICK", bg: "#fee2e2", fg: "#7f1d1d" },
-                        sick_n: { lbl: "SICK-N", bg: "#fee2e2", fg: "#7f1d1d" },
-                        al: { lbl: "ANNUAL", bg: "#e0f2fe", fg: "#075985" },
-                        ph: { lbl: "PH", bg: "#e0f2fe", fg: "#075985" },
-                        mat: { lbl: "MAT", bg: "#fce7f3", fg: "#9d174d" },
-                        term: { lbl: "TERM", bg: "#fee2e2", fg: "#7f1d1d" },
-                        frl: { lbl: "FRL", bg: "#fef3c7", fg: "#92400e" },
-                        no: { lbl: "NO-SHOW", bg: "#fee2e2", fg: "#7f1d1d" },
-                        unpaid: { lbl: "UNPAID", bg: "#fef3c7", fg: "#92400e" }
-                      };
-                      const t = r.type === "in" ? { lbl: "IN", bg: "#dcfce7", fg: "#14532d" }
-                        : r.type === "out" ? { lbl: "OUT", bg: "#fef3c7", fg: "#92400e" }
-                          : r.type === "out_auto" ? { lbl: "AUTO-OUT", bg: "#fee2e2", fg: "#7f1d1d" }
-                            : r.type === "att" ? (STATUS_BADGE[r.status] || { lbl: String(r.status || "").toUpperCase(), bg: "#f3f4f6", fg: "#374151" })
-                              : { lbl: r.type, bg: "#f3f4f6", fg: "#374151" };
-                      const isOrphan = !r.staff;
-                      rowsOut.push(
-                        <tr key={r.id} style={{ borderTop: "1px solid #FCE7F3", background: isOrphan ? "#fef2f2" : undefined }}>
-                          <td style={{ padding: "8px 12px", whiteSpace: "nowrap", color: "#831843" }}>{fmtDateTime(r.ts)}</td>
-                          <td style={{ padding: "8px 12px" }}>
-                            <span style={{ background: t.bg, color: t.fg, fontWeight: 700, fontSize: 10, padding: "2px 8px", borderRadius: 5, letterSpacing: "0.05em" }}>{t.lbl}</span>
-                          </td>
-                          <td style={{ padding: "8px 12px", fontWeight: 600, color: isOrphan ? "#7f1d1d" : undefined }}>
-                            {isOrphan ? <em>⚠ orphan · staff_id={String(r.staff_id || "(null)")}</em> : (
-                              <>
-                                {r.staff.name || "—"}
-                                {r.markedBy && <div style={{ fontWeight: 500, fontSize: 11, color: "#831843", marginTop: 2 }}>👤 Marked by {r.markedBy}</div>}
-                                {r.note && <div style={{ fontWeight: 400, fontSize: 11, color: "#6b7280", marginTop: 2, fontStyle: "italic" }}>📝 {r.note}</div>}
-                                {r.hasProof && r.proofKey && (
+                        const _b = _branchOf(r);
+                        if (_b !== _lastBranch) {
+                          _lastBranch = _b;
+                          rowsOut.push(
+                            <tr key={"grp-" + _b} style={{ background: "#FCE7F3" }}>
+                              <td colSpan={5} style={{ padding: "9px 12px", fontWeight: 800, color: "#831843", fontSize: 12.5 }}>
+                                📍 {_b} · {_countByBranch[_b]} record{_countByBranch[_b] !== 1 ? "s" : ""}
+                                {_signedOffByBranch[_b] && (
                                   <button
                                     onClick={async () => {
-                                      setProofModal({ loading: true, name: r.staff.name, ymd: r.ymd || "", status: r.status });
+                                      if (!window.confirm("Reopen " + _b + "'s check-in for " + dayLabel(checkinDay) + "?\n\nThis unlocks the day on the kiosk so the manager can add the remaining techs and submit again. Statuses already tagged on the kiosk are kept.")) return;
                                       try {
-                                        const url = await window.BOA_DB.loadKioskProof(r.proofKey);
-                                        setProofModal(p => p ? { ...p, loading: false, dataUrl: url } : null);
-                                      } catch (e) {
-                                        setProofModal(p => p ? { ...p, loading: false, error: (e && e.message) || String(e) } : null);
-                                      }
+                                        await window.BOA_DB.reopenDailyCheckin(_b, checkinDay);
+                                        setCheckinsTick(t => t + 1);
+                                      } catch (e) { alert("Could not reopen: " + ((e && e.message) || e)); }
                                     }}
-                                    style={{ marginTop: 4, background: "#fce7f3", color: "#9d174d", border: "1px solid #fbcfe8", padding: "2px 8px", borderRadius: 5, fontSize: 10.5, fontWeight: 600, cursor: "pointer" }}
-                                  >📎 View proof</button>
+                                    style={{ marginLeft: 10, background: "#fff", color: "#9d174d", border: "1px solid #FBCFE8", borderRadius: 6, padding: "3px 9px", cursor: "pointer", fontSize: 10.5, fontWeight: 700 }}>
+                                    🔓 Reopen check-in
+                                  </button>
                                 )}
-                              </>
-                            )}
-                          </td>
-                          <td style={{ padding: "8px 12px", fontFamily: "monospace", fontSize: 11, color: "#8E5570" }}>{(r.staff && r.staff.employee_code) || ""}</td>
-                          <td style={{ padding: "8px 12px", color: isOrphan ? "#7f1d1d" : "#831843" }}>📍 {(r.staff && r.staff.branch) || "—"}</td>
-                        </tr>
-                      );
+                              </td>
+                            </tr>
+                          );
+                        }
+                        const STATUS_BADGE = {
+                          on: { lbl: "ON TIME", bg: "#dcfce7", fg: "#14532d" },
+                          late: { lbl: "LATE", bg: "#fef3c7", fg: "#92400e" },
+                          ext: { lbl: "EXTRA", bg: "#dbeafe", fg: "#1e3a8a" },
+                          trial: { lbl: "TRIAL", bg: "#e0e7ff", fg: "#3730a3" },
+                          swap_o: { lbl: "SWAP", bg: "#cffafe", fg: "#155e75" },
+                          swap_i: { lbl: "SWAP-IN", bg: "#cffafe", fg: "#155e75" },
+                          off: { lbl: "OFF", bg: "#f3f4f6", fg: "#374151" },
+                          sick: { lbl: "SICK", bg: "#fee2e2", fg: "#7f1d1d" },
+                          sick_n: { lbl: "SICK-N", bg: "#fee2e2", fg: "#7f1d1d" },
+                          al: { lbl: "ANNUAL", bg: "#e0f2fe", fg: "#075985" },
+                          ph: { lbl: "PH", bg: "#e0f2fe", fg: "#075985" },
+                          mat: { lbl: "MAT", bg: "#fce7f3", fg: "#9d174d" },
+                          term: { lbl: "TERM", bg: "#fee2e2", fg: "#7f1d1d" },
+                          frl: { lbl: "FRL", bg: "#fef3c7", fg: "#92400e" },
+                          no: { lbl: "NO-SHOW", bg: "#fee2e2", fg: "#7f1d1d" },
+                          unpaid: { lbl: "UNPAID", bg: "#fef3c7", fg: "#92400e" }
+                        };
+                        const t = r.type === "in" ? { lbl: "IN", bg: "#dcfce7", fg: "#14532d" }
+                          : r.type === "out" ? { lbl: "OUT", bg: "#fef3c7", fg: "#92400e" }
+                            : r.type === "out_auto" ? { lbl: "AUTO-OUT", bg: "#fee2e2", fg: "#7f1d1d" }
+                              : r.type === "att" ? (STATUS_BADGE[r.status] || { lbl: String(r.status || "").toUpperCase(), bg: "#f3f4f6", fg: "#374151" })
+                                : { lbl: r.type, bg: "#f3f4f6", fg: "#374151" };
+                        const isOrphan = !r.staff;
+                        rowsOut.push(
+                          <tr key={r.id} style={{ borderTop: "1px solid #FCE7F3", background: isOrphan ? "#fef2f2" : undefined }}>
+                            <td style={{ padding: "8px 12px", whiteSpace: "nowrap", color: "#831843" }}>{fmtDateTime(r.ts)}</td>
+                            <td style={{ padding: "8px 12px" }}>
+                              <span style={{ background: t.bg, color: t.fg, fontWeight: 700, fontSize: 10, padding: "2px 8px", borderRadius: 5, letterSpacing: "0.05em" }}>{t.lbl}</span>
+                            </td>
+                            <td style={{ padding: "8px 12px", fontWeight: 600, color: isOrphan ? "#7f1d1d" : undefined }}>
+                              {isOrphan ? <em>⚠ orphan · staff_id={String(r.staff_id || "(null)")}</em> : (
+                                <>
+                                  {r.staff.name || "—"}
+                                  {r.markedBy && <div style={{ fontWeight: 500, fontSize: 11, color: "#831843", marginTop: 2 }}>👤 Marked by {r.markedBy}</div>}
+                                  {r.note && <div style={{ fontWeight: 400, fontSize: 11, color: "#6b7280", marginTop: 2, fontStyle: "italic" }}>📝 {r.note}</div>}
+                                  {r.hasProof && r.proofKey && (
+                                    <button
+                                      onClick={async () => {
+                                        setProofModal({ loading: true, name: r.staff.name, ymd: r.ymd || "", status: r.status });
+                                        try {
+                                          const url = await window.BOA_DB.loadKioskProof(r.proofKey);
+                                          setProofModal(p => p ? { ...p, loading: false, dataUrl: url } : null);
+                                        } catch (e) {
+                                          setProofModal(p => p ? { ...p, loading: false, error: (e && e.message) || String(e) } : null);
+                                        }
+                                      }}
+                                      style={{ marginTop: 4, background: "#fce7f3", color: "#9d174d", border: "1px solid #fbcfe8", padding: "2px 8px", borderRadius: 5, fontSize: 10.5, fontWeight: 600, cursor: "pointer" }}
+                                    >📎 View proof</button>
+                                  )}
+                                </>
+                              )}
+                            </td>
+                            <td style={{ padding: "8px 12px", fontFamily: "monospace", fontSize: 11, color: "#8E5570" }}>{(r.staff && r.staff.employee_code) || ""}</td>
+                            <td style={{ padding: "8px 12px", color: isOrphan ? "#7f1d1d" : "#831843" }}>📍 {(r.staff && r.staff.branch) || "—"}</td>
+                          </tr>
+                        );
                       });
                       return rowsOut;
                     })()}
@@ -36057,17 +36128,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           <div style={{ marginTop: 6, display: "flex", gap: 4, flexWrap: "wrap" }}>
                             {existing
                               ? <button
-                                  onClick={() => setMgrReasonModal({ staffId: ns.staffId, ec: ns.ec, name: ns.name, branch: ns.branch, date: ns.ymd, existing })}
-                                  title={(existing.note || "") + (existing.recorded_by ? "\n— " + existing.recorded_by : "")}
-                                  style={{ background: "#dcfce7", color: "#166534", border: "1px solid #86efac", borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
-                                  {statLabel(existing.status)}{existing.proof ? " 📎" : ""} ✎
-                                </button>
+                                onClick={() => setMgrReasonModal({ staffId: ns.staffId, ec: ns.ec, name: ns.name, branch: ns.branch, date: ns.ymd, existing })}
+                                title={(existing.note || "") + (existing.recorded_by ? "\n— " + existing.recorded_by : "")}
+                                style={{ background: "#dcfce7", color: "#166534", border: "1px solid #86efac", borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                                {statLabel(existing.status)}{existing.proof ? " 📎" : ""} ✎
+                              </button>
                               : <button
-                                  onClick={() => ns.staffId && setMgrReasonModal({ staffId: ns.staffId, ec: ns.ec, name: ns.name, branch: ns.branch, date: ns.ymd, existing: null })}
-                                  disabled={!ns.staffId}
-                                  style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 6, padding: "3px 10px", fontSize: 11, fontWeight: 700, cursor: ns.staffId ? "pointer" : "not-allowed", opacity: ns.staffId ? 1 : 0.5 }}>
-                                  Mark reason
-                                </button>
+                                onClick={() => ns.staffId && setMgrReasonModal({ staffId: ns.staffId, ec: ns.ec, name: ns.name, branch: ns.branch, date: ns.ymd, existing: null })}
+                                disabled={!ns.staffId}
+                                style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 6, padding: "3px 10px", fontSize: 11, fontWeight: 700, cursor: ns.staffId ? "pointer" : "not-allowed", opacity: ns.staffId ? 1 : 0.5 }}>
+                                Mark reason
+                              </button>
                             }
                             {!existing && ns.staffId && (
                               <button
@@ -36504,60 +36575,60 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <div key={group.branch} style={{ marginBottom: 18 }}>
                   <div style={{ background: "#FCE7F3", color: "#831843", fontWeight: 800, fontSize: 13, padding: "8px 12px", borderRadius: 9, marginBottom: 8 }}>📍 {group.branch} · {group.rows.length} clock-in{group.rows.length !== 1 ? "s" : ""}</div>
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 10 }}>
-                {group.rows.map(r => {
-                  const t = typeLabel(r.type);
-                  const meta = mgrClockinMeta[r.id] || {};
-                  const photo = meta.photo;
-                  const dist = meta.distanceM;
-                  const oor = meta.outOfRange;
-                  return (
-                    <div key={r.id} style={{ background: "#FFFFFF", borderRadius: 11, border: "1px solid #FBCFE8", padding: "10px 12px" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 8 }}>
-                        <div>
-                          <div style={{ fontSize: 13, fontWeight: 700, color: "#831843" }}>{r.staff && r.staff.name}</div>
-                          <div style={{ fontSize: 10, fontFamily: "monospace", color: "#9ca3af" }}>{r.staff && r.staff.employee_code} · {r.branch || (r.staff && r.staff.branch) || "—"}</div>
-                        </div>
-                        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
-                          <span style={{ fontSize: 9, fontWeight: 800, padding: "3px 8px", borderRadius: 99, background: t.bg, color: t.fg, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>{t.lbl}</span>
-                          {currentUser && currentUser.isOwner && (
-                            <button
-                              onClick={async () => {
-                                const who = (r.staff && r.staff.name) || (r.staff && r.staff.employee_code) || "this manager";
-                                if (!window.confirm("Delete this clock-in for " + who + "?\n\n" + t.lbl + " · " + fmtDate(r.ts) + "\n\nUse this only for a test or mistaken clock-in. It removes the clock-in record (and its selfie/GPS) so the manager no longer shows as clocked in — letting you set their absence on the attendance sheet. Owner-only and cannot be undone.")) return;
-                                try {
-                                  await window.BOA_DB.deleteClockin(r.id);
-                                  setMgrClockinRows(prev => (prev || []).filter(x => x.id !== r.id));
-                                  if (logActivity) logActivity("Deleted clock-in", who + " · " + t.lbl, fmtDate(r.ts) + " · " + (r.branch || (r.staff && r.staff.branch) || "—"), "Manager Check-ins");
-                                } catch (e) { window.alert("Could not delete clock-in: " + ((e && e.message) || e)); }
-                              }}
-                              title="Owner only: delete this clock-in (e.g. a test entry) so you can set the manager's absence"
-                              style={{ background: "#fff", color: "#b91c1c", border: "1px solid #fecaca", borderRadius: 7, padding: "3px 8px", fontWeight: 700, fontSize: 10, cursor: "pointer", whiteSpace: "nowrap" }}>🗑 Delete</button>
-                          )}
-                        </div>
-                      </div>
-                      <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
-                        {photo ? (
-                          <button onClick={() => setMgrClockinPhoto({ url: photo, name: r.staff && r.staff.name, ts: r.ts, type: r.type, dist, oor })} style={{ padding: 0, border: "1px solid #FBCFE8", borderRadius: 8, background: "#FCE7F3", cursor: "pointer", overflow: "hidden", flexShrink: 0 }}>
-                            <img src={photo} alt="selfie" style={{ width: 80, height: 100, objectFit: "cover", display: "block" }} />
-                          </button>
-                        ) : (
-                          <div style={{ width: 80, height: 100, borderRadius: 8, background: "#f3f4f6", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, color: "#9ca3af", flexShrink: 0, textAlign: "center", padding: 6 }}>no photo</div>
-                        )}
-                        <div style={{ flex: 1, fontSize: 11, color: "#374151", lineHeight: 1.6 }}>
-                          <div>📅 {fmtDate(r.ts)}</div>
-                          {dist !== null && dist !== undefined ? (
-                            <div style={{ color: oor ? "#7f1d1d" : "#14532d" }}>
-                              📍 {dist}m from store{oor ? " ⚠ OUT OF RANGE" : ""}
+                    {group.rows.map(r => {
+                      const t = typeLabel(r.type);
+                      const meta = mgrClockinMeta[r.id] || {};
+                      const photo = meta.photo;
+                      const dist = meta.distanceM;
+                      const oor = meta.outOfRange;
+                      return (
+                        <div key={r.id} style={{ background: "#FFFFFF", borderRadius: 11, border: "1px solid #FBCFE8", padding: "10px 12px" }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 8 }}>
+                            <div>
+                              <div style={{ fontSize: 13, fontWeight: 700, color: "#831843" }}>{r.staff && r.staff.name}</div>
+                              <div style={{ fontSize: 10, fontFamily: "monospace", color: "#9ca3af" }}>{r.staff && r.staff.employee_code} · {r.branch || (r.staff && r.staff.branch) || "—"}</div>
                             </div>
-                          ) : (
-                            <div style={{ color: "#9ca3af" }}>📍 no GPS</div>
-                          )}
-                          {r.type === "out_auto" && <div style={{ color: "#7f1d1d", fontWeight: 600 }}>⚠ Forgot to clock out</div>}
+                            <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
+                              <span style={{ fontSize: 9, fontWeight: 800, padding: "3px 8px", borderRadius: 99, background: t.bg, color: t.fg, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>{t.lbl}</span>
+                              {currentUser && currentUser.isOwner && (
+                                <button
+                                  onClick={async () => {
+                                    const who = (r.staff && r.staff.name) || (r.staff && r.staff.employee_code) || "this manager";
+                                    if (!window.confirm("Delete this clock-in for " + who + "?\n\n" + t.lbl + " · " + fmtDate(r.ts) + "\n\nUse this only for a test or mistaken clock-in. It removes the clock-in record (and its selfie/GPS) so the manager no longer shows as clocked in — letting you set their absence on the attendance sheet. Owner-only and cannot be undone.")) return;
+                                    try {
+                                      await window.BOA_DB.deleteClockin(r.id);
+                                      setMgrClockinRows(prev => (prev || []).filter(x => x.id !== r.id));
+                                      if (logActivity) logActivity("Deleted clock-in", who + " · " + t.lbl, fmtDate(r.ts) + " · " + (r.branch || (r.staff && r.staff.branch) || "—"), "Manager Check-ins");
+                                    } catch (e) { window.alert("Could not delete clock-in: " + ((e && e.message) || e)); }
+                                  }}
+                                  title="Owner only: delete this clock-in (e.g. a test entry) so you can set the manager's absence"
+                                  style={{ background: "#fff", color: "#b91c1c", border: "1px solid #fecaca", borderRadius: 7, padding: "3px 8px", fontWeight: 700, fontSize: 10, cursor: "pointer", whiteSpace: "nowrap" }}>🗑 Delete</button>
+                              )}
+                            </div>
+                          </div>
+                          <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+                            {photo ? (
+                              <button onClick={() => setMgrClockinPhoto({ url: photo, name: r.staff && r.staff.name, ts: r.ts, type: r.type, dist, oor })} style={{ padding: 0, border: "1px solid #FBCFE8", borderRadius: 8, background: "#FCE7F3", cursor: "pointer", overflow: "hidden", flexShrink: 0 }}>
+                                <img src={photo} alt="selfie" style={{ width: 80, height: 100, objectFit: "cover", display: "block" }} />
+                              </button>
+                            ) : (
+                              <div style={{ width: 80, height: 100, borderRadius: 8, background: "#f3f4f6", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, color: "#9ca3af", flexShrink: 0, textAlign: "center", padding: 6 }}>no photo</div>
+                            )}
+                            <div style={{ flex: 1, fontSize: 11, color: "#374151", lineHeight: 1.6 }}>
+                              <div>📅 {fmtDate(r.ts)}</div>
+                              {dist !== null && dist !== undefined ? (
+                                <div style={{ color: oor ? "#7f1d1d" : "#14532d" }}>
+                                  📍 {dist}m from store{oor ? " ⚠ OUT OF RANGE" : ""}
+                                </div>
+                              ) : (
+                                <div style={{ color: "#9ca3af" }}>📍 no GPS</div>
+                              )}
+                              {r.type === "out_auto" && <div style={{ color: "#7f1d1d", fontWeight: 600 }}>⚠ Forgot to clock out</div>}
+                            </div>
+                          </div>
                         </div>
-                      </div>
-                    </div>
-                  );
-                })}
+                      );
+                    })}
                   </div>
                 </div>
               ))
@@ -36616,7 +36687,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           weekDays.push({
             ymd: ymdToStr(d),
             dom: d.getDate(),
-            dowLbl: ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"][i],
+            dowLbl: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][i],
             dayLbl: d.toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }),
             isToday: ymdToStr(d) === todayYmd,
             isWeekend: i >= 5,
@@ -37128,10 +37199,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // small-icon + short label so it fits inside the W block.
         const _ABS_STYLE = {
           sick_n: { bg: "#FEE2E2", fg: "#7F1D1D", lbl: "🤒 SICK + NOTE" },
-          sick:   { bg: "#FEE2E2", fg: "#7F1D1D", lbl: "🤒 SICK" },
-          frl:    { bg: "#FEF3C7", fg: "#92400E", lbl: "👪 FRL" },
+          sick: { bg: "#FEE2E2", fg: "#7F1D1D", lbl: "🤒 SICK" },
+          frl: { bg: "#FEF3C7", fg: "#92400E", lbl: "👪 FRL" },
           absent: { bg: "#FECDD3", fg: "#9F1239", lbl: "🚫 ABSENT" },
-          no:     { bg: "#7F1D1D", fg: "#FFFFFF", lbl: "⛔ NO SHOW" }
+          no: { bg: "#7F1D1D", fg: "#FFFFFF", lbl: "⛔ NO SHOW" }
         };
 
         // Coverage per branch per day — count managers scheduled to work.
@@ -37345,7 +37416,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 const destKey = dl.toBranch + "|" + ym;
                 const code = removing ? null
                   : ((mergedByKey[destKey] && mergedByKey[destKey][dEc]
-                      && (mergedByKey[destKey][dEc][date] || mergedByKey[destKey][dEc][domN] || mergedByKey[destKey][dEc][String(domN)])) || "W");
+                    && (mergedByKey[destKey][dEc][date] || mergedByKey[destKey][dEc][domN] || mergedByKey[destKey][dEc][String(domN)])) || "W");
                 await patchApprovedSnapshotRow(dl.toBranch, ym, true, dEc, (srow) => {
                   if (removing) {
                     const had = srow[date] != null || srow[domN] != null || srow[String(domN)] != null;
@@ -37739,30 +37810,30 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const _draftStale = _draftAgeMin >= 60;
               const _ageLbl = _draftAgeMin >= 60 ? Math.floor(_draftAgeMin / 60) + "h " + (_draftAgeMin % 60) + "m" : _draftAgeMin + " min";
               return (
-              <div style={{ position: "sticky", top: 0, zIndex: 40, background: _draftStale ? "#FEF2F2" : "#FFFBEB", border: _draftStale ? "2px solid #F87171" : "1px solid #FCD34D", borderRadius: 11, padding: "10px 14px", marginBottom: 14, display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", boxShadow: "0 4px 10px rgba(0,0,0,0.07)" }}>
-                <div style={{ flex: 1, minWidth: 220 }}>
-                  <div style={{ fontSize: 13, fontWeight: 800, color: _draftStale ? "#7F1D1D" : "#92400E" }}>
-                    {_draftStale ? "⚠" : "📝"} {_draftChangeCount} pending shift change{_draftChangeCount === 1 ? "" : "s"}
-                    {mgrCoverageDraftLoans.filter(l => l._op !== "remove").length > 0 ? (
-                      <> · {mgrCoverageDraftLoans.filter(l => l._op !== "remove").length} cross-store loan{mgrCoverageDraftLoans.filter(l => l._op !== "remove").length === 1 ? "" : "s"}</>
-                    ) : null}
-                    {mgrCoverageDraftSince ? <> · unapplied for {_ageLbl}</> : null}
+                <div style={{ position: "sticky", top: 0, zIndex: 40, background: _draftStale ? "#FEF2F2" : "#FFFBEB", border: _draftStale ? "2px solid #F87171" : "1px solid #FCD34D", borderRadius: 11, padding: "10px 14px", marginBottom: 14, display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", boxShadow: "0 4px 10px rgba(0,0,0,0.07)" }}>
+                  <div style={{ flex: 1, minWidth: 220 }}>
+                    <div style={{ fontSize: 13, fontWeight: 800, color: _draftStale ? "#7F1D1D" : "#92400E" }}>
+                      {_draftStale ? "⚠" : "📝"} {_draftChangeCount} pending shift change{_draftChangeCount === 1 ? "" : "s"}
+                      {mgrCoverageDraftLoans.filter(l => l._op !== "remove").length > 0 ? (
+                        <> · {mgrCoverageDraftLoans.filter(l => l._op !== "remove").length} cross-store loan{mgrCoverageDraftLoans.filter(l => l._op !== "remove").length === 1 ? "" : "s"}</>
+                      ) : null}
+                      {mgrCoverageDraftSince ? <> · unapplied for {_ageLbl}</> : null}
+                    </div>
+                    <div style={{ fontSize: 11, color: _draftStale ? "#7F1D1D" : "#92400E", marginTop: 2, opacity: 0.9 }}>
+                      {_draftStale
+                        ? "These changes are ONLY visible here — the kiosk, myboa and Scheduling are still showing the old roster. Click \"Apply to live\" to publish them."
+                        : "Showing as a preview. Nothing is saved to the kiosk or Scheduling tab yet — click \"Apply to live\" to commit, or \"Discard\" to revert."}
+                    </div>
                   </div>
-                  <div style={{ fontSize: 11, color: _draftStale ? "#7F1D1D" : "#92400E", marginTop: 2, opacity: 0.9 }}>
-                    {_draftStale
-                      ? "These changes are ONLY visible here — the kiosk, myboa and Scheduling are still showing the old roster. Click \"Apply to live\" to publish them."
-                      : "Showing as a preview. Nothing is saved to the kiosk or Scheduling tab yet — click \"Apply to live\" to commit, or \"Discard\" to revert."}
-                  </div>
+                  <button onClick={_discardDraft} disabled={mgrCoverageDraftApplying}
+                    style={{ background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 8, padding: "8px 14px", cursor: mgrCoverageDraftApplying ? "not-allowed" : "pointer", fontSize: 12, fontWeight: 700, opacity: mgrCoverageDraftApplying ? 0.6 : 1 }}>
+                    ↺ Discard
+                  </button>
+                  <button onClick={_applyDraft} disabled={mgrCoverageDraftApplying}
+                    style={{ background: mgrCoverageDraftApplying ? "#FBCFE8" : "#16A34A", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", cursor: mgrCoverageDraftApplying ? "not-allowed" : "pointer", fontSize: 13, fontWeight: 800 }}>
+                    {mgrCoverageDraftApplying ? "Applying…" : "✓ Apply to live"}
+                  </button>
                 </div>
-                <button onClick={_discardDraft} disabled={mgrCoverageDraftApplying}
-                  style={{ background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 8, padding: "8px 14px", cursor: mgrCoverageDraftApplying ? "not-allowed" : "pointer", fontSize: 12, fontWeight: 700, opacity: mgrCoverageDraftApplying ? 0.6 : 1 }}>
-                  ↺ Discard
-                </button>
-                <button onClick={_applyDraft} disabled={mgrCoverageDraftApplying}
-                  style={{ background: mgrCoverageDraftApplying ? "#FBCFE8" : "#16A34A", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", cursor: mgrCoverageDraftApplying ? "not-allowed" : "pointer", fontSize: 13, fontWeight: 800 }}>
-                  {mgrCoverageDraftApplying ? "Applying…" : "✓ Apply to live"}
-                </button>
-              </div>
               );
             })()}
 
@@ -37873,35 +37944,35 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       return rows.map(({ m, b, r }) => {
                         const _isOff = !!m._offGhost;
                         return (
-                        <tr key={m.ec + "-" + b + (m.isShadow ? "-shadow" : "")} style={{ opacity: _isOff ? 0.55 : 1 }}>
-                          <td style={{ padding: "6px 14px", borderBottom: "1px solid #FCE7F3", background: _isOff ? "#f9fafb" : (m._guestFromBranch ? "#eff6ff" : (m.isShadow ? "#eff6ff" : (m.transferring ? "#fffbeb" : undefined))) }}>
-                            <div style={{ fontWeight: 700, color: _isOff ? "#9ca3af" : "#831843", fontSize: 12.5, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", textDecoration: _isOff ? "line-through" : "none" }}>
-                              <span>{_effectiveRole(m) === "SSM" ? "💎 " : _effectiveRole(m) === "SM" ? "👑 " : _effectiveRole(m) === "AM" ? "⭐ " : ""}{m.name}</span>
-                              {m._guestFromBranch && (
-                                <span title={"Guest manager — home branch is " + m._guestFromBranch} style={{ background: "#dbeafe", color: "#1e40af", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em", textDecoration: "none" }}>↪ GUEST FROM {m._guestFromBranch}</span>
-                              )}
-                              {m.isShadow && m.transferFrom && (
-                                <span style={{ background: "#dbeafe", color: "#1e40af", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em", textDecoration: "none" }}>🔄 FROM {m.transferFrom}{m.transferDate ? " · " + new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>
-                              )}
-                              {!m.isShadow && m.transferring && m.transferTo && (
-                                <span style={{ background: "#fef3c7", color: "#92400e", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em", textDecoration: "none" }}>🔄 → {m.transferTo}{m.transferDate ? " · " + new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>
-                              )}
-                            </div>
-                            <div style={{ fontSize: 10, color: "#9ca3af" }}>
-                              📍 {b} <span style={{ background: r.bg, color: r.color, padding: "1px 6px", borderRadius: 4, fontWeight: 700, marginLeft: 4 }}>{r.label}</span>
-                              <span style={{ marginLeft: 6, fontFamily: "monospace" }}>{_effectiveRole(m) || ""}{m.role === "AM" && _effectiveRole(m) === "SM" ? " (trial)" : ""}</span>
-                            </div>
-                            {_isOff && (
-                              <div style={{ marginTop: 2, fontSize: 10, color: "#991b1b", fontWeight: 700 }}>
-                                👋 LEFT {m._offLeftDate}{m._offReason ? " · " + m._offReason : ""}
+                          <tr key={m.ec + "-" + b + (m.isShadow ? "-shadow" : "")} style={{ opacity: _isOff ? 0.55 : 1 }}>
+                            <td style={{ padding: "6px 14px", borderBottom: "1px solid #FCE7F3", background: _isOff ? "#f9fafb" : (m._guestFromBranch ? "#eff6ff" : (m.isShadow ? "#eff6ff" : (m.transferring ? "#fffbeb" : undefined))) }}>
+                              <div style={{ fontWeight: 700, color: _isOff ? "#9ca3af" : "#831843", fontSize: 12.5, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", textDecoration: _isOff ? "line-through" : "none" }}>
+                                <span>{_effectiveRole(m) === "SSM" ? "💎 " : _effectiveRole(m) === "SM" ? "👑 " : _effectiveRole(m) === "AM" ? "⭐ " : ""}{m.name}</span>
+                                {m._guestFromBranch && (
+                                  <span title={"Guest manager — home branch is " + m._guestFromBranch} style={{ background: "#dbeafe", color: "#1e40af", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em", textDecoration: "none" }}>↪ GUEST FROM {m._guestFromBranch}</span>
+                                )}
+                                {m.isShadow && m.transferFrom && (
+                                  <span style={{ background: "#dbeafe", color: "#1e40af", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em", textDecoration: "none" }}>🔄 FROM {m.transferFrom}{m.transferDate ? " · " + new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>
+                                )}
+                                {!m.isShadow && m.transferring && m.transferTo && (
+                                  <span style={{ background: "#fef3c7", color: "#92400e", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em", textDecoration: "none" }}>🔄 → {m.transferTo}{m.transferDate ? " · " + new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>
+                                )}
                               </div>
-                            )}
-                          </td>
-                          {weekDays.map(d => {
-                            const v = _covCell(b, m.ec, d);
-                            return renderCell(v, m.ec + "-" + d.ymd, b, _effectiveRole(m), d.ymd, m.ec, m._guestFromBranch || null, d.mgrYm, m.name, d.dom, d.dow, m);
-                          })}
-                        </tr>
+                              <div style={{ fontSize: 10, color: "#9ca3af" }}>
+                                📍 {b} <span style={{ background: r.bg, color: r.color, padding: "1px 6px", borderRadius: 4, fontWeight: 700, marginLeft: 4 }}>{r.label}</span>
+                                <span style={{ marginLeft: 6, fontFamily: "monospace" }}>{_effectiveRole(m) || ""}{m.role === "AM" && _effectiveRole(m) === "SM" ? " (trial)" : ""}</span>
+                              </div>
+                              {_isOff && (
+                                <div style={{ marginTop: 2, fontSize: 10, color: "#991b1b", fontWeight: 700 }}>
+                                  👋 LEFT {m._offLeftDate}{m._offReason ? " · " + m._offReason : ""}
+                                </div>
+                              )}
+                            </td>
+                            {weekDays.map(d => {
+                              const v = _covCell(b, m.ec, d);
+                              return renderCell(v, m.ec + "-" + d.ymd, b, _effectiveRole(m), d.ymd, m.ec, m._guestFromBranch || null, d.mgrYm, m.name, d.dom, d.dow, m);
+                            })}
+                          </tr>
                         );
                       });
                     })()}
@@ -37953,9 +38024,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const activeRows = filtered.filter(r => !r.archived_at);
         const totals = activeRows.reduce((acc, r) => {
           acc.revenue += Number(r.total) || 0;
-          acc.cash    += Number(r.cash)  || 0;
-          acc.banked  += Number(r.amount_banked) || 0;
-          acc.tips    += Number(r.card_tips) || 0;
+          acc.cash += Number(r.cash) || 0;
+          acc.banked += Number(r.amount_banked) || 0;
+          acc.tips += Number(r.card_tips) || 0;
           acc.manualD += Number(r.manual_discounts) || 0;
           return acc;
         }, { revenue: 0, cash: 0, banked: 0, tips: 0, manualD: 0 });
@@ -38005,10 +38076,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const selIsFuture = cashupDate > _todayYmd;
         const missingBranches = (cashupDate >= CASHUP_GO_LIVE && !selIsFuture)
           ? branchesToCheck.filter(s =>
-              cashupDate >= expectedFrom(s.name) &&
-              !(Array.isArray(s.closedDow) && s.closedDow.includes(selDow)) &&
-              !submittedSet.has(s.name)
-            ).map(s => s.name)
+            cashupDate >= expectedFrom(s.name) &&
+            !(Array.isArray(s.closedDow) && s.closedDow.includes(selDow)) &&
+            !submittedSet.has(s.name)
+          ).map(s => s.name)
           : [];
         const missingCount = missingBranches.length;
         // Day-navigator helpers.
@@ -38176,7 +38247,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             <strong style={{ color: "#14532d" }}>Yes</strong>
                             {" · "}{_fmtMoney(r.amount_banked)}
                             {r.banking_ref && <> · ref <em>{r.banking_ref}</em></>}
-                            {r.banked_by   && <> · by <em>{r.banked_by}</em></>}
+                            {r.banked_by && <> · by <em>{r.banked_by}</em></>}
                             {r.banking_slip && <> · <a href="#" onClick={e => { e.preventDefault(); setCashupSlipModal({ url: r.banking_slip, branch: r.branch, date: r.date }); }} style={{ color: "#BE185D", fontWeight: 700 }}>slip</a></>}
                           </span>
                         );
@@ -38829,16 +38900,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         };
         const _setDraft = (next) => setMgrCellEditor(prev => prev ? { ...prev, ...next } : null);
         const _opts = [
-          { code: "W",  lbl: "Work · standard" },
+          { code: "W", lbl: "Work · standard" },
           { code: "WE", lbl: "Work early" },
           { code: "WL", lbl: "Work late" },
           { code: "WM", lbl: "Work middle shift" },
           { code: "WB", lbl: "Work Bonus shift" },
-          { code: "E",  lbl: "Extra cover" },
-          { code: "O",  lbl: "Off" },
-          { code: "R",  lbl: "Requested off" },
-          { code: "L",  lbl: "Annual leave" },
-          { code: "",   lbl: "(clear cell)" }
+          { code: "E", lbl: "Extra cover" },
+          { code: "O", lbl: "Off" },
+          { code: "R", lbl: "Requested off" },
+          { code: "L", lbl: "Annual leave" },
+          { code: "", lbl: "(clear cell)" }
         ];
         const otherBranches = SALONS.map(s => s.name).filter(b => b !== E.branch);
         const draftCode = E._draftCode != null ? E._draftCode : E.currentCell;
@@ -39155,17 +39226,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   {(g.branches || []).length === 0
                     ? <div style={{ fontSize: 11, color: "#9ca3af", fontStyle: "italic", padding: "4px 0" }}>No stores in this group yet — add some from the dropdown below.</div>
                     : <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 4 }}>
-                        {g.branches.map((b, bi) => (
-                          <div key={b} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#FDEEF5", border: "1px solid #FBCFE8", borderRadius: 7, padding: "4px 8px", fontSize: 12 }}>
-                            <span style={{ fontWeight: 700, color: "#831843" }}>📍 {b}</span>
-                            <span style={{ display: "flex", gap: 2 }}>
-                              <button onClick={() => moveBranch(gi, bi, -1)} disabled={bi === 0} style={{ background: "transparent", border: "none", cursor: bi === 0 ? "default" : "pointer", fontSize: 11, color: "#831843", padding: "0 4px", opacity: bi === 0 ? 0.3 : 1 }}>▲</button>
-                              <button onClick={() => moveBranch(gi, bi, 1)} disabled={bi === g.branches.length - 1} style={{ background: "transparent", border: "none", cursor: bi === g.branches.length - 1 ? "default" : "pointer", fontSize: 11, color: "#831843", padding: "0 4px", opacity: bi === g.branches.length - 1 ? 0.3 : 1 }}>▼</button>
-                              <button onClick={() => removeBranch(gi, b)} title="Remove from group" style={{ background: "transparent", border: "none", cursor: "pointer", fontSize: 13, color: "#7f1d1d", padding: "0 4px" }}>×</button>
-                            </span>
-                          </div>
-                        ))}
-                      </div>
+                      {g.branches.map((b, bi) => (
+                        <div key={b} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#FDEEF5", border: "1px solid #FBCFE8", borderRadius: 7, padding: "4px 8px", fontSize: 12 }}>
+                          <span style={{ fontWeight: 700, color: "#831843" }}>📍 {b}</span>
+                          <span style={{ display: "flex", gap: 2 }}>
+                            <button onClick={() => moveBranch(gi, bi, -1)} disabled={bi === 0} style={{ background: "transparent", border: "none", cursor: bi === 0 ? "default" : "pointer", fontSize: 11, color: "#831843", padding: "0 4px", opacity: bi === 0 ? 0.3 : 1 }}>▲</button>
+                            <button onClick={() => moveBranch(gi, bi, 1)} disabled={bi === g.branches.length - 1} style={{ background: "transparent", border: "none", cursor: bi === g.branches.length - 1 ? "default" : "pointer", fontSize: 11, color: "#831843", padding: "0 4px", opacity: bi === g.branches.length - 1 ? 0.3 : 1 }}>▼</button>
+                            <button onClick={() => removeBranch(gi, b)} title="Remove from group" style={{ background: "transparent", border: "none", cursor: "pointer", fontSize: 13, color: "#7f1d1d", padding: "0 4px" }}>×</button>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
                   }
                   {unassigned.length > 0 && (
                     <div style={{ marginTop: 8 }}>
@@ -39406,7 +39477,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               try {
                 const rows = await window.BOA_DB.loadManagerDayStatuses(60);
                 setMgrDayStatuses(rows || []);
-              } catch (_) {}
+              } catch (_) { }
               setMgrReasonModal(null);
             }}
           />
