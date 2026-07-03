@@ -862,6 +862,23 @@
     // Per-manager custom shift hours (set in the HR portal coverage view),
     // layered over the computed times on the Manager Schedule view.
     var customTimes = (isMgr && window.APP_DATA.getMgrTimes) ? ((await window.APP_DATA.getMgrTimes()) || {}) : {};
+    // Manager day-loans (boa_mgr_loans_v1) — the DURABLE "away" signal. Keyed
+    // ec → { ymd: toBranch } for loans OUT of this branch, so a manager loaned
+    // to another store renders as "→ dest" here even when a re-publish clobbered
+    // her home cell back to a work code (the bug this guards against). Manager
+    // view only; mirrors Manager Coverage + My BOA, which honour the record too.
+    var mgrLoanByEcYmd = {};
+    if (isMgr && window.APP_DATA.listMgrLoans) {
+      try {
+        var _mls = (await window.APP_DATA.listMgrLoans()) || [];
+        _mls.forEach(function (l) {
+          if (!l || !l.ec || !l.date || !l.toBranch) return;
+          if (l.fromBranch !== thisBranch || l.toBranch === thisBranch) return;   // only loans OUT of here
+          var _le = String(l.ec).trim();
+          (mgrLoanByEcYmd[_le] = mgrLoanByEcYmd[_le] || {})[l.date] = l.toBranch;
+        });
+      } catch (_mlErr) { /* overlay only — never block the schedule view */ }
+    }
     var days  = window.APP_DATA.periodDays(ym);
     // Re-derived split-shift manager labels (WE/WM/WL/WB) so the kiosk shows the
     // SAME shift Manager Coverage / myboa show, instead of the raw saved "W".
@@ -1004,7 +1021,15 @@
         var classes = '';
         if (d.isToday) classes += ' sched-today';
         if (weekStartAt(d, i)) classes += ' sched-week-start';
-        if (cell) {
+        // On loan to another store this day — driven by the durable loan record
+        // (or a leftover loan_out cell). Show "→ dest" instead of a home shift or
+        // the literal "loan_out" text. Maternity / legal / leave still win above.
+        var _awayTo = (!blanked && isMgr) ? (mgrLoanByEcYmd[String(s.employee_code || "").trim()] || {})[_ymd] : null;
+        if ((_awayTo || cell === "loan_out") && cell !== "ML" && cell !== "EL" && cell !== "L") {
+          var _awayDest = _awayTo || "another store";
+          var _awayShort = _awayDest.length > 8 ? _awayDest.slice(0, 7) + "…" : _awayDest;
+          html += '<td class="sched-cell sched-st-away' + classes + '" style="text-align:center;background:#eff6ff;color:#1e3a8a;font-weight:700;font-size:11px" title="' + esc("On loan to " + _awayDest + " this day — not working at " + thisBranch) + '">→ ' + esc(_awayShort) + '</td>';
+        } else if (cell) {
           // Hover-only full time on Manager view so the cell stays
           // visually clean but the exact hours are reachable on tap.
           var _title = "";

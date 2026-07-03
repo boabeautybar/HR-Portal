@@ -37015,6 +37015,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         scopedBranches.forEach(s => {
           const _seen = new Set(mgrByBranch[s.name].map(m => String(m.ec || "").trim()));
           let _gridEcsCount = 0, _resolvedCount = 0, _unresolved = [];
+          const _orphanGuests = [];
           let _ymsSeen = new Set();
           weekDays.forEach(d => {
             // Use the draft-merged view so cross-store loans staged in the
@@ -37052,6 +37053,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 _seen.add(ecKey);
                 if (_gLd && _gLd < weekDays[0].ymd) continue;
                 _resolvedCount++;
+                // Orphan guest = surfaced here (has a work cell at this branch)
+                // but NOT backed by a loan record INTO this branch (live or
+                // staged). That's a double-booking — her home branch still
+                // schedules her, with no loan to reconcile it (the Danel /
+                // Cobble-Walk defect). Arriving transfers live in the roster
+                // (_seen) and never reach this branch, so they aren't flagged.
+                const _guestBacked = (mgrLoanRows || []).some(l => l && String(l.ec).trim() === ecKey && l.toBranch === s.name)
+                  || (mgrCoverageDraftLoans || []).some(l => l && String(l.ec).trim() === ecKey && l.toBranch === s.name && l._op !== "remove");
+                if (!_guestBacked && !_gLd) _orphanGuests.push({ name: person.name || ecKey, home: person.branch || "?" });
                 mgrByBranch[s.name].push(_gLd
                   ? { ...person, _guestFromBranch: person.branch || "?", _offGhost: true, _offLeftDate: _gLd, _offReason: _resolveLeftReason(person) }
                   : { ...person, _guestFromBranch: person.branch || "?" });
@@ -37062,7 +37072,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             ymsLoaded: Array.from(_ymsSeen),
             gridEcsCount: _gridEcsCount,
             resolvedCount: _resolvedCount,
-            unresolvedEcs: Array.from(new Set(_unresolved)).slice(0, 8)
+            unresolvedEcs: Array.from(new Set(_unresolved)).slice(0, 8),
+            orphanGuests: _orphanGuests.slice(0, 8)
           };
         });
         // Sort: maternity-leave managers pinned at the bottom, then
@@ -37221,6 +37232,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             (mgrByBranch[s.name] || []).forEach(m => {
               const ld = m._offLeftDate || m.leftDate;
               if (ld && d.ymd > ld) return;       // already gone — don't count
+              // On loan elsewhere this day → not covering here. Honour the loan
+              // RECORD even if a re-publish clobbered the home cell back to "W",
+              // so a loaned-out manager never inflates home coverage.
+              const _cvLoan = _loansByEcYmd[String(m.ec).trim() + "|" + d.ymd];
+              if (_cvLoan && _cvLoan.toBranch && _cvLoan.toBranch !== s.name) return;
               if (isWorking(readWithFallback(s.name, m.ec, d))) count++;
             });
             return { count, gridLoaded: !!(wGrid || aGrid) };
@@ -37564,7 +37580,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           }
           const clockedIn = ec && ymd && _clockedInByEcYmd[String(ec).trim()] && _clockedInByEcYmd[String(ec).trim()][ymd];
           const isPast = ymd && ymd < (function () { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); })();
-          const _dragDraggable = _isSrcDraggable(cellVal);
+          // Cross-store loan is driven by the loan RECORD (live or staged) — the
+          // durable source of truth. A re-publish can clobber the home grid cell
+          // back to a work code; honouring the record here (not only a loan_out
+          // cell) stops the manager silently double-booking home + destination.
+          const _loanRec = ec && ymd ? _loansByEcYmd[String(ec).trim() + "|" + ymd] : null;
+          const _draftLoUp = ec && ymd ? (mgrCoverageDraftLoans || []).find(l => String(l.ec).trim() === String(ec).trim() && l.date === ymd && l._op !== "remove") : null;
+          const _draftLoRemove = ec && ymd ? (mgrCoverageDraftLoans || []).some(l => String(l.ec).trim() === String(ec).trim() && l.date === ymd && l._op === "remove") : false;
+          const _activeLoan = _draftLoUp || (_loanRec && !_draftLoRemove ? _loanRec : null);
+          const _awayToBranch = _activeLoan && _activeLoan.toBranch && _activeLoan.toBranch !== branchName ? _activeLoan.toBranch : null;
+          // An away cell behaves like loan_out for dragging: not draggable itself,
+          // but still a valid drop target (so a shift can be dropped back onto it).
+          const _dragDraggable = _isSrcDraggable(_awayToBranch ? "loan_out" : cellVal);
           // Transfer-edge: mid-month branch move. A shadow row at the
           // destination branch shows '←Src' for days BEFORE transferDate
           // (still on the source schedule); the source-side row shows
@@ -37581,7 +37608,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             : xferEdge === "out" ? (manager.transferTo || "")
               : null;
           const tdStyle = { background: "#fff", borderLeft: "1px solid #FCE7F3", borderBottom: "1px solid #FCE7F3", padding: 4, verticalAlign: "middle", cursor: ec && !xferEdge ? (_dragDraggable ? "grab" : "pointer") : "default", userSelect: "none", WebkitUserSelect: "none" };
-          const _dh = xferEdge ? {} : _dragHandlers(cellVal, branchName, mgrYm, ec, dom, ymd, mgrName);
+          const _dh = xferEdge ? {} : _dragHandlers(_awayToBranch ? "loan_out" : cellVal, branchName, mgrYm, ec, dom, ymd, mgrName);
           const onCellClick = () => openCellEditor(branchName, mgrYm, dom, ymd, ec, mgrName, role, cellVal || "");
           if (xferEdge) {
             const otherLbl = xferOther === "Green Point" ? "GP" : (xferOther || "").slice(0, 4);
@@ -37611,21 +37638,23 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // hatch so it's obvious this manager isn't covering the home
           // store that day. The destination branch's row shows them
           // working normally; only the home side reads as away.
-          if (cellVal === "loan_out") {
-            const lo = _loansByEcYmd[String(ec).trim() + "|" + ymd];
-            const draftLo = (mgrCoverageDraftLoans || []).find(l => String(l.ec).trim() === String(ec).trim() && l.date === ymd && l._op !== "remove");
+          if (cellVal === "loan_out" || _awayToBranch) {
+            const lo = _loanRec;
+            const draftLo = _draftLoUp;
             // Orphaned loan_out — the loan was reversed (record gone) but the
             // grid cell was left behind. Treat it as a cleared, clickable cell
             // instead of a phantom "AWAY → Other store". Opening it seeds a
             // blank code + no destination, so saving clears the stale cell.
-            if (!lo && !draftLo) {
+            // Only for a real loan_out cell; a work cell reaches here only when a
+            // loan record backs it (_awayToBranch), so it's never an orphan.
+            if (cellVal === "loan_out" && !lo && !draftLo) {
               return (
                 <td key={key} {..._dh} onClick={ec ? onCellClick : undefined} title={ec ? "Click to add a shift · drop a dragged shift here" : ""} style={{ ...tdStyle, textAlign: "center" }}>
                   <div style={{ minHeight: 56, display: "flex", alignItems: "center", justifyContent: "center", color: ec ? "#FBCFE8" : "#e5e7eb", fontSize: 18, transition: "color 0.15s" }}>＋</div>
                 </td>
               );
             }
-            const destLbl = (draftLo && draftLo.toBranch) || (lo && lo.toBranch) || "Other store";
+            const destLbl = _awayToBranch || (draftLo && draftLo.toBranch) || (lo && lo.toBranch) || "Other store";
             const _loanExtra = !!((draftLo && draftLo.extra) || (lo && lo.extra));
             return (
               <td key={key} {..._dh} onClick={onCellClick} title={"Not covering " + branchName + " — on loan to " + destLbl + " this day" + (_loanExtra ? " (Extra Day — home pays the extra)" : "")} style={{ ...tdStyle, textAlign: "center" }}>
@@ -37861,8 +37890,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                       if (!dg) return null;
                                       const noSchedule = !dg.ymsLoaded || dg.ymsLoaded.length === 0 || dg.gridEcsCount === 0;
                                       if (noSchedule) return <div style={{ fontSize: 10, fontWeight: 600, color: "#7f1d1d", marginTop: 2 }}>⚠ No manager schedule published for this branch in the visible cycle.</div>;
-                                      if (dg.unresolvedEcs.length > 0) return <div style={{ fontSize: 10, fontWeight: 600, color: "#92400e", marginTop: 2 }}>⚠ {dg.unresolvedEcs.length} EC{dg.unresolvedEcs.length === 1 ? "" : "s"} in schedule not on staff list: {dg.unresolvedEcs.join(", ")}</div>;
-                                      return null;
+                                      const _warns = [];
+                                      if (dg.unresolvedEcs.length > 0) _warns.push(<div key="unres" style={{ fontSize: 10, fontWeight: 600, color: "#92400e", marginTop: 2 }}>⚠ {dg.unresolvedEcs.length} EC{dg.unresolvedEcs.length === 1 ? "" : "s"} in schedule not on staff list: {dg.unresolvedEcs.join(", ")}</div>);
+                                      if (dg.orphanGuests && dg.orphanGuests.length > 0) _warns.push(<div key="orphan" style={{ fontSize: 10, fontWeight: 600, color: "#9f1239", marginTop: 2 }}>⚠ {dg.orphanGuests.map(g => g.name + " (home " + g.home + ")").join(", ")} scheduled here with no loan/transfer — likely double-booked with their home branch</div>);
+                                      return _warns.length ? _warns : null;
                                     })()}
                                   </th>
                                   {weekDays.map(dayHeader)}

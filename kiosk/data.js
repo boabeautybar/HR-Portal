@@ -170,6 +170,21 @@
     return arr.filter(function (l) { return l && l.date === dateIso; });
   }
 
+  // Manager day-loans — same shape as tech loans but keyed under
+  // boa_mgr_loans_v1: { _id, ec, name, date, fromBranch, toBranch, note, ... }.
+  // Used by the Manager Schedule view to redirect a loaned-out home manager to
+  // her destination store. The loan RECORD is the durable source of truth — a
+  // re-publish can clobber the home grid cell (loan_out → W), so the schedule
+  // view must overlay these rather than trust the cell alone. Whole array (no
+  // date filter) so a full-cycle grid can look up any day.
+  async function listMgrLoans() {
+    var c = client(); if (!c) return [];
+    var res = await c.from("app_state").select("value").eq("key", "boa_mgr_loans_v1").maybeSingle();
+    if (res.error) { console.error("listMgrLoans:", res.error); return []; }
+    var v = res.data && res.data.value;
+    return Array.isArray(v) ? v : [];
+  }
+
   // Kiosk reminders. The HR portal writes daily tasks to
   // boa_daily_tasks_v1. Records with target === "kiosk" are branch-
   // wide broadcasts (no per-person done tracking). For everything else
@@ -1780,7 +1795,7 @@
     isManagerRow: isManagerRow,
     branch: branch, branchDisplay: branchDisplay, todayStr: todayStr,
     listStaff: listStaff, listMaternity: listMaternity, listUnpaidLegal: listUnpaidLegal, listLeaveRecords: listLeaveRecords, loadOffboarding: loadOffboarding,
-    listTechLoans: listTechLoans, saveTechLoan: saveTechLoan, listStaffAllBranches: listStaffAllBranches,
+    listTechLoans: listTechLoans, saveTechLoan: saveTechLoan, listMgrLoans: listMgrLoans, listStaffAllBranches: listStaffAllBranches,
     calledInTodayForBranch: calledInTodayForBranch,
     listTransfersInto: listTransfersInto,
     listKioskReminders: listKioskReminders,
