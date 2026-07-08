@@ -1885,7 +1885,8 @@ const KIOSK_DEFAULT_PINS = {
   "Riverlands": "0009", "Kuils River": "0010", "Westlake": "0011", "Green Point": "0012",
   "Plumstead": "0013", "Sandown": "0014", "Cape Gate": "0015", "Winelands": "0016",
   "Betty": "0017", "Fourways": "0018", "Eastgate": "0019", "Mall of the South": "0020",
-  "Mushroom Farm": "0021", "Verdi": "0022", "Ballito": "0023"
+  "Mushroom Farm": "0021", "Verdi": "0022", "Ballito": "0023",
+  "Head Office": "0025"
 };
 
 // Manager scheduled shift times for a (role, schedule-code, branch, day-of-week).
@@ -35590,6 +35591,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const devicesByBranch = {};
         (kioskRealDevices || []).filter(d => d.active).forEach(d => { devicesByBranch[d.branch] = d; });
         const fmtSeen = (t) => t ? new Date(t).toLocaleString("en-ZA", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—";
+        // Head Office isn't a salon (not in SALONS) but its kiosk uses the same
+        // single-PIN override + device-lock, so list it here alongside the salons.
+        const pinBranches = [...SALONS, { name: HEAD_OFFICE, region: null }];
         return (
           <div style={{ padding: "0 24px" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
@@ -35599,11 +35603,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 {(() => {
-                  const allRevealed = SALONS.length > 0 && SALONS.every(s => kioskPinReveal[s.name]);
+                  const allRevealed = pinBranches.length > 0 && pinBranches.every(s => kioskPinReveal[s.name]);
                   return (
                     <button onClick={() => {
                       const next = {};
-                      if (!allRevealed) SALONS.forEach(s => { next[s.name] = true; });
+                      if (!allRevealed) pinBranches.forEach(s => { next[s.name] = true; });
                       setKioskPinReveal(next);
                     }} style={{ background: allRevealed ? "#f3f4f6" : "#FCE7F3", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 6, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>
                       {allRevealed ? "🙈 Hide all PINs" : "👁 Reveal all PINs"}
@@ -35621,7 +35625,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     {kioskSecurityConfig.disableDeviceVerification ? "🔴 Device Verification Disabled" : "🟢 Device Verification Enabled"}
                   </button>
                 )}
-                <div style={{ fontSize: 11, color: "#9ca3af" }}>{kioskPinsLoaded ? Object.keys(kioskPins).length + " custom · " + SALONS.length + " branches total" : "Loading…"}</div>
+                <div style={{ fontSize: 11, color: "#9ca3af" }}>{kioskPinsLoaded ? Object.keys(kioskPins).length + " custom · " + pinBranches.length + " branches total" : "Loading…"}</div>
               </div>
             </div>
 
@@ -35646,7 +35650,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {SALONS.map((s) => {
+                  {pinBranches.map((s) => {
                     const customPin = kioskPins[s.name] || "";
                     const defaultPin = KIOSK_DEFAULT_PINS[s.name] || "";
                     const pin = customPin || defaultPin;          // effective PIN the kiosk uses
