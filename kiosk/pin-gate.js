@@ -83,13 +83,18 @@
   }
 
   function bootGate() {
-    // Admin device (security.js): recognised on every branch with NO 4-digit PIN —
-    // go straight into the Manager dashboard.
-    if (window.APP_DEVICE_ADMIN) { autoAuth("manager"); return; }
+    // Admin device (security.js): recognised on every branch with NO 4-digit PIN.
+    // Head Office is a single-PIN STAFF kiosk with no manager dashboard, so an
+    // admin device there opens the staff app; every salon opens Manager as before.
+    if (window.APP_DEVICE_ADMIN) { autoAuth(cfg.headOffice ? "staff" : "manager"); return; }
 
-    // If already authed in this session, skip the PIN.
+    // If already authed in this session, skip the PIN. The role key is
+    // branch-agnostic, so a "manager" role carried over from a salon kiosk must
+    // still resolve to "staff" on Head Office (which has no manager surface).
     var prev = sessionStorage.getItem(STORAGE_KEY);
-    if (prev === "staff" || prev === "manager") { autoAuth(prev); return; }
+    if (prev === "staff" || prev === "manager") {
+      autoAuth(cfg.headOffice && prev === "manager" ? "staff" : prev); return;
+    }
 
     document.addEventListener("DOMContentLoaded", init);
     if (document.readyState !== "loading") init();
@@ -163,7 +168,9 @@
 
       var role = null;
       if (pin === (cfg.staffPin   || "")) role = "staff";
-      if (pin === (cfg.managerPin || "")) role = "manager";
+      // Head Office is a single-PIN STAFF kiosk (no manager dashboard) — its
+      // branch PIN opens the staff app, not the manager one.
+      if (pin === (cfg.managerPin || "")) role = cfg.headOffice ? "staff" : "manager";
 
       if (role) {
         clearFailState();

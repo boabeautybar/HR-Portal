@@ -17,10 +17,11 @@
   // Built-in store names (matches the kiosk's default branch list). We also
   // try to merge any stores added later (boa_custom_salons, public-safe).
   var STORES = [
-    "Sea Point", "Bree", "Kloof", "Claremont", "Rondebosch", "Durbanville",
+    "Sea Point", "Bree", "Kloof", "Claremont", "Rondebosch", "Durbanville", "Cobble Walk",
     "Table Bay", "Somerset West", "Riverlands", "Kuils River", "Westlake",
     "Green Point", "Plumstead", "Sandown", "Cape Gate", "Winelands", "Betty",
-    "Fourways", "Eastgate", "Mall of the South", "Mushroom Farm", "Verdi", "Ballito"
+    "Fourways", "Eastgate", "Mall of the South", "Mushroom Farm", "Verdi", "Ballito",
+    "Head Office"
   ];
 
   var CATEGORIES = [

@@ -77,7 +77,12 @@ fs.createReadStream(csvPath)
     if (cleanRow.contract === null) {
       cleanRow.contract = "NO CONTRACT";
     }
-    if (cleanRow.employee_code) {
+    // Head Office is classified by BRANCH, not by employee-code suffix — an HO
+    // person (even one with an -M code) must land as role_type "head_office" so
+    // the portal loads them into hoStaff, never into the salon manager pool.
+    if (String(cleanRow.branch || "").trim().toLowerCase() === "head office") {
+      cleanRow.role_type = "head_office";
+    } else if (cleanRow.employee_code) {
       const code = cleanRow.employee_code.toUpperCase();
       if (code.endsWith("-M")) {
         cleanRow.role_type = "manager";
