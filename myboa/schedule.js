@@ -19,7 +19,8 @@
     "Sea Point", "Bree", "Kloof", "Claremont", "Rondebosch", "Durbanville", "Cobble Walk",
     "Table Bay", "Somerset West", "Riverlands", "Kuils River", "Westlake",
     "Green Point", "Plumstead", "Sandown", "Cape Gate", "Winelands", "Betty",
-    "Fourways", "Eastgate", "Mall of the South", "Mushroom Farm", "Verdi", "Ballito"
+    "Fourways", "Eastgate", "Mall of the South", "Mushroom Farm", "Verdi", "Ballito",
+    "Head Office"
   ];
   var DOW = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
   var MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -87,6 +88,12 @@
     var isSM = r === "SM" || r === "SSM";
     var isAM = r === "AM";
     var _b = branch || "";
+    // Head Office hours (mirrors the portal): office staff a single day shift;
+    // the Call Centre & Sales floor a two-shift early/late split (WE / WL).
+    if (String(_b).trim().toLowerCase() === "head office") {
+      if (r === "CC" || r === "MCC" || r === "SALES") return code === "WL" ? "09:00 - 18:30" : "07:00 - 16:00";
+      return "08:00 - 17:00";
+    }
     if (_b === "Sandown" || _b === "Table Bay") {
       if (isSM) return "08:00 - 17:00";
       if (dow === 0) { if (code === "WE") return "08:00 - 17:00"; return "09:00 - 18:00"; }

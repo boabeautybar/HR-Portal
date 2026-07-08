@@ -37,6 +37,10 @@
   function boot() {
     root = document.getElementById("app-root");
     if (!root) return;
+    // Head Office is a restricted STAFF kiosk: branch ONCE here into its own
+    // landing/menu/clock-in path rather than threading a flag through every
+    // salon render function. Salon kiosks (no cfg.headOffice) are untouched.
+    if (cfg.headOffice) { bootHeadOffice(); return; }
     var nextMonth = window.APP_DATA ? window.APP_DATA.nextMonthLabel().split(" ")[0] : "Off";
     root.innerHTML =
       '<header class="app-header gp-header">' +
@@ -97,6 +101,296 @@
     setInterval(function () { if (document.getElementById("eval-due-slot")) refreshEvalNag(); }, 60 * 1000);
 
     renderLanding();
+  }
+
+  /* ============================================================
+     Head Office kiosk (cfg.headOffice)
+     A single-PIN staff kiosk with a restricted surface:
+       Menu:  Home · Schedule · Today · Staff · Log out
+       Tiles: Clock In (selfie mandatory) · Request Off
+     Clock-in mirrors the manager photo flow (clockins row +
+     boa_mgrclockin_meta_<id> sidecar) and marks the person
+     present on the branch attendance grid (boa_att_Head Office_*).
+     NOTE: the portal Attendance + "Head office check ins" surfaces
+     that read these writes land in Phase 5 — until they ship, the
+     rows/selfies are recorded but not yet visible in the portal, and
+     the schedule grid the roster reads must be published from the HR
+     portal (there is no HO scheduling UI yet either).
+     ============================================================ */
+  function bootHeadOffice() {
+    // Reused flows (Request Off, Schedule) call _backHandler on "← Back" — point
+    // it at the HO landing so Back never drops into the salon dashboard.
+    _backHandler = function () { renderHoLanding(); };
+    root.innerHTML =
+      '<header class="app-header gp-header">' +
+        '<div class="gp-header-inner">' +
+        '<div class="gp-left">' +
+          '<div class="boa-logo"><img class="boa-logo-img" src="boa-logo.png" alt="BOA Beauty Bar"></div>' +
+          '<div class="gp-greeting">' +
+            '<div class="gp-greeting-line">' + esc(getGreeting()) + ' · ' + esc(cfg.branchDisplayName || cfg.branchName || "Head Office") + '</div>' +
+            '<div class="gp-sublabel" id="gp-sublabel">HOME</div>' +
+          '</div>' +
+        '</div>' +
+        '<div class="gp-actions">' +
+          '<button class="gp-btn" data-action="home"     type="button"><span>🏠</span> Home</button>' +
+          '<button class="gp-btn" data-action="schedule" type="button"><span>📅</span> Schedule</button>' +
+          '<button class="gp-btn" data-action="today"    type="button"><span>🕐</span> Today</button>' +
+          '<button class="gp-btn" data-action="staff"    type="button"><span>👥</span> Staff</button>' +
+          '<button class="gp-btn gp-logout" data-action="logout" type="button">LOG OUT</button>' +
+        '</div>' +
+        '<div class="gp-header-right">' +
+          '<button class="gp-home-quick" id="gp-home-quick" type="button" aria-label="Home" title="Home">🏠</button>' +
+          '<button class="gp-menu-toggle" id="gp-menu-toggle" type="button" aria-label="Menu">☰</button>' +
+        '</div>' +
+        '</div>' +
+      '</header>' +
+      '<main id="staff-main"></main>';
+
+    var gpActions = document.querySelector(".gp-actions");
+    function closeMenu() { if (gpActions) gpActions.classList.remove("open"); }
+    var gpHome = document.getElementById("gp-home-quick");
+    if (gpHome) gpHome.addEventListener("click", function () { closeMenu(); renderHoLanding(); });
+    var gpToggle = document.getElementById("gp-menu-toggle");
+    if (gpToggle) gpToggle.addEventListener("click", function (e) {
+      e.stopPropagation();
+      if (gpActions) gpActions.classList.toggle("open");
+    });
+    document.addEventListener("click", function (e) {
+      if (!gpActions || !gpActions.classList.contains("open")) return;
+      if (gpActions.contains(e.target) || (gpToggle && gpToggle.contains(e.target))) return;
+      closeMenu();
+    });
+    gpActions.addEventListener("click", function (e) {
+      var btn = e.target.closest("button[data-action]"); if (!btn) return;
+      var a = btn.dataset.action;
+      closeMenu();
+      if (a === "logout")   window.APP_LOGOUT();
+      if (a === "home")     renderHoLanding();
+      if (a === "schedule") renderSchedule();
+      if (a === "today")    renderHoClockin();
+      if (a === "staff")    renderHoStaffList();
+    });
+
+    renderHoLanding();
+  }
+
+  function renderHoLanding() {
+    setSublabel("HOME");
+    setMain(
+      '<div class="hero hero-big">' +
+        '<div class="hero-brand">' + esc(cfg.branchDisplayName || cfg.branchName || "Head Office") + '</div>' +
+        '<div class="hero-title">What would you like to do?</div>' +
+      '</div>' +
+      '<div id="sick-today-slot"></div>' +
+      '<div class="tile-grid tile-grid-4">' +
+        '<button class="tile tile-big" id="tile-ho-checkin" type="button">' +
+          '<div class="tile-icon">🕐</div>' +
+          '<div class="tile-label">Clock In</div>' +
+          '<div class="tile-hint">SELFIE REQUIRED</div>' +
+        '</button>' +
+        '<button class="tile tile-big" id="tile-ho-offreq" type="button">' +
+          '<div class="tile-icon">📝</div>' +
+          '<div class="tile-label">Request Off</div>' +
+          '<div class="tile-hint">TIME OFF</div>' +
+        '</button>' +
+      '</div>'
+    );
+    document.getElementById("tile-ho-checkin").onclick = renderHoClockin;
+    document.getElementById("tile-ho-offreq").onclick  = renderOffRequests;
+    refreshSickToday();
+  }
+
+  // Roster schedule for HO: prefer the PUBLISHED snapshot [0], fall back to the
+  // live draft only for a cycle that was never published (mirrors the manager
+  // kiosk — commit d9f6db6). Uses tech-style keys (boa_sched(approved)_<br>_<ym>).
+  async function _loadHoSchedule(ym) {
+    if (window.APP_DATA.getApprovedSchedule) {
+      try {
+        var ap = await window.APP_DATA.getApprovedSchedule(ym, "tech");
+        if (ap && ap.grid && Object.keys(ap.grid).length) return ap;
+      } catch (_e) { /* fall through to draft */ }
+    }
+    try { return await window.APP_DATA.getSchedule(ym, "tech"); }
+    catch (_e2) { return { grid: {} }; }
+  }
+
+  // Selfie is MANDATORY: resolves to a dataUrl, or null if the person cancels —
+  // and null aborts the clock-in (there is no photo-less path to a clockins row).
+  function _hoSelfie(name) {
+    return window.BOA_CAMERA.capture({
+      facingMode: "user",
+      title: "Selfie required for " + (name || "you"),
+      crop: { mode: "cover", w: 400, h: 500, quality: 0.7 }
+    });
+  }
+
+  // Latest clock-in state per staff_id from today's rows (newest-first).
+  function _hoClockStateById(clockins) {
+    var byId = {};
+    (clockins || []).forEach(function (r) {
+      if (r && r.staff_id && !byId[r.staff_id]) byId[r.staff_id] = r;
+    });
+    return byId;
+  }
+
+  // Today's working HO roster. A person is on the roster if their published-
+  // snapshot cell for today is a working code, OR they have an open clock-in
+  // today — the latter so a mid-cycle re-publish that flips someone's cell to
+  // off can't strand them clocked-in with no way to clock out. Leave, maternity
+  // and off-boarding are honoured via categorizeStaff (its `active` bucket
+  // already excludes people away today), so an HO employee on approved leave
+  // whose stale grid cell still reads "work" never shows as "Not clocked in".
+  async function _hoTodayRoster() {
+    var now = new Date();
+    var ym = window.APP_DATA.ymForDate(now);
+    var dayKey = String(now.getDate());
+    var loaded = await Promise.all([
+      window.APP_DATA.categorizeStaff(now),
+      _loadHoSchedule(ym),
+      window.APP_DATA.listTodayClockins()
+    ]);
+    var staff     = (loaded[0] && loaded[0].active) || [];
+    var grid      = (loaded[1] && loaded[1].grid) || {};
+    var clockins  = loaded[2] || [];
+    var stateById = _hoClockStateById(clockins);
+    var working = staff.filter(function (s) {
+      var cell = grid[s.employee_code] && grid[s.employee_code][dayKey];
+      var openClockIn = stateById[s.id] && stateById[s.id].type === "in";
+      return isWorkingShift(cell) || openClockIn;
+    }).sort(function (a, b) { return (a.name || "").localeCompare(b.name || ""); });
+    return {
+      roster: working,
+      stateById: stateById,
+      ym: ym,
+      dayKey: dayKey,
+      scheduleLoaded: Object.keys(grid).length > 0
+    };
+  }
+
+  function _fmtClockTime(iso) {
+    try { return new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }); }
+    catch (_e) { return ""; }
+  }
+
+  async function renderHoClockin() {
+    setSublabel("Clock-in");
+    setMain(
+      '<div class="panel">' +
+        '<div class="panel-head">' +
+          '<h2>🕐 Head Office Clock-in</h2>' +
+          '<div style="display:flex;gap:8px">' +
+            '<button class="link-btn" id="ho-clock-refresh">Refresh</button>' +
+            '<button class="link-btn link-btn-dark" id="ho-clock-back">← Back</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="dly-sub">Tap your name, then take a quick selfie to confirm you\'re here. ' +
+          'A selfie is required — one clock-in per person per day.</div>' +
+        '<div id="ho-clock-list">Loading roster…</div>' +
+      '</div>'
+    );
+    document.getElementById("ho-clock-back").onclick    = function () { renderHoLanding(); };
+    document.getElementById("ho-clock-refresh").onclick = renderHoClockin;
+    if (!window.APP_DATA || !window.APP_DATA.isConfigured()) {
+      document.getElementById("ho-clock-list").innerHTML = configMissingHtml();
+      return;
+    }
+    await _paintHoClockList(true, "ho-clock-list");
+  }
+
+  // Renders the clock-in roster into the container named by listId. When
+  // interactive, each row gets a Clock In / Clock Out button; on the read-only
+  // Staff view it's a badge only. The caller names its own container (and we bail
+  // if it's gone) so an in-flight repaint can never land in a different view —
+  // otherwise a clock write finishing after the user navigated to the read-only
+  // Staff view would inject live Clock In/Out buttons into it.
+  async function _paintHoClockList(interactive, listId) {
+    var listEl = document.getElementById(listId);
+    if (!listEl) return;
+    var data;
+    try { data = await _hoTodayRoster(); }
+    catch (e) { listEl.innerHTML = '<div class="warn">Could not load the roster: ' + esc((e && e.message) || String(e)) + '</div>'; return; }
+    var roster = data.roster, stateById = data.stateById;
+    if (roster.length === 0) {
+      listEl.innerHTML = data.scheduleLoaded
+        ? '<div class="dly-empty" style="padding:24px;text-align:center;color:var(--gray-500)">No one is scheduled to work at Head Office today.</div>'
+        : '<div class="dly-empty" style="padding:24px;text-align:center;color:var(--gray-500)">No schedule has been published for Head Office yet.<br>Publish the Head Office schedule from the HR portal to populate this roster.</div>';
+      return;
+    }
+    var rowsHtml = roster.map(function (s) {
+      var st = stateById[s.id];
+      var badge, action = "";
+      if (!st) {
+        badge = '<span class="dly-status-badge" style="background:#fef2f2;color:#b91c1c">Not clocked in</span>';
+        if (interactive) action = '<button class="dly-act" data-ho-clock="in" data-id="' + esc(s.id) + '" data-ec="' + esc(s.employee_code || "") + '" data-name="' + esc(s.name || "") + '" type="button">Clock In</button>';
+      } else if (st.type === "in") {
+        badge = '<span class="dly-status-badge" style="background:#ecfdf5;color:#047857">In · ' + esc(_fmtClockTime(st.ts)) + '</span>';
+        if (interactive) action = '<button class="dly-act" data-ho-clock="out" data-id="' + esc(s.id) + '" data-ec="' + esc(s.employee_code || "") + '" data-name="' + esc(s.name || "") + '" type="button">Clock Out</button>';
+      } else {
+        badge = '<span class="dly-status-badge" style="background:#f3f4f6;color:#374151">Out · ' + esc(_fmtClockTime(st.ts)) + '</span>';
+      }
+      return '<div class="dly-row" data-ec="' + esc(s.employee_code || "") + '" style="display:flex;align-items:center;gap:12px;padding:12px 8px;border-bottom:1px solid var(--pink-100)">' +
+        '<div style="flex:1">' +
+          '<div style="font-weight:700;color:var(--pink-800)">' + esc(s.name || s.employee_code || "—") + '</div>' +
+          '<div style="font-size:12px;color:var(--gray-500)">' + esc(s.role || "Head Office") + '</div>' +
+        '</div>' +
+        badge + action +
+      '</div>';
+    }).join("");
+    listEl.innerHTML = rowsHtml;
+    if (interactive) {
+      listEl.querySelectorAll("button[data-ho-clock]").forEach(function (btn) {
+        btn.onclick = function () {
+          _doHoClock(
+            { id: btn.dataset.id, employee_code: btn.dataset.ec, name: btn.dataset.name },
+            btn.dataset.hoClock
+          );
+        };
+      });
+    }
+  }
+
+  async function _doHoClock(person, type) {
+    var dataUrl = await _hoSelfie(person.name);
+    if (!dataUrl) return;   // cancelled — no photo, no clock-in
+    try {
+      await window.APP_DATA.addManagerClockinWithMeta(person.id, type, { photoDataUrl: dataUrl, flags: [] });
+    } catch (e) {
+      window.alert("Could not record: " + ((e && e.message) || e));
+      return;
+    }
+    // Mark present on the branch attendance grid the portal reads. Only on
+    // clock-IN — a clock-out doesn't change the fact that they were here.
+    if (type === "in" && person.employee_code) {
+      try {
+        var now = new Date();
+        await window.APP_DATA.setAttendanceStatus(window.APP_DATA.ymForDate(now), String(now.getDate()), person.employee_code, "on");
+      } catch (e) { console.warn("HO attendance status write failed (non-fatal):", e); }
+    }
+    // Repaint the clock-in view only. If the user has since navigated to the
+    // read-only Staff view, #ho-clock-list is gone and the paint no-ops — it
+    // must never fall through to #ho-staff-list and add live buttons there.
+    await _paintHoClockList(true, "ho-clock-list");
+  }
+
+  // Read-only "Staff" view: today's HO roster with clock-in status, no buttons.
+  async function renderHoStaffList() {
+    setSublabel("Staff");
+    setMain(
+      '<div class="panel">' +
+        '<div class="panel-head">' +
+          '<h2>👥 Head Office · Today</h2>' +
+          '<button class="link-btn link-btn-dark" id="ho-staff-back">← Back</button>' +
+        '</div>' +
+        '<div class="dly-sub">Everyone scheduled at Head Office today and whether they\'ve clocked in.</div>' +
+        '<div id="ho-staff-list">Loading roster…</div>' +
+      '</div>'
+    );
+    document.getElementById("ho-staff-back").onclick = function () { renderHoLanding(); };
+    if (!window.APP_DATA || !window.APP_DATA.isConfigured()) {
+      document.getElementById("ho-staff-list").innerHTML = configMissingHtml();
+      return;
+    }
+    await _paintHoClockList(false, "ho-staff-list");
   }
 
   function setMain(html) {
@@ -447,13 +741,23 @@
   // codes (managers have W only; techs have WE/WL/E too).
   async function renderSchedule() {
     setSublabel("Schedule");
-    setMain(
-      '<div class="panel">' +
-        '<div class="panel-head">' +
-          '<h2>📅 Schedule</h2>' +
-          '<button class="link-btn link-btn-dark" id="back-home">← Back</button>' +
-        '</div>' +
-        '<div class="sched-picker">' +
+    // Salon kiosks split the schedule by ROLE (managers vs nail techs). Head
+    // Office has neither, so it splits by DEPARTMENT instead — back-office
+    // people vs the Call Centre & Sales floor — over its single HO grid.
+    var pickerBtns = cfg.headOffice
+      ? (
+          '<button class="sched-picker-btn" data-kind="office" type="button">' +
+            '<span class="sched-picker-icon">🏢</span>' +
+            '<span class="sched-picker-lbl">Office Staff</span>' +
+            '<span class="sched-picker-sub">Admin, Marketing &amp; Operations</span>' +
+          '</button>' +
+          '<button class="sched-picker-btn" data-kind="ccsales" type="button">' +
+            '<span class="sched-picker-icon">📞</span>' +
+            '<span class="sched-picker-lbl">Call Centre &amp; Sales</span>' +
+            '<span class="sched-picker-sub">Call Centre &amp; Sales agents</span>' +
+          '</button>'
+        )
+      : (
           '<button class="sched-picker-btn" data-kind="mgr" type="button">' +
             '<span class="sched-picker-icon">👔</span>' +
             '<span class="sched-picker-lbl">Manager Schedule</span>' +
@@ -463,8 +767,15 @@
             '<span class="sched-picker-icon">💅</span>' +
             '<span class="sched-picker-lbl">Nail Tech Schedule</span>' +
             '<span class="sched-picker-sub">All nail technicians</span>' +
-          '</button>' +
+          '</button>'
+        );
+    setMain(
+      '<div class="panel">' +
+        '<div class="panel-head">' +
+          '<h2>📅 Schedule</h2>' +
+          '<button class="link-btn link-btn-dark" id="back-home">← Back</button>' +
         '</div>' +
+        '<div class="sched-picker">' + pickerBtns + '</div>' +
       '</div>'
     );
     document.getElementById("back-home").onclick = function () { _backHandler(); };
@@ -698,10 +1009,42 @@
 
   // out of renderSchedule so the picker can call it without re-running
   // the picker UI. Back button returns to the picker.
+  // Head Office department buckets for the schedule split: the Call Centre &
+  // Sales floor — agents ("CC"), the Call Centre Manager ("MCC"), and any
+  // future "SALES" — vs everyone else ("Office Staff": HR, Marketing, Admin,
+  // Recruiter, Trainer, Payroll, Hygienist, EPA, and anyone with no department).
+  function _hoIsCcSales(s) {
+    var r = String((s && s.role) || "").trim().toUpperCase();
+    return r === "CC" || r === "MCC" || r === "SALES";
+  }
+  // True when a branch string is Head Office (tolerant of casing/whitespace),
+  // mirroring the portal's isHeadOfficeBranch.
+  function _isHoBranch(b) { return String(b == null ? "" : b).trim().toLowerCase() === "head office"; }
+  // Head Office shift hours — the single source of truth for both the per-cell
+  // times (_shiftTimes) and the schedule hours banner (_techHoursBannerHtml).
+  // Call Centre & Sales work an early/late split (WE / WL); "Office Staff" work
+  // one day shift. Change the hours here and both surfaces follow.
+  var HO_HOURS = {
+    ccEarly: { start: "07:00", end: "16:00" },  // WE — Call Centre & Sales early
+    ccLate:  { start: "09:00", end: "18:30" },  // WL — Call Centre & Sales late
+    office:  { start: "08:00", end: "17:00" }   // everyone else
+  };
+  function _hoCellHours(h) { return h.start + " - " + h.end; }  // per-cell: "07:00 - 16:00"
+  function _hoDashHours(h) { return h.start + "–" + h.end; }    // banner:   "07:00–16:00"
+
   async function renderScheduleKind(kind, ym) {
-    var isMgr = kind === "mgr";
-    var label = isMgr ? "Manager Schedule" : "Nail Tech Schedule";
-    var icon  = isMgr ? "👔" : "💅";
+    // Head Office has no manager/tech split — its two views are DEPARTMENT
+    // filters over the one HO grid (office staff vs Call Centre & Sales), so
+    // isMgr is always false there and both views read the tech-style grid.
+    var isHo   = !!cfg.headOffice;
+    var isMgr  = !isHo && kind === "mgr";
+    var hoDept = isHo ? (kind === "ccsales" ? "ccsales" : "office") : null;
+    var label  = isHo
+      ? (hoDept === "ccsales" ? "Call Centre & Sales" : "Office Staff")
+      : (isMgr ? "Manager Schedule" : "Nail Tech Schedule");
+    var icon   = isHo
+      ? (hoDept === "ccsales" ? "📞" : "🏢")
+      : (isMgr ? "👔" : "💅");
     setSublabel(label);
     var currentYm = window.APP_DATA ? window.APP_DATA.currentSchedYm() : "";
     var nextYm    = _nextSchedYm(currentYm);
@@ -761,7 +1104,10 @@
         staff.push(t);
       });
     }
-    var sched = await window.APP_DATA.getSchedule(ym, kind);
+    // For HO, `kind` names a department (office/ccsales), not a data source —
+    // both read the one HO (tech-style) grid.
+    var dataKind = isHo ? "tech" : kind;
+    var sched = await window.APP_DATA.getSchedule(ym, dataKind);
     var grid  = (sched && sched.grid) || {};
     // Mirror the HR portal's Manager Coverage resolution exactly, so the kiosk
     // can never disagree with it:
@@ -771,9 +1117,12 @@
     //   4. fall back to the newest APPROVED snapshot when the live cell is empty
     var approvedGrid = {};
     var approvedNames = {};
-    if (isMgr && window.APP_DATA.getApprovedSchedule) {
+    if ((isMgr || isHo) && window.APP_DATA.getApprovedSchedule) {
       try {
-        var _ap = await window.APP_DATA.getApprovedSchedule(ym, "mgr");
+        // HO renders the PUBLISHED truth like managers do — read its tech-style
+        // snapshot [0] (same source-of-truth as the HO check-in roster), so the
+        // schedule view can't disagree with Today/Staff or show unpublished edits.
+        var _ap = await window.APP_DATA.getApprovedSchedule(ym, isMgr ? "mgr" : "tech");
         approvedGrid = (_ap && _ap.grid) || {};
         approvedNames = (_ap && _ap.names) || {};
       } catch (_apErr) { /* fallback only — never block the live view */ }
@@ -899,7 +1248,10 @@
     var rows = staff.filter(function (s) {
       if (!s.employee_code) return false;
       if (!grid[s.employee_code] && !approvedGrid[s.employee_code]) return false;
-      if (isMgr ? !isManagerStaff(s) : isManagerStaff(s)) return false;
+      if (isHo) {
+        // Department split: Call Centre & Sales on one view, all other HO staff on the other.
+        if (hoDept === "ccsales" ? !_hoIsCcSales(s) : _hoIsCcSales(s)) return false;
+      } else if (isMgr ? !isManagerStaff(s) : isManagerStaff(s)) return false;
       var xfer = (s.transferring && s.transfer_date) ? s.transfer_date : null;
       if (xfer) {
         if (s.transfer_to && s.transfer_to !== thisBranch && cycStartYmd && xfer <= cycStartYmd) return false;
@@ -931,7 +1283,9 @@
 
     var body = document.getElementById("sched-body");
     if (rows.length === 0 && trialGhostRows.length === 0) {
-      body.innerHTML = '<div class="empty">No ' + (isMgr ? "manager" : "nail tech") + ' schedule has been posted for this period yet, or ' + (isMgr ? "managers" : "techs") + " don't have employee codes matching the HR portal.</div>";
+      body.innerHTML = isHo
+        ? '<div class="empty">No schedule has been published for ' + esc(label) + ' this period yet, or they don\'t have employee codes matching the HR portal.</div>'
+        : '<div class="empty">No ' + (isMgr ? "manager" : "nail tech") + ' schedule has been posted for this period yet, or ' + (isMgr ? "managers" : "techs") + " don't have employee codes matching the HR portal.</div>";
       return;
     }
 
@@ -952,7 +1306,7 @@
     if (isMgr) {
       html += _hoursBannerHtml(thisBranch);
     } else {
-      html += _techHoursBannerHtml(thisBranch);
+      html += _techHoursBannerHtml(thisBranch, hoDept);
     }
     html += '<div class="sched-wrap"><table class="sched-table">';
     html += '<thead><tr><th class="sched-name-h">Staff</th>';
@@ -3531,6 +3885,13 @@
     var isAM = r === "AM";
     var b = branchName || "";
 
+    // Head Office hours (mirrors the portal): office staff a single day shift;
+    // the Call Centre & Sales floor a two-shift early/late split (WE / WL).
+    if (_isHoBranch(b)) {
+      if (_hoIsCcSales({ role: r })) return _hoCellHours(code === "WL" ? HO_HOURS.ccLate : HO_HOURS.ccEarly);
+      return _hoCellHours(HO_HOURS.office);
+    }
+
     if (b === "Sandown" || b === "Table Bay") {
       if (isSM) return "08:00 - 17:00";
       if (dow === 0) {
@@ -3641,10 +4002,14 @@
   // Same banner pattern, but for the Nail Tech schedule view. Only the
   // stores that publish a known tech-side WL split are listed; anything
   // else gets an empty string so we don't render a banner at all.
-  function _techHoursBannerHtml(branchName) {
+  function _techHoursBannerHtml(branchName, hoDept) {
     var b = branchName || "";
+    var isHoBanner = _isHoBranch(b);
     var lines = [];
-    if (b === "Fourways") {
+    if (isHoBanner) {
+      if (hoDept === "ccsales") lines.push("Early (WE) " + _hoDashHours(HO_HOURS.ccEarly) + " · Late (WL) " + _hoDashHours(HO_HOURS.ccLate));
+      else lines.push(_hoDashHours(HO_HOURS.office) + " · Mon–Fri");
+    } else if (b === "Fourways") {
       lines.push("Mon–Fri · W 09:30–18:30 · WL 11:00–20:00 (4 techs)");
       lines.push("Saturday · W 09:00–18:00 · WL 11:00–20:00 (4 techs)");
       lines.push("Sunday · W 09:00–18:00 · WL 10:00–19:00 (2–3 techs, alternates by parity)");
@@ -3657,8 +4022,11 @@
     }
     if (lines.length === 0) return "";
     var rows = lines.map(function (l) { return '<div>' + esc(l) + '</div>'; }).join("");
+    var _title = isHoBanner
+      ? ("🕐 " + (hoDept === "ccsales" ? "Call Centre & Sales" : "Office Staff") + " hours")
+      : ("🕐 Nail tech hours · " + esc(b));
     return '<div class="sched-hours-banner">' +
-             '<div class="sched-hours-banner-title">🕐 Nail tech hours · ' + esc(b) + '</div>' +
+             '<div class="sched-hours-banner-title">' + _title + '</div>' +
              '<div class="sched-hours-banner-rows">' + rows + '</div>' +
            '</div>';
   }
@@ -3709,8 +4077,9 @@
       for (var ec in grid) {
         var st = grid[ec] && grid[ec][dayKey];
         if (!isWorkingShift(st)) continue;
-        var code = String(ec).toUpperCase();
-        if (/\dM$/.test(code) || /^M\d/.test(code)) continue;   // manager code
+        // Route through the shared, HO-aware predicate instead of a private
+        // regex copy so manager/HO classification stays in one place.
+        if (isManagerStaff({ employee_code: ec })) continue;    // manager code
         return true;
       }
       return false;

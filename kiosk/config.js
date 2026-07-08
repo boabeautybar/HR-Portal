@@ -61,7 +61,12 @@
     { name: "Mushroom Farm",     pin: "0021", geo: { lat: -26.0930, lng: 28.0490 }, radiusMeters: 1500, enforceGeo: false },
     { name: "Verdi",             pin: "0022", geo: { lat: -25.8870, lng: 28.1840 }, radiusMeters: 1500, enforceGeo: false },
     // KZN
-    { name: "Ballito",           pin: "0023", geo: { lat: -29.5380, lng: 31.2140 }, radiusMeters: 1500, enforceGeo: false }
+    { name: "Ballito",           pin: "0023", geo: { lat: -29.5380, lng: 31.2140 }, radiusMeters: 1500, enforceGeo: false },
+    // Head Office (Call Centre / Admin / Marketing / HR). Single-PIN STAFF kiosk:
+    // headOffice:true routes the PIN to the staff app — there is no manager
+    // dashboard here. Geo is unused (enforceGeo false + no manager clock-in), so
+    // the coords are a placeholder.
+    { name: "Head Office",       pin: "0025", geo: { lat: -33.9249, lng: 18.4241 }, radiusMeters: 1000, enforceGeo: false, headOffice: true }
   ];
 
   // ── Resolve branch from URL ──────────────────────────────────
@@ -130,6 +135,7 @@
   window.APP_CONFIG = {
     branchName:        resolved.name,                 // exact name as stored in Supabase
     branchDisplayName: "BOA " + resolved.name,        // shown in headers / PIN screen
+    headOffice:        !!resolved.headOffice,          // HO kiosk: single-PIN staff app, no manager dashboard
 
     // 4-digit PINs — change as needed
     staffPin:   "2026",                               // same across all stores (low-stakes lock)
