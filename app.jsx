@@ -1900,6 +1900,14 @@ function shiftTimes(role, code, branch, dow) {
   const isAM = r === "AM";
   const _b = branch || "";
 
+  // Head Office runs its own hours, driven by the HO department (role) + code:
+  // office staff a single day shift; the Call Centre & Sales floor a two-shift
+  // early/late split (WE 07:00–16:00 · WL 09:00–18:30).
+  if (isHeadOfficeBranch(_b)) {
+    if (r === "CC" || r === "MCC" || r === "SALES") return code === "WL" ? "09:00 - 18:30" : "07:00 - 16:00";
+    return "08:00 - 17:00";
+  }
+
   // Sandown / Table Bay share the same Mon-Fri split (and
   // Table Bay extends it to Saturday). SM is a flat 08:00-17:00
   // every working day.
@@ -2958,10 +2966,17 @@ function StaffModal({ s, onClose, onSave, onTransfer, allStaff, isOwner, onHardD
   const inp = { width: "100%", padding: "8px 11px", borderRadius: 8, border: "1px solid #FBCFE8", background: "#FCE7F3", fontFamily: "inherit", fontSize: 13, color: "#111827", boxSizing: "border-box" };
   const lbl = { display: "block", fontSize: 10, fontWeight: 700, color: "#BE185D", letterSpacing: "0.08em", marginBottom: 4, textTransform: "uppercase" };
 
-  // Check for duplicate EC in a different record
-  const dupInOtherBranch = allStaff.find(x =>
+  // Check for duplicate EC in a different record (salon staff/managers in state)
+  const _dupSalon = allStaff.find(x =>
     x.ec.trim().toUpperCase() === f.ec.trim().toUpperCase() && x._id !== f._id
   );
+  // Head Office staff are a separate population (never in allStaff), so also
+  // block reusing an EC that belongs to an HO employee. There is NO DB unique
+  // constraint on employee_code, so this client guard is the only defence.
+  const _fEcU = String(f.ec || "").trim().toUpperCase();
+  const _dupHeadOffice = !_dupSalon && !!_fEcU && isHeadOfficeEc(f.ec)
+    && String((s && s.ec) || "").trim().toUpperCase() !== _fEcU;
+  const dupInOtherBranch = _dupSalon || (_dupHeadOffice ? { name: "a Head Office employee", branch: HEAD_OFFICE } : null);
 
   // Required-field validation
   const missing = [];
@@ -3499,8 +3514,31 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete, smTrialActive, onStar
 }
 
 // ─── SCHEDULE EDITOR (Phase 2a — manual editing, save to Supabase) ──────────────
-function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, leaveRecs, obList, techLoans, onTechLoansChange, initialBranch, isOwner }) {
-  const [branch, setBranch] = useState(initialBranch || SALONS[0].name);
+function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, leaveRecs, obList, techLoans, onTechLoansChange, initialBranch, isOwner, branchList, requestStore }) {
+  // requestStore (optional, "ho") names the persistence target for off-day
+  // request edits — default is the nail-tech key. The Head Office scheduler
+  // passes "ho" so HO edits land in boa_ho_requests_v1, never the shared tech
+  // key. Resolved by NAME at call time and hard-fails if the saver is missing:
+  // a function-reference prop would silently be undefined on a stale-cached
+  // data.js and fall back to saveTechRequests — overwriting every salon tech
+  // request with the HO array. Failing loudly is the only safe degradation.
+  const _saveReqs = (arr) => {
+    if (requestStore === "ho") {
+      if (!window.BOA_DB.saveHoRequests) throw new Error("This portal build can't save Head Office requests yet — refresh the page to load the latest data.js.");
+      return window.BOA_DB.saveHoRequests(arr);
+    }
+    return window.BOA_DB.saveTechRequests(arr);
+  };
+  // branchList (optional) locks the branch picker to an explicit set — used by
+  // the Head Office scheduling sub-tab so HO gets a tech-style grid without
+  // "Head Office" ever entering SALONS (which would leak it into ~15 salon
+  // surfaces). Defaults to the full salon list.
+  const _branchOptions = (branchList && branchList.length) ? branchList : SALONS.map(s => s.name);
+  const [branch, setBranch] = useState(initialBranch || _branchOptions[0]);
+  // Head Office has no mani/pedi stations, so autoFill's station-capacity math
+  // computes capacity 0 and generates a schedule with everyone off — the
+  // feature is meaningless there (HO is a simple M–F pattern, filled by hand).
+  const _isHoSchedule = branch === HEAD_OFFICE;
   const [ym, setYm] = useState(window.BOA_DB ? window.BOA_DB.currentSchedYm() : "2026-05");
   const [grid, setGrid] = useState({});
   const [savedAt, setSavedAt] = useState(null);
@@ -6260,7 +6298,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
         <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, fontWeight: 700, color: "#831843" }}>📅 Schedule Editor</div>
         <select value={branch} onChange={e => { if (dirty && !confirm("You have unsaved changes. Discard?")) return; setBranch(e.target.value); }}
           style={{ padding: "8px 12px", borderRadius: 9, border: "1px solid #FBCFE8", background: "#fff", fontFamily: "inherit", fontSize: 14, color: "#831843", fontWeight: 600 }}>
-          {SALONS.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+          {_branchOptions.map(n => <option key={n} value={n}>{n}</option>)}
         </select>
         <div style={{ display: "flex", alignItems: "center", gap: 6, background: "#fff", border: "1px solid #FBCFE8", borderRadius: 9, padding: "4px" }}>
           <button onClick={() => { if (dirty && !confirm("Discard unsaved changes?")) return; setYm(window.BOA_DB.shiftYm(ym, -1)); }} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", color: "#BE185D", padding: "0 8px", lineHeight: 1 }}>‹</button>
@@ -6285,7 +6323,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
         <div style={{ flex: 1 }} />
         {savedAt && !dirty && <span style={{ fontSize: 11, color: "#15803d", fontStyle: "italic" }}>✓ Saved {new Date(savedAt).toLocaleString()}</span>}
         {dirty && <span style={{ fontSize: 11, color: "#b45309", fontWeight: 600 }}>● Unsaved changes</span>}
-        <button onClick={autoFill} style={{ padding: "8px 14px", borderRadius: 9, border: "1px solid #BE185D", background: "#FCE7F3", color: "#831843", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 }}>✨ Auto-fill</button>
+        {!_isHoSchedule && <button onClick={autoFill} style={{ padding: "8px 14px", borderRadius: 9, border: "1px solid #BE185D", background: "#FCE7F3", color: "#831843", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 }}>✨ Auto-fill</button>}
         {undoSnap && (
           <button onClick={() => { setGrid(undoSnap.grid); setDirty(true); setUndoSnap(null); }}
             title={"Undo " + undoSnap.label + " — restores the schedule to just before it (click Save to keep the rollback)"}
@@ -6374,7 +6412,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
         const techsActive = techs.filter(t => !t.onMat);
         const persist = async (next) => {
           try {
-            await window.BOA_DB.saveTechRequests(next);
+            await _saveReqs(next);
             if (onTechRequestsChange) onTechRequestsChange(next);
           } catch (e) { alert("Could not save: " + (e.message || e)); }
         };
@@ -6578,7 +6616,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                 }));
                 const next = [...(techRequests || []), ...newReqs];
                 try {
-                  await window.BOA_DB.saveTechRequests(next);
+                  await _saveReqs(next);
                   if (onTechRequestsChange) onTechRequestsChange(next);
                   setTechReqModal(null);
                 } catch (e) { alert("Could not save: " + (e.message || e)); }
@@ -8743,6 +8781,7 @@ const SETTINGS_TABS = [
   { t: "locations", l: "Locations", cat: "Operations", icon: "📍" },
   { t: "checkins", l: "Nail Tech Check-ins", cat: "Operations", icon: "📲" },
   { t: "mgrclockins", l: "Manager Check-ins", cat: "Operations", icon: "🕐" },
+  { t: "hoCheckins", l: "Head Office Check-ins", cat: "Operations", icon: "🏢" },
   { t: "leave", l: "Leave Planner", cat: "Operations", icon: "🌴" },
   { t: "leaveRequests", l: "Leave Requests", cat: "Operations", icon: "📨" },
   { t: "calledInSick", l: "Called in Sick", cat: "Operations", icon: "🤒" },
@@ -10910,7 +10949,46 @@ async function finalizeLeaveIfReady(r, deps) {
 // Detecting only the trailing-M form silently mis-classified every legacy
 // M### assistant manager as a tech — sending their approved extra days to the
 // tech schedule/kiosk instead of the manager schedule & Manager Coverage.
-function isManagerEc(ec) { const e = String(ec || "").trim(); return /M$/i.test(e) || /^M\d/i.test(e); }
+// Canonical Head Office branch name + a tolerant matcher. Branch strings drift
+// in the data (e.g. "Mushroom" vs "Mushroom Farm"), so every classification
+// check normalises case/whitespace through here rather than `=== "Head Office"`.
+const HEAD_OFFICE = "Head Office";
+function isHeadOfficeBranch(b) { return String(b == null ? "" : b).trim().toLowerCase() === "head office"; }
+// Employee codes (UPPER-cased) whose branch is Head Office. HO people carry
+// real codes ending in -M/-CC/-T; the -M ones would otherwise trip the manager
+// test below and pollute Manager Coverage / Check-ins / leave / extra-days.
+// Also the single source of "who is HO" for the EC-collision guards (there is
+// no DB unique constraint on employee_code). Rebuilt from the loaded roster on
+// every load; EMPTY until HO staff exist, so isManagerEc() is byte-identical for
+// salons.
+let HEAD_OFFICE_ECS = new Set();
+function isManagerEc(ec) { const e = String(ec || "").trim(); if (HEAD_OFFICE_ECS.has(e.toUpperCase())) return false; return /M$/i.test(e) || /^M\d/i.test(e); }
+// True when an employee code belongs to a Head Office person. Module-level so the
+// Leave / Extra-Day request tabs can carve an HO section out of the flat request
+// list without threading hoStaff through (paired with an isHeadOfficeBranch(store)
+// fallback for a request whose EC hasn't loaded into the set yet).
+function isHeadOfficeEc(ec) { return HEAD_OFFICE_ECS.has(String(ec || "").trim().toUpperCase()); }
+
+// Shared request-board classification: split a filtered request list into
+// Managers / Nail Techs / Head Office — the three colour-coded columns the
+// Leave Requests and Extra-Day Requests tabs both render. HO is carved out
+// first (registered EC or HO store) so an HO person never lands in the Nail
+// Techs column. Kept in one place so the two boards can't drift apart.
+const REQUEST_GROUP_STYLES = [
+  { key: "mgr",  label: "👑 Managers",    bg: "#faf5ff", border: "#e9d5ff", headBg: "#7c3aed", headFg: "#fff" },
+  { key: "tech", label: "💅 Nail Techs",  bg: "#fdf2f8", border: "#fbcfe8", headBg: "#BE185D", headFg: "#fff" },
+  { key: "ho",   label: "🏢 Head Office", bg: "#f0fdfa", border: "#99f6e4", headBg: "#0f766e", headFg: "#fff" }
+];
+function classifyRequestGroups(filtered) {
+  const mgr = [], tech = [], ho = [];
+  (filtered || []).forEach(r => {
+    if (isHeadOfficeEc(r.ec) || isHeadOfficeBranch(r.store)) ho.push(r);
+    else if (isManagerEc(r.ec)) mgr.push(r);
+    else tech.push(r);
+  });
+  const byKey = { mgr, tech, ho };
+  return REQUEST_GROUP_STYLES.map(g => ({ ...g, items: byKey[g.key] }));
+}
 // Estimated off-days inside a stretch of `calDays` calendar days when there is
 // no saved roster to read the real off-days from. Short requests (1–5 days) are
 // assumed to land entirely on working days, so nothing is deducted; a 6-day
@@ -12342,6 +12420,10 @@ function CalledInSickTab({ requests, setRequests, currentUser }) {
           // Nail techs take Fresha bookings (manager ECs end in "M"); suggest
           // blocking them so no clients book a tech who's off.
           const isTech = !isManagerEc(r.ec);
+          // Head Office people route to the Head Office Check-ins tab — they're
+          // neither Fresha techs nor salon managers. Match by a registered HO code
+          // or an HO store on the request.
+          const isHo = isHeadOfficeEc(r.ec) || isHeadOfficeBranch(r.store);
           const firstName = (r.name || "").trim().split(/\s+/)[0] || "this tech";
           const awayLbl = fmtIncidentDate(r.start_date) + (r.end_date !== r.start_date ? "–" + fmtIncidentDate(r.end_date) : "");
           // Pull the proof URL out of the reason so we can show a compact "view"
@@ -12370,7 +12452,7 @@ function CalledInSickTab({ requests, setRequests, currentUser }) {
                 </a>
               )}
               <div style={{ marginTop: 6, fontSize: 11, color: "#9d6a82" }}>Ref {r.ref_code} · {fmtIncidentTime(r.created_at)}{r.contact ? " · " + r.contact : ""}</div>
-              {isTech && (
+              {!isHo && isTech && (
                 <div style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "flex-start", background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 10, padding: "9px 12px" }}>
                   <span style={{ fontSize: 15, lineHeight: 1.2 }}>💆‍♀️</span>
                   <div style={{ fontSize: 12.5, color: "#1e3a8a", lineHeight: 1.45 }}>
@@ -12378,11 +12460,19 @@ function CalledInSickTab({ requests, setRequests, currentUser }) {
                   </div>
                 </div>
               )}
-              {!isTech && (
+              {!isHo && !isTech && (
                 <div style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "flex-start", background: "#faf5ff", border: "1px solid #e9d5ff", borderRadius: 10, padding: "9px 12px" }}>
                   <span style={{ fontSize: 15, lineHeight: 1.2 }}>👑</span>
                   <div style={{ fontSize: 12.5, color: "#6b21a8", lineHeight: 1.45 }}>
                     <strong>What to do:</strong> mark {firstName} as <strong>absent</strong> on the <strong>Manager Check-ins</strong> tab (or the <strong>Manager Coverage</strong> overview) and attach their <strong>sick note</strong> if they have one{proofUrl ? " (tap 📎 View sick note above)" : ""}. Then tap <strong>Mark done</strong> to clear it.
+                  </div>
+                </div>
+              )}
+              {isHo && (
+                <div style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "flex-start", background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: 10, padding: "9px 12px" }}>
+                  <span style={{ fontSize: 15, lineHeight: 1.2 }}>🏢</span>
+                  <div style={{ fontSize: 12.5, color: "#075985", lineHeight: 1.45 }}>
+                    <strong>What to do:</strong> {firstName} is Head Office — check the <strong>Head Office Check-ins</strong> tab to confirm they haven't clocked in, record the absence there, and attach their <strong>sick note</strong> if they have one{proofUrl ? " (tap 📎 View sick note above)" : ""}. Then tap <strong>Mark done</strong> to clear it.
                   </div>
                 </div>
               )}
@@ -12591,15 +12681,8 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
       return (a.work_date || "").localeCompare(b.work_date || "");
     });
   const pendingCount = (requests || []).filter(r => r.status === "pending").length;
-  // Split into managers (EC ends in "M") and nail techs, shown as two
-  // distinct colour-coded columns side by side.
-  const isMgrReq = (r) => isManagerEc(r.ec);
-  const mgrReqs = filtered.filter(isMgrReq);
-  const techReqs = filtered.filter(r => !isMgrReq(r));
-  const groups = [
-    { key: "mgr", label: "👑 Managers", items: mgrReqs, bg: "#faf5ff", border: "#e9d5ff", headBg: "#7c3aed", headFg: "#fff" },
-    { key: "tech", label: "💅 Nail Techs", items: techReqs, bg: "#fdf2f8", border: "#fbcfe8", headBg: "#BE185D", headFg: "#fff" }
-  ];
+  // Split into Managers / Nail Techs / Head Office (see classifyRequestGroups).
+  const groups = classifyRequestGroups(filtered);
 
   return (
     <div>
@@ -13537,7 +13620,13 @@ function FamilyResponsibilityTab({ enriched, managers, currentUser, logActivity 
   );
 }
 
-function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLeaveRecs, enriched, managers, staff, opsCfg, payrollCfg, logActivity, schedCache, ymdToSchedYm }) {
+function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLeaveRecs, enriched: enrichedBase, managers, staff, opsCfg, payrollCfg, logActivity, schedCache, ymdToSchedYm, hoStaff }) {
+  // Head Office people resolve through the same person-lookup pool as techs, so an
+  // HO leave request enriches (name/branch) and writes to the planner on approval
+  // instead of dropping into "Nail Techs" with a "not on planner" badge. HO carry
+  // -CC/-M/-T codes but are non-managers (isManagerEc excludes them), so they only
+  // ever affect their own Head Office branch in the clash counts.
+  const enriched = (enrichedBase || []).concat(hoStaff || []);
   const schedOpts = (r) => { const p = findLeavePerson(r.ec, enriched, managers); return { schedCache, ymdToSchedYm, ec: (p && p.ec) || r.ec, branch: p && p.branch }; };
   const [statusFilter, setStatusFilter] = useState("pending");
   const [storeFilter, setStoreFilter] = useState("");
@@ -13762,15 +13851,10 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
   const card = { background: "#fff", border: "1px solid #f3d4e0", borderRadius: 14, padding: "16px 18px", marginBottom: 16 };
   const chip = (c) => ({ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 700, color: c.color, background: c.bg });
 
-  // Split into managers (EC ends in "M") and nail techs, shown as two distinct
-  // colour-coded columns side by side — same as the Extra-Day Requests tab.
+  // Split into Managers / Nail Techs / Head Office (see classifyRequestGroups).
+  // isMgrReq stays local — the leave-day math below also uses it.
   const isMgrReq = (r) => isManagerEc(r.ec);
-  const mgrReqs = filtered.filter(isMgrReq);
-  const techReqs = filtered.filter(r => !isMgrReq(r));
-  const groups = [
-    { key: "mgr", label: "👑 Managers", items: mgrReqs, bg: "#faf5ff", border: "#e9d5ff", headBg: "#7c3aed", headFg: "#fff" },
-    { key: "tech", label: "💅 Nail Techs", items: techReqs, bg: "#fdf2f8", border: "#fbcfe8", headBg: "#BE185D", headFg: "#fff" }
-  ];
+  const groups = classifyRequestGroups(filtered);
 
   return (
     <div>
@@ -15583,6 +15667,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   }, [currentUser]);
 
   const [staff, setStaff] = useState([]);
+  // Head Office staff — a THIRD population, separate from techs (`staff`) and
+  // `managers`. loadAll carves them out by branch so they never pollute salon
+  // surfaces; HO-specific surfaces (Attendance/Leave/check-ins, Phase 5) read
+  // this. Empty until HO staff exist.
+  const [hoStaff, setHoStaff] = useState([]);
   const [matRecs, setMatRecs] = useState([]);
   // Unpaid legal-status leave records — same shape as matRecs but stored in
   // app_state["boa_unpaid_legal_v1"] rather than the maternity table. People
@@ -16874,7 +16963,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Map of tab → category name. Kept in sync with the groups list below.
   const NAV_TAB_TO_CATEGORY = {
     onboard: "People", offboard: "People", staff: "People", recruitment: "People", hrLibrary: "People", maternity: "People", unpaidLegal: "People", trialPeriod: "People", smTrial: "People",
-    scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", leave: "Operations", checkins: "Operations", freshaTodo: "Operations", storeOpenings: "Operations", storeHours: "Operations", movements: "Operations", cashups: "Operations", mgrCoverage: "Operations",
+    scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", hoCheckins: "Operations", leave: "Operations", checkins: "Operations", freshaTodo: "Operations", storeOpenings: "Operations", storeHours: "Operations", movements: "Operations", cashups: "Operations", mgrCoverage: "Operations",
     attendance: "Payroll", payrollProgress: "Payroll", payrollReports: "Payroll", overtime: "Payroll", payrollInbox: "Payroll", leaveBalances: "Payroll", frl: "Payroll",
     leaveRequests: "Operations", calledInSick: "Operations", extraDayRequests: "Operations",
     alerts: "Insights", activity: "Insights", storeReports: "Insights", staffingReport: "Insights",
@@ -16891,6 +16980,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   }, [tab, recruitSubTab, mgrSubTab]);
   const [mgrSchedTick, setMgrSchedTick] = useState(0);    // bump after edits to force refetch
   const [mgrSchedHist, setMgrSchedHist] = useState({});   // {branch|ym: [grids...]} for undo
+
+  // ── Head Office Check-ins viewer state ─────────────────────────────
+  // HO clock-ins come from the same `clockins` table (role_type head_office),
+  // with selfies in the boa_mgrclockin_meta_<id> sidecar — same photo path as
+  // managers, loaded via loadClockinMeta.
+  const [hoClockinRows, setHoClockinRows] = useState([]);
+  const [hoClockinMeta, setHoClockinMeta] = useState({});  // {clockinId: meta}
+  const [hoClockinDays] = useState(31);                    // how far back HO rows load
+  const [hoClockinDay, setHoClockinDay] = useState(() => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); });
 
   // ── Manager Clock-ins viewer state ─────────────────────────────────
   const [mgrClockinRows, setMgrClockinRows] = useState([]);
@@ -18789,6 +18887,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       window.BOA_DB.loadFreshaBlocks ? window.BOA_DB.loadFreshaBlocks() : Promise.resolve({}),
       window.BOA_DB.loadInterviews ? window.BOA_DB.loadInterviews() : Promise.resolve([])
     ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess, cuReviewAccess, lvOpsAccess, lvPayrollAccess, lvBalancesAccess, incidents, leaveReqs, extraReqs, freshaExtraOpenMap, freshaBlocksMap, interviews]) => {
+      // Register Head Office employee codes BEFORE any state update so
+      // isManagerEc() never mis-classifies an HO person (e.g. a -M code) as a
+      // salon manager. Rebuilt each load; empty when no HO staff exist.
+      HEAD_OFFICE_ECS = new Set(((d && d.hoStaff) || []).map(s => String(s.ec || "").trim().toUpperCase()));
+      setHoStaff(Array.isArray(d && d.hoStaff) ? d.hoStaff : []);
       // Auto-finalize transfers that completed in a PRIOR pay period. A transfer
       // keeps branch=OLD + transferring=true until it's "settled"; nothing ever
       // wrote that back, so someone who moved last cycle kept showing a lingering
@@ -19075,6 +19178,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [mgrRequests, setMgrRequests] = useState([]);
   const [techRequests, setTechRequests] = useState([]);
   const [techRequestsTick, setTechRequestsTick] = useState(0);
+  // Head Office off-day requests (boa_ho_requests_v1) — the kiosk's HO Request-Off
+  // tile writes here; the portal reads them for the HO scheduler overlay and the
+  // requests board (routed by department via boa_ho_routing_v1).
+  const [hoRequests, setHoRequests] = useState([]);
+  const [hoRequestsTick, setHoRequestsTick] = useState(0);
   const [mgrReqTick, setMgrReqTick] = useState(0);
   const [mgrReqModal, setMgrReqModal] = useState(null);  // {ec, name, date, note} draft
   useEffect(() => {
@@ -19100,6 +19208,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       .catch((e) => { console.warn("loadTechRequests:", e); });
     return () => { cancelled = true; };
   }, [tab, schedSubTab, techRequestsTick]);
+
+  // Load Head Office off-day requests. Needed by the HO scheduler sub-tab and
+  // the requests board; refreshed when either opens or after a local change.
+  useEffect(() => {
+    if (!(tab === "scheduling" || tab === "leave")) return;
+    if (!window.BOA_DB || !window.BOA_DB.isReady) return;
+    if (!window.BOA_DB.loadHoRequests) return;            // pre-deploy guard
+    let cancelled = false;
+    window.BOA_DB.loadHoRequests()
+      .then((arr) => { if (!cancelled) setHoRequests(arr || []); })
+      .catch((e) => { console.warn("loadHoRequests:", e); });
+    return () => { cancelled = true; };
+  }, [tab, schedSubTab, hoRequestsTick]);
 
   // ── Manager-schedule trash (7-day soft-delete) ──────────────────
   const [mgrTrash, setMgrTrash] = useState([]);
@@ -19396,6 +19517,42 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     return () => { cancelled = true; };
   }, [tab, mgrClockinDay, mgrClockinRows]);
 
+  // ── Head Office Check-ins loaders ──────────────────────────────────
+  // Recent HO clock-in rows when the tab opens (and for the attendance grid's
+  // HO overlay). Guarded on the loader existing so older deploys no-op.
+  useEffect(() => {
+    if (tab !== "hoCheckins" && !(tab === "attendance" && attBranch === HEAD_OFFICE)) return;
+    if (!window.BOA_DB || !window.BOA_DB.isReady || !window.BOA_DB.listRecentHoClockins) return;
+    let cancelled = false;
+    window.BOA_DB.listRecentHoClockins(hoClockinDays)
+      .then((rows) => { if (!cancelled) setHoClockinRows(rows || []); })
+      .catch((e) => { console.warn("listRecentHoClockins:", e); });
+    return () => { cancelled = true; };
+  }, [tab, attBranch, hoClockinDays]);
+
+  // Load selfies for just the HO clock-ins on the selected day (same sidecar
+  // + loader as managers), so stepping day-by-day stays snappy.
+  useEffect(() => {
+    if (tab !== "hoCheckins") return;
+    if (!window.BOA_DB || !window.BOA_DB.loadClockinMeta) return;
+    let cancelled = false;
+    (async () => {
+      const need = (hoClockinRows || []).filter(r => ymdStr(new Date(r.ts)) === hoClockinDay && !(r.id in hoClockinMeta));
+      if (need.length === 0) return;
+      const pairs = await Promise.all(need.map(async (r) => {
+        try { return [r.id, await window.BOA_DB.loadClockinMeta(r.id)]; }
+        catch (_) { return [r.id, null]; }
+      }));
+      if (cancelled) return;
+      setHoClockinMeta(prev => {
+        const next = { ...prev };
+        pairs.forEach(([id, m]) => { next[id] = m; });
+        return next;
+      });
+    })();
+    return () => { cancelled = true; };
+  }, [tab, hoClockinDay, hoClockinRows]);
+
   // Load recent nail-tech clock-ins when either the Check-ins tab or the
   // Attendance tab opens. The Attendance grid uses these to overlay check-in
   // markers on each cell and to flag discrepancies vs. the Fresha import.
@@ -19476,8 +19633,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       const dt = new Date(r.ts);
       if (!isNaN(dt) && (!cell.firstInTs || dt < cell.firstInTs)) cell.firstInTs = dt;
     }
+    // Layer in Head Office clock-ins so the HO attendance grid gets its green ✓
+    // marks. HO rows are excluded from techClockinRows (they'd double-surface on
+    // the Nail Tech tab and pollute the leave reconcile), so they arrive via
+    // their own loader here. Keyed under the canonical HEAD_OFFICE name — every
+    // row is HO by definition, so a drifted staff-row branch string can't
+    // scatter them under a key the grid never reads.
+    for (const r of hoClockinRows || []) {
+      if (!r || !r.staff || !r.staff.employee_code) continue;
+      const ec = r.staff.employee_code;
+      const dt = new Date(r.ts);
+      const ymd = dt.getFullYear() + "-" + String(dt.getMonth() + 1).padStart(2, "0") + "-" + String(dt.getDate()).padStart(2, "0");
+      if (!out[HEAD_OFFICE]) out[HEAD_OFFICE] = {};
+      if (!out[HEAD_OFFICE][ec]) out[HEAD_OFFICE][ec] = {};
+      const cell = out[HEAD_OFFICE][ec][ymd] = out[HEAD_OFFICE][ec][ymd] || { hasIn: false, hasOut: false, autoOut: false, firstInTs: null, name: (r.staff && r.staff.name) || "" };
+      if (r.type === "in") { cell.hasIn = true; cell.firstInTs = (cell.firstInTs && cell.firstInTs < dt) ? cell.firstInTs : dt; }
+      if (r.type === "out") { cell.hasOut = true; }
+      if (r.type === "out_auto") { cell.hasOut = true; cell.autoOut = true; }
+    }
     return out;
-  }, [techClockinRows, attCheckinRows]);
+  }, [techClockinRows, attCheckinRows, hoClockinRows]);
 
   // Index kiosk submissions whose status is NOT "on"/"late" — i.e. the manager
   // marked the tech as not physically present (sick, no-show, off, swap-in,
@@ -20748,6 +20923,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t: "locations", l: "📍 Locations" },
                   { t: "checkins", l: "📲 Nail Tech Check-ins" },
                   { t: "mgrclockins", l: "🕐 Manager Check-ins" },
+                  ...(hoStaff.length ? [{ t: "hoCheckins", l: "🏢 Head Office Check-ins" }] : []),
                   { t: "leave", l: "🌴 Leave Planner" },
                   ...(canSeeLeaveRequests ? [(() => {
                     const pend = leaveRequests.filter(r => r.status === "pending" && r.leave_type !== "Sick" && r.leave_type !== "Absent").length;
@@ -22980,7 +23156,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           <div style={{ padding: "0 24px" }}><div style={{ display: "flex", gap: 0, marginBottom: 24, padding: 6, background: "#FCE7F3", borderRadius: 14, border: "1px solid #FBCFE8", maxWidth: 680 }}>
             {[
               { k: "techs", label: "💅 Nail Tech Schedule" },
-              { k: "managers", label: "👔 Manager Schedule" }
+              { k: "managers", label: "👔 Manager Schedule" },
+              // Head Office scheduling only appears once HO staff exist — a
+              // provable no-op for salon-only deployments (hoStaff empty).
+              ...(hoStaff.length ? [{ k: "headoffice", label: "🏢 Head Office" }] : [])
             ].map(t => {
               const active = schedSubTab === t.k;
               return (
@@ -23006,6 +23185,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               catch (e) { console.error("saveTechLoans (auto):", e); }
             }}
             initialBranch={_myStores[0] || SALONS[0].name}
+            isOwner={!!(currentUser && currentUser.isOwner)}
+          />
+        )}
+        {tab === "scheduling" && schedSubTab === "headoffice" && hoStaff.length > 0 && (
+          // Head Office reuses the tech Schedule (HO gets a tech-style grid:
+          // boa_sched_Head Office_* + published boa_schedapproved_Head Office_*
+          // [0], which the HO kiosk roster reads). branchList locks the picker
+          // to Head Office so it never touches the salon branch list.
+          <Schedule
+            allStaff={hoStaff}
+            trialList={[]}
+            techRequests={hoRequests}
+            onTechRequestsChange={(next) => { setHoRequests(next); }}
+            requestStore="ho"
+            leaveRecs={leaveRecs}
+            obList={obList}
+            techLoans={[]}
+            onTechLoansChange={() => {}}
+            initialBranch={HEAD_OFFICE}
+            branchList={[HEAD_OFFICE]}
             isOwner={!!(currentUser && currentUser.isOwner)}
           />
         )}
@@ -25116,7 +25315,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         {/* ── LEAVE REQUESTS TAB ── */}
         {tab === "leaveRequests" && canSeeLeaveRequests && (
-          <LeaveRequestsTab requests={leaveRequests} setRequests={setLeaveRequests} currentUser={currentUser} leaveRecs={leaveRecs} setLeaveRecs={setLeaveRecs} enriched={enriched} managers={managers} staff={staff} opsCfg={leaveOpsCfg} payrollCfg={leavePayrollCfg} logActivity={logActivity} schedCache={schedCache} ymdToSchedYm={ymdToSchedYm} />
+          <LeaveRequestsTab requests={leaveRequests} setRequests={setLeaveRequests} currentUser={currentUser} leaveRecs={leaveRecs} setLeaveRecs={setLeaveRecs} enriched={enriched} managers={managers} staff={staff} hoStaff={hoStaff} opsCfg={leaveOpsCfg} payrollCfg={leavePayrollCfg} logActivity={logActivity} schedCache={schedCache} ymdToSchedYm={ymdToSchedYm} />
         )}
 
         {/* ── PAYROLL INBOX TAB ── */}
@@ -26246,7 +26445,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (!window.confirm(head + lines + (outstanding.length ? "\n\nPromote anyway?" : ""))) return;
           // Pre-fill the onboarding form and switch to onboarding tab
           const isMgrTrial = r.role === "am";
-          const allEcs = [...staff.map(s => s.ec), ...managers.map(m => m.ec), ...obList.map(o => o.ec)].filter(Boolean);
+          // Include Head Office codes — they're in neither staff nor managers
+          // state, so without this the max-B scan under-shoots and could mint an
+          // EC that collides with an HO person's code.
+          const allEcs = [...staff.map(s => s.ec), ...managers.map(m => m.ec), ...obList.map(o => o.ec), ...HEAD_OFFICE_ECS].filter(Boolean);
           const maxNum = allEcs.reduce((max, ec) => {
             const m = /B[- ]?(\d+)/i.exec(ec || "");
             return m ? Math.max(max, parseInt(m[1], 10)) : max;
@@ -27306,6 +27508,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           let ec = (obForm.ec || "").trim();
           if (isMgrPos && ec && !/M$/i.test(ec)) ec = ec + "M";
 
+          // Duplicate-EC guard. The EC keys the entire employee model and has NO
+          // DB unique constraint, so a code shared between an HO hire and a salon
+          // manager makes isManagerEc()/HEAD_OFFICE_ECS mis-classify one of them
+          // portal-wide (a salon manager silently demoted to tech, or vice-versa).
+          // Block onboarding any hire whose final code already belongs to a salon
+          // employee, a manager, or a Head Office employee. Pending onboards
+          // (obList) are excluded — EC auto-generation already de-dupes against
+          // them, and this record may itself be mid-pipeline there.
+          const _obEcU = ec.trim().toUpperCase();
+          const _committedEcs = new Set(
+            [...(staff || []).map(s => s.ec), ...(managers || []).map(m => m.ec)]
+              .filter(Boolean).map(x => String(x).trim().toUpperCase())
+          );
+          HEAD_OFFICE_ECS.forEach(x => _committedEcs.add(x));
+          if (_obEcU && _committedEcs.has(_obEcU)) {
+            alert("🚫 EC " + ec + " is already in use by another employee (salon or Head Office). Use a different code.");
+            setObSubmitting(false);
+            return;
+          }
+
           let driveFolderId = null;
           if (obForm.files && obForm.files.length > 0) {
             if (!window.google) {
@@ -27362,17 +27584,29 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
           let savedStaff;
           try {
+            // Head Office hires are a SEPARATE population — never insert them
+            // into the salon managers/staff state (that pollutes Coverage /
+            // Check-ins / leave until reload, even though the DB row is written
+            // as head_office). Register the EC so isManagerEc treats them as HO
+            // immediately this session; they surface on HO surfaces after the
+            // next load. saveManager/saveStaff still persist role_type via the
+            // branch-aware transforms in data.js.
+            const _hoHire = isHeadOfficeBranch(obForm.branch);
             if (isMgrPos) {
               // Manager hire (incl. promoted AM/SM trials): persist via the
               // manager path so the row is manager-shaped and lands in the
               // managers list — not the nail-tech list. Without this, a
               // promoted trial manager showed up as a nail tech until reload.
               savedStaff = await window.BOA_DB.saveManager(newStaff);
-              setManagers(ms => [...(ms || []).filter(m => m.ec !== newStaff.ec), savedStaff]);
+              if (!_hoHire) setManagers(ms => [...(ms || []).filter(m => m.ec !== newStaff.ec), savedStaff]);
             } else {
               savedStaff = await window.BOA_DB.saveStaff(newStaff);
-              setStaff([...staff.filter(s => s.ec !== newStaff.ec), savedStaff]);
+              if (!_hoHire) setStaff([...staff.filter(s => s.ec !== newStaff.ec), savedStaff]);
             }
+            // Head Office hires are a separate population — keep them out of the
+            // salon staff/managers state (above) and register the EC so
+            // isManagerEc + the EC-collision guards see them this session.
+            if (_hoHire) HEAD_OFFICE_ECS.add(String(newStaff.ec || "").trim().toUpperCase());
           } catch (e) {
             alert("Failed to save staff record: " + (e.message || e));
             setObSubmitting(false);
@@ -27429,7 +27663,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // fine-tune on the Scheduling tab.
           try {
             const isTech = !isMgrPos;
-            if (isTech && obForm.branch && window.BOA_DB.currentSchedYm && window.BOA_DB.periodDays && window.BOA_DB.loadSchedule && window.BOA_DB.saveSchedule) {
+            // Head Office hires never get a salon tech-schedule row — 'Head Office'
+            // is not a SALONS store; writing boa_sched_Head Office_* here would
+            // pollute the Schedule/Coverage surfaces HO is carved out of.
+            if (isTech && !isHeadOfficeBranch(obForm.branch) && obForm.branch && window.BOA_DB.currentSchedYm && window.BOA_DB.periodDays && window.BOA_DB.loadSchedule && window.BOA_DB.saveSchedule) {
               const ym = window.BOA_DB.currentSchedYm();
               const days = window.BOA_DB.periodDays(ym) || [];
               const _pad = n => String(n).padStart(2, "0");
@@ -27505,7 +27742,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // Manager Coverage until they actually start. Trial days are NOT placed
           // on the schedule — only this post-onboarding roster.
           try {
-            if (isMgrPos && obForm.branch && window.BOA_DB.currentSchedYm && window.BOA_DB.periodDays && window.BOA_DB.loadSchedule && window.BOA_DB.saveSchedule) {
+            if (isMgrPos && !isHeadOfficeBranch(obForm.branch) && obForm.branch && window.BOA_DB.currentSchedYm && window.BOA_DB.periodDays && window.BOA_DB.loadSchedule && window.BOA_DB.saveSchedule) {
               const ym = window.BOA_DB.currentSchedYm();
               const days = window.BOA_DB.periodDays(ym) || [];
               // Manager schedules are stored under the cycle's START-month ym
@@ -28439,7 +28676,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           ...enriched.filter(s => s.branch === attBranch && stillInCycle(s.ec) && !_movedAwayThisCycle(s)).map(s => ({ ec: s.ec, name: s.name, role: "NT", onMat: !!s.onMat, council: !!s.bargainingCouncil, matStart: (s.matRec && s.matRec.matStart) || s.matStart || null })),
           ...enriched.filter(s => stillInCycle(s.ec) && _arrivingHereThisCycle(s)).map(s => ({ ec: s.ec, name: s.name, role: "NT", onMat: !!s.onMat, council: !!s.bargainingCouncil, matStart: (s.matRec && s.matRec.matStart) || s.matStart || null, movedFrom: s.branch, movedOn: s.transferDate })),
           ...managers.filter(m => m.branch === attBranch && stillInCycle(m.ec) && !_movedAwayThisCycle(m)).map(m => ({ ec: m.ec, name: m.name, role: m.role || "AM", onMat: !!m.onMat, council: !!m.bargainingCouncil, matStart: (m.matRec && m.matRec.matStart) || m.matStart || null, smTrial: _smTrialEcSet.has(String(m.ec).trim()) })),
-          ...managers.filter(m => stillInCycle(m.ec) && _arrivingHereThisCycle(m)).map(m => ({ ec: m.ec, name: m.name, role: m.role || "AM", onMat: !!m.onMat, council: !!m.bargainingCouncil, matStart: (m.matRec && m.matRec.matStart) || m.matStart || null, smTrial: _smTrialEcSet.has(String(m.ec).trim()), movedFrom: m.branch, movedOn: m.transferDate }))
+          ...managers.filter(m => stillInCycle(m.ec) && _arrivingHereThisCycle(m)).map(m => ({ ec: m.ec, name: m.name, role: m.role || "AM", onMat: !!m.onMat, council: !!m.bargainingCouncil, matStart: (m.matRec && m.matRec.matStart) || m.matStart || null, smTrial: _smTrialEcSet.has(String(m.ec).trim()), movedFrom: m.branch, movedOn: m.transferDate })),
+          // Head Office staff are a separate population (not in enriched/managers),
+          // so they get their own attendance arm. HO people don't transfer between
+          // salons, so no moved-in/out logic applies — the role label is their
+          // department (the HO `role` value). The kiosk writes boa_att_Head Office_*
+          // + clockins for these ECs, which this grid then reads.
+          ...(attBranch === HEAD_OFFICE
+            ? hoStaff.filter(s => s && s.ec && stillInCycle(s.ec)).map(s => ({ ec: s.ec, name: s.name, role: s.role || "HO", onMat: !!s.onMat, council: !!s.bargainingCouncil, matStart: (s.matRec && s.matRec.matStart) || s.matStart || null }))
+            : [])
         ].sort((a, b) => {
           // Maternity-leave staff go to the very bottom of the grid so the
           // active roster stays at the top. Within each group, sort by
@@ -30575,6 +30820,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <label style={{ fontSize: 11, fontWeight: 600, color: "#831843" }}>Store:</label>
                 <select value={attBranch} onChange={e => setAttBranch(e.target.value)} style={{ border: "none", fontSize: 13, fontWeight: 600, color: "#831843", background: "transparent", cursor: "pointer", fontFamily: "inherit", outline: "none" }}>
                   {SALONS.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+                  {/* Head Office opts into Attendance explicitly (never via SALONS)
+                      — only once HO staff exist, so salon-only data is unaffected. */}
+                  {hoStaff.length > 0 && <option key={HEAD_OFFICE} value={HEAD_OFFICE}>{HEAD_OFFICE}</option>}
                 </select>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 6, background: "#FFFFFF", border: "1px solid #FBCFE8", borderRadius: 8, padding: "4px 6px" }}>
@@ -31617,11 +31865,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               if (acts.length === 0) return null;
               const mgrEcs = new Set((managers || []).map(m => String(m.ec || "").trim()).filter(Boolean));
               const byEc = {};
-              (staff || []).concat(managers || []).forEach(p => { if (p && p.ec) byEc[String(p.ec).trim()] = p; });
+              (staff || []).concat(managers || []).concat(hoStaff || []).forEach(p => { if (p && p.ec) byEc[String(p.ec).trim()] = p; });
               const _fmt = ymd => { if (!ymd) return ""; try { return new Date(String(ymd).slice(0, 10) + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }); } catch (_) { return ymd; } };
               const rows = acts.map(([ec, a]) => {
                 const p = byEc[String(ec).trim()] || {};
-                return { ec, name: p.name || ec, branch: p.branch || "—", role: mgrEcs.has(String(ec).trim()) ? "Manager" : "Nail tech", note: a.note || "", by: a.by || "", at: a.at || "", throughYmd: a.throughYmd || "" };
+                return { ec, name: p.name || ec, branch: p.branch || "—", role: isHeadOfficeEc(ec) ? "Head Office" : (mgrEcs.has(String(ec).trim()) ? "Manager" : "Nail tech"), note: a.note || "", by: a.by || "", at: a.at || "", throughYmd: a.throughYmd || "" };
               }).sort((x, y) => (y.at || "").localeCompare(x.at || ""));
               return (
                 <div style={{ background: "#fffbeb", border: "1px solid #fcd34d", borderRadius: 12, padding: "14px 16px", marginBottom: 16 }}>
@@ -32221,8 +32469,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // can still log the leave, but it's added "balance pending" and lands in
         // the payroll officer's inbox to confirm the days.
         const canCheckBalance = accessAllows(currentUser, leavePayrollCfg);
-        const peopleType = isTechMode ? "nail tech" : "manager";
-        const peopleTypePlural = isTechMode ? "nail techs" : "managers";
+        const peopleType = br === HEAD_OFFICE ? "staff member" : (isTechMode ? "nail tech" : "manager");
+        const peopleTypePlural = br === HEAD_OFFICE ? "staff" : (isTechMode ? "nail techs" : "managers");
         // Off-boarded people (leftDate in the past) should not appear in
         // the leave planner. Techs come from `enriched` which already
         // tracks `offDaysSinceLeft`; managers come from `managers` so
@@ -32241,9 +32489,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // `branch`: once a transfer's date has passed the person belongs to the
         // destination store, so they (and their ec-keyed leave, which carries no
         // branch of its own) move onto the new store's planner automatically.
-        const sourceArr = isTechMode ? enriched : managers;
+        // Head Office is a separate population with no tech/manager split, so it
+        // sources hoStaff on either sub-tab and bypasses the salon role guard.
+        // (Per-department clash — "max 1 CC off" — is a follow-up; for now HO uses
+        // the same branch-wide 20% cap the grid math below applies.)
+        const _isHoBranch = br === HEAD_OFFICE;
+        const sourceArr = _isHoBranch ? hoStaff : (isTechMode ? enriched : managers);
+        // HO has no tech/manager role split, but the leaver exclusion that
+        // ROLE_GUARD embeds for salons must still apply: hoStaff comes from an
+        // unfiltered load (no active predicate), so without this check an
+        // off-boarded HO employee would list as active and inflate the 20% cap.
+        const passesRole = _isHoBranch ? ((p) => p && p.active !== false && !_hasLeft(p.ec)) : ROLE_GUARD;
         const peopleAtBranch = (sourceArr || [])
-          .filter(p => effHomeBranch(p, _todayYmd) === br && !p.onMat && ROLE_GUARD(p))
+          .filter(p => effHomeBranch(p, _todayYmd) === br && !p.onMat && passesRole(p))
           .sort((a, b) => (a.ec || "").localeCompare(b.ec || ""));
         // For dropdown — all people of this type across all branches.
         // On-maternity people are INCLUDED here and on the planner grid
@@ -32253,10 +32511,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // the active headcount — the 20% cap and the staffing checks ignore
         // them, since they aren't staffing the store.
         const peopleAllBranches = (sourceArr || [])
-          .filter(p => ROLE_GUARD(p))
+          .filter(p => passesRole(p))
           .sort((a, b) => (a.ec || "").localeCompare(b.ec || ""));
         const matPeopleAtBranch = (sourceArr || [])
-          .filter(p => effHomeBranch(p, _todayYmd) === br && p.onMat && ROLE_GUARD(p))
+          .filter(p => effHomeBranch(p, _todayYmd) === br && p.onMat && passesRole(p))
           .sort((a, b) => (a.ec || "").localeCompare(b.ec || ""));
         const plannerRows = [...peopleAtBranch, ...matPeopleAtBranch];
         // 20% per-day cap, minimum 1
@@ -32332,10 +32590,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           let ct = 0;
           for (const lv of leaveRecs) {
             if (lv.type !== "Annual leave") continue;
-            const p2 = (isTechMode ? enriched : managers).find(x => _ecEq(x.ec, lv.ec));
+            const p2 = sourceArr.find(x => _ecEq(x.ec, lv.ec));
             // On-mat people's PRE-maternity annual leave still occupies a slot.
             if (!p2 || effHomeBranch(p2, _todayYmd) !== br) continue;
-            if (!ROLE_GUARD(p2)) continue;
+            if (!passesRole(p2)) continue;
             if (iso >= lv.startDate && iso <= lv.endDate) ct++;
           }
           return ct;
@@ -32347,7 +32605,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // any entry point. Existing records (incl. already-orphaned ones)
           // pass through untouched so removals still work.
           const known = new Set();
-          [...(staff || []), ...(managers || [])].forEach(p => { if (p && p.ec) known.add(String(p.ec).toUpperCase().trim()); });
+          // Head Office staff are a separate population (never in staff/managers)
+          // but are legitimate leave subjects since the planner's HO branch.
+          [...(staff || []), ...(managers || []), ...(hoStaff || [])].forEach(p => { if (p && p.ec) known.add(String(p.ec).toUpperCase().trim()); });
           const existingIds = new Set((leaveRecs || []).map(r => r._id));
           const badNew = (next || []).find(r => r && !existingIds.has(r._id) && r.ec && !known.has(String(r.ec).toUpperCase().trim()));
           if (badNew) { alert("Cannot save leave: no staff member or manager matches employee code \"" + badNew.ec + "\". Pick an existing person."); return; }
@@ -32370,7 +32630,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             if (!f.balanceChecked) { alert("Please confirm you've checked this person's leave balance on Sage before adding annual leave to the calendar."); return; }
             balNum = Number(f.balanceDays);
             if (f.balanceDays === "" || isNaN(balNum) || balNum < 0) { alert("Enter the leave balance (days available on Sage) so it's on record."); return; }
-            const _br = ((isTechMode ? enriched : managers).find(p => p.ec === f.ec) || {}).branch;
+            const _br = (sourceArr.find(p => p.ec === f.ec) || {}).branch;
             const _bd = leaveDayBreakdown(f.startDate, f.endDate, !isTechMode, { schedCache, ymdToSchedYm, ec: f.ec, branch: _br });
             if (balNum < _bd.real && !confirm("Heads up: the balance you entered is " + balNum + " day(s), but this leave works out to " + (_bd.fromSchedule ? "" : "≈ ") + _bd.real + " actual leave day(s) (" + _bd.cal + " calendar) — more than they have available.\n\nAdd it anyway?")) return;
           }
@@ -32383,10 +32643,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             alert("Cannot add: this person already has annual leave logged for " + fmtIncidentDate(dup.startDate) + " → " + fmtIncidentDate(dup.endDate) + ", which overlaps these dates. Edit or remove that entry instead of adding a duplicate.");
             return;
           }
-          const stf = (isTechMode ? enriched : managers).find(p => p.ec === f.ec);
-          if (!stf || !ROLE_GUARD(stf)) { alert("This sub-tab manages annual leave for " + peopleTypePlural + " only."); return; }
+          const stf = sourceArr.find(p => p.ec === f.ec);
+          if (!stf || !passesRole(stf)) { alert("This sub-tab manages annual leave for " + peopleTypePlural + " only."); return; }
           const stBr = effHomeBranch(stf, _todayYmd);
-          const stPeople = (isTechMode ? enriched : managers).filter(p => effHomeBranch(p, _todayYmd) === stBr && !p.onMat && ROLE_GUARD(p));
+          const stPeople = sourceArr.filter(p => effHomeBranch(p, _todayYmd) === stBr && !p.onMat && passesRole(p));
           const stMx = Math.max(1, Math.floor(stPeople.length * 0.2));
           // Peak season check (1 Oct – 31 Mar). Annual leave is allowed
           // 1 Apr → 30 Sep; blocked the rest of the year except for
@@ -32411,8 +32671,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             let ct = 1;
             for (const lv of leaveRecs) {
               if (lv.type !== "Annual leave") continue;
-              const ls = (isTechMode ? enriched : managers).find(p2 => _ecEq(p2.ec, lv.ec));
-              if (!ls || effHomeBranch(ls, _todayYmd) !== stBr || ls.onMat || !ROLE_GUARD(ls)) continue;
+              const ls = sourceArr.find(p2 => _ecEq(p2.ec, lv.ec));
+              if (!ls || effHomeBranch(ls, _todayYmd) !== stBr || ls.onMat || !passesRole(ls)) continue;
               if (ds >= lv.startDate && ds <= lv.endDate) ct++;
             }
             if (ct > stMx) {
@@ -32510,10 +32770,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const storeLeave = leaveRecs
           .filter(lv => {
             if (lv.type !== "Annual leave") return false;
-            const p = (isTechMode ? enriched : managers).find(x => _ecEq(x.ec, lv.ec));
+            const p = sourceArr.find(x => _ecEq(x.ec, lv.ec));
             if (!p) return false;
             if (effHomeBranch(p, _todayYmd) !== br) return false;
-            return ROLE_GUARD(p);
+            return passesRole(p);
           })
           .slice()
           .sort((a, b) => a.startDate.localeCompare(b.startDate));
@@ -32526,7 +32786,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // ~2 off-days/week estimate (≤5-day leaves deduct nothing, 21 → 15).
         const computeLeaveDays = (lv) => {
           if (!lv.startDate || !lv.endDate || lv.startDate > lv.endDate) return { cal: 0, off: 0, used: 0 };
-          const techRec = staff.find(x => x.ec === lv.ec) || managers.find(x => x.ec === lv.ec);
+          const techRec = staff.find(x => x.ec === lv.ec) || managers.find(x => x.ec === lv.ec) || (hoStaff || []).find(x => x.ec === lv.ec);
           const techBranch = techRec ? techRec.branch : br;
           const bd = leaveDayBreakdown(lv.startDate, lv.endDate, isManagerEc(lv.ec), { schedCache, ymdToSchedYm, ec: lv.ec, branch: techBranch });
           return { cal: bd.cal, off: bd.off, used: bd.real };
@@ -32575,6 +32835,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <label style={{ fontSize: 10, fontWeight: 700, color: "#F472B6", letterSpacing: "0.06em" }}>STORE</label>
                 <select value={br} onChange={e => setLeaveBranch(e.target.value)} style={{ padding: "7px 11px", borderRadius: 7, border: "1px solid " + Y, fontFamily: "inherit", fontSize: 13, background: aA, minWidth: 160 }}>
                   {SALONS.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+                  {hoStaff.length > 0 && <option key={HEAD_OFFICE} value={HEAD_OFFICE}>{HEAD_OFFICE}</option>}
                 </select>
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
@@ -32633,12 +32894,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <div style={{ background: "#f0fdfa", border: "1px solid #99f6e4", borderRadius: 8, padding: "8px 12px", marginBottom: 10 }}>
                   <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "#0f766e", cursor: "pointer", fontWeight: 700 }}>
                     <input type="checkbox" checked={f.balanceChecked} onChange={e => setLeaveForm({ ...f, balanceChecked: e.target.checked })} style={{ width: 15, height: 15, accentColor: "#0f766e" }} />
-                    🧮 I've checked this person's leave balance on Sage{f.startDate && f.endDate ? (() => { const _b = leaveDayBreakdown(f.startDate, f.endDate, !isTechMode, { schedCache, ymdToSchedYm, ec: f.ec, branch: ((isTechMode ? enriched : managers).find(p => p.ec === f.ec) || {}).branch }); return " (" + _b.cal + " calendar days " + (_b.fromSchedule ? "= " : "≈ ") + _b.real + " actual leave day" + (_b.real === 1 ? "" : "s") + ")"; })() : ""}
+                    🧮 I've checked this person's leave balance on Sage{f.startDate && f.endDate ? (() => { const _b = leaveDayBreakdown(f.startDate, f.endDate, !isTechMode, { schedCache, ymdToSchedYm, ec: f.ec, branch: (sourceArr.find(p => p.ec === f.ec) || {}).branch }); return " (" + _b.cal + " calendar days " + (_b.fromSchedule ? "= " : "≈ ") + _b.real + " actual leave day" + (_b.real === 1 ? "" : "s") + ")"; })() : ""}
                   </label>
                 </div>
               ) : (
                 <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8, padding: "8px 12px", marginBottom: 10, fontSize: 12.5, color: "#92400e" }}>
-                  ⏳ You don't have access to leave balances — this leave will be added and flagged <strong>balance pending</strong> for the payroll officer to verify how many days {isTechMode ? "this tech" : "this manager"} has{f.startDate && f.endDate ? (() => { const _b = leaveDayBreakdown(f.startDate, f.endDate, !isTechMode, { schedCache, ymdToSchedYm, ec: f.ec, branch: ((isTechMode ? enriched : managers).find(p => p.ec === f.ec) || {}).branch }); return " (" + _b.cal + " calendar days " + (_b.fromSchedule ? "= " : "≈ ") + _b.real + " actual leave day" + (_b.real === 1 ? "" : "s") + ")"; })() : ""}.
+                  ⏳ You don't have access to leave balances — this leave will be added and flagged <strong>balance pending</strong> for the payroll officer to verify how many days {isTechMode ? "this tech" : "this manager"} has{f.startDate && f.endDate ? (() => { const _b = leaveDayBreakdown(f.startDate, f.endDate, !isTechMode, { schedCache, ymdToSchedYm, ec: f.ec, branch: (sourceArr.find(p => p.ec === f.ec) || {}).branch }); return " (" + _b.cal + " calendar days " + (_b.fromSchedule ? "= " : "≈ ") + _b.real + " actual leave day" + (_b.real === 1 ? "" : "s") + ")"; })() : ""}.
                 </div>
               )}
               <div style={{ display: "flex", gap: 14, alignItems: "flex-start", flexWrap: "wrap" }}>
@@ -32774,7 +33035,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               ) : (
                 <div style={{ maxHeight: 300, overflow: "auto" }}>
                   {storeLeave.map(lv => {
-                    const s2 = (isTechMode ? enriched : managers).find(x => x.ec === lv.ec);
+                    const s2 = sourceArr.find(x => x.ec === lv.ec);
                     const stats = computeLeaveDays(lv);
                     // Grey out leave records for staff who have already
                     // left so the active leave list reads at a glance.
@@ -35988,6 +36249,89 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             </div>
           );
         }
+      })()}
+
+      {tab === "hoCheckins" && (() => {
+        // Head Office check-ins — a leaner sibling of Manager Check-ins. HO has
+        // no per-store GPS / no-show-at-11:00 machinery; this shows photo-verified
+        // clock-ins for the selected day + who at HO hasn't clocked in yet.
+        const _p2 = n => String(n).padStart(2, "0");
+        const localYmd = (ts) => ymdStr(new Date(ts));
+        const todayYmd = localYmd(Date.now());
+        const shiftDay = (ymd, delta) => { const a = ymd.split("-").map(Number); const dt = new Date(Date.UTC(a[0], a[1] - 1, a[2])); dt.setUTCDate(dt.getUTCDate() + delta); return dt.getUTCFullYear() + "-" + _p2(dt.getUTCMonth() + 1) + "-" + _p2(dt.getUTCDate()); };
+        const dayLabel = (ymd) => { try { return new Date(ymd + "T12:00:00").toLocaleDateString("en-ZA", { weekday: "short", day: "2-digit", month: "short", year: "numeric" }); } catch (_) { return ymd; } };
+        const fmtT = (iso) => { try { return new Date(iso).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" }); } catch (_) { return ""; } };
+        const typeBadge = (t) => {
+          if (t === "in") return { lbl: "IN", bg: "#dcfce7", fg: "#14532d" };
+          if (t === "out") return { lbl: "OUT", bg: "#fef3c7", fg: "#92400e" };
+          if (t === "out_auto") return { lbl: "AUTO-OUT", bg: "#fee2e2", fg: "#7f1d1d" };
+          return { lbl: t, bg: "#f3f4f6", fg: "#374151" };
+        };
+        const dayRows = (hoClockinRows || [])
+          .filter(r => localYmd(r.ts) === hoClockinDay)
+          .sort((x, y) => String(y.ts || "").localeCompare(String(x.ts || "")));
+        const seenEcs = new Set(dayRows.map(r => r.staff && r.staff.employee_code).filter(Boolean).map(e => String(e).trim().toUpperCase()));
+        const isFuture = hoClockinDay > todayYmd;
+        const absent = isFuture ? [] : (hoStaff || []).filter(s => s && s.ec && !seenEcs.has(String(s.ec).trim().toUpperCase()));
+        return (
+          <div style={{ padding: "0 24px" }}>
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, color: "#831843", fontWeight: 700, marginBottom: 4 }}>🏢 Head Office Check-ins</div>
+              <div style={{ fontSize: 12, color: "#F472B6" }}>Photo-verified clock-ins for Head Office staff. Each card shows the selfie and timestamp; the roster below flags anyone not yet clocked in.</div>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, background: "#fff", border: "1px solid #FBCFE8", borderRadius: 9, padding: "4px 6px", width: "fit-content", marginBottom: 14 }}>
+              <button onClick={() => setHoClockinDay(shiftDay(hoClockinDay, -1))} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", color: "#BE185D", padding: "0 8px" }}>‹</button>
+              <span style={{ fontSize: 13, fontWeight: 600, color: "#831843", minWidth: 210, textAlign: "center" }}>{dayLabel(hoClockinDay)}{hoClockinDay === todayYmd ? " · Today" : ""}</span>
+              <button onClick={() => { if (hoClockinDay < todayYmd) setHoClockinDay(shiftDay(hoClockinDay, +1)); }} disabled={hoClockinDay >= todayYmd} style={{ background: "none", border: "none", fontSize: 18, cursor: hoClockinDay >= todayYmd ? "not-allowed" : "pointer", color: hoClockinDay >= todayYmd ? "#d1d5db" : "#BE185D", padding: "0 8px" }}>›</button>
+            </div>
+            {hoStaff.length === 0 ? (
+              <div style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 11, padding: "20px", color: "#831843", fontSize: 13 }}>No Head Office staff yet. Once HO people are onboarded and clocking in on the kiosk, their photo-verified check-ins appear here.</div>
+            ) : (
+              <>
+                {dayRows.length === 0 ? (
+                  <div style={{ background: "#fff7fb", border: "1px solid #FBCFE8", borderRadius: 11, padding: "16px 18px", color: "#9d174d", fontSize: 13, marginBottom: 16 }}>No Head Office clock-ins on this day.</div>
+                ) : (
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12, marginBottom: 20 }}>
+                    {dayRows.map(r => {
+                      const b = typeBadge(r.type);
+                      const meta = hoClockinMeta[r.id] || {};
+                      const photo = meta.photo;
+                      return (
+                        <div key={r.id} style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 12, overflow: "hidden", boxShadow: "0 1px 4px rgba(190,24,93,0.06)" }}>
+                          <div style={{ height: 150, background: "#fce7f3", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                            {photo
+                              ? <img src={photo} alt="selfie" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                              : <span style={{ fontSize: 11, color: "#9d174d" }}>No selfie</span>}
+                          </div>
+                          <div style={{ padding: "10px 12px" }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
+                              <span style={{ fontWeight: 700, color: "#831843", fontSize: 13 }}>{(r.staff && r.staff.name) || "—"}</span>
+                              <span style={{ background: b.bg, color: b.fg, fontWeight: 700, fontSize: 10, padding: "2px 7px", borderRadius: 5 }}>{b.lbl}</span>
+                            </div>
+                            <div style={{ fontSize: 11, color: "#6b7280", marginTop: 3 }}>{(r.staff && r.staff.role) || "Head Office"}{(r.staff && r.staff.employee_code) ? " · " + r.staff.employee_code : ""}</div>
+                            <div style={{ fontSize: 12, color: "#831843", marginTop: 4, fontWeight: 600 }}>🕐 {fmtT(r.ts)}</div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                {!isFuture && (
+                  <div style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 11, padding: "14px 16px" }}>
+                    <div style={{ fontWeight: 700, color: "#831843", fontSize: 13, marginBottom: 8 }}>Not clocked in ({absent.length})</div>
+                    {absent.length === 0
+                      ? <div style={{ fontSize: 12, color: "#16a34a" }}>Everyone at Head Office has clocked in.</div>
+                      : <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                          {absent.map(s => (
+                            <span key={s.ec} style={{ background: "#fef2f2", color: "#b91c1c", border: "1px solid #fecaca", borderRadius: 7, padding: "4px 10px", fontSize: 12 }}>{s.name || s.ec}</span>
+                          ))}
+                        </div>}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        );
       })()}
 
       {tab === "mgrclockins" && (() => {

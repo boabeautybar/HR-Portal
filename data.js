@@ -17,7 +17,23 @@
   });
 
   // ---------- Row ↔ React-shape transforms ----------
-  function getRoleType(ec, existingRole) {
+  // Tolerant Head Office branch matcher — branch strings drift in the data, so
+  // never compare with a raw `=== "Head Office"`.
+  function isHeadOfficeBranch(b) { return String(b == null ? "" : b).trim().toLowerCase() === "head office"; }
+  // Canonicalize a stored branch string at READ time. hoStaff membership is
+  // decided by the tolerant matcher above, but nearly every consumer downstream
+  // (HO scheduler grid, leave planner, called-in-sick routing) compares the
+  // branch strictly against "Head Office" — so a drifted row ("head office",
+  // trailing space) would be carved out of the salon populations yet invisible
+  // on every HO surface. Normalizing here makes strict equality safe portal-wide.
+  function canonBranch(b) { return isHeadOfficeBranch(b) ? "Head Office" : (b || ""); }
+  function getRoleType(ec, existingRole, branch) {
+    // Head Office staff are classified by BRANCH, not by their employee-code
+    // suffix — their real codes end in -M / -CC / -T which would otherwise
+    // derive to manager / call_centre / tech and leak into the salon
+    // populations. Branch wins so every HO person lands in one head_office
+    // bucket. No-op for everyone else (no salon branch is "Head Office").
+    if (isHeadOfficeBranch(branch)) return "head_office";
     if (!ec) return existingRole || "tech";
     const code = ec.toUpperCase().trim();
     if (code.endsWith("-W")) return "warehouse";
@@ -61,9 +77,9 @@
       firstName: r.first_name || (_sp >= 0 ? _nm.slice(0, _sp) : _nm),
       surname: r.surname || (_sp >= 0 ? _nm.slice(_sp + 1).trim() : ""),
       name: _nm,
-      branch: r.branch || "",
+      branch: canonBranch(r.branch),
       role: r.role || "",
-      roleType: getRoleType(r.employee_code, r.role_type),
+      roleType: getRoleType(r.employee_code, r.role_type, r.branch),
       contract: r.contract || null,
       permit: r.permit || null,
       permitExpiry: r.permit_expiry || null,
@@ -105,7 +121,7 @@
       left_date: s.leftDate || null,
       start_date: s.startDate || null,
       level: s.level || null,
-      role_type: getRoleType(s.ec, s.roleType),
+      role_type: getRoleType(s.ec, s.roleType, s.branch),
       active: s.active !== undefined ? s.active : !s.leftDate,
       cell_number: s.cellNumber || null,
       email: s.email || null,
@@ -128,9 +144,9 @@
       firstName: r.first_name || (_sp >= 0 ? _nm.slice(0, _sp) : _nm),
       surname: r.surname || (_sp >= 0 ? _nm.slice(_sp + 1).trim() : ""),
       name: _nm,
-      branch: r.branch || "",
+      branch: canonBranch(r.branch),
       role: r.role || "",
-      roleType: getRoleType(r.employee_code, r.role_type),
+      roleType: getRoleType(r.employee_code, r.role_type, r.branch),
       notes: r.notes || "",
       contract: r.contract || null,
       permit: r.permit || null,
@@ -169,7 +185,11 @@
       transfer_note: m.transferNote || null,
       start_date: m.startDate || null,
       left_date: m.leftDate || null,
-      role_type: m.roleType || "manager",
+      // Derive head_office from branch so a manager-shaped save (onboarding a
+      // Head Office hire with an SM/AM position) can NEVER persist a poisoned
+      // role_type='manager' + branch='Head Office' row — raw role_type readers
+      // (My BOA, kiosk clock-in joins) trust this column directly.
+      role_type: isHeadOfficeBranch(m.branch) ? "head_office" : (m.roleType || "manager"),
       active: m.active !== undefined ? m.active : !m.leftDate,
       cell_number: m.cellNumber || null,
       email: m.email || null,
@@ -222,12 +242,17 @@
     // Separate into techs and managers
     // Managers are those with role_type === 'manager'
     // Techs are everyone else (role_type !== 'manager', including empty/null role_types)
-    var techs = data.filter(function (r) { return r.role_type !== "manager"; }).map(rowToStaff);
-    var mgrs = data.filter(function (r) { return r.role_type === "manager"; }).map(rowToManager);
+    // Head Office is a third population, carved out purely by BRANCH so the
+    // existing raw-role_type split is untouched for every salon person (no-op
+    // until HO staff exist). HO people never appear in techs OR managers.
+    var techs   = data.filter(function (r) { return r.role_type !== "manager" && !isHeadOfficeBranch(r.branch); }).map(rowToStaff);
+    var mgrs    = data.filter(function (r) { return r.role_type === "manager" && !isHeadOfficeBranch(r.branch); }).map(rowToManager);
+    var hoStaff = data.filter(function (r) { return isHeadOfficeBranch(r.branch); }).map(rowToStaff);
 
     return {
       staff: techs,
       managers: mgrs,
+      hoStaff: hoStaff,
       matRecs: (mat.data || []).map(rowToMat)
     };
   }
@@ -505,6 +530,7 @@
     await rewriteEcList("boa_leave_v1", "leave");
     await rewriteEcList("boa_mgr_requests_v1", "requests");
     await rewriteEcList("boa_tech_requests_v1", "requests");
+    await rewriteEcList("boa_ho_requests_v1", "requests");
 
     // Maps keyed by ec: custom manager hours.
     try {
@@ -656,6 +682,23 @@
   }
   async function saveTechRequests(records) {
     var res = await sb.from("app_state").upsert({ key: "boa_tech_requests_v1", value: records || [] });
+    if (res.error) throw res.error;
+    return records;
+  }
+
+  // ---------- Head Office off-day requests (boa_ho_requests_v1) ----------
+  // Same record shape. The HO kiosk's Request-Off tile writes here (kept out of
+  // the tech/mgr keys so HO requests never enter salon schedule generation); the
+  // portal reads them for the HO scheduler overlay + the requests board, which
+  // routes each by department via boa_ho_routing_v1.
+  async function loadHoRequests() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_ho_requests_v1").maybeSingle();
+    if (res.error) { console.error("loadHoRequests:", res.error); return []; }
+    var v = res.data && res.data.value;
+    return Array.isArray(v) ? v : [];
+  }
+  async function saveHoRequests(records) {
+    var res = await sb.from("app_state").upsert({ key: "boa_ho_requests_v1", value: records || [] });
     if (res.error) throw res.error;
     return records;
   }
@@ -1082,7 +1125,7 @@
     var out = [], page = 1000, from = 0;
     for (;;) {
       var res = await sb.from("clockins")
-        .select("*, staff:staff_id ( id, name, employee_code, role_type, branch )")
+        .select("*, staff:staff_id ( id, name, employee_code, role_type, branch, role )")
         .gte("ts", sinceIso)
         .order("ts", { ascending: false })
         .range(from, from + page - 1);
@@ -1094,10 +1137,17 @@
     }
     return out;
   }
+  // The three clock-in viewers split the same table three ways. Head Office
+  // membership is decided by BRANCH (tolerant match), NOT the stored role_type:
+  // legacy HO rows minted before the head_office classification keep their old
+  // role_type ('manager'/'tech') until re-saved, and keying on it would route
+  // their clock-ins to the wrong tab (an HO -M person's selfie landing in
+  // Manager Check-ins) or nowhere. Branch is what the kiosk itself keys on.
+  function _isHoClockin(r) { return !!(r.staff && isHeadOfficeBranch(r.staff.branch)); }
   async function listRecentManagerClockins(daysBack) {
     var since = new Date(); since.setHours(0, 0, 0, 0); since.setDate(since.getDate() - (daysBack || 14));
     var rows = await _allClockinsSince(since.toISOString());
-    return rows.filter(function (r) { return r.staff && r.staff.role_type === "manager"; });
+    return rows.filter(function (r) { return r.staff && r.staff.role_type === "manager" && !_isHoClockin(r); });
   }
   // Same as the manager viewer but filtered to nail-tech clock-ins. Used by
   // the Daily Check-ins tab and by the Attendance tab to overlay check-in
@@ -1106,8 +1156,19 @@
     var since = new Date(); since.setHours(0, 0, 0, 0); since.setDate(since.getDate() - (daysBack || 60));
     var rows = await _allClockinsSince(since.toISOString());
     // Keep tech rows AND orphan rows (staff join failed) so the Daily Check-ins
-    // tab can surface them as diagnostics. Only manager-tagged rows are dropped.
-    return rows.filter(function (r) { return !r.staff || r.staff.role_type !== "manager"; });
+    // tab can surface them as diagnostics. Manager-tagged rows are dropped, and
+    // so are Head Office rows — otherwise HO clock-ins double-surface among
+    // nail techs and pollute the leave-balance reconcile's clock-day set.
+    return rows.filter(function (r) { return (!r.staff || r.staff.role_type !== "manager") && !_isHoClockin(r); });
+  }
+  // Head Office clock-ins for the "Head office check ins" tab. HO people clock in
+  // via the kiosk's manager-style photo flow (addManagerClockinWithMeta → clockins
+  // row + boa_mgrclockin_meta_<id> selfie sidecar), so their rows land in the same
+  // table, distinguished by their staff row's branch.
+  async function listRecentHoClockins(daysBack) {
+    var since = new Date(); since.setHours(0, 0, 0, 0); since.setDate(since.getDate() - (daysBack || 31));
+    var rows = await _allClockinsSince(since.toISOString());
+    return rows.filter(_isHoClockin);
   }
   // Lazily fetch a single proof image from app_state. The kiosk app stores
   // proof-of-sickness/FRL pictures as data URLs at boa_proof_<branch>_<ym>_<ec>_<day>
@@ -2368,6 +2429,8 @@
     saveMgrRequests: saveMgrRequests,
     loadTechRequests: loadTechRequests,
     saveTechRequests: saveTechRequests,
+    loadHoRequests: loadHoRequests,
+    saveHoRequests: saveHoRequests,
     listRequestKeys: listRequestKeys,
     probeRequestTables: probeRequestTables,
     loadByKey: loadByKey,
@@ -2427,6 +2490,7 @@
 
     // Manager clock-ins viewer
     listRecentManagerClockins: listRecentManagerClockins,
+    listRecentHoClockins: listRecentHoClockins,
     recordManualManagerClockin: recordManualManagerClockin,
     listRecentTechClockins: listRecentTechClockins,
     listRecentAttendanceCheckins: listRecentAttendanceCheckins,

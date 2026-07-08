@@ -39,8 +39,11 @@
   // for, so some manager rows land in the DB with role_type "tech". Matching
   // the code pattern too keeps managers out of the tech lists and ensures they
   // still surface in the Manager Clock-in regardless of how role_type stored.
+  // Tolerant Head Office branch matcher (branch strings drift in the data).
+  function isHeadOfficeBranch(b) { return String(b == null ? "" : b).trim().toLowerCase() === "head office"; }
   function isManagerRow(s) {
     if (!s) return false;
+    if (isHeadOfficeBranch(s.branch)) return false;   // HO staff are never salon managers, even with a -M code
     if (s.role_type === "manager") return true;
     var code = (s.employee_code || "").toUpperCase().trim();
     return !!code && (/\dM$/.test(code) || /^M\d/.test(code));
@@ -277,7 +280,9 @@
     var res = await c.from("staff").select("*").eq("active", true)
       .order("branch", { ascending: true }).order("name", { ascending: true });
     if (res.error) { console.error("listStaffAllBranches:", res.error); return []; }
-    return (res.data || []).filter(function (s) { return !isManagerRow(s); });
+    // Exclude Head Office staff outright — the borrow-a-tech picker is salon-only,
+    // and HO people (now correctly non-managers) would otherwise pass !isManagerRow.
+    return (res.data || []).filter(function (s) { return !isManagerRow(s) && !isHeadOfficeBranch(s.branch); });
   }
   async function _fetchStaffByEcs(ecs) {
     if (!ecs || !ecs.length) return [];
@@ -1539,6 +1544,15 @@
   function _saveAllTechRequests(arr) { return _saveRequestsAt(TECH_REQUESTS_KEY, arr); }
   function _loadAllMgrRequests()  { return _loadRequestsAt(MGR_REQUESTS_KEY); }
   function _saveAllMgrRequests(arr)  { return _saveRequestsAt(MGR_REQUESTS_KEY, arr); }
+  // Head Office off-day requests live in their OWN key so they never leak into
+  // salon schedule generation (which reads the tech/mgr keys). One bucket — HO
+  // has no manager/tech split. NOTE: no portal surface reads this key yet — the
+  // requests board + department→approver routing (boa_ho_routing_v1) land in
+  // Phase 5. Until then an HO off-request is stored but not actionable by an
+  // approver; do not treat "submitted" as "will be seen".
+  var HO_REQUESTS_KEY = "boa_ho_requests_v1";
+  function _loadAllHoRequests()   { return _loadRequestsAt(HO_REQUESTS_KEY); }
+  function _saveAllHoRequests(arr)   { return _saveRequestsAt(HO_REQUESTS_KEY, arr); }
 
   // ---------- Extra-Day (ED) offers + requests ----------
   // Offers are PUBLISHED by Ops in the portal (boa_mgr_ed_offers_v1); the kiosk
@@ -1591,9 +1605,14 @@
     var startIso  = isoDate(new Date(prevYear, prevMonth - 1, 25));
     var endIso    = isoDate(new Date(y, m - 1, 24));
     var br = branch();
-    var techRequests = await _loadAllTechRequests();
-    var mgrRequests  = await _loadAllMgrRequests();
-    var allRequests  = techRequests.concat(mgrRequests);
+    var allRequests;
+    if (isHeadOfficeBranch(br)) {
+      allRequests = await _loadAllHoRequests();
+    } else {
+      var techRequests = await _loadAllTechRequests();
+      var mgrRequests  = await _loadAllMgrRequests();
+      allRequests  = techRequests.concat(mgrRequests);
+    }
     var byEc = {};
     allRequests.forEach(function (r) {
       if (!r || r.branch !== br) return;
@@ -1654,9 +1673,12 @@
 
   async function addOffRequest(targetYm, payload) {
     var c = client(); if (!c) throw new Error("Supabase not configured");
-    var isManager = payload && payload.roleType === "manager";
-    var loadFn = isManager ? _loadAllMgrRequests : _loadAllTechRequests;
-    var saveFn = isManager ? _saveAllMgrRequests : _saveAllTechRequests;
+    // Head Office writes to its own key regardless of the record's roleType —
+    // HO is one bucket and must never touch the salon tech/mgr request arrays.
+    var isHo = isHeadOfficeBranch(branch());
+    var isManager = !isHo && payload && payload.roleType === "manager";
+    var loadFn = isHo ? _loadAllHoRequests : (isManager ? _loadAllMgrRequests : _loadAllTechRequests);
+    var saveFn = isHo ? _saveAllHoRequests : (isManager ? _saveAllMgrRequests : _saveAllTechRequests);
     var existing = await loadFn();
     var br = branch();
     var dates = (payload.dates || []).slice();
@@ -1708,6 +1730,14 @@
         });
       }
       return list.filter(function (r) { return r && r.id !== id; });
+    }
+
+    // Head Office deletes only touch the HO key (its requests live nowhere else).
+    if (isHeadOfficeBranch(br)) {
+      var hoExisting = await _loadAllHoRequests();
+      var hoNext = applyFilter(hoExisting);
+      if (hoNext.length !== hoExisting.length) await _saveAllHoRequests(hoNext);
+      return;
     }
 
     var techExisting = await _loadAllTechRequests();

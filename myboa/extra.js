@@ -20,7 +20,8 @@
     "Sea Point", "Bree", "Kloof", "Claremont", "Rondebosch", "Durbanville", "Cobble Walk",
     "Table Bay", "Somerset West", "Riverlands", "Kuils River", "Westlake",
     "Green Point", "Plumstead", "Sandown", "Cape Gate", "Winelands", "Betty",
-    "Fourways", "Eastgate", "Mall of the South", "Mushroom Farm", "Verdi", "Ballito"
+    "Fourways", "Eastgate", "Mall of the South", "Mushroom Farm", "Verdi", "Ballito",
+    "Head Office"
   ];
   var WORK_CODES = { W: 1, WE: 1, WL: 1, WM: 1, WB: 1, E: 1 };
   var DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -28,9 +29,13 @@
 
   // Employee-code format: a letter + number, no spaces/dashes; managers end in M
   // (e.g. B379 / B379M). Strip non-alphanumerics + upper-case, then check shape.
-  var EC_HINT = "Your employee code should look like B379 (nail techs) or B379M (managers) — a letter, then your number, no spaces or dashes. Managers add an M at the end.";
-  function cleanEc(raw) { return String(raw == null ? "" : raw).replace(/[^A-Za-z0-9]/g, "").toUpperCase(); }
-  var EC_RE = /^[A-Z]\d+M?$/;
+  var EC_HINT = "Your employee code should look like B379 (nail techs) or B379M (managers) — a letter, then your number. Head Office and some manager codes end in a dashed suffix (like B412-CC or B941-M): type it exactly as it appears.";
+  // Keep dashes: Head Office (and legacy manager) codes are STORED with a dashed
+  // suffix (B412-CC, B941-M) and the server lookup compares the code verbatim
+  // (upper/trim only) — stripping the dash made those codes unfindable. Spaces
+  // and other punctuation are still dropped.
+  function cleanEc(raw) { return String(raw == null ? "" : raw).replace(/[^A-Za-z0-9-]/g, "").toUpperCase(); }
+  var EC_RE = /^[A-Z]\d+(-?(M|W|F|T|CC|C))?$/;
 
   var state = { busy: false, name: "", store: "", ec: "", isManager: false, offDays: [] };
 
