@@ -1885,7 +1885,8 @@ const KIOSK_DEFAULT_PINS = {
   "Riverlands": "0009", "Kuils River": "0010", "Westlake": "0011", "Green Point": "0012",
   "Plumstead": "0013", "Sandown": "0014", "Cape Gate": "0015", "Winelands": "0016",
   "Betty": "0017", "Fourways": "0018", "Eastgate": "0019", "Mall of the South": "0020",
-  "Mushroom Farm": "0021", "Verdi": "0022", "Ballito": "0023"
+  "Mushroom Farm": "0021", "Verdi": "0022", "Ballito": "0023",
+  "Head Office": "0025"
 };
 
 // Manager scheduled shift times for a (role, schedule-code, branch, day-of-week).
@@ -17032,6 +17033,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // forgotten clock-in. Shape:
   //   { staffId, ec, name, branch, ymd, time, note, _saving, _err }
   const [manualMgrClockinModal, setManualMgrClockinModal] = useState(null);
+
+  // Head Office manual clock-in modal — same shape as the manager one, but the
+  // staff picker draws from hoStaff and the branch is always Head Office.
+  //   { staffId, ec, name, ymd, time, note, _saving, _err }
+  const [manualHoClockinModal, setManualHoClockinModal] = useState(null);
 
   // ── Manager Coverage tab state ─────────────────────────────────────
   // Week-at-a-glance roster of every manager grouped by branch (and
@@ -35590,6 +35596,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const devicesByBranch = {};
         (kioskRealDevices || []).filter(d => d.active).forEach(d => { devicesByBranch[d.branch] = d; });
         const fmtSeen = (t) => t ? new Date(t).toLocaleString("en-ZA", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—";
+        // Head Office isn't a salon (not in SALONS) but its kiosk uses the same
+        // single-PIN override + device-lock, so list it here alongside the salons.
+        const pinBranches = [...SALONS, { name: HEAD_OFFICE, region: null }];
         return (
           <div style={{ padding: "0 24px" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
@@ -35599,11 +35608,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 {(() => {
-                  const allRevealed = SALONS.length > 0 && SALONS.every(s => kioskPinReveal[s.name]);
+                  const allRevealed = pinBranches.length > 0 && pinBranches.every(s => kioskPinReveal[s.name]);
                   return (
                     <button onClick={() => {
                       const next = {};
-                      if (!allRevealed) SALONS.forEach(s => { next[s.name] = true; });
+                      if (!allRevealed) pinBranches.forEach(s => { next[s.name] = true; });
                       setKioskPinReveal(next);
                     }} style={{ background: allRevealed ? "#f3f4f6" : "#FCE7F3", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 6, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>
                       {allRevealed ? "🙈 Hide all PINs" : "👁 Reveal all PINs"}
@@ -35621,7 +35630,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     {kioskSecurityConfig.disableDeviceVerification ? "🔴 Device Verification Disabled" : "🟢 Device Verification Enabled"}
                   </button>
                 )}
-                <div style={{ fontSize: 11, color: "#9ca3af" }}>{kioskPinsLoaded ? Object.keys(kioskPins).length + " custom · " + SALONS.length + " branches total" : "Loading…"}</div>
+                <div style={{ fontSize: 11, color: "#9ca3af" }}>{kioskPinsLoaded ? Object.keys(kioskPins).length + " custom · " + pinBranches.length + " branches total" : "Loading…"}</div>
               </div>
             </div>
 
@@ -35646,7 +35655,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {SALONS.map((s) => {
+                  {pinBranches.map((s) => {
                     const customPin = kioskPins[s.name] || "";
                     const defaultPin = KIOSK_DEFAULT_PINS[s.name] || "";
                     const pin = customPin || defaultPin;          // effective PIN the kiosk uses
@@ -36279,10 +36288,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, color: "#831843", fontWeight: 700, marginBottom: 4 }}>🏢 Head Office Check-ins</div>
               <div style={{ fontSize: 12, color: "#F472B6" }}>Photo-verified clock-ins for Head Office staff. Each card shows the selfie and timestamp; the roster below flags anyone not yet clocked in.</div>
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 6, background: "#fff", border: "1px solid #FBCFE8", borderRadius: 9, padding: "4px 6px", width: "fit-content", marginBottom: 14 }}>
-              <button onClick={() => setHoClockinDay(shiftDay(hoClockinDay, -1))} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", color: "#BE185D", padding: "0 8px" }}>‹</button>
-              <span style={{ fontSize: 13, fontWeight: 600, color: "#831843", minWidth: 210, textAlign: "center" }}>{dayLabel(hoClockinDay)}{hoClockinDay === todayYmd ? " · Today" : ""}</span>
-              <button onClick={() => { if (hoClockinDay < todayYmd) setHoClockinDay(shiftDay(hoClockinDay, +1)); }} disabled={hoClockinDay >= todayYmd} style={{ background: "none", border: "none", fontSize: 18, cursor: hoClockinDay >= todayYmd ? "not-allowed" : "pointer", color: hoClockinDay >= todayYmd ? "#d1d5db" : "#BE185D", padding: "0 8px" }}>›</button>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, background: "#fff", border: "1px solid #FBCFE8", borderRadius: 9, padding: "4px 6px" }}>
+                <button onClick={() => setHoClockinDay(shiftDay(hoClockinDay, -1))} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", color: "#BE185D", padding: "0 8px" }}>‹</button>
+                <span style={{ fontSize: 13, fontWeight: 600, color: "#831843", minWidth: 210, textAlign: "center" }}>{dayLabel(hoClockinDay)}{hoClockinDay === todayYmd ? " · Today" : ""}</span>
+                <button onClick={() => { if (hoClockinDay < todayYmd) setHoClockinDay(shiftDay(hoClockinDay, +1)); }} disabled={hoClockinDay >= todayYmd} style={{ background: "none", border: "none", fontSize: 18, cursor: hoClockinDay >= todayYmd ? "not-allowed" : "pointer", color: hoClockinDay >= todayYmd ? "#d1d5db" : "#BE185D", padding: "0 8px" }}>›</button>
+              </div>
+              <button onClick={() => setManualHoClockinModal({ staffId: "", ec: "", name: "", ymd: hoClockinDay, time: "09:00", note: "" })}
+                title="Manually log a Head Office clock-in for someone who missed the kiosk — for backfilling mid-month."
+                style={{ background: "#15803D", color: "#fff", border: "none", borderRadius: 8, padding: "9px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700, letterSpacing: "0.03em" }}>
+                ✓ Manual clock-in
+              </button>
+              <div style={{ flex: 1 }} />
+              <div style={{ fontSize: 12, color: "#831843", textAlign: "right", fontWeight: 700 }}>{dayRows.length} clock-in record{dayRows.length !== 1 ? "s" : ""}</div>
             </div>
             {hoStaff.length === 0 ? (
               <div style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 11, padding: "20px", color: "#831843", fontSize: 13 }}>No Head Office staff yet. Once HO people are onboarded and clocking in on the kiosk, their photo-verified check-ins appear here.</div>
@@ -39733,6 +39751,97 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <div style={{ flex: 1 }}>
                   <label style={lbl}>DATE</label>
                   <input type="date" value={m.ymd || ""} max={ymdMax} onChange={ev => ev.target.value && _set({ ymd: ev.target.value })} style={inp} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label style={lbl}>CLOCK-IN TIME</label>
+                  <input type="time" value={m.time || "09:00"} onChange={ev => _set({ time: ev.target.value })} style={inp} />
+                </div>
+              </div>
+
+              <div style={{ marginTop: 12 }}>
+                <label style={lbl}>NOTE (optional)</label>
+                <input value={m.note || ""} onChange={ev => _set({ note: ev.target.value })} placeholder="e.g. forgot to tap — verified arrival 9:00"
+                  style={{ ...inp, fontFamily: "inherit" }} />
+              </div>
+
+              {m._err && (
+                <div style={{ marginTop: 10, background: "#fee2e2", border: "1px solid #fca5a5", color: "#7f1d1d", borderRadius: 8, padding: "8px 10px", fontSize: 12 }}>{m._err}</div>
+              )}
+
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+                <button onClick={_close} disabled={!!m._saving} style={{ padding: "9px 16px", borderRadius: 9, border: "1px solid #FBCFE8", background: "#fff", color: "#831843", fontWeight: 700, fontSize: 13, cursor: m._saving ? "not-allowed" : "pointer" }}>Cancel</button>
+                <button onClick={_save} disabled={!!m._saving}
+                  style={{ padding: "9px 20px", borderRadius: 9, border: "none", background: m._saving ? "#FBCFE8" : "#15803D", color: "#fff", fontWeight: 700, fontSize: 13, cursor: m._saving ? "not-allowed" : "pointer" }}>
+                  {m._saving ? "Logging…" : "💾 Log clock-in"}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {manualHoClockinModal && (() => {
+        const m = manualHoClockinModal;
+        const _close = () => setManualHoClockinModal(null);
+        const _set = (patch) => setManualHoClockinModal({ ...m, ...patch });
+        const _todayY = (() => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); })();
+        const hoPeople = (hoStaff || []).filter(s => s && !s.leftDate).sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+        const _save = async () => {
+          if (!m.staffId) { _set({ _err: "Pick a person." }); return; }
+          if (!m.ymd) { _set({ _err: "Pick a date." }); return; }
+          if (!m.time || !/^\d{2}:\d{2}$/.test(m.time)) { _set({ _err: "Pick a time (HH:MM)." }); return; }
+          if (!window.BOA_DB || !window.BOA_DB.recordManualManagerClockin) { _set({ _err: "Not connected." }); return; }
+          _set({ _saving: true, _err: "" });
+          try {
+            // Local-timezone ISO so the row lands on the day the ROM picked.
+            const [yy, mm, dd] = m.ymd.split("-").map(Number);
+            const [hh, mn] = m.time.split(":").map(Number);
+            const tsIso = new Date(yy, mm - 1, dd, hh, mn, 0, 0).toISOString();
+            await window.BOA_DB.recordManualManagerClockin({
+              staffId: m.staffId,
+              branch: HEAD_OFFICE,
+              type: "in",
+              ts: tsIso,
+              note: m.note || null,
+              recordedBy: (currentUser && (currentUser.name || currentUser.pin)) || null
+            });
+            if (window.BOA_DB.listRecentHoClockins) {
+              const fresh = await window.BOA_DB.listRecentHoClockins(hoClockinDays || 31);
+              setHoClockinRows(fresh || []);
+            }
+            _close();
+          } catch (err) {
+            setManualHoClockinModal(prev => prev ? { ...prev, _saving: false, _err: (err && err.message) || String(err) } : null);
+          }
+        };
+        const inp = { display: "block", width: "100%", marginTop: 4, padding: "8px 10px", borderRadius: 8, border: "1px solid #FBCFE8", fontSize: 13, background: "#fff", boxSizing: "border-box" };
+        const lbl = { fontSize: 10, fontWeight: 800, color: "#F472B6", letterSpacing: "0.06em" };
+        return (
+          <div onClick={_close} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+            <div onClick={ev => ev.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "20px 22px", width: "100%", maxWidth: 480 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+                <div>
+                  <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 19, color: "#831843", fontWeight: 700 }}>✓ Manual Head Office clock-in</div>
+                  <div style={{ fontSize: 12, color: "#9ca3af" }}>Backfill a clock-in for an HO person who missed the kiosk. Writes into the same log the check-in cards read — no selfie, tagged as a manual entry.</div>
+                </div>
+                <button onClick={_close} style={{ background: "transparent", border: "none", fontSize: 22, cursor: "pointer", color: "#831843", lineHeight: 1 }}>×</button>
+              </div>
+
+              <div style={{ marginTop: 14 }}>
+                <label style={lbl}>HEAD OFFICE STAFF</label>
+                <select value={m.staffId || ""} onChange={ev => {
+                  const s = hoPeople.find(x => (x._id || x.id) === ev.target.value);
+                  _set({ staffId: ev.target.value, ec: (s && s.ec) || "", name: (s && s.name) || "" });
+                }} style={inp}>
+                  <option value="">— pick a person —</option>
+                  {hoPeople.map(s => <option key={s._id || s.id} value={s._id || s.id}>{s.name}{s.role ? " · " + s.role : ""}</option>)}
+                </select>
+              </div>
+
+              <div style={{ marginTop: 12, display: "flex", gap: 10 }}>
+                <div style={{ flex: 1 }}>
+                  <label style={lbl}>DATE</label>
+                  <input type="date" value={m.ymd || ""} max={_todayY} onChange={ev => ev.target.value && _set({ ymd: ev.target.value })} style={inp} />
                 </div>
                 <div style={{ flex: 1 }}>
                   <label style={lbl}>CLOCK-IN TIME</label>
