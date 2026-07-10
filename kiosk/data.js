@@ -380,9 +380,10 @@
       listLeaveRecords(),
       listTechLoans(refIso),
       loadOffboarding(),
-      listTransfersInto(thisBranch)
+      listTransfersInto(thisBranch),
+      listUnpaidLegal()
     ]);
-    var staff = results[0], matRecs = results[1], leaveRecs = results[2], loansToday = results[3], offList = results[4], transfersIn = results[5];
+    var staff = results[0], matRecs = results[1], leaveRecs = results[2], loansToday = results[3], offList = results[4], transfersIn = results[5], unpaidLegalRecs = results[6];
 
     // Off-boarding lookup: HR portal's dedicated tab writes leftDate into
     // boa_offboard_v1 (NOT the staff row's left_date column), so we have
@@ -493,14 +494,28 @@
       if (l.endDate   && refIso > l.endDate)   return;
       leaveByEc[l.ec] = l;
     });
-    var active = [], onMat = [], onLeave = [];
-    staff.forEach(function (s) {
-      var ec = s.employee_code;
-      if (ec && matByEc[ec])         onMat.push({ staff: s, record: matByEc[ec] });
-      else if (ec && leaveByEc[ec])  onLeave.push({ staff: s, record: leaveByEc[ec] });
-      else                           active.push(s);
+    // Legal unpaid leave (HR Compliance → "Unpaid Leave (Legal)", boa_unpaid_legal_v1)
+    // covering the ref date. Same matching as the schedule-view EL overlay:
+    // status "on_leave", EC upper-trimmed, open-ended ranges allowed. Keeps a
+    // person on legal leave OFF the taggable roster (so no false "absent" tag),
+    // out of the borrow list, and out of off-requests.
+    var unpaidByEc = {};
+    (unpaidLegalRecs || []).forEach(function (r) {
+      if (!r || r.status !== "on_leave" || !r.ec) return;
+      if (r.startDate && refIso < r.startDate) return;
+      if (r.endDate   && refIso > r.endDate)   return;
+      unpaidByEc[String(r.ec).trim().toUpperCase()] = r;
     });
-    return { active: active, onMat: onMat, onLeave: onLeave, loansToday: loansToday, leftCompany: leftCompany };
+    var active = [], onMat = [], onLeave = [], onUnpaidLegal = [];
+    staff.forEach(function (s) {
+      var ec  = s.employee_code;
+      var ecU = ec && String(ec).trim().toUpperCase();
+      if (ec && matByEc[ec])            onMat.push({ staff: s, record: matByEc[ec] });
+      else if (ec && leaveByEc[ec])     onLeave.push({ staff: s, record: leaveByEc[ec] });
+      else if (ecU && unpaidByEc[ecU])  onUnpaidLegal.push({ staff: s, record: unpaidByEc[ecU] });
+      else                              active.push(s);
+    });
+    return { active: active, onMat: onMat, onLeave: onLeave, onUnpaidLegal: onUnpaidLegal, loansToday: loansToday, leftCompany: leftCompany };
   }
 
   // Roster for the Off Requests picker: everyone who belongs to THIS branch at

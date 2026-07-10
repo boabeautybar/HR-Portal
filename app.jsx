@@ -1938,6 +1938,7 @@ function shiftTimes(role, code, branch, dow) {
     if (dow === 0) return "08:30 - 17:00";          // Sun single AM (08:30 open)
     if (code === "WE") return "09:00 - 18:00";      // AM opener
     if (code === "WB") return "08:00 - 17:00";      // 4+ bonus opener
+    if (code === "WM") return "09:00 - 18:00";      // AM mid shift
     if (code === "WL") return "10:00 - 19:00";
     return "10:00 - 19:00";
   }
@@ -34962,7 +34963,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             {mgrSchedDraft && branch === "Riverlands" && (
               <div style={{ background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: 10, padding: "10px 14px", marginBottom: 10, fontSize: 12, color: "#065f46", display: "flex", flexWrap: "wrap", gap: 14, alignItems: "center" }}>
                 <span style={{ fontSize: 11, fontWeight: 800, color: "#065f46", letterSpacing: "0.08em", textTransform: "uppercase" }}>🕐 Riverlands manager shifts</span>
-                <span><strong>Mon–Fri</strong> · WE = SM 08:00–17:00 or AM 09:00–18:00 · WL 10:00–19:00 · <span style={{ color: "#0f766e" }}>WB = 4+ on duty bonus 08:00–17:00 AM (rotated fairly)</span></span>
+                <span><strong>Mon–Fri</strong> · WE = SM 08:00–17:00 or AM 09:00–18:00 · WM 09:00–18:00 · WL 10:00–19:00 · <span style={{ color: "#0f766e" }}>WB = 4+ on duty bonus 08:00–17:00 AM (rotated fairly)</span></span>
                 <span><strong>Saturday</strong> · single shift 09:00–18:00 (WE)</span>
                 <span><strong>Sunday</strong> · single shift 08:00–17:00 (WE)</span>
               </div>
@@ -35927,15 +35928,45 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const cur = attLatestByKey[k];
             if (!cur || String(r.ts) > String(cur.ts)) attLatestByKey[k] = r;
           }
+          // Some techs are excluded from work by reasons that live in their OWN
+          // stores and produce NO kiosk tag — Unpaid Leave (Legal),
+          // boa_unpaid_legal_v1; and annual/emergency leave, boa_leave_v1. If such
+          // a day was submitted with an "absent"/"no-show"/blank status it wrongly
+          // reads as ABSENT here (STATUS_BADGE has no `absent` key → raw-uppercase).
+          // Relabel those FALSE absents to the correct non-work badge (which also
+          // makes them obey the "Hide off / leave" toggle via NONWORK). A real
+          // clock-in, or an explicit sick/late/on-time tag, is left untouched.
+          // (Maternity + annual leave are already excluded from the kiosk taggable
+          // roster upstream in categorizeStaff; this mainly catches EL + pre-fix rows.)
+          const _elRanges = {};
+          (unpaidLegalRecs || []).forEach(r => {
+            if (!r || !r.ec || r.status !== "on_leave") return;
+            const ec = String(r.ec).trim();
+            (_elRanges[ec] = _elRanges[ec] || []).push({ start: r.startDate || null, end: r.endDate || null });
+          });
+          const _onElCI = (ec, ymd) => {
+            const rs = _elRanges[String(ec || "").trim()];
+            return !!(rs && ymd) && rs.some(rg => (!rg.start || ymd >= rg.start) && (!rg.end || ymd <= rg.end));
+          };
+          const _leaveHitCI = (ec, ymd) => (leaveRecs || []).find(lv => lv && lv.ec && String(lv.ec).trim() === String(ec || "").trim()
+            && lv.startDate && lv.endDate && ymd >= lv.startDate && ymd <= lv.endDate);
           const attShaped = Object.keys(attLatestByKey).map(key => {
             const r = attLatestByKey[key];
             const sRec = staffByEc[r.ec] || null;
+            const _day = r.ymd || checkinDay;
+            const _bare = r.status ? (r.status.charAt(0) === "~" ? r.status.slice(1) : r.status) : "";
+            const _falseAbsent = (!_bare || _bare === "absent" || _bare === "no");
+            let _status = r.status;
+            if (_falseAbsent) {
+              if (_onElCI(r.ec, _day)) _status = "unpaid";
+              else { const _lv = _leaveHitCI(r.ec, _day); if (_lv) _status = _lv.emergency ? "el" : "al"; }
+            }
             return {
               id: r.id,
               ts: r.ts,
               ymd: r.ymd,
               type: r.type,        // "att" — special render (status badge instead of IN/OUT pill)
-              status: r.status,
+              status: _status,
               note: r.note || null,
               hasProof: !!r.hasProof,
               proofKey: r.proofKey || null,

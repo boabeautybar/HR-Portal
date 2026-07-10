@@ -1020,6 +1020,20 @@
   // True when a branch string is Head Office (tolerant of casing/whitespace),
   // mirroring the portal's isHeadOfficeBranch.
   function _isHoBranch(b) { return String(b == null ? "" : b).trim().toLowerCase() === "head office"; }
+  // Case/whitespace-tolerant lookup into a custom-hours map (boa_mgr_times_v1):
+  // Coverage may store the EC in a different case than the kiosk staff row
+  // carries, and a strict lookup silently drops the override (staff then see
+  // the code-default hours, not their real custom hours).
+  function _custHoursRow(map, ec) {
+    if (!map || ec == null) return null;
+    var raw = String(ec);
+    if (map[raw]) return map[raw];
+    var t = raw.trim();
+    if (map[t]) return map[t];
+    var u = t.toUpperCase(), keys = Object.keys(map);
+    for (var i = 0; i < keys.length; i++) { if (String(keys[i]).trim().toUpperCase() === u) return map[keys[i]]; }
+    return null;
+  }
   // Head Office shift hours — the single source of truth for both the per-cell
   // times (_shiftTimes) and the schedule hours banner (_techHoursBannerHtml).
   // Call Centre & Sales work an early/late split (WE / WL); "Office Staff" work
@@ -1396,7 +1410,7 @@
             // the computed hours and is flagged with a ★ + summary row.
             // Employee codes can carry a trailing space in older data, so
             // fall back to the trimmed key.
-            var _custRow = customTimes[s.employee_code] || customTimes[(s.employee_code || "").trim()];
+            var _custRow = _custHoursRow(customTimes, s.employee_code);
             var _cust = _custRow && _custRow[_ymd];
             if (_cust) {
               _hrs = _cust;
@@ -3912,6 +3926,7 @@
       if (dow === 0) return "08:30 - 17:00";          // Sun single AM (08:30 open)
       if (code === "WE") return "09:00 - 18:00";
       if (code === "WB") return "08:00 - 17:00";
+      if (code === "WM") return "09:00 - 18:00";      // AM mid shift
       return "10:00 - 19:00";
     }
     if (b === "Ballito" || b === "Mall of the South") {
@@ -3975,7 +3990,7 @@
       lines.push("AM Sunday · WE 08:00–17:00 · WL 09:00–18:00");
     } else if (b === "Riverlands") {
       lines.push("SM — 08:00–17:00 Mon–Fri");
-      lines.push("AM Mon–Fri · WE 09:00–18:00 · WL 10:00–19:00 · WB 08:00–17:00");
+      lines.push("AM Mon–Fri · WE/WM 09:00–18:00 · WL 10:00–19:00 · WB 08:00–17:00");
       lines.push("Saturday — single 09:00–18:00 shift");
       lines.push("Sunday — AM 08:30–17:00 · SM 08:00–17:00");
     } else if (b === "Ballito" || b === "Mall of the South") {

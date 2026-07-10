@@ -2099,7 +2099,7 @@
       // we don't tell an off-duty manager "your shift is X" by mistake.
       var _schedCodeToday = mgrTodaySched[ec];
       var _isWorkingToday = _schedCodeToday === "W" || _schedCodeToday === "WL" || _schedCodeToday === "WE" || _schedCodeToday === "WM" || _schedCodeToday === "WB" || _schedCodeToday === "E";
-      var _custRow = mgrCustomTimes[ecRaw] || mgrCustomTimes[ec];
+      var _custRow = _custHoursRow(mgrCustomTimes, ecRaw || ec);
       var _custHrs = _custRow ? _custRow[todayK] : null;
       var shiftLine = "";
       if (m.branch === thisBranch && (_custHrs || _isWorkingToday) && !_onLeaveCode) {
@@ -2675,11 +2675,34 @@
   //   code: schedule cell value for today (W / WE / WL / WM / WB / E …)
   //   branchName: store name (matches APP_CONFIG.branchName)
   //   dow: 0=Sun … 6=Sat (Date#getDay)
+  // Case/whitespace-tolerant lookup into a custom-hours map (boa_mgr_times_v1).
+  // Coverage may store the EC in a different case/spacing than the kiosk staff
+  // row carries; a strict lookup silently drops the override and the manager
+  // then sees the code-default hours instead of their real custom hours.
+  function _custHoursRow(map, ec) {
+    if (!map || ec == null) return null;
+    var raw = String(ec);
+    if (map[raw]) return map[raw];
+    var t = raw.trim();
+    if (map[t]) return map[t];
+    var u = t.toUpperCase(), keys = Object.keys(map);
+    for (var i = 0; i < keys.length; i++) { if (String(keys[i]).trim().toUpperCase() === u) return map[keys[i]]; }
+    return null;
+  }
+
   function shiftTimes(role, code, branchName, dow) {
     var r = (role || "").toUpperCase();
     var isSM = r === "SM" || r === "SSM";
     var isAM = r === "AM";
     var b = branchName || "";
+
+    // Head Office runs its own hours (mirrors app.jsx / staff-app / myboa):
+    // Call Centre & Sales split early (WE → 07:00-16:00) / late (WL → 09:00-18:30);
+    // everyone else ("Office Staff") one day shift 08:00-17:00.
+    if (String(b).trim().toLowerCase() === "head office") {
+      if (r === "CC" || r === "MCC" || r === "SALES") return code === "WL" ? "09:00 - 18:30" : "07:00 - 16:00";
+      return "08:00 - 17:00";
+    }
 
     if (b === "Sandown" || b === "Table Bay") {
       if (isSM) return "08:00 - 17:00";
@@ -2704,6 +2727,7 @@
       if (dow === 0) return "08:30 - 17:00";          // Sun single AM (08:30 open)
       if (code === "WE") return "09:00 - 18:00";      // AM opener
       if (code === "WB") return "08:00 - 17:00";      // 4+ bonus opener
+      if (code === "WM") return "09:00 - 18:00";      // AM mid shift
       if (code === "WL") return "10:00 - 19:00";
       return "10:00 - 19:00";
     }
