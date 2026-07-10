@@ -35927,15 +35927,45 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const cur = attLatestByKey[k];
             if (!cur || String(r.ts) > String(cur.ts)) attLatestByKey[k] = r;
           }
+          // Some techs are excluded from work by reasons that live in their OWN
+          // stores and produce NO kiosk tag — Unpaid Leave (Legal),
+          // boa_unpaid_legal_v1; and annual/emergency leave, boa_leave_v1. If such
+          // a day was submitted with an "absent"/"no-show"/blank status it wrongly
+          // reads as ABSENT here (STATUS_BADGE has no `absent` key → raw-uppercase).
+          // Relabel those FALSE absents to the correct non-work badge (which also
+          // makes them obey the "Hide off / leave" toggle via NONWORK). A real
+          // clock-in, or an explicit sick/late/on-time tag, is left untouched.
+          // (Maternity + annual leave are already excluded from the kiosk taggable
+          // roster upstream in categorizeStaff; this mainly catches EL + pre-fix rows.)
+          const _elRanges = {};
+          (unpaidLegalRecs || []).forEach(r => {
+            if (!r || !r.ec || r.status !== "on_leave") return;
+            const ec = String(r.ec).trim();
+            (_elRanges[ec] = _elRanges[ec] || []).push({ start: r.startDate || null, end: r.endDate || null });
+          });
+          const _onElCI = (ec, ymd) => {
+            const rs = _elRanges[String(ec || "").trim()];
+            return !!(rs && ymd) && rs.some(rg => (!rg.start || ymd >= rg.start) && (!rg.end || ymd <= rg.end));
+          };
+          const _leaveHitCI = (ec, ymd) => (leaveRecs || []).find(lv => lv && lv.ec && String(lv.ec).trim() === String(ec || "").trim()
+            && lv.startDate && lv.endDate && ymd >= lv.startDate && ymd <= lv.endDate);
           const attShaped = Object.keys(attLatestByKey).map(key => {
             const r = attLatestByKey[key];
             const sRec = staffByEc[r.ec] || null;
+            const _day = r.ymd || checkinDay;
+            const _bare = r.status ? (r.status.charAt(0) === "~" ? r.status.slice(1) : r.status) : "";
+            const _falseAbsent = (!_bare || _bare === "absent" || _bare === "no");
+            let _status = r.status;
+            if (_falseAbsent) {
+              if (_onElCI(r.ec, _day)) _status = "unpaid";
+              else { const _lv = _leaveHitCI(r.ec, _day); if (_lv) _status = _lv.emergency ? "el" : "al"; }
+            }
             return {
               id: r.id,
               ts: r.ts,
               ymd: r.ymd,
               type: r.type,        // "att" — special render (status badge instead of IN/OUT pill)
-              status: r.status,
+              status: _status,
               note: r.note || null,
               hasProof: !!r.hasProof,
               proofKey: r.proofKey || null,
