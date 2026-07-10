@@ -2727,6 +2727,7 @@
       if (dow === 0) return "08:30 - 17:00";          // Sun single AM (08:30 open)
       if (code === "WE") return "09:00 - 18:00";      // AM opener
       if (code === "WB") return "08:00 - 17:00";      // 4+ bonus opener
+      if (code === "WM") return "09:00 - 18:00";      // AM mid shift
       if (code === "WL") return "10:00 - 19:00";
       return "10:00 - 19:00";
     }

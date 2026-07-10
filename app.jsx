@@ -1938,6 +1938,7 @@ function shiftTimes(role, code, branch, dow) {
     if (dow === 0) return "08:30 - 17:00";          // Sun single AM (08:30 open)
     if (code === "WE") return "09:00 - 18:00";      // AM opener
     if (code === "WB") return "08:00 - 17:00";      // 4+ bonus opener
+    if (code === "WM") return "09:00 - 18:00";      // AM mid shift
     if (code === "WL") return "10:00 - 19:00";
     return "10:00 - 19:00";
   }
@@ -34962,7 +34963,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             {mgrSchedDraft && branch === "Riverlands" && (
               <div style={{ background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: 10, padding: "10px 14px", marginBottom: 10, fontSize: 12, color: "#065f46", display: "flex", flexWrap: "wrap", gap: 14, alignItems: "center" }}>
                 <span style={{ fontSize: 11, fontWeight: 800, color: "#065f46", letterSpacing: "0.08em", textTransform: "uppercase" }}>🕐 Riverlands manager shifts</span>
-                <span><strong>Mon–Fri</strong> · WE = SM 08:00–17:00 or AM 09:00–18:00 · WL 10:00–19:00 · <span style={{ color: "#0f766e" }}>WB = 4+ on duty bonus 08:00–17:00 AM (rotated fairly)</span></span>
+                <span><strong>Mon–Fri</strong> · WE = SM 08:00–17:00 or AM 09:00–18:00 · WM 09:00–18:00 · WL 10:00–19:00 · <span style={{ color: "#0f766e" }}>WB = 4+ on duty bonus 08:00–17:00 AM (rotated fairly)</span></span>
                 <span><strong>Saturday</strong> · single shift 09:00–18:00 (WE)</span>
                 <span><strong>Sunday</strong> · single shift 08:00–17:00 (WE)</span>
               </div>

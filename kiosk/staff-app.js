@@ -3926,6 +3926,7 @@
       if (dow === 0) return "08:30 - 17:00";          // Sun single AM (08:30 open)
       if (code === "WE") return "09:00 - 18:00";
       if (code === "WB") return "08:00 - 17:00";
+      if (code === "WM") return "09:00 - 18:00";      // AM mid shift
       return "10:00 - 19:00";
     }
     if (b === "Ballito" || b === "Mall of the South") {
@@ -3989,7 +3990,7 @@
       lines.push("AM Sunday · WE 08:00–17:00 · WL 09:00–18:00");
     } else if (b === "Riverlands") {
       lines.push("SM — 08:00–17:00 Mon–Fri");
-      lines.push("AM Mon–Fri · WE 09:00–18:00 · WL 10:00–19:00 · WB 08:00–17:00");
+      lines.push("AM Mon–Fri · WE/WM 09:00–18:00 · WL 10:00–19:00 · WB 08:00–17:00");
       lines.push("Saturday — single 09:00–18:00 shift");
       lines.push("Sunday — AM 08:30–17:00 · SM 08:00–17:00");
     } else if (b === "Ballito" || b === "Mall of the South") {
