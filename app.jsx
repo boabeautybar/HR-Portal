@@ -17060,6 +17060,27 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // used as a fallback when the working draft grid has no entry for a
   // manager — keyed `<branch>|<ym>` like mgrClockinSchedCache.
   const [mgrApprovedFallbackCache, setMgrApprovedFallbackCache] = useState({});
+  // Tolerant EC-row lookup for a schedule grid — matches a legacy/dash/space
+  // key ("B941-M") to the current code ("B941M") the way _canonicalizeGrid does
+  // for the editor, so a snapshot row keyed under an old code is still found.
+  const _gridEcRow = (grid, ec) => {
+    if (!grid || ec == null) return undefined;
+    if (grid[ec]) return grid[ec];
+    const want = String(ec).replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+    const k = Object.keys(grid).find(kk => String(kk).replace(/[^A-Za-z0-9]/g, "").toUpperCase() === want);
+    return k ? grid[k] : undefined;
+  };
+  // Single accessor for the manager no-show scanners: judge "expected to work"
+  // against what staff SAW — the published snapshot — and fall back to the draft
+  // ONLY when the cycle was never published (a null OR truthy-but-empty snapshot
+  // grid must not mask a populated draft). One place so the next scanner added
+  // can't reintroduce the draft-first read this plan exists to kill.
+  const mgrPublishedFirstGrid = (branch, ym) => {
+    const k = (branch || "") + "|" + ym;
+    const pub = mgrApprovedFallbackCache[k];
+    if (pub && Object.keys(pub).length > 0) return pub;
+    return mgrClockinSchedCache[k];
+  };
   // Per-user custom branch groupings for the Manager Coverage tab. Lets a
   // ROM organise stores into clusters that make sense for their region
   // (e.g. "Cape Town city bowl", "Southern suburbs"). Falls back to the
@@ -19350,6 +19371,35 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             pairs.forEach(([k, g]) => { next[k] = g; });
             return next;
           });
+        }
+        // Load the PUBLISHED snapshot ([0].grid) for the same branch × cycle
+        // set. The no-show scanners (dashboard "reasons to add", mgrclockins
+        // no-show banner + kiosk scheduled-by-branch) must judge "expected to
+        // work" against what staff actually SAW — the published snapshot — not
+        // the draft, which can diverge post-publish. Draft stays the fallback
+        // for never-published cycles. (The Coverage tab loads this too; keyed
+        // identically so loads dedupe across both effects.)
+        if (window.BOA_DB.loadApprovedSchedules) {
+          const needApproved = [];
+          for (const ym of ymsInRange) for (const sl of SALONS) {
+            const k = sl.name + "|" + ym;
+            if (!(k in mgrApprovedFallbackCache)) needApproved.push({ branch: sl.name, ym, key: k });
+          }
+          if (needApproved.length > 0) {
+            const aPairs = await Promise.all(needApproved.map(async (n) => {
+              try {
+                const list = await window.BOA_DB.loadApprovedSchedules(n.branch, n.ym, true);
+                const top = Array.isArray(list) && list.length > 0 ? list[0] : null;
+                return [n.key, (top && top.grid) || null];
+              } catch (_) { return [n.key, null]; }
+            }));
+            if (cancelled) return;
+            setMgrApprovedFallbackCache(prev => {
+              const next = { ...prev };
+              aPairs.forEach(([k, g]) => { next[k] = g; });
+              return next;
+            });
+          }
         }
         // Also load the payroll ATTENDANCE sheet for each branch × cycle so the
         // "Manager reasons to add" scan can use it as a fallback: a manager with
@@ -22549,9 +22599,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           if (m.active === false) return;                            // deactivated record
                           if (m.startDate && ymd < m.startDate) return;              // not started yet on this date — a roster published before their start date still carries working cells
                           if (m.leftDate && ymd > m.leftDate) return;                // already left by this date
-                          const grid = mgrClockinSchedCache[(m.branch || "") + "|" + ymOf];
+                          // Published-first (what staff SAW), draft only as a
+                          // never-published fallback — see mgrPublishedFirstGrid.
+                          const grid = mgrPublishedFirstGrid(m.branch, ymOf);
                           if (!grid) return;
-                          const cell = (grid[m.ec]) ? (grid[m.ec][ymd] || grid[m.ec][dom]) : undefined;
+                          const _row = _gridEcRow(grid, m.ec);
+                          const cell = _row ? (_row[ymd] || _row[dom]) : undefined;
                           if (cell !== "W" && cell !== "WL" && cell !== "WE" && cell !== "WM" && cell !== "WB" && cell !== "E") return;
                           if (clockedInByEcDate.has(String(m.ec || "").trim() + "|" + ymd)) return;
                           // Attendance-sheet fallback: if HR has filled in ANY cell
@@ -34509,6 +34562,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               return;
             }
             setMgrSchedVersions(after);
+            // Refresh the no-show scanners' / Coverage badge's snapshot cache
+            // in place so they judge against THIS publish immediately, without a
+            // reload (the loader effects skip keys already cached — finding: a
+            // mid-session publish otherwise kept scanners on the pre-publish
+            // snapshot). Keyed identically to mgrPublishedFirstGrid.
+            setMgrApprovedFallbackCache(prev => ({ ...prev, [branch + "|" + ymKey]: _approvedGrid }));
             let publishedLive = false;
             try {
               const liveDraft = JSON.parse(JSON.stringify(draft));
@@ -36476,7 +36535,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               };
               const noShows = [];
               for (const branchName of branchesToCheck) {
-                const grid = mgrClockinSchedCache[branchName + "|" + ymOf];
+                // Published-first (what staff saw); draft only as a never-published fallback.
+                const grid = mgrPublishedFirstGrid(branchName, ymOf);
                 if (!grid) continue;        // schedule not loaded yet
                 // Effective home branch — a manager transferred to another
                 // store (transferring/transferTo/transferDate) must appear
@@ -36485,7 +36545,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 for (const m of managers.filter(mm => effHomeBranch(mm, ymd) === branchName && !mm.onMat && !mm.leftDate && !mm.offboarded)) {
                   if (_hasLeftBanner(m.ec)) continue;                             // resigned
                   if (_onLeaveEcs.has(String(m.ec || "").trim())) continue;    // on annual leave
-                  const cell = (grid[m.ec]) ? (grid[m.ec][ymd] || grid[m.ec][_dom]) : undefined;
+                  const _row = _gridEcRow(grid, m.ec);
+                  const cell = _row ? (_row[ymd] || _row[_dom]) : undefined;
                   if (cell !== "W" && cell !== "WL" && cell !== "WE" && cell !== "WM" && cell !== "WB" && cell !== "E") continue;     // not scheduled to work
                   if (clockedIn.has(String(m.ec || "").trim())) continue;              // they did clock in
                   noShows.push({ ec: m.ec, name: m.name, branch: branchName, ymd, staffId: m._id || m.id });
@@ -36645,7 +36706,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const ymdParts = ymd.split("-").map(Number);
               const dayOfMonth = ymdParts[2];
               const ymOf = (() => { let y = ymdParts[0], m = ymdParts[1]; if (ymdParts[2] <= 24) { m -= 1; if (m < 1) { m = 12; y--; } } return y + "-" + String(m).padStart(2, "0"); })();
-              const _readCell = (grid, ec) => (grid && grid[ec]) ? (grid[ec][ymd] || grid[ec][dayOfMonth]) : undefined;
+              const _readCell = (grid, ec) => { const r = _gridEcRow(grid, ec); return r ? (r[ymd] || r[dayOfMonth]) : undefined; };
               const _isWorking = v => v === "W" || v === "WL" || v === "WE" || v === "WM" || v === "WB" || v === "E";
               // Anyone on annual leave today is OFF — don't count them as a
               // no-show even if their schedule cell still says W. Matches the
@@ -36689,7 +36750,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const surpriseClockIns = [];   // clocked in but scheduled off today
               const loanedOut = [];          // home-branch view: managers loaned out today
               scopedBranches.forEach(b => {
-                const grid = mgrClockinSchedCache[b + "|" + ymOf];
+                // Published-first (what staff saw); draft only as a never-published fallback.
+                const grid = mgrPublishedFirstGrid(b, ymOf);
                 const branchMgrs = _mgrsEffMC.filter(m => m.branch === b && !m.onMat && !m.leftDate && !m.offboarded && !_hasLeftMC(m.ec) && !_onLeaveEcs.has(String(m.ec || "").trim()));
                 const scheduleHasToday = !!grid && branchMgrs.some(m => _readCell(grid, m.ec) != null);
                 if (!scheduleHasToday) {
@@ -37241,6 +37303,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         };
         const _gridForView = (branchName, ym) => {
           const k = _draftKey(branchName, ym);
+          // Coverage is an EDITING surface: it renders the working DRAFT so the
+          // ROM sees the schedule they're building, and Apply/swap/editor all
+          // read and write the same draft substrate (no view↔write divergence).
+          // What staff SEE is enforced by the published-first no-show scanners +
+          // the actual staff surfaces; when the draft ≠ the published snapshot
+          // the "Unpublished changes" badge flags it so nothing hides silently.
           return _mergeDraft(_canonicalizeGrid(mgrClockinSchedCache[k], mgrSchedNamesCache[k]), mgrCoverageDraft[k]);
         };
         // Leave Planner overlay (same idea as the attendance grid version).
@@ -37776,6 +37844,53 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               await window.BOA_DB.saveSchedule(branchName, ym, merged, true, mgrSchedNamesCache[key] || undefined);
               setMgrClockinSchedCache(prev => ({ ...prev, [key]: merged }));
             }
+            // Mirror EVERY applied draft cell into the published snapshot — not
+            // just loans. "Apply to live" must reach the kiosk / My BOA snapshot
+            // readers for a published cycle, so a plain shift-swap or off-day
+            // change made here can't stay stranded in the draft. One load+save
+            // per (branch, ym). Loan cells are re-asserted precisely by the
+            // loan-delta loop below (idempotent). No-op on an unpublished cycle.
+            // Rows are matched to the snapshot the SAME tolerant way the editor
+            // canonicalises them (_normGridKey — strips dash/space/case), so a
+            // legacy-keyed snapshot row is UPDATED, never duplicated.
+            const _mirrorCellsIntoGrid = (grid, draftBranch) => {
+              let changed = false;
+              Object.entries(draftBranch).forEach(([ecKey, dRow]) => {
+                const want = _normGridKey(ecKey);
+                const rowKey = Object.keys(grid).find(k => _normGridKey(k) === want) || String(ecKey).trim().toUpperCase();
+                const row = grid[rowKey] || {};
+                Object.keys(dRow).forEach(cellKey => {
+                  if (!/^\d{4}-\d{2}-\d{2}$/.test(cellKey)) return;   // full-date keys only; skip dom duplicates
+                  const v = dRow[cellKey] || "";
+                  const domK = String(parseInt(cellKey.slice(8, 10), 10));   // numeric dom mask (same prop as String(domN))
+                  if (v) { if (row[cellKey] !== v) { row[cellKey] = v; changed = true; } }
+                  else if (row[cellKey] != null) { delete row[cellKey]; changed = true; }
+                  if (row[domK] != null) { delete row[domK]; changed = true; }
+                });
+                if (Object.keys(row).length === 0) { if (grid[rowKey]) { delete grid[rowKey]; changed = true; } }
+                else grid[rowKey] = row;
+              });
+              return changed;
+            };
+            // Keep the badge/scanner cache (mgrApprovedFallbackCache) in step with
+            // the snapshot we just patched — applying the SAME mutation to the
+            // cached grid, so the "Unpublished changes" badge clears immediately
+            // and the no-show scanners judge against the new snapshot without a
+            // page reload. (Only when a published snapshot exists for the cycle.)
+            const _approvedCacheUpdates = {};
+            for (const [key, draftBranch] of entries) {
+              const [branchName, ym] = key.split("|");
+              await patchApprovedSnapshotGrid(branchName, ym, true, (grid) => _mirrorCellsIntoGrid(grid, draftBranch));
+              const cached = mgrApprovedFallbackCache[key];
+              if (cached && Object.keys(cached).length > 0) {
+                const clone = JSON.parse(JSON.stringify(cached));
+                _mirrorCellsIntoGrid(clone, draftBranch);
+                _approvedCacheUpdates[key] = clone;
+              }
+            }
+            if (Object.keys(_approvedCacheUpdates).length > 0) {
+              setMgrApprovedFallbackCache(prev => ({ ...prev, ..._approvedCacheUpdates }));
+            }
             // Commit loan record changes.
             if (mgrCoverageDraftLoans.length > 0 && window.BOA_DB.saveMgrLoans) {
               const existing = (mgrLoanRows || []).slice();
@@ -38130,6 +38245,45 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           );
         };
 
+        // "Unpublished changes" signal — does any scoped branch's SAVED draft
+        // differ from its PUBLISHED snapshot for the cycles the visible week
+        // touches? Coverage now renders published-first, so a lit badge tells the
+        // ROM the working draft carries edits that only Publish would push to
+        // staff. Compares full-date cells only, treating the WE/WM/WL/WB split
+        // variants as one "W" (those are re-derived at render/publish, not real
+        // divergence). Only flags when a published snapshot EXISTS.
+        const _covYms = Array.from(new Set(weekDays.map(d => d.mgrYm)));
+        const _covCanonCell = (v) => { const s = String(v || ""); return (s === "WE" || s === "WM" || s === "WL" || s === "WB") ? "W" : s; };
+        const _covGridsDiffer = (draft, pub) => {
+          if (!draft || !pub) return false;   // never-published → nothing to diverge from
+          const norm = (g) => {
+            const out = {};
+            Object.keys(g).forEach(ec => {
+              const row = g[ec]; if (!row) return;
+              const r = {};
+              Object.keys(row).forEach(ck => { if (!/^\d{4}-\d{2}-\d{2}$/.test(ck)) return; const cv = _covCanonCell(row[ck]); if (cv) r[ck] = cv; });
+              // Bucket by the SAME tolerant key the view uses (_normGridKey), so a
+              // draft row keyed "B941M" and a snapshot row keyed "B941-M" align
+              // instead of every cell reading as phantom drift (false badge).
+              if (Object.keys(r).length) out[_normGridKey(ec)] = r;
+            });
+            return out;
+          };
+          const A = norm(draft), B = norm(pub);
+          const ecs = new Set([...Object.keys(A), ...Object.keys(B)]);
+          for (const ec of ecs) {
+            const ra = A[ec] || {}, rb = B[ec] || {};
+            const days = new Set([...Object.keys(ra), ...Object.keys(rb)]);
+            for (const dd of days) { if ((ra[dd] || "") !== (rb[dd] || "")) return true; }
+          }
+          return false;
+        };
+        const _unpublishedBranches = scopedBranches.filter(s => _covYms.some(ym => {
+          const k = s.name + "|" + ym;
+          return _covGridsDiffer(mgrClockinSchedCache[k], mgrApprovedFallbackCache[k]);
+        })).map(s => s.name);
+        const _hasUnpublished = _unpublishedBranches.length > 0;
+
         const coverPill = (c) => {
           if (!c.gridLoaded) return <span title="Schedule not loaded for this cycle" style={{ display: "inline-block", padding: "1px 6px", borderRadius: 5, fontSize: 9, fontWeight: 800, background: "#f3f4f6", color: "#9ca3af" }}>—</span>;
           if (c.count === 0) return <span title="No manager scheduled — coverage gap" style={{ display: "inline-block", padding: "1px 6px", borderRadius: 5, fontSize: 9, fontWeight: 800, background: "#fee2e2", color: "#7f1d1d" }}>✗ 0</span>;
@@ -38147,7 +38301,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         return (
           <div style={{ padding: "0 24px" }}>
             <div style={{ marginBottom: 14 }}>
-              <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, color: "#831843", fontWeight: 700, marginBottom: 4 }}>🗓 Manager Coverage</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 4 }}>
+                <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, color: "#831843", fontWeight: 700 }}>🗓 Manager Coverage</div>
+                {_hasUnpublished && (
+                  <span title={"Saved schedule edits not yet published — staff still see the published version. Publish to push them out: " + _unpublishedBranches.join(", ")}
+                    style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 11px", borderRadius: 999, fontSize: 11, fontWeight: 800, background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a" }}>
+                    ⚠ Unpublished changes · {_unpublishedBranches.length}
+                  </span>
+                )}
+              </div>
               <div style={{ fontSize: 12, color: "#F472B6" }}>Weekly view of every manager's scheduled shifts. Spot days with no coverage and decide where to borrow a manager.</div>
             </div>
 
