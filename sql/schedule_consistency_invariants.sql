@@ -11,9 +11,11 @@
 --   Q3  loan_out without a record → ec55083 family (phantom "AWAY → store")
 --   Q4  working cell in EL/ML/leave range → G4 (published grid says work)
 --   Q5  kiosk "absent/no" in EL/ML/leave  → Case B (Kimberley: ABSENT while on EL)
+--   Q6  extra-day ↔ finalised attendance reconciliation → INFO (back-pay list)
+--   Q7  pending publishes, classified → INFO (the "Publish current cycle" engine)
 --
--- Q1/Q3/Q4/Q5 SHOULD return ZERO rows. Q2 is expected to have rows (it lists the
--- same divergence the Coverage "Unpublished changes" badge shows) — eyeball it.
+-- Q1/Q3/Q4/Q5 SHOULD return ZERO rows. Q2/Q6/Q7 are informational lists — eyeball
+-- them (Q2 mirrors the Coverage "Unpublished changes" badge; Q7 buckets it by cycle).
 --
 -- STORE SHAPES (app_state.value), all verified against data.js/kiosk/data.js:
 --   boa_(mgr)schedapproved_<branch>_<ym>  ARRAY, [0]=live, [0].grid={ec:{cell:code}}
@@ -605,3 +607,110 @@ left join att_grid ag on ag.branch=e.branch and ag.ec=e.ec and ag.dom::int=e.dom
 left join att_ovr ao on ao.branch=e.branch and ao.ec=e.ec and ao.dom::int=e.dom::int
       and ao.start_ym = to_char(to_date(e.ym||'-01','YYYY-MM-DD') - interval '1 month','YYYY-MM')
 order by w.wd, e.branch, e.ec;
+
+
+-- ── Q7: pending publishes, classified — the "Publish current cycle" engine ─────
+-- Every draft cell that differs from its published counterpart, from the CURRENT
+-- pay cycle onward, resolved to a calendar date and bucketed so the output is a
+-- per-branch publish checklist rather than an undifferentiated dump. This is the
+-- data layer for a "Publish all for current cycle" action + the Phase 3.1 diff
+-- modal: the `current-cycle-edit` rows are the safe "publish now" set.
+--
+-- CLASSES (by calendar date; cycle bounds are derived from today, 25th–24th, so
+-- this stays correct every month without editing):
+--   current-cycle-edit  — falls in the live cycle → an edit pending publish
+--   unpublished-cycle   — the next cycle (a whole draft not yet published)
+--   future-placeholder  — beyond next cycle (usually leave booked into empty drafts)
+--
+-- COLUMNS: change_type names the action (Leave / Extra day / Day off / Added shift
+-- / Loan out / New); timing flags past-vs-upcoming within the cycle (a PAST-day
+-- change retro-affects recorded attendance); cycle_published shows whether that
+-- branch+cycle has a snapshot at all (false on a current-cycle row = anomaly);
+-- a NULL name = the EC isn't in staff (an unassigned placeholder slot).
+--
+-- WE/WM/WL/WB are normalised to W (re-derived at publish, not real drift). Shows
+-- draft-side changes only (adds / edits); pure removals aren't captured yet.
+-- READ-ONLY. For a per-branch rollup, wrap the SELECT as a subquery and
+-- `select class, who, branch, cycle_published, count(*) ... group by 1,2,3,4`.
+with cyc as (
+  select (case when extract(day from current_date) >= 25
+               then date_trunc('month', current_date) + interval '24 days'
+               else date_trunc('month', current_date) - interval '1 month' + interval '24 days'
+          end)::date as cyc_start
+),
+bounds as (
+  select cyc_start,
+         (cyc_start + interval '1 month' - interval '1 day')::date as cyc_end,      -- 24th next month
+         (cyc_start + interval '2 month' - interval '1 day')::date as next_cyc_end  -- 24th month after
+  from cyc
+),
+draft as (
+  select (key ~ '^boa_mgrsched_')                                        as is_mgr,
+         (regexp_match(key,'^boa_(?:mgr)?sched_(.+)_(\d{4}-\d{2})$'))[1]  as branch,
+         (regexp_match(key,'^boa_(?:mgr)?sched_(.+)_(\d{4}-\d{2})$'))[2]  as ym,
+         value->'grid'                                                    as grid
+  from app_state where key ~ '^boa_mgrsched_' or key ~ '^boa_sched_'
+),
+pub as (
+  select (key ~ '^boa_mgrschedapproved_')                                        as is_mgr,
+         (regexp_match(key,'^boa_(?:mgr)?schedapproved_(.+)_(\d{4}-\d{2})$'))[1]  as branch,
+         (regexp_match(key,'^boa_(?:mgr)?schedapproved_(.+)_(\d{4}-\d{2})$'))[2]  as ym,
+         value->0->'grid'                                                         as grid
+  from app_state
+  where (key ~ '^boa_mgrschedapproved_' or key ~ '^boa_schedapproved_')
+    and jsonb_typeof(value)='array' and jsonb_array_length(value)>0
+),
+dcells as (
+  select d.is_mgr, d.branch, d.ym, upper(regexp_replace(ec.key,'[^A-Za-z0-9]','','g')) as ec, cell.key as cell_key,
+         case when (cell.value #>> '{}') in ('WE','WM','WL','WB') then 'W' else (cell.value #>> '{}') end as code
+  from draft d, lateral jsonb_each(d.grid) ec(key,val), lateral jsonb_each(ec.val) cell(key,value)
+  where d.grid is not null and (not d.is_mgr or cell.key ~ '^\d{4}-\d{2}-\d{2}$')
+),
+pcells as (
+  select p.is_mgr, p.branch, p.ym, upper(regexp_replace(ec.key,'[^A-Za-z0-9]','','g')) as ec, cell.key as cell_key,
+         case when (cell.value #>> '{}') in ('WE','WM','WL','WB') then 'W' else (cell.value #>> '{}') end as code
+  from pub p, lateral jsonb_each(p.grid) ec(key,val), lateral jsonb_each(ec.val) cell(key,value)
+  where p.grid is not null and (not p.is_mgr or cell.key ~ '^\d{4}-\d{2}-\d{2}$')
+),
+pub_cycles as (select distinct is_mgr, branch, ym from pcells)
+select
+  cal.cal_date,
+  case when cal.cal_date <= b.cyc_end      then 'current-cycle-edit'
+       when cal.cal_date <= b.next_cyc_end then 'unpublished-cycle'
+       else 'future-placeholder' end                                     as class,
+  case when d.is_mgr then 'mgr' else 'tech' end                          as who,
+  d.branch, d.ec, st.name,
+  case
+    when d.code in ('L','EL','ML')             then 'Leave'
+    when d.code = 'E'                          then 'Extra day'
+    when d.code = 'loan_out'                   then 'Loan out'
+    when d.code in ('O','R') and pc.code = 'W' then 'Day off'
+    when d.code = 'W' and pc.code in ('O','R') then 'Added shift'
+    when pc.code is null                       then 'New ('||d.code||')'
+    else d.code||' (was '||pc.code||')'
+  end                                                                     as change_type,
+  d.code                                as draft_code,
+  coalesce(pc.code,'(not live)')        as published_code,
+  case when cal.cal_date < current_date then 'past'
+       when cal.cal_date = current_date then 'today'
+       else 'upcoming' end              as timing,
+  exists (select 1 from pub_cycles pc2 where pc2.is_mgr=d.is_mgr and pc2.branch=d.branch and pc2.ym=d.ym) as cycle_published
+from dcells d
+cross join bounds b
+left join pcells pc on pc.is_mgr=d.is_mgr and pc.branch=d.branch and pc.ym=d.ym and pc.ec=d.ec and pc.cell_key=d.cell_key
+cross join lateral (
+  select case
+    when d.is_mgr then to_date(d.cell_key,'YYYY-MM-DD')
+    when d.cell_key ~ '^\d{1,2}$' then
+      ((case when d.cell_key::int >= 25
+             then to_date(d.ym||'-01','YYYY-MM-DD') - interval '1 month'
+             else to_date(d.ym||'-01','YYYY-MM-DD') end)
+       + (d.cell_key::int - 1) * interval '1 day')::date
+    else null end as cal_date
+) cal
+left join staff st on upper(regexp_replace(st.employee_code,'[^A-Za-z0-9]','','g')) = d.ec
+where coalesce(d.code,'') <> coalesce(pc.code,'')
+  and cal.cal_date >= b.cyc_start
+order by
+  case when cal.cal_date <= b.cyc_end then 0 when cal.cal_date <= b.next_cyc_end then 1 else 2 end,
+  cal.cal_date, d.is_mgr, d.branch, d.ec;
