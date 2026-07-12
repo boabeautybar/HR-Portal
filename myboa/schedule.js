@@ -41,25 +41,14 @@
     busy: false
   };
 
-  // ── Cycle helpers (mirror the HR portal's 25th→24th logic) ───
-  function pad(n) { return String(n).padStart(2, "0"); }
-  function currentSchedYm() {
-    var d = new Date(), y = d.getFullYear(), m = d.getMonth() + 1;
-    if (d.getDate() > 24) { m += 1; if (m > 12) { m = 1; y += 1; } }
-    return y + "-" + pad(m);
-  }
-  function shiftYm(ym, delta) {
-    var p = ym.split("-"), y = +p[0], m = +p[1] + delta;
-    while (m > 12) { m -= 12; y += 1; }
-    while (m < 1) { m += 12; y -= 1; }
-    return y + "-" + pad(m);
-  }
+  // ── Cycle helpers — one implementation in cycle.js (window.BOA_CYCLE,
+  //    loaded before this file). These are thin wrappers so call sites
+  //    below stay unchanged; the 25th→24th rollover + key format live once.
+  function pad(n) { return window.BOA_CYCLE.pad(n); }
+  function currentSchedYm() { return window.BOA_CYCLE.currentYm(); }
+  function shiftYm(ym, delta) { return window.BOA_CYCLE.shiftYm(ym, delta); }
   // Which cycle (end-month ym) does a calendar date belong to?
-  function ymForDate(dt) {
-    var y = dt.getFullYear(), m = dt.getMonth() + 1;
-    if (dt.getDate() >= 25) { m += 1; if (m > 12) { m = 1; y += 1; } }
-    return y + "-" + pad(m);
-  }
+  function ymForDate(dt) { return window.BOA_CYCLE.ymForDate(dt); }
   function periodDays(ym) {
     var p = ym.split("-"), y = +p[0], m = +p[1];
     var prevM = m === 1 ? 12 : m - 1, prevY = m === 1 ? y - 1 : y;
@@ -635,8 +624,7 @@
   // id everywhere and translate when building the storage key / reading a cell.
   function storageKey(ymEnd, branch) {
     branch = branch || state.store;
-    if (state.isManager) return "boa_mgrsched_" + branch + "_" + shiftYm(ymEnd, -1);
-    return "boa_sched_" + branch + "_" + ymEnd;
+    return window.BOA_CYCLE.liveKey(branch, ymEnd, state.isManager);
   }
   // The branch a person is effectively at on a date — after a branch transfer's
   // effective date, that's the destination store (mirrors the portal's
@@ -651,7 +639,7 @@
   // first; the live grid (storageKey) can hold an unpublished draft, so we read
   // the published snapshot for display.
   function approvedKey(store, isManager, ymEnd) {
-    return (isManager ? "boa_mgrschedapproved_" : "boa_schedapproved_") + store + "_" + (isManager ? shiftYm(ymEnd, -1) : ymEnd);
+    return window.BOA_CYCLE.approvedKey(store, ymEnd, isManager);
   }
   // Is this cycle later than the one containing today? (string "YYYY-MM" compares lexically)
   function isFutureCycle(ymEnd) { return ymEnd > currentSchedYm(); }
@@ -727,10 +715,8 @@
     var loanDays = row ? periodDays(ymEnd).filter(function (x) { return isLoanOut(getCell(row, x.date)); }) : [];
     if (!loanDays.length) { state.awayMap[ck] = {}; return state.awayMap[ck]; }
 
-    var prefix = state.isManager ? "boa_mgrschedapproved_" : "boa_schedapproved_";
-    var ymPart = state.isManager ? shiftYm(ymEnd, -1) : ymEnd;
     var keys = STORES.filter(function (s) { return s !== branch; })
-      .map(function (s) { return prefix + s + "_" + ymPart; });
+      .map(function (s) { return approvedKey(s, state.isManager, ymEnd); });
     var byBranch = {};
     try {
       var res = await sb.from("app_state").select("key,value").in("key", keys);
@@ -799,7 +785,7 @@
 
   // Raw grid fetch independent of state (used while we work out who they are).
   async function fetchGrid(store, isManager, ymEnd) {
-    var key = (isManager ? "boa_mgrsched_" : "boa_sched_") + store + "_" + (isManager ? shiftYm(ymEnd, -1) : ymEnd);
+    var key = window.BOA_CYCLE.liveKey(store, ymEnd, isManager);
     var res = await sb.from("app_state").select("value").eq("key", key).maybeSingle();
     return (res && res.data && res.data.value && res.data.value.grid) || null;
   }

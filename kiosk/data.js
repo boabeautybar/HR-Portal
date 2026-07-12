@@ -844,13 +844,7 @@
     // The HR portal's Daily Check-ins tab reads ONLY from this log.
     try {
       var logKey = "boa_kiosk_log_" + branch() + "_" + attKey(ym).split("_").pop();
-      var cycP = attKey(ym).split("_").pop().split("-");
-      var cycY = +cycP[0], cycM = +cycP[1];
-      var dayN = parseInt(dayKey, 10);
-      var dt;
-      if (dayN >= 25) { dt = new Date(cycY, cycM - 1, dayN); }
-      else { var nm = cycM + 1, ny = cycY; if (nm > 12) { nm = 1; ny += 1; } dt = new Date(ny, nm - 1, dayN); }
-      var ymd = dt.getFullYear() + "-" + String(dt.getMonth() + 1).padStart(2, "0") + "-" + String(dt.getDate()).padStart(2, "0");
+      var ymd = scheduleDayToYmd(ym, parseInt(dayKey, 10));
       var sideCalls = await Promise.all([
         c.from("app_state").select("value").eq("key", logKey).maybeSingle(),
         c.from("app_state").select("value").eq("key", absencesKey(ym)).maybeSingle(),
@@ -900,13 +894,7 @@
     var c = client(); if (!c) return 0;
     try {
       var cycSuffix = attKey(ym).split("_").pop();           // "YYYY-MM"
-      var cycP = cycSuffix.split("-");
-      var cycY = +cycP[0], cycM = +cycP[1];
-      var dayN = parseInt(dayKey, 10);
-      var dt;
-      if (dayN >= 25) { dt = new Date(cycY, cycM - 1, dayN); }
-      else { var nm = cycM + 1, ny = cycY; if (nm > 12) { nm = 1; ny += 1; } dt = new Date(ny, nm - 1, dayN); }
-      var ymd = dt.getFullYear() + "-" + String(dt.getMonth() + 1).padStart(2, "0") + "-" + String(dt.getDate()).padStart(2, "0");
+      var ymd = scheduleDayToYmd(ym, parseInt(dayKey, 10));
 
       var att = await getAttendance(ym);
       var grid = (att && att.grid) || {};
@@ -1073,21 +1061,11 @@
       var logKey = "boa_kiosk_log_" + branch() + "_" + attKey(ym).split("_").pop();
       var prior  = await c.from("app_state").select("value").eq("key", logKey).maybeSingle();
       var log    = (prior.data && Array.isArray(prior.data.value)) ? prior.data.value : [];
-      // ym here is the END-month cycle key (ymForDate names the 25th→24th
-      // cycle by the month its 24th falls in; extrasKey uses it directly).
-      // Days 25..31 therefore belong to the PREVIOUS calendar month and days
-      // 1..24 to ym's own month. The old math assumed a START-month base
-      // (like setAttendanceStatus, which first shifts ym back via attKey), so
-      // every extra day logged here carried a ymd exactly ONE MONTH IN THE
-      // FUTURE — and surfaced in the portal's Daily Check-ins as a phantom
-      // EXTRA a month later, at the branch it was originally marked at.
-      var cycP = ym.split("-");
-      var cycY = +cycP[0], cycM = +cycP[1];
-      var dayN = parseInt(dayKey, 10);
-      var dt;
-      if (dayN >= 25) { var pm = cycM - 1, py = cycY; if (pm < 1) { pm = 12; py -= 1; } dt = new Date(py, pm - 1, dayN); }
-      else { dt = new Date(cycY, cycM - 1, dayN); }
-      var ymd = dt.getFullYear() + "-" + String(dt.getMonth() + 1).padStart(2, "0") + "-" + String(dt.getDate()).padStart(2, "0");
+      // ym here is the END-month cycle key (extrasKey uses it directly), so
+      // scheduleDayToYmd reconstructs the calendar date with the END-month
+      // convention. (This site once used START-month math and logged every
+      // extra a month in the future — see scheduleDayToDate's note.)
+      var ymd = scheduleDayToYmd(ym, parseInt(dayKey, 10));
       log.push({
         ec: ec, dayKey: String(dayKey), ymd: ymd,
         status: "ext",
@@ -1207,13 +1185,9 @@
       if (sM < 1) { sM = 12; sY -= 1; }
       var startYm = sY + "-" + String(sM).padStart(2, "0");
       var logKey  = "boa_kiosk_log_" + branch() + "_" + startYm;
-      // Compute the actual calendar date the dayKey falls on within this
-      // start-month cycle: 25..31 → start month itself; 1..24 → next month.
-      var dayN = parseInt(dayKey, 10);
-      var dt;
-      if (dayN >= 25) { dt = new Date(sY, sM - 1, dayN); }
-      else { var nm = sM + 1, ny = sY; if (nm > 12) { nm = 1; ny += 1; } dt = new Date(ny, nm - 1, dayN); }
-      var ymd = dt.getFullYear() + "-" + String(dt.getMonth() + 1).padStart(2, "0") + "-" + String(dt.getDate()).padStart(2, "0");
+      // The log key is the START-month, but the calendar date reconstructs
+      // from the END-month cycle key `ym` (same result, one helper).
+      var ymd = scheduleDayToYmd(ym, parseInt(dayKey, 10));
 
       var prior  = await c.from("app_state").select("value").eq("key", logKey).maybeSingle();
       var log    = (prior.data && Array.isArray(prior.data.value)) ? prior.data.value : [];
@@ -1282,10 +1256,21 @@
   }
 
   // ---------- Schedule ----------
-  function currentSchedYm() {
-    var d = new Date(), y = d.getFullYear(), m = d.getMonth() + 1;
-    if (d.getDate() > 24) { m += 1; if (m > 12) { m = 1; y += 1; } }
-    return y + "-" + String(m).padStart(2, "0");
+  // One rollover helper (ymForDate) for the whole kiosk; this is just
+  // "which cycle is today in".
+  function currentSchedYm() { return ymForDate(new Date()); }
+
+  // Schedule app_state key builders — the ONE place the boa_sched* key
+  // format lives. Tech grids key by END-month ym; manager grids by the
+  // START-month ym (END minus 1, via _toStartMonthYm). getSchedule /
+  // getApprovedSchedule route through these instead of rebuilding the
+  // string inline. (Companion builders: portal data.js schedKey/
+  // schedApprovedKey, myboa cycle.js liveKey/approvedKey.)
+  function schedKey(br, ym, isMgr) {
+    return (isMgr ? "boa_mgrsched_" : "boa_sched_") + br + "_" + (isMgr ? _toStartMonthYm(ym) : ym);
+  }
+  function schedApprovedKey(br, ym, isMgr) {
+    return (isMgr ? "boa_mgrschedapproved_" : "boa_schedapproved_") + br + "_" + (isMgr ? _toStartMonthYm(ym) : ym);
   }
 
   function periodLabel(ym) {
@@ -1378,10 +1363,10 @@
   async function getSchedule(ym, kind) {
     var c = client(); if (!c) return { grid: {}, ym: ym, kind: kind || "combined" };
     var br = branch();
-    // Tech keeps end-month; manager re-maps to start-month.
-    var mgrYm = _toStartMonthYm(ym);
-    var techKey = "boa_sched_"    + br + "_" + ym;
-    var mgrKey  = "boa_mgrsched_" + br + "_" + mgrYm;
+    // Tech keeps end-month; manager re-maps to start-month (schedKey handles
+    // the mapping). mgrKey is also compared against below to tag manager rows.
+    var mgrKey  = schedKey(br, ym, true);
+    var techKey = schedKey(br, ym, false);
     var keys;
     if (kind === "tech")      keys = [techKey];
     else if (kind === "mgr")  keys = [mgrKey];
@@ -1409,7 +1394,7 @@
     var c = client(); if (!c) return { grid: {}, names: {}, ym: ym };
     var br = branch();
     var isMgr = kind === "mgr";
-    var key = (isMgr ? "boa_mgrschedapproved_" : "boa_schedapproved_") + br + "_" + (isMgr ? _toStartMonthYm(ym) : ym);
+    var key = schedApprovedKey(br, ym, isMgr);
     var res = await c.from("app_state").select("value").eq("key", key).maybeSingle();
     if (res.error) { console.error("getApprovedSchedule:", res.error); return { grid: {}, names: {}, ym: ym }; }
     var list = res.data && res.data.value;
@@ -1443,6 +1428,9 @@
     var c = client(); if (!c) return {};
     var keys = [];
     branches.forEach(function (br) {
+      // NOTE: built inline (not via schedKey) on purpose — this picker uses
+      // the SAME raw `ym` for both the tech AND manager key, whereas schedKey
+      // start-shifts the manager key. Preserved as-is to keep behaviour.
       keys.push("boa_sched_"    + br + "_" + ym);
       keys.push("boa_mgrsched_" + br + "_" + ym);
     });
@@ -1551,6 +1539,13 @@
     return months[+p[1] - 1] + " " + p[0];
   }
 
+  // The ONE cell-date reconstruction for the kiosk. Given an END-month ym
+  // and a bare day-of-month cell, return the actual calendar Date: days
+  // 25..31 fall in the PREVIOUS calendar month, days 1..24 in ym's own
+  // month. (A START-month base is just this with END = start + 1, so every
+  // caller passes the END-month ym it already has — see scheduleDayToYmd
+  // callers. Getting this convention wrong once shipped ymd's a month in
+  // the future; see the boa_kiosk_log write in setAttendanceStatus.)
   function scheduleDayToDate(targetYm, dayNum) {
     var p = targetYm.split("-"); var y = +p[0], m = +p[1];
     if (dayNum >= 25) {
@@ -1559,6 +1554,12 @@
       return new Date(py, pm - 1, dayNum);
     }
     return new Date(y, m - 1, dayNum);
+  }
+  // Same reconstruction, formatted as "YYYY-MM-DD" — the shape the
+  // kiosk-log / extras writers need.
+  function scheduleDayToYmd(targetYm, dayNum) {
+    var dt = scheduleDayToDate(targetYm, dayNum);
+    return dt.getFullYear() + "-" + String(dt.getMonth() + 1).padStart(2, "0") + "-" + String(dt.getDate()).padStart(2, "0");
   }
 
   function isoDate(d) {

@@ -476,9 +476,9 @@
       // and a manager who was scheduled to WORK on the same date last
       // cycle but is OFF today incorrectly flagged as "not clocked in".
       var schedByEc = {};
-      var _endY = nowD.getFullYear(), _endM = nowD.getMonth() + 1;
-      if (nowD.getDate() >= 25) { _endM += 1; if (_endM > 12) { _endM = 1; _endY += 1; } }
-      var schedYm = _endY + "-" + String(_endM).padStart(2, "0");
+      // END-month ym for today — the one rollover helper (getSchedule subtracts
+      // one internally for the manager start-month key, per the comment above).
+      var schedYm = window.APP_DATA.currentSchedYm();
       try {
         if (window.APP_DATA.getSchedule) {
           var res = await window.APP_DATA.getSchedule(schedYm, "mgr");
