@@ -15,13 +15,11 @@
   }
   var sb = window.supabase.createClient(cfg.url, cfg.anonKey, { auth: { persistSession: false } });
 
-  var STORES = [
-    "Sea Point", "Bree", "Kloof", "Claremont", "Rondebosch", "Durbanville", "Cobble Walk",
-    "Table Bay", "Somerset West", "Riverlands", "Kuils River", "Westlake",
-    "Green Point", "Plumstead", "Sandown", "Cape Gate", "Winelands", "Betty",
-    "Fourways", "Eastgate", "Mall of the South", "Mushroom Farm", "Verdi", "Ballito",
-    "Head Office"
-  ];
+  // Store list — single source in stores.js (window.BOA_STORES), loaded via
+  // <script src="stores.js"> before this file (see it for companion lists).
+  // .slice() copies it so the per-page DB-augment below can't mutate the
+  // shared registry.
+  var STORES = (window.BOA_STORES || []).slice();
   var DOW = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
   var MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
   var LS_KEY = "myboa_sched_v1";
