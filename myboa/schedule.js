@@ -133,9 +133,6 @@
 
   // Default nail-tech hours for normal stores (single shift every day).
   var NORMAL_TECH = { 1: "09:30 - 18:30", 6: "09:00 - 18:00", 0: "09:00 - 17:00" };
-  // Stores where weekday techs are split into early/late shifts (so a plain "W"
-  // weekday has no single time). Sandown/Fourways have full tables below.
-  var SPLIT_STORES = { "Sandown": 1, "Table Bay": 1, "Fourways": 1, "Mall of the South": 1, "Ballito": 1 };
 
   // NAIL-TECH shift times, taken straight from the schedule tab's per-store
   // banners (these differ from the manager shiftTimes rules — e.g. Sandown WE
@@ -430,15 +427,7 @@
     var tt = techTime(branch, dow, code);
     if (tt !== null) return tt ? tt + variant : variant.replace(" · ", "");
 
-    // 2) Split-shift store without a full table: explicit codes show their time;
-    // a plain "W" only has one known time on weekends, weekdays show just "Work".
-    if (SPLIT_STORES[branch]) {
-      if (code !== "W") return shiftTimes(state.role, code, branch, dow) + variant;
-      if (dow === 0 || dow === 6) return shiftTimes(state.role, "W", branch, dow);
-      return "";
-    }
-
-    // 3) Normal store: a single shift every day (Mon–Fri / Sat / Sun).
+    // 2) Normal store: a single shift every day (Mon–Fri / Sat / Sun).
     return NORMAL_TECH[dow === 0 ? 0 : dow === 6 ? 6 : 1] + variant;
   }
 
