@@ -3677,7 +3677,7 @@
   // Ported verbatim from myboa/schedule.js (itself a verbatim port of app.jsx)
   // so the kiosk matches them exactly. All re-run-safe: working cells reset to
   // "W" first, then re-assign purely from the work/off pattern + roles.
-  var SPLIT_SHIFT_STORES = { "Sandown": 1, "Table Bay": 1, "Riverlands": 1, "Ballito": 1, "Mall of the South": 1, "Fourways": 1 };
+  var SPLIT_SHIFT_STORES = window.BOA_SHIFT.SPLIT_SHIFT_STORES;   // one source: ../shift-rules.js
   var _MGR_WORK_CODES = { W: 1, WE: 1, WL: 1, WM: 1, WB: 1, E: 1 };
   function _isSMrole(m) { return /^(SSM|SM)$/i.test((m && m.role) || ""); }
   function _pickLowest(list, counter) {
@@ -3903,84 +3903,12 @@
     return out;
   }
 
-  // Mirror of the HR portal's shiftTimes() so the kiosk Manager Schedule
-  // view can stamp each working cell with its actual hours. Kept in sync
-  // with the portal copy (app.jsx Manager Coverage) and with the
-  // equivalent helper in manager-app.js — those two are the source of
-  // truth, this one just renders the schedule grid.
-  //   role: "SM" | "SSM" | "AM"
-  //   code: W / WE / WL / WM / WB / E
-  //   branchName: store name (APP_CONFIG.branchName)
-  //   dow: 0=Sun … 6=Sat
+  // Thin wrapper over the shared rule set in ../shift-rules.js
+  // (window.BOA_SHIFT) so the kiosk Manager Schedule grid stamps the exact
+  // same hours as the portal, manager-app, and My BOA. window.BOA_SHIFT
+  // is loaded before this script (see kiosk/index.html).
   function _shiftTimes(role, code, branchName, dow) {
-    var r = (role || "").toUpperCase();
-    var isSM = r === "SM" || r === "SSM";
-    var isAM = r === "AM";
-    var b = branchName || "";
-
-    // Head Office hours (mirrors the portal): office staff a single day shift;
-    // the Call Centre & Sales floor a two-shift early/late split (WE / WL).
-    if (_isHoBranch(b)) {
-      if (_hoIsCcSales({ role: r })) return _hoCellHours(code === "WL" ? HO_HOURS.ccLate : HO_HOURS.ccEarly);
-      return _hoCellHours(HO_HOURS.office);
-    }
-
-    if (b === "Sandown" || b === "Table Bay") {
-      if (isSM) return "08:00 - 17:00";
-      if (dow === 0) {
-        if (code === "WE") return "08:00 - 17:00";
-        return "09:00 - 18:00";
-      }
-      if (dow === 6 && b === "Sandown") {
-        if (code === "WE") return "08:00 - 17:00";
-        return "10:00 - 19:00";
-      }
-      if (code === "WE") return "08:00 - 17:00";
-      if (code === "WM") return "09:00 - 18:00";
-      return "11:00 - 20:00";
-    }
-    if (b === "Riverlands") {
-      if (isSM) return "08:00 - 17:00";               // SM/SSM always 08:00-17:00, every day
-      if (dow === 6) return "09:00 - 18:00";
-      if (dow === 0) return "08:30 - 17:00";          // Sun single AM (08:30 open)
-      if (code === "WE") return "09:00 - 18:00";
-      if (code === "WB") return "08:00 - 17:00";
-      if (code === "WM") return "09:00 - 18:00";      // AM mid shift
-      return "10:00 - 19:00";
-    }
-    if (b === "Ballito" || b === "Mall of the South") {
-      if (isSM) return "08:00 - 17:00";
-      if (dow === 0) return isAM ? "08:30 - 17:00" : "08:00 - 17:00";
-      if (code === "WE") return "08:00 - 17:00";
-      if (code === "WM") return "09:00 - 18:00";
-      return "10:00 - 19:00";
-    }
-    if (b === "Fourways") {
-      if (isSM) return "08:00 - 17:00";   // SM/SSM always open, never close
-      if (dow === 0) {
-        if (code === "WE") return "08:00 - 17:00";
-        return "10:00 - 19:00";
-      }
-      if (code === "WE") return "08:00 - 17:00";   // AM opener when no SM is in
-      if (code === "WM") return "10:00 - 19:00";
-      return "11:00 - 20:00";
-    }
-    // Generic stores. SM flat 08-17 on weekends. AM Sat 09-18, Sun 8:30-17.
-    if (isSM) {
-      if (dow === 0 || dow === 6) return "08:00 - 17:00";
-      if (code === "WL") return "08:30 - 17:30";
-      if (code === "WE") return "07:30 - 16:30";
-      if (code === "WM") return "08:00 - 13:00";
-      return "08:00 - 17:00";
-    }
-    if (dow === 6) return "09:00 - 18:00";
-    if (dow === 0) return "08:30 - 17:00";
-    if (code === "WL") return "10:00 - 19:00";
-    if (code === "WE") return "08:30 - 18:00";
-    if (code === "WM") return "09:00 - 13:00";
-    if (code === "WB") return "08:00 - 19:00";
-    if (code === "E")  return "09:00 - 18:30";
-    return "09:00 - 18:30";
+    return window.BOA_SHIFT.times(role, code, branchName, dow);
   }
   // Compact a "HH:MM - HH:MM" range so it fits in a narrow grid cell:
   //   "09:00 - 18:00" → "9–18"

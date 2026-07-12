@@ -1913,100 +1913,13 @@ const KIOSK_DEFAULT_PINS = {
 };
 
 // Manager scheduled shift times for a (role, schedule-code, branch, day-of-week).
-// Pure lookup of the store/role hour rules — module-scope so BOTH the Manager
-// Coverage grid and the Attendance sheet (which derives a manager's early-leave
-// deduction from their clock-out vs this end time) use the exact same rules.
+// Thin wrapper over the ONE shared rule set in shift-rules.js
+// (window.BOA_SHIFT), so the Manager Coverage grid, the Attendance early-leave
+// deduction, the kiosk, and My BOA all resolve the exact same hours.
 // Returns a "HH:MM - HH:MM" string. Per-day CUSTOM hours (boa_mgr_times_v1)
 // override this where set.
 function shiftTimes(role, code, branch, dow) {
-  const r = (role || "").toUpperCase();
-  const isSM = r === "SM" || r === "SSM";
-  const isAM = r === "AM";
-  const _b = branch || "";
-
-  // Head Office runs its own hours, driven by the HO department (role) + code:
-  // office staff a single day shift; the Call Centre & Sales floor a two-shift
-  // early/late split (WE 07:00–16:00 · WL 09:00–18:30).
-  if (isHeadOfficeBranch(_b)) {
-    if (r === "CC" || r === "MCC" || r === "SALES") return code === "WL" ? "09:00 - 18:30" : "07:00 - 16:00";
-    return "08:00 - 17:00";
-  }
-
-  // Sandown / Table Bay share the same Mon-Fri split (and
-  // Table Bay extends it to Saturday). SM is a flat 08:00-17:00
-  // every working day.
-  if (_b === "Sandown" || _b === "Table Bay") {
-    if (isSM) return "08:00 - 17:00";
-    if (dow === 0) {                                // Sunday
-      if (code === "WE") return "08:00 - 17:00";
-      if (code === "WL") return "09:00 - 18:00";
-      return "09:00 - 18:00";
-    }
-    if (dow === 6 && _b === "Sandown") {            // Sandown Saturday
-      if (code === "WE") return "08:00 - 17:00";
-      if (code === "WL") return "10:00 - 19:00";
-      return "10:00 - 19:00";
-    }
-    // Mon-Fri (and Mon-Sat for Table Bay)
-    if (code === "WE") return "08:00 - 17:00";
-    if (code === "WM") return "09:00 - 18:00";
-    if (code === "WL") return "11:00 - 20:00";
-    return "11:00 - 20:00";
-  }
-
-  // Riverlands — Mon-Fri split, Sat/Sun single shift.
-  if (_b === "Riverlands") {
-    if (isSM) return "08:00 - 17:00";               // SM/SSM always 08:00-17:00, every day
-    if (dow === 6) return "09:00 - 18:00";          // Sat single AM
-    if (dow === 0) return "08:30 - 17:00";          // Sun single AM (08:30 open)
-    if (code === "WE") return "09:00 - 18:00";      // AM opener
-    if (code === "WB") return "08:00 - 17:00";      // 4+ bonus opener
-    if (code === "WM") return "09:00 - 18:00";      // AM mid shift
-    if (code === "WL") return "10:00 - 19:00";
-    return "10:00 - 19:00";
-  }
-
-  // Ballito / Mall of the South — SM-only WE opener, AM closers.
-  if (_b === "Ballito" || _b === "Mall of the South") {
-    if (isSM) return "08:00 - 17:00";
-    if (dow === 0) return isAM ? "08:30 - 17:00" : "08:00 - 17:00"; // Sunday: AM opens 08:30, others 08:00
-    if (code === "WE") return "08:00 - 17:00";
-    if (code === "WM") return "09:00 - 18:00";
-    if (code === "WL") return "10:00 - 19:00";
-    return "10:00 - 19:00";
-  }
-
-  // Fourways — store hours differ; SM/SSM always open (08-17),
-  // AMs/techs carry the late close.
-  if (_b === "Fourways") {
-    if (isSM) return "08:00 - 17:00";   // SM/SSM always open, never close
-    if (dow === 0) {                                // Sunday (store 09-19)
-      if (code === "WE") return "08:00 - 17:00";
-      if (code === "WL") return "10:00 - 19:00";
-      return "10:00 - 19:00";
-    }
-    if (code === "WE") return "08:00 - 17:00";   // AM opener when no SM is in
-    if (code === "WM") return "10:00 - 19:00";
-    if (code === "WL") return "11:00 - 20:00";
-    return "11:00 - 20:00";
-  }
-
-  // Generic stores — generic SM 08-17 / AM 09:00-18:30 hours.
-  if (isSM) {
-    if (dow === 0 || dow === 6) return "08:00 - 17:00";
-    if (code === "WL") return "08:30 - 17:30";
-    if (code === "WE") return "07:30 - 16:30";
-    if (code === "WM") return "08:00 - 13:00";
-    return "08:00 - 17:00";
-  }
-  if (dow === 6) return "09:00 - 18:00";        // Saturday AM
-  if (dow === 0) return "08:30 - 17:00";        // Sunday AM
-  if (code === "WL") return "10:00 - 19:00";
-  if (code === "WE") return "08:30 - 18:00";
-  if (code === "WM") return "09:00 - 13:00";
-  if (code === "WB") return "08:00 - 19:00";
-  if (code === "E") return "09:00 - 18:30";
-  return "09:00 - 18:30";
+  return window.BOA_SHIFT.times(role, code, branch, dow);
 }
 
 // ─── PER-STORE MANAGER SHIFT LABELLING ────────────────────────────────────────────
@@ -2266,8 +2179,10 @@ function applyBranchShiftRules(grid, dates, managers, branch) {
   if (branch === "Fourways") return applyFourwaysShifts(grid, dates, managers);
 }
 // Branches whose manager shifts carry a per-day WE/WM/WL split (used to decide
-// whether Coverage needs to re-derive labels for a store).
-const SPLIT_SHIFT_STORES = { "Sandown": 1, "Table Bay": 1, "Riverlands": 1, "Ballito": 1, "Mall of the South": 1, "Fourways": 1 };
+// whether Coverage needs to re-derive labels for a store). ONE source of truth
+// in shift-rules.js (window.BOA_SHIFT) — the same stores shiftTimes gives a
+// multi-shift window.
+const SPLIT_SHIFT_STORES = window.BOA_SHIFT.SPLIT_SHIFT_STORES;
 
 // Parse a "HH:MM - HH:MM" range into {start,end} minutes-from-midnight, or null.
 function parseShiftRange(s) {

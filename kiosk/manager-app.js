@@ -2769,84 +2769,10 @@
     return null;
   }
 
+  // Thin wrapper over the shared rule set in ../shift-rules.js
+  // (window.BOA_SHIFT) — same hours as the portal, staff-app, and My BOA.
   function shiftTimes(role, code, branchName, dow) {
-    var r = (role || "").toUpperCase();
-    var isSM = r === "SM" || r === "SSM";
-    var isAM = r === "AM";
-    var b = branchName || "";
-
-    // Head Office runs its own hours (mirrors app.jsx / staff-app / myboa):
-    // Call Centre & Sales split early (WE → 07:00-16:00) / late (WL → 09:00-18:30);
-    // everyone else ("Office Staff") one day shift 08:00-17:00.
-    if (String(b).trim().toLowerCase() === "head office") {
-      if (r === "CC" || r === "MCC" || r === "SALES") return code === "WL" ? "09:00 - 18:30" : "07:00 - 16:00";
-      return "08:00 - 17:00";
-    }
-
-    if (b === "Sandown" || b === "Table Bay") {
-      if (isSM) return "08:00 - 17:00";
-      if (dow === 0) {
-        if (code === "WE") return "08:00 - 17:00";
-        if (code === "WL") return "09:00 - 18:00";
-        return "09:00 - 18:00";
-      }
-      if (dow === 6 && b === "Sandown") {
-        if (code === "WE") return "08:00 - 17:00";
-        if (code === "WL") return "10:00 - 19:00";
-        return "10:00 - 19:00";
-      }
-      if (code === "WE") return "08:00 - 17:00";
-      if (code === "WM") return "09:00 - 18:00";
-      if (code === "WL") return "11:00 - 20:00";
-      return "11:00 - 20:00";
-    }
-    if (b === "Riverlands") {
-      if (isSM) return "08:00 - 17:00";               // SM/SSM always 08:00-17:00, every day
-      if (dow === 6) return "09:00 - 18:00";          // Sat single AM
-      if (dow === 0) return "08:30 - 17:00";          // Sun single AM (08:30 open)
-      if (code === "WE") return "09:00 - 18:00";      // AM opener
-      if (code === "WB") return "08:00 - 17:00";      // 4+ bonus opener
-      if (code === "WM") return "09:00 - 18:00";      // AM mid shift
-      if (code === "WL") return "10:00 - 19:00";
-      return "10:00 - 19:00";
-    }
-    if (b === "Ballito" || b === "Mall of the South") {
-      if (isSM) return "08:00 - 17:00";
-      if (dow === 0) return isAM ? "08:30 - 17:00" : "08:00 - 17:00";
-      if (code === "WE") return "08:00 - 17:00";
-      if (code === "WM") return "09:00 - 18:00";
-      if (code === "WL") return "10:00 - 19:00";
-      return "10:00 - 19:00";
-    }
-    if (b === "Fourways") {
-      if (isSM) return "08:00 - 17:00";   // SM/SSM always open, never close
-      if (dow === 0) {
-        if (code === "WE") return "08:00 - 17:00";
-        if (code === "WL") return "10:00 - 19:00";
-        return "10:00 - 19:00";
-      }
-      if (code === "WE") return "08:00 - 17:00";   // AM opener when no SM is in
-      if (code === "WM") return "10:00 - 19:00";
-      if (code === "WL") return "11:00 - 20:00";
-      return "11:00 - 20:00";
-    }
-    // Generic stores. Weekend override: SM flat 08:00-17:00 Sat & Sun.
-    // AM Sat 09:00-18:00, Sun 08:30-17:00. Weekdays keep code-specific.
-    if (isSM) {
-      if (dow === 0 || dow === 6) return "08:00 - 17:00";
-      if (code === "WL") return "08:30 - 17:30";
-      if (code === "WE") return "07:30 - 16:30";
-      if (code === "WM") return "08:00 - 13:00";
-      return "08:00 - 17:00";
-    }
-    if (dow === 6) return "09:00 - 18:00";
-    if (dow === 0) return "08:30 - 17:00";
-    if (code === "WL") return "10:00 - 19:00";
-    if (code === "WE") return "08:30 - 18:00";
-    if (code === "WM") return "09:00 - 13:00";
-    if (code === "WB") return "08:00 - 19:00";
-    if (code === "E")  return "09:00 - 18:30";
-    return "09:00 - 18:30";
+    return window.BOA_SHIFT.times(role, code, branchName, dow);
   }
   function fmtDate(s) {
     try {

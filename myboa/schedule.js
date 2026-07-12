@@ -72,67 +72,10 @@
   }
 
   // ── Shift times (replicated from the portal's shiftTimes) ────
+  // Thin wrapper over the shared rule set in ../shift-rules.js
+  // (window.BOA_SHIFT) — same hours as the portal + kiosk.
   function shiftTimes(role, code, branch, dow) {
-    var r = (role || "").toUpperCase();
-    var isSM = r === "SM" || r === "SSM";
-    var isAM = r === "AM";
-    var _b = branch || "";
-    // Head Office hours (mirrors the portal): office staff a single day shift;
-    // the Call Centre & Sales floor a two-shift early/late split (WE / WL).
-    if (String(_b).trim().toLowerCase() === "head office") {
-      if (r === "CC" || r === "MCC" || r === "SALES") return code === "WL" ? "09:00 - 18:30" : "07:00 - 16:00";
-      return "08:00 - 17:00";
-    }
-    if (_b === "Sandown" || _b === "Table Bay") {
-      if (isSM) return "08:00 - 17:00";
-      if (dow === 0) { if (code === "WE") return "08:00 - 17:00"; return "09:00 - 18:00"; }
-      if (dow === 6 && _b === "Sandown") { if (code === "WE") return "08:00 - 17:00"; return "10:00 - 19:00"; }
-      if (code === "WE") return "08:00 - 17:00";
-      if (code === "WM") return "09:00 - 18:00";
-      if (code === "WL") return "11:00 - 20:00";
-      return "11:00 - 20:00";
-    }
-    if (_b === "Riverlands") {
-      if (isSM) return "08:00 - 17:00";
-      if (dow === 6) return "09:00 - 18:00";
-      if (dow === 0) return "08:30 - 17:00";
-      if (code === "WE") return "09:00 - 18:00";
-      if (code === "WB") return "08:00 - 17:00";
-      if (code === "WM") return "09:00 - 18:00";
-      if (code === "WL") return "10:00 - 19:00";
-      return "10:00 - 19:00";
-    }
-    if (_b === "Ballito" || _b === "Mall of the South") {
-      if (isSM) return "08:00 - 17:00";
-      if (dow === 0) return isAM ? "08:30 - 17:00" : "08:00 - 17:00";
-      if (code === "WE") return "08:00 - 17:00";
-      if (code === "WM") return "09:00 - 18:00";
-      if (code === "WL") return "10:00 - 19:00";
-      return "10:00 - 19:00";
-    }
-    if (_b === "Fourways") {
-      if (isSM) return "08:00 - 17:00";
-      if (dow === 0) { if (code === "WE") return "08:00 - 17:00"; return "10:00 - 19:00"; }
-      if (code === "WE") return "08:00 - 17:00";   // AM opener when no SM is in
-      if (code === "WM") return "10:00 - 19:00";
-      if (code === "WL") return "11:00 - 20:00";
-      return "11:00 - 20:00";
-    }
-    if (isSM) {
-      if (dow === 0 || dow === 6) return "08:00 - 17:00";
-      if (code === "WL") return "08:30 - 17:30";
-      if (code === "WE") return "07:30 - 16:30";
-      if (code === "WM") return "08:00 - 13:00";
-      return "08:00 - 17:00";
-    }
-    if (dow === 6) return "09:00 - 18:00";
-    if (dow === 0) return "08:30 - 17:00";
-    if (code === "WL") return "10:00 - 19:00";
-    if (code === "WE") return "08:30 - 18:00";
-    if (code === "WM") return "09:00 - 13:00";
-    if (code === "WB") return "08:00 - 19:00";
-    if (code === "E")  return "09:00 - 18:30";
-    return "09:00 - 18:30";
+    return window.BOA_SHIFT.times(role, code, branch, dow);
   }
 
   function ymdStr(dt) { return dt.getFullYear() + "-" + pad(dt.getMonth() + 1) + "-" + pad(dt.getDate()); }
@@ -247,7 +190,7 @@
   // app.jsx (applyMgrShiftSplit / applyRiverlandsShifts / applyBallitoShifts /
   // applyFourwaysShifts) — all re-run-safe: working cells reset to "W" first,
   // then re-assign purely from the work/off pattern + roles.
-  var SPLIT_SHIFT_STORES = { "Sandown": 1, "Table Bay": 1, "Riverlands": 1, "Ballito": 1, "Mall of the South": 1, "Fourways": 1 };
+  var SPLIT_SHIFT_STORES = window.BOA_SHIFT.SPLIT_SHIFT_STORES;   // one source: ../shift-rules.js
   function _isSMrole(m) { return /^(SSM|SM)$/i.test((m && m.role) || ""); }
   function _pickLowest(list, counter) {
     var sorted = list.slice().sort(function (a, b) {
