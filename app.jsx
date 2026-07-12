@@ -17225,8 +17225,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         (groups[k] = groups[k] || { isMgr: r.isMgr, branch: r.branch, ym: r.ym, cells: [] }).cells.push(r);
       });
       let okSurfaces = 0; const notPublished = [];
+      const _mgrCacheUpdates = {};   // branch|ym -> patched manager snapshot grid
       for (const k of Object.keys(groups)) {
         const g = groups[k];
+        let _patchedGrid = null;
         const applied = await patchApprovedSnapshotGrid(g.branch, g.ym, g.isMgr, (grid) => {
           let changed = false;
           g.cells.forEach(r => {
@@ -17242,10 +17244,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             }
             if (row[wk] !== r.draftCode) { row[wk] = r.draftCode; changed = true; }
           });
+          if (changed) _patchedGrid = grid;   // reference to the just-mutated snapshot grid
           return changed;
         });
-        if (applied) okSurfaces++; else notPublished.push(g.branch + (g.isMgr ? " · mgr" : " · tech"));
+        if (applied) {
+          okSurfaces++;
+          // Keep Manager Coverage's in-memory snapshot cache in lock-step so the
+          // "Unpublished changes" badge + no-show scanners judge against THIS
+          // publish immediately — same cache the branch-level publish refreshes
+          // (app.jsx:34894). Manager surfaces only; tech viewers read the DB
+          // snapshot directly, no portal cache to update.
+          if (g.isMgr && _patchedGrid) _mgrCacheUpdates[g.branch + "|" + g.ym] = JSON.parse(JSON.stringify(_patchedGrid));
+        } else notPublished.push(g.branch + (g.isMgr ? " · mgr" : " · tech"));
       }
+      if (Object.keys(_mgrCacheUpdates).length) setMgrApprovedFallbackCache(prev => ({ ...prev, ..._mgrCacheUpdates }));
       try { await logActivity("Published current cycle", chosen.length + " change" + (chosen.length === 1 ? "" : "s"), "Patched " + okSurfaces + " published snapshot" + (okSurfaces === 1 ? "" : "s"), "Schedule"); } catch (_e) { }
       alert("✓ Published " + chosen.length + " change" + (chosen.length === 1 ? "" : "s") + " across " + okSurfaces + " schedule" + (okSurfaces === 1 ? "" : "s") + "." +
         (notPublished.length ? "\n\n⚠ Skipped (cycle has no published snapshot yet — use that branch's own Approve & Publish): " + notPublished.join(", ") : ""));
