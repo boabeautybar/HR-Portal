@@ -31,6 +31,7 @@
     homeBranch: "", typedStore: "",   // typedStore = what they entered; store = home anchor
     transferring: false, transferTo: "", transferDate: "",   // permanent branch move (effective date)
     custom: {},              // ymd -> "HH:MM - HH:MM" custom hours for this person
+    leaveRanges: [],         // [{start,end,emergency}] annual/emergency leave (boa_leave_v1)
     view: "soon",            // soon | week | month
     monthYm: null,
     cache: {},               // "<branch>|<ymEnd>" -> grid object (effective branch can vary per day)
@@ -481,13 +482,15 @@
     if (state.isManager) {
       var custom = state.custom && state.custom[ymdStr(dt)];
       if (custom) return custom + " · custom hours";
-      // Phase 1.1: prefer the portal-baked hours (when the baked code still
-      // matches this cell) so My BOA shows the EXACT times the portal published,
-      // rather than re-deriving them from this app's own shiftTimes copy (which
-      // can drift). Fall back to shiftTimes for legacy snapshots / code changes.
+      // Phase 1.1: prefer the portal-baked hours (when the baked code AND role
+      // still match this cell) so My BOA shows the EXACT times the portal
+      // published, rather than re-deriving them from this app's own shiftTimes
+      // copy (which can drift). The role guard means a post-publish SM-trial flip
+      // recomputes live; fall back to shiftTimes for legacy snapshots / changes.
+      var _liveRole = state.effRole || state.role;
       var bk = bakedHoursFor(dt, branch);
-      if (bk && bk.c === (c || "W")) return bk.t;
-      return shiftTimes(state.effRole || state.role, c || "W", branch, dt.getDay());
+      if (bk && bk.c === (c || "W") && bk.r === _liveRole) return bk.t;
+      return shiftTimes(_liveRole, c || "W", branch, dt.getDay());
     }
     var dow = dt.getDay();
     var code = (c === "WE" || c === "WL" || c === "WM" || c === "WB") ? c : "W";
@@ -535,6 +538,19 @@
   }
   var LEGAL_INFO = { kind: "leave", label: "Unpaid leave (legal)", sub: "" };
 
+  // Leave Planner overlay (boa_leave_v1) — annual or emergency leave recorded in
+  // its own store, not always on the grid. Returns the matched record (for the
+  // annual/emergency label) or null. Mirrors matMlOn / legalUnpaidOn.
+  function annualLeaveOn(dt) {
+    var ranges = state.leaveRanges || [];
+    if (!ranges.length) return null;
+    var ymd = ymdStr(dt);
+    for (var i = 0; i < ranges.length; i++) {
+      if (ymd >= ranges[i].start && ymd <= ranges[i].end) return ranges[i];
+    }
+    return null;
+  }
+
   // Cross-store day-loans (boa_mgr_loans_v1 / boa_tech_loans_v1) for this person,
   // keyed by date. A loan day means they're borrowed to loan.toBranch.
   function loanForDate(dt) {
@@ -555,6 +571,16 @@
     branch = branch || state.store;
     if (matMlOn(dt)) return ML_INFO;
     if (legalUnpaidOn(dt)) return LEGAL_INFO;
+    var _alv = annualLeaveOn(dt);
+    if (_alv) {
+      // Don't stamp annual/emergency leave onto an explicit day off / ghost day
+      // inside the leave range — you don't "take leave" on a day off. Matches the
+      // kiosk staff schedule (which skips O/R/X) so the two surfaces agree.
+      var _offCode = String(getCell(row, dt) == null ? "" : getCell(row, dt)).toUpperCase().trim();
+      if (_offCode !== "O" && _offCode !== "R" && _offCode !== "X") {
+        return { kind: "leave", label: _alv.emergency ? "Emergency leave" : "On leave", sub: "" };
+      }
+    }
     // Cross-store day-loan (swap/borrow): borrowed to ANOTHER branch this day.
     var loan = loanForDate(dt);
     if (loan && loan.toBranch && loan.toBranch !== branch) return loanInfo(loan);
@@ -832,6 +858,7 @@
       state.legalOn = false;
       state.legalStart = null;
       state.legalEnd = null;
+      state.leaveRanges = [];
       state.custom = {};
       state.cache = {};
       state.hoursCache = {};
@@ -864,7 +891,11 @@
           // Legal unpaid-leave records (Compliance → "Unpaid Leave (Legal)") so
           // EL shows the moment HR puts someone on it — same as maternity, no
           // roster regenerate needed.
-          sb.from("app_state").select("value").eq("key", "boa_unpaid_legal_v1").maybeSingle()
+          sb.from("app_state").select("value").eq("key", "boa_unpaid_legal_v1").maybeSingle(),
+          // Annual/emergency leave from the Leave Planner (boa_leave_v1) — batched
+          // here (not a separate serial round-trip) so the overlay costs no extra
+          // boot latency.
+          sb.from("app_state").select("value").eq("key", "boa_leave_v1").maybeSingle()
         ]);
         var rows = (rr[0] && rr[0].data) || [];
         var row = rows.filter(function (x) { return String(x.employee_code || "").trim().toUpperCase() === ecUp; })[0];
@@ -915,6 +946,18 @@
             state.legalStart = legalRow.startDate || null;
             state.legalEnd = legalRow.endDate || null;
           }
+        }
+        // Annual/emergency leave from the Leave Planner (boa_leave_v1). It lives in
+        // its own store and is often NOT written onto the grid, so without this
+        // overlay a person granted leave after publish still reads as working here.
+        state.leaveRanges = [];
+        var lvs = (rr[5] && rr[5].data && rr[5].data.value);
+        if (Array.isArray(lvs)) {
+          lvs.forEach(function (lv) {
+            if (lv && lv.ec && lv.startDate && lv.endDate && String(lv.ec).trim().toUpperCase() === ecUp) {
+              state.leaveRanges.push({ start: lv.startDate, end: lv.endDate, emergency: !!lv.emergency });
+            }
+          });
         }
       } catch (_e) {}
 

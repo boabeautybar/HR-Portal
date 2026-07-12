@@ -1427,6 +1427,12 @@
               _mark = '<span class="sched-cust-star" aria-hidden="true">★</span>';
               customList.push({ name: s.name, mon: monthAbbr[d.monthIdx], day: d.day, dow: dowAbbr[_dt.getDay()], hrs: _cust });
             } else {
+              // NB: unlike the manager card / auto-out / My BOA, this hover-only
+              // tooltip does NOT role-check the bake — staff-app carries no SM-trial
+              // data, and comparing baked (SM-adjusted) role against the raw s.role
+              // would make trial managers fall back to raw-role hours at publish and
+              // disagree with the other surfaces. The only exposure is a stale
+              // tooltip after a mid-cycle role change without re-publish (accepted).
               var _bkRow = _custHoursRow(approvedHours, s.employee_code);
               var _bk = _bkRow && _bkRow[_ymd];
               _hrs = (_bk && _bk.c === cell) ? _bk.t : _shiftTimes(s.role, cell, thisBranch, _dt.getDay());

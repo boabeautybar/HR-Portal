@@ -116,9 +116,14 @@
     return res.data || [];
   }
 
+  // Maternity records — matched by employee_code, NOT branch-filtered (same as
+  // listUnpaidLegal). A maternity row can carry a stale branch (recorded before a
+  // transfer, or a branch rename), and every consumer joins these to a staff row
+  // by EC anyway, so a `.eq("branch", …)` filter only ever HID a valid record —
+  // a transferred manager then still got nagged to clock in while on maternity.
   async function listMaternity() {
     var c = client(); if (!c) return [];
-    var res = await c.from("maternity").select("*").eq("branch", branch());
+    var res = await c.from("maternity").select("*");
     if (res.error) { console.error("listMaternity:", res.error); return []; }
     return res.data || [];
   }

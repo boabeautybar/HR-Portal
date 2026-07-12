@@ -381,6 +381,11 @@
       savedAt: new Date().toISOString(),
       savedBy: (entry.savedBy || "").toString().slice(0, 80)
     };
+    // Only the newest version [0] is ever read for hours; strip the (Phase 1.1)
+    // hours blob off superseded versions so the retained-version array doesn't
+    // accumulate ~25 hours blobs that every kiosk / My BOA read re-downloads in
+    // full. A restored older version is re-baked on its next publish.
+    (existing || []).forEach(function (v) { if (v && v.hours) delete v.hours; });
     var next = [rec].concat(existing).slice(0, SCHED_APPROVED_LIMIT);
     var res = await sb.from("app_state").upsert({ key: schedApprovedKey(branch, ym, isManager), value: next });
     if (res.error) { console.error("saveApprovedSchedule:", res.error); throw res.error; }

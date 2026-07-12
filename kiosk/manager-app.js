@@ -1806,7 +1806,13 @@
         // baked range (if its code still matches the schedule cell) instead of
         // the local shiftTimes copy — same value every surface published.
         var _bkH = (!custRange && schedHoursLookup) ? schedHoursLookup(ec, k) : null;
-        var _bkRange = (_bkH && _bkH.c === schedCode) ? _bkH.t : null;
+        // Only trust the baked range when BOTH the cell code AND the role it was
+        // baked from still match live — a post-publish role change (SM trial
+        // flip / promotion) leaves the baked end time stale, and auto-clocking
+        // out at a frozen end mis-stamps paid hours. On mismatch fall through to
+        // the live-role shiftTimes path in _scheduledEndDate.
+        var _liveRole = (mgr && (mgr._effRole || mgr.role)) || "";
+        var _bkRange = (_bkH && _bkH.c === schedCode && _bkH.r === _liveRole) ? _bkH.t : null;
         var schedEnd = (mgr && (schedCode || custRange)) ? _scheduledEndDate(k, mgr._effRole || mgr.role, schedCode, mgr.branch || (last.staff && last.staff.branch), custRange || _bkRange) : null;
         var endIso, fireCutoff;
         if (schedEnd) {
@@ -1959,14 +1965,43 @@
         _loadMgrSched(_prevEndYm),
         window.APP_DATA.listManagerDayStatusesToday ? window.APP_DATA.listManagerDayStatusesToday().catch(function () { return []; }) : Promise.resolve([]),
         _onLeaveEcsToday(false).catch(function () { return {}; }),   // ec → al/el on approved leave today
-        window.APP_DATA.getMgrTimes ? window.APP_DATA.getMgrTimes().catch(function () { return {}; }) : Promise.resolve({})
+        window.APP_DATA.getMgrTimes ? window.APP_DATA.getMgrTimes().catch(function () { return {}; }) : Promise.resolve({}),
+        window.APP_DATA.listUnpaidLegal ? window.APP_DATA.listUnpaidLegal().catch(function () { return []; }) : Promise.resolve([]),
+        window.APP_DATA.listMaternity ? window.APP_DATA.listMaternity().catch(function () { return []; }) : Promise.resolve([])
       ]);
       recent = _stage2[0];
       _ingestSched(_curCycleYm, _stage2[1]);
       _ingestSched(_prevCycleYm, _stage2[2]);
       (_stage2[3] || []).forEach(function (r) { if (r && r.staff_id) mgrTaggedStaffIds[r.staff_id] = true; });
-      mgrOnLeaveToday = _stage2[4] || {};
       mgrCustomTimes = _stage2[5] || {};
+      // Re-key the approved-leave map to canonical trim+UPPER EC so the overlay
+      // merge below and the card read are case/space-robust — records can carry
+      // the EC in a different case than the staff row (the portal's legal-leave
+      // modal has a free-text EC field), and mixed-case keys would both miss the
+      // read AND break the ML>EL>leave precedence (plan §7 rule 5: normalize at
+      // write AND read).
+      var _norm = function (x) { return String(x == null ? "" : x).trim().toUpperCase(); };
+      mgrOnLeaveToday = {};
+      Object.keys(_stage2[4] || {}).forEach(function (k) { mgrOnLeaveToday[_norm(k)] = _stage2[4][k]; });
+      // Overlay the two "off today" reasons that live in their OWN stores and
+      // never touch the schedule grid — Unpaid Leave (Legal) and Maternity — so a
+      // manager on either isn't nagged to clock in or shown a working shift here.
+      // Mirrors what the kiosk STAFF schedule already overlays; matrix EL/ML gaps.
+      // Precedence (matching My BOA + Attendance): maternity > unpaid-legal >
+      // annual/emergency leave — so unpaid overwrites al/el and ml overwrites all.
+      var _todayKML = _ymdToday(new Date());
+      (_stage2[6] || []).forEach(function (r) {   // unpaid legal (boa_unpaid_legal_v1)
+        if (!r || !r.ec || r.status !== "on_leave") return;
+        if ((r.startDate && _todayKML < r.startDate) || (r.endDate && _todayKML > r.endDate)) return;
+        mgrOnLeaveToday[_norm(r.ec)] = "unpaid";
+      });
+      (_stage2[7] || []).forEach(function (m) {   // maternity (on_mat / dates_tbc)
+        if (!m || !m.employee_code) return;
+        if (m.mat_status !== "on_mat" && m.mat_status !== "dates_tbc") return;
+        var _ms = m.mat_start ? String(m.mat_start).replace(/\//g, "-") : "";
+        if (_ms && _todayKML < _ms) return;   // dated maternity hasn't started yet
+        mgrOnLeaveToday[_norm(m.employee_code)] = "ml";
+      });
     } catch (e) {
       document.getElementById("mc-body").innerHTML =
         '<div class="warn">Could not load: ' + esc(e.message || e) + '</div>';
@@ -2103,10 +2138,15 @@
       // so show a calm pill and never nag. The schedule grid often still
       // carries a working code (W) because leave is recorded in the Leave
       // Calendar rather than re-written onto the grid.
-      var _onLeaveCode = mgrOnLeaveToday[ec];
-      var _leaveBadge = _onLeaveCode
-        ? ' <span class="pill" style="background:#dbeafe;color:#1e3a8a">🌴 on leave today' + (_onLeaveCode === "el" ? " (emergency)" : "") + '</span>'
-        : "";
+      var _onLeaveCode = mgrOnLeaveToday[String(ecRaw || ec).trim().toUpperCase()];   // map is canonical trim+UPPER
+      var _leaveBadge = "";
+      if (_onLeaveCode === "ml") {
+        _leaveBadge = ' <span class="pill" style="background:#fce7f3;color:#9d174d">🤱 on maternity leave</span>';
+      } else if (_onLeaveCode === "unpaid") {
+        _leaveBadge = ' <span class="pill" style="background:#f3e8ff;color:#581c87">⏸️ unpaid leave (legal)</span>';
+      } else if (_onLeaveCode) {
+        _leaveBadge = ' <span class="pill" style="background:#dbeafe;color:#1e3a8a">🌴 on leave today' + (_onLeaveCode === "el" ? " (emergency)" : "") + '</span>';
+      }
       // Blinking nag: scheduled, no clock-in today, not ROM-tagged, not on
       // leave, past the warning cutoff time. Only nag for THIS branch's managers.
       var _nagBadge = "";
@@ -2136,15 +2176,17 @@
           _hrs = _custHrs;
           _custMark = ' <span title="Custom hours for today, set on Manager Coverage" style="color:#9A3412">★ custom</span>';
         } else {
-          // Phase 1.1: prefer the portal-baked hours (when the baked code still
-          // matches today's schedule cell) so this kiosk shows the EXACT times
-          // the portal published, even if the two shiftTimes copies have drifted;
-          // fall back to this kiosk's own shiftTimes otherwise.
+          // Phase 1.1: prefer the portal-baked hours (when the baked code AND
+          // role still match today's schedule cell) so this kiosk shows the EXACT
+          // times the portal published, even if the two shiftTimes copies have
+          // drifted; fall back to this kiosk's own shiftTimes otherwise. The role
+          // guard means a post-publish SM-trial flip / promotion recomputes live
+          // instead of showing stale frozen hours.
+          var _effRole = onSmTrial ? "SM" : (m.role || "");
           var _bk = _custHoursRow(mgrTodayHours, ecRaw || ec);
-          if (_bk && _bk.c === _schedCodeToday) {
+          if (_bk && _bk.c === _schedCodeToday && _bk.r === _effRole) {
             _hrs = _bk.t;
           } else {
-            var _effRole = onSmTrial ? "SM" : (m.role || "");
             _hrs = shiftTimes(_effRole, _schedCodeToday, thisBranch, _todayDow);
           }
         }

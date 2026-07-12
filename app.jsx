@@ -10829,7 +10829,13 @@ function _bakeSnapshotHours(grid, managers, branch) {
       let dow; try { dow = new Date(cellKey + "T12:00:00").getDay(); } catch (_) { return; }
       const t = shiftTimes(role, code, branch, dow);
       if (!t) return;
-      (hours[rowKey] = hours[rowKey] || {})[cellKey] = { t: t, c: code };
+      // Tag the ROLE too, not just the cell code: shiftTimes depends on the
+      // (SM-trial-adjusted) role, and that can change AFTER publish (SM trial
+      // starts/ends, a promotion) WITHOUT changing the cell code. Consumers
+      // compare bk.r against their live effective role, so a post-publish role
+      // change self-invalidates the bake and they recompute — otherwise a
+      // trial-flipped manager would show/auto-clock-out at stale frozen hours.
+      (hours[rowKey] = hours[rowKey] || {})[cellKey] = { t: t, c: code, r: role };
     });
   });
   return hours;
@@ -36673,6 +36679,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           sick: { lbl: "SICK", bg: "#fee2e2", fg: "#7f1d1d" },
                           sick_n: { lbl: "SICK-N", bg: "#fee2e2", fg: "#7f1d1d" },
                           al: { lbl: "ANNUAL", bg: "#e0f2fe", fg: "#075985" },
+                          el: { lbl: "EMERGENCY", bg: "#fed7aa", fg: "#9a3412" },
                           ph: { lbl: "PH", bg: "#e0f2fe", fg: "#075985" },
                           mat: { lbl: "MAT", bg: "#fce7f3", fg: "#9d174d" },
                           term: { lbl: "TERM", bg: "#fee2e2", fg: "#7f1d1d" },
@@ -37594,9 +37601,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           return BRANCH_PALETTE[Math.abs(h) % BRANCH_PALETTE.length];
         };
         // Non-working cell styling (kept muted so the working blocks pop).
-        const NON_WORK_BG = { O: "#FDF2F8", L: "#FEF3C7", R: "#FCE7F3", ML: "#EDE9FE" };
-        const NON_WORK_FG = { O: "#9D174D", L: "#92400E", R: "#9D174D", ML: "#5B21B6" };
-        const NON_WORK_LBL = { O: "OFF", L: "LEAVE", R: "REQ", ML: "MATERNITY" };
+        const NON_WORK_BG = { O: "#FDF2F8", L: "#FEF3C7", R: "#FCE7F3", ML: "#EDE9FE", EL: "#FFEDD5" };
+        const NON_WORK_FG = { O: "#9D174D", L: "#92400E", R: "#9D174D", ML: "#5B21B6", EL: "#9A3412" };
+        const NON_WORK_LBL = { O: "OFF", L: "LEAVE", R: "REQ", ML: "MATERNITY", EL: "UNPAID" };
         // Cell code → suffix the role-default shift times. Lets us show
         // "9:00a - 6:30p" inside a manager's working block the way
         // Connecteam does, without needing per-shift data on each cell.
@@ -37715,6 +37722,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             (_onLeaveByEcYmdCov[ec] = _onLeaveByEcYmdCov[ec] || {})[ymd] = true;
           }
         });
+        // Unpaid Leave (Legal) overlay — lives in its OWN store (boa_unpaid_legal_v1),
+        // never written onto the schedule grid, so like the Leave Planner overlay a
+        // manager on it reads as 'EL' on covered days regardless of the saved cell.
+        // Coverage was the last surface still missing this (Attendance already does
+        // it at _onUnpaidLegal); without it a manager on legal unpaid leave showed
+        // as working here. Prebuild an ec→ranges map ONCE per render (mirrors
+        // _onLeaveByEcYmdCov above) instead of re-scanning all records per cell —
+        // readWithFallback runs per manager × per day × per branch.
+        const _unpaidLegalRangesCov = {};
+        (unpaidLegalRecs || []).forEach(r => {
+          if (!r || r.status !== "on_leave" || !r.ec) return;
+          (_unpaidLegalRangesCov[String(r.ec).trim()] = _unpaidLegalRangesCov[String(r.ec).trim()] || [])
+            .push({ start: r.startDate || null, end: r.endDate || null });
+        });
+        const _onUnpaidLegalCov = (ec, ymd) => {
+          const rs = _unpaidLegalRangesCov[String(ec || "").trim()];
+          return !!(rs && ymd) && rs.some(rg => (!rg.start || ymd >= rg.start) && (!rg.end || ymd <= rg.end));
+        };
         const readWithFallback = (branchName, ec, d) => {
           // Leave overlay wins over the saved grid + draft. Drafts can still
           // override leave on purpose (ROM manually re-stamps a shift on top
@@ -37722,6 +37747,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // them through.
           const draftCell = readCell(mgrCoverageDraft[_draftKey(branchName, d.mgrYm)], ec, d);
           if (!draftCell && ec && d && d.ymd && (_onLeaveByEcYmdCov[String(ec).trim()] || {})[d.ymd]) return "L";
+          if (!draftCell && ec && d && d.ymd && _onUnpaidLegalCov(ec, d.ymd)) return "EL";
           const grid = _gridForView(branchName, d.mgrYm);
           const v = readCell(grid, ec, d);
           if (v) return v;
