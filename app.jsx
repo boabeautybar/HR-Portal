@@ -10785,6 +10785,101 @@ async function patchApprovedSnapshotRow(branch, ym, isMgr, ec, mutateRow) {
     return true;
   });
 }
+// ── "Publish current cycle" engine ─────────────────────────────────────────
+// Diff every branch's draft schedule against its published snapshot, keep only
+// the cells whose real calendar date falls inside the CURRENT payroll cycle,
+// and classify each pending change. This is the in-browser mirror of the SQL
+// invariant Q7 (sql/schedule_consistency_invariants.sql) — same normalisation,
+// same date resolution, same change-type vocabulary — so the modal it feeds
+// reads identically to that report. Pure: no I/O, no React.
+const _CYCLE_WORK_CODES = { W: 1, WE: 1, WM: 1, WL: 1, WB: 1 };
+// Dash/space/case-tolerant EC key (matches _normGridKey used by the grids).
+function _normEc(s) { return String(s == null ? "" : s).replace(/[^A-Za-z0-9]/g, "").toUpperCase(); }
+// Collapse shift-label variants to "W" so a WE↔WM relabel is NOT flagged as a
+// change (only real work/off/leave transitions surface). Blank → "".
+function _cycleNormCode(c) { if (c == null || c === "") return ""; return _CYCLE_WORK_CODES[c] ? "W" : c; }
+// Resolve a cell key to its YYYY-MM-DD. Manager cells are already full dates;
+// tech cells are a day-of-month under the END-month ym, where day ≥ 25 belongs
+// to the cycle's START month (the 25th→24th convention). Returns null if the
+// key isn't a date/day we understand.
+function _cyclePendingCellDate(isMgr, cellKey, techYm) {
+  if (isMgr) return /^\d{4}-\d{2}-\d{2}$/.test(cellKey) ? cellKey : null;
+  const dom = parseInt(cellKey, 10);
+  if (!(dom >= 1 && dom <= 31)) return null;
+  const p = String(techYm).split("-"); let y = +p[0], m = +p[1];
+  if (!(y > 0 && m >= 1 && m <= 12)) return null;
+  if (dom >= 25) { m -= 1; if (m < 1) { m = 12; y -= 1; } }
+  const p2 = n => String(n).padStart(2, "0");
+  return y + "-" + p2(m) + "-" + p2(dom);
+}
+// Read a published row's cell for the SAME logical day as a draft cell key,
+// tolerating the padded/non-padded day-of-month drift between grids (kiosk +
+// attendance write "7"; some schedule writes "07"). Managers key by full date.
+function _cyclePubRowCell(row, isMgr, cellKey) {
+  if (!row) return undefined;
+  if (row[cellKey] !== undefined) return row[cellKey];
+  if (isMgr) return undefined;
+  const n = String(parseInt(cellKey, 10));
+  if (row[n] !== undefined) return row[n];
+  const pad = n.length === 1 ? "0" + n : n;
+  if (row[pad] !== undefined) return row[pad];
+  return undefined;
+}
+// surfaces: [{ isMgr, branch, ym, draft, pub }] from BOA_DB.loadCycleScheduleGrids.
+// opts: { techYm, cycStart, cycEnd, todayYmd, nameFor(ec)->string|null }.
+// Returns sorted pending-change rows (each publishable independently).
+function computeCyclePendingRows(surfaces, opts) {
+  opts = opts || {};
+  const techYm = opts.techYm, cycStart = opts.cycStart, cycEnd = opts.cycEnd;
+  const today = opts.todayYmd, nameFor = opts.nameFor || (() => null);
+  const LEAVE = { L: 1, EL: 1, ML: 1 };
+  const rows = [];
+  (surfaces || []).forEach(s => {
+    const draft = (s && s.draft) || {};
+    const pub = (s && s.pub) || null;
+    // Tolerant EC index on the published grid.
+    const pubIdx = {};
+    if (pub) Object.keys(pub).forEach(k => { pubIdx[_normEc(k)] = pub[k]; });
+    Object.keys(draft).forEach(ecKey => {
+      const drow = draft[ecKey] || {};
+      const prow = pub ? pubIdx[_normEc(ecKey)] : null;
+      Object.keys(drow).forEach(cellKey => {
+        const dRaw = drow[cellKey];
+        const cal = _cyclePendingCellDate(s.isMgr, cellKey, techYm);
+        if (!cal) return;
+        if (cal < cycStart || cal > cycEnd) return;   // current-cycle scope rail
+        const pRaw = prow ? _cyclePubRowCell(prow, s.isMgr, cellKey) : undefined;
+        const dCode = _cycleNormCode(dRaw), pCode = _cycleNormCode(pRaw);
+        if (dCode === pCode) return;                   // no real change
+        let changeType;
+        if (LEAVE[dCode]) changeType = "Leave";
+        else if (dCode === "E") changeType = "Extra day";
+        else if (dCode === "loan_out") changeType = "Loan out";
+        else if ((dCode === "O" || dCode === "R") && pCode === "W") changeType = "Day off";
+        else if (dCode === "W" && (pCode === "O" || pCode === "R")) changeType = "Added shift";
+        else if (pRaw === undefined) changeType = "New (" + (dCode || "blank") + ")";
+        else changeType = (dCode || "blank") + " (was " + (pCode || "blank") + ")";
+        const nm = nameFor(ecKey);
+        rows.push({
+          id: (s.isMgr ? "m" : "t") + "|" + s.branch + "|" + ecKey + "|" + cellKey,
+          isMgr: s.isMgr, who: s.isMgr ? "Manager" : "Tech",
+          branch: s.branch, ym: s.ym, ec: ecKey, name: nm || null,
+          cal: cal, cellKey: cellKey,
+          draftCode: dRaw, publishedCode: (pRaw === undefined ? null : pRaw),
+          changeType: changeType,
+          timing: cal < today ? "past" : (cal === today ? "today" : "upcoming"),
+          needsLoanRecord: dCode === "loan_out",
+          isPlaceholder: !nm
+        });
+      });
+    });
+  });
+  rows.sort((a, b) => (a.cal < b.cal ? -1 : a.cal > b.cal ? 1 : 0)
+    || (a.isMgr === b.isMgr ? 0 : a.isMgr ? -1 : 1)
+    || (a.branch < b.branch ? -1 : a.branch > b.branch ? 1 : 0)
+    || (a.ec < b.ec ? -1 : a.ec > b.ec ? 1 : 0));
+  return rows;
+}
 // Publish approved tech leave onto the SAVED schedule grid(s). The kiosk
 // schedule and the My BOA schedule viewer read ONLY the saved boa_sched grid
 // — they have no access to the Leave Planner — so leave that exists purely as
@@ -17056,6 +17151,109 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   });
   const [mgrCoverageView, setMgrCoverageView] = useState("byBranch");   // "byBranch" | "byManager"
   const [mgrCoverageRegion, setMgrCoverageRegion] = useState("all");
+  // "Publish current cycle" review modal. rows: null = not scanned yet,
+  // [] = scanned/nothing pending. skip: { rowId: true } for opted-out rows.
+  const [pubCycleOpen, setPubCycleOpen] = useState(false);
+  const [pubCycleRows, setPubCycleRows] = useState(null);
+  const [pubCycleSkip, setPubCycleSkip] = useState({});
+  const [pubCycleBusy, setPubCycleBusy] = useState(false);
+  const [pubCycleErr, setPubCycleErr] = useState("");
+  // EC → display name across every population (techs, managers, HO), keyed by
+  // the tolerant _normEc so a dash/space/case variant still resolves. A missing
+  // name flags a placeholder slot (T001-style) in the publish preview.
+  const _pubCycleNameMap = useMemo(() => {
+    const m = {};
+    const add = (arr) => (arr || []).forEach(p => {
+      const ec = _normEc(p && (p.employee_code || p.ec || p.code));
+      if (ec && !(ec in m)) m[ec] = (p && (p.name || p.full_name)) || "";
+    });
+    add(staff); add(managers); add(hoStaff);
+    return m;
+  }, [staff, managers, hoStaff]);
+
+  // Scan every branch's draft-vs-published for the current cycle and open the
+  // review modal. Mirrors SQL Q7 — see computeCyclePendingRows.
+  const openPublishCycle = async () => {
+    setPubCycleErr(""); setPubCycleRows(null); setPubCycleSkip({});
+    setPubCycleOpen(true); setPubCycleBusy(true);
+    try {
+      if (!window.BOA_DB || !window.BOA_DB.loadCycleScheduleGrids) {
+        throw new Error("This deploy doesn't have the cycle-scan API yet — redeploy data.js.");
+      }
+      const techYm = window.BOA_DB.currentSchedYm();   // END-month ym (tech grids)
+      const mgrYm = window.BOA_DB.currentAttYm();      // START-month ym (mgr grids)
+      const p2 = n => String(n).padStart(2, "0");
+      const ymd = d => d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate());
+      const now = new Date();
+      const cs = now.getDate() >= 25
+        ? new Date(now.getFullYear(), now.getMonth(), 25)
+        : new Date(now.getFullYear(), now.getMonth() - 1, 25);
+      const ce = new Date(cs.getFullYear(), cs.getMonth() + 1, 24);
+      const surfaces = await window.BOA_DB.loadCycleScheduleGrids(techYm, mgrYm);
+      const rows = computeCyclePendingRows(surfaces, {
+        techYm, cycStart: ymd(cs), cycEnd: ymd(ce), todayYmd: ymd(now),
+        nameFor: (ec) => _pubCycleNameMap[_normEc(ec)] || null
+      });
+      // Safety default: pre-uncheck placeholder rows (a code with no employee
+      // record — e.g. T002 draft slots or the B563M relabel ghost) so a blind
+      // "publish all" can never push them. The user can re-check individually.
+      const initSkip = {};
+      rows.forEach(r => { if (r.isPlaceholder) initSkip[r.id] = true; });
+      setPubCycleSkip(initSkip);
+      setPubCycleRows(rows);
+    } catch (e) {
+      setPubCycleErr(e && e.message ? e.message : String(e));
+      setPubCycleRows([]);
+    } finally { setPubCycleBusy(false); }
+  };
+
+  // Publish the SELECTED pending changes by patching each affected published
+  // snapshot in place (patchApprovedSnapshotGrid preserves pins / loans /
+  // custom-hours — never a full republish). Grouped one patch per surface.
+  const doPublishCycle = async () => {
+    const chosen = (pubCycleRows || []).filter(r => !pubCycleSkip[r.id]);
+    if (!chosen.length) { alert("Nothing selected — every row is unchecked."); return; }
+    const loanRows = chosen.filter(r => r.needsLoanRecord);
+    if (loanRows.length && !window.confirm(
+      loanRows.length + " loan-out day" + (loanRows.length === 1 ? "" : "s") +
+      " will be published. A loan-out only shows the HOME branch — you must still add the matching loan record (from → to) on each so a later re-publish can't double-book them.\n\nPublish anyway?")) return;
+    setPubCycleBusy(true);
+    try {
+      const groups = {};
+      chosen.forEach(r => {
+        const k = (r.isMgr ? "m" : "t") + "|" + r.branch + "|" + r.ym;
+        (groups[k] = groups[k] || { isMgr: r.isMgr, branch: r.branch, ym: r.ym, cells: [] }).cells.push(r);
+      });
+      let okSurfaces = 0; const notPublished = [];
+      for (const k of Object.keys(groups)) {
+        const g = groups[k];
+        const applied = await patchApprovedSnapshotGrid(g.branch, g.ym, g.isMgr, (grid) => {
+          let changed = false;
+          g.cells.forEach(r => {
+            const want = _normEc(r.ec);
+            const ecKey = Object.keys(grid).find(kk => _normEc(kk) === want) || String(r.ec).trim();
+            const row = grid[ecKey] || (grid[ecKey] = {});
+            let wk;
+            if (r.isMgr) { wk = r.cal; }
+            else {
+              const n = String(parseInt(r.cellKey, 10));
+              const pad = n.length === 1 ? "0" + n : n;
+              wk = (row[pad] !== undefined && row[n] === undefined) ? pad : n;
+            }
+            if (row[wk] !== r.draftCode) { row[wk] = r.draftCode; changed = true; }
+          });
+          return changed;
+        });
+        if (applied) okSurfaces++; else notPublished.push(g.branch + (g.isMgr ? " · mgr" : " · tech"));
+      }
+      try { await logActivity("Published current cycle", chosen.length + " change" + (chosen.length === 1 ? "" : "s"), "Patched " + okSurfaces + " published snapshot" + (okSurfaces === 1 ? "" : "s"), "Schedule"); } catch (_e) { }
+      alert("✓ Published " + chosen.length + " change" + (chosen.length === 1 ? "" : "s") + " across " + okSurfaces + " schedule" + (okSurfaces === 1 ? "" : "s") + "." +
+        (notPublished.length ? "\n\n⚠ Skipped (cycle has no published snapshot yet — use that branch's own Approve & Publish): " + notPublished.join(", ") : ""));
+      setPubCycleOpen(false); setPubCycleRows(null); setPubCycleSkip({});
+    } catch (e) {
+      alert("Publish failed: " + (e && e.message ? e.message : e));
+    } finally { setPubCycleBusy(false); }
+  };
   // Most-recent-approved schedule cache for the Manager Coverage tab,
   // used as a fallback when the working draft grid has no entry for a
   // manager — keyed `<branch>|<ym>` like mgrClockinSchedCache.
@@ -20871,6 +21069,116 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           <button onClick={() => setUpdateAvailable(false)} title="Dismiss" style={{ background: "transparent", color: "#fff", border: "none", cursor: "pointer", fontSize: 17, lineHeight: 1, padding: "0 4px" }}>✕</button>
         </div>
       )}
+      {/* Publish-current-cycle review modal — previews every draft-vs-published
+          drift inside the current payroll cycle and publishes the ones the user
+          keeps checked (patch-in-place, never a full republish). */}
+      {pubCycleOpen && (() => {
+        const rows = pubCycleRows || [];
+        const chosen = rows.filter(r => !pubCycleSkip[r.id]);
+        const nPlaceholder = rows.filter(r => r.isPlaceholder).length;
+        const nPast = rows.filter(r => r.timing === "past").length;
+        const nLoan = rows.filter(r => r.needsLoanRecord).length;
+        const p2 = n => String(n).padStart(2, "0");
+        const now = new Date();
+        const cs = now.getDate() >= 25 ? new Date(now.getFullYear(), now.getMonth(), 25) : new Date(now.getFullYear(), now.getMonth() - 1, 25);
+        const ce = new Date(cs.getFullYear(), cs.getMonth() + 1, 24);
+        const mo = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+        const cycleLbl = mo[cs.getMonth()] + " " + cs.getDate() + " – " + mo[ce.getMonth()] + " " + ce.getDate() + ", " + ce.getFullYear();
+        const setAll = (skip) => { const m = {}; if (skip) rows.forEach(r => { m[r.id] = true; }); setPubCycleSkip(m); };
+        const fmtDate = (ymdStr) => { const p = ymdStr.split("-"); return p[2] + " " + mo[(+p[1]) - 1]; };
+        const th = { textAlign: "left", padding: "7px 9px", fontSize: 10, fontWeight: 800, color: "#9d174d", letterSpacing: "0.04em", textTransform: "uppercase", position: "sticky", top: 0, background: "#FCE7F3", borderBottom: "1px solid #FBCFE8", whiteSpace: "nowrap" };
+        const td = { padding: "6px 9px", fontSize: 12, color: "#500724", borderBottom: "1px solid #FBE3EE", whiteSpace: "nowrap" };
+        const typeColor = { "Leave": "#7c3aed", "Extra day": "#b45309", "Loan out": "#be185d", "Day off": "#0f766e", "Added shift": "#15803d" };
+        return (
+          <div style={{ position: "fixed", inset: 0, background: "rgba(76,5,25,0.5)", backdropFilter: "blur(3px)", zIndex: 100003, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, fontFamily: "'DM Sans',sans-serif" }}>
+            <div style={{ background: "#fff", borderRadius: 16, width: "min(1080px, 96vw)", maxHeight: "90vh", display: "flex", flexDirection: "column", boxShadow: "0 24px 70px rgba(76,5,25,0.4)", overflow: "hidden" }}>
+              {/* Header */}
+              <div style={{ padding: "18px 22px 14px", borderBottom: "1px solid #FBCFE8" }}>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 21, fontWeight: 700, color: "#831843" }}>⚡ Publish current cycle</div>
+                    <div style={{ fontSize: 12.5, color: "#be5a8a", marginTop: 3 }}>
+                      Mid-cycle edits across every branch for <strong>{cycleLbl}</strong>. Uncheck anything you don't want live, then publish. Each change patches the published schedule in place — pins, loans and custom hours are untouched.
+                    </div>
+                  </div>
+                  <button onClick={() => setPubCycleOpen(false)} disabled={pubCycleBusy}
+                    style={{ background: "transparent", border: "none", fontSize: 22, lineHeight: 1, color: "#9d174d", cursor: pubCycleBusy ? "default" : "pointer", padding: 2 }}>✕</button>
+                </div>
+              </div>
+              {/* Body */}
+              <div style={{ flex: 1, overflow: "auto", padding: "0 0 4px" }}>
+                {pubCycleBusy && !pubCycleRows && (
+                  <div style={{ padding: "48px 22px", textAlign: "center", color: "#9d174d", fontSize: 14, fontWeight: 700 }}>⏳ Scanning every branch's draft against its published schedule…</div>
+                )}
+                {pubCycleErr && (
+                  <div style={{ margin: "16px 22px", padding: "12px 14px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 10, color: "#b91c1c", fontSize: 13, fontWeight: 600 }}>⚠ {pubCycleErr}</div>
+                )}
+                {pubCycleRows && rows.length === 0 && !pubCycleErr && (
+                  <div style={{ padding: "48px 22px", textAlign: "center", color: "#15803d", fontSize: 14, fontWeight: 700 }}>✓ Nothing pending — every branch's published schedule already matches its draft for this cycle.</div>
+                )}
+                {rows.length > 0 && (
+                  <>
+                    {/* Toolbar row */}
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", padding: "12px 22px", position: "sticky", top: 0, background: "#fff", zIndex: 2, borderBottom: "1px solid #FBE3EE" }}>
+                      <span style={{ fontSize: 13, fontWeight: 800, color: "#831843" }}>{chosen.length} of {rows.length} selected</span>
+                      <button onClick={() => setAll(false)} style={{ fontSize: 11, fontWeight: 700, color: "#831843", background: "#FCE7F3", border: "1px solid #FBCFE8", borderRadius: 7, padding: "5px 10px", cursor: "pointer" }}>Select all</button>
+                      <button onClick={() => setAll(true)} style={{ fontSize: 11, fontWeight: 700, color: "#831843", background: "#fff", border: "1px solid #FBCFE8", borderRadius: 7, padding: "5px 10px", cursor: "pointer" }}>Clear all</button>
+                      <div style={{ flex: 1 }} />
+                      {nPlaceholder > 0 && <span title="Codes with no matching employee record (draft placeholder slots or relabel ghosts) — unchecked by default." style={{ fontSize: 11, fontWeight: 700, color: "#92400e", background: "#fef3c7", border: "1px solid #fde68a", borderRadius: 999, padding: "3px 9px" }}>⚠ {nPlaceholder} placeholder</span>}
+                      {nPast > 0 && <span title="Days that have already passed — publishing rewrites the historical published schedule." style={{ fontSize: 11, fontWeight: 700, color: "#6d28d9", background: "#f5f3ff", border: "1px solid #ddd6fe", borderRadius: 999, padding: "3px 9px" }}>🕓 {nPast} past</span>}
+                      {nLoan > 0 && <span title="Loan-out days still need a matching loan record (from → to) after publishing." style={{ fontSize: 11, fontWeight: 700, color: "#be185d", background: "#fdf2f8", border: "1px solid #fbcfe8", borderRadius: 999, padding: "3px 9px" }}>🔁 {nLoan} loan-out</span>}
+                    </div>
+                    <div style={{ overflowX: "auto", padding: "0 22px" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 720 }}>
+                        <thead>
+                          <tr>
+                            <th style={{ ...th, width: 34 }}></th>
+                            <th style={th}>Date</th>
+                            <th style={th}>Who</th>
+                            <th style={th}>Branch</th>
+                            <th style={th}>Employee</th>
+                            <th style={th}>Change</th>
+                            <th style={th}>Draft → Live</th>
+                            <th style={th}>When</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {rows.map(r => {
+                            const on = !pubCycleSkip[r.id];
+                            return (
+                              <tr key={r.id} onClick={() => setPubCycleSkip(m => { const n = { ...m }; if (n[r.id]) delete n[r.id]; else n[r.id] = true; return n; })}
+                                style={{ cursor: "pointer", background: !on ? "#faf5f7" : (r.timing === "past" ? "#fbfaff" : "#fff"), opacity: on ? 1 : 0.55 }}>
+                                <td style={{ ...td, textAlign: "center" }}><input type="checkbox" checked={on} readOnly style={{ pointerEvents: "none", accentColor: "#831843" }} /></td>
+                                <td style={{ ...td, fontWeight: 700 }}>{fmtDate(r.cal)}</td>
+                                <td style={td}>{r.who}</td>
+                                <td style={td}>{r.branch}</td>
+                                <td style={td}>{r.name ? r.name : <span style={{ color: "#92400e", fontWeight: 700 }} title="No employee record matches this code">⚠ {r.ec}</span>}{r.name && <span style={{ color: "#be5a8a", fontWeight: 500 }}> · {r.ec}</span>}</td>
+                                <td style={td}><span style={{ fontWeight: 800, color: typeColor[r.changeType] || "#500724" }}>{r.changeType}</span>{r.needsLoanRecord && <span title="Needs a loan record after publishing" style={{ marginLeft: 6, fontSize: 10, fontWeight: 800, color: "#be185d" }}>🔁</span>}</td>
+                                <td style={{ ...td, color: "#6b7280", fontFamily: "monospace", fontSize: 11 }}>{String(r.draftCode)} → {r.publishedCode == null ? "∅" : String(r.publishedCode)}</td>
+                                <td style={td}>{r.timing === "past" ? <span style={{ color: "#6d28d9", fontWeight: 700 }}>past</span> : r.timing === "today" ? <span style={{ color: "#b45309", fontWeight: 700 }}>today</span> : "upcoming"}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )}
+              </div>
+              {/* Footer */}
+              <div style={{ padding: "14px 22px", borderTop: "1px solid #FBCFE8", display: "flex", alignItems: "center", gap: 12 }}>
+                <div style={{ fontSize: 11.5, color: "#be5a8a", flex: 1 }}>Only affects the current cycle. Staff see changes immediately after publishing.</div>
+                <button onClick={() => setPubCycleOpen(false)} disabled={pubCycleBusy}
+                  style={{ background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 9, padding: "9px 18px", fontSize: 13, fontWeight: 700, cursor: pubCycleBusy ? "default" : "pointer" }}>Cancel</button>
+                <button onClick={doPublishCycle} disabled={pubCycleBusy || chosen.length === 0}
+                  style={{ background: (pubCycleBusy || chosen.length === 0) ? "#FBCFE8" : "#831843", color: "#fff", border: "none", borderRadius: 9, padding: "9px 20px", fontSize: 13, fontWeight: 800, cursor: (pubCycleBusy || chosen.length === 0) ? "default" : "pointer" }}>
+                  {pubCycleBusy ? "Publishing…" : "⚡ Publish " + chosen.length + " change" + (chosen.length === 1 ? "" : "s")}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
       {/* Baseline mobile fixes for content that isn't inline-laid-out (mainly wide
           tables). Chrome responsiveness is handled by the isMobile branches. */}
       <style>{`
@@ -23213,23 +23521,39 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         {/* ── SCHEDULES TAB (Phase 2a — manual editor) ── */}
         {/* ── SCHEDULING (parent tab with sub-tabs: nail tech / manager) ── */}
         {tab === "scheduling" && (
-          <div style={{ padding: "0 24px" }}><div style={{ display: "flex", gap: 0, marginBottom: 24, padding: 6, background: "#FCE7F3", borderRadius: 14, border: "1px solid #FBCFE8", maxWidth: 680 }}>
-            {[
-              { k: "techs", label: "💅 Nail Tech Schedule" },
-              { k: "managers", label: "👔 Manager Schedule" },
-              // Head Office scheduling only appears once HO staff exist — a
-              // provable no-op for salon-only deployments (hoStaff empty).
-              ...(hoStaff.length ? [{ k: "headoffice", label: "🏢 Head Office" }] : [])
-            ].map(t => {
-              const active = schedSubTab === t.k;
-              return (
-                <button key={t.k} onClick={() => tryChangeSchedSub(t.k)}
-                  style={{ flex: 1, padding: "14px 22px", borderRadius: 10, border: "none", background: active ? "#BE185D" : "transparent", color: active ? "#FFFFFF" : "#831843", cursor: "pointer", fontFamily: "inherit", fontSize: 15, fontWeight: 700, transition: "all .18s", boxShadow: active ? "0 4px 12px rgba(190,24,93,0.32)" : "none", letterSpacing: "0.01em", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 10 }}>
-                  {t.label}
+          <div style={{ padding: "0 24px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 24, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", gap: 0, padding: 6, background: "#FCE7F3", borderRadius: 14, border: "1px solid #FBCFE8", maxWidth: 680, flex: "1 1 320px" }}>
+                {[
+                  { k: "techs", label: "💅 Nail Tech Schedule" },
+                  { k: "managers", label: "👔 Manager Schedule" },
+                  // Head Office scheduling only appears once HO staff exist — a
+                  // provable no-op for salon-only deployments (hoStaff empty).
+                  ...(hoStaff.length ? [{ k: "headoffice", label: "🏢 Head Office" }] : [])
+                ].map(t => {
+                  const active = schedSubTab === t.k;
+                  return (
+                    <button key={t.k} onClick={() => tryChangeSchedSub(t.k)}
+                      style={{ flex: 1, padding: "14px 22px", borderRadius: 10, border: "none", background: active ? "#BE185D" : "transparent", color: active ? "#FFFFFF" : "#831843", cursor: "pointer", fontFamily: "inherit", fontSize: 15, fontWeight: 700, transition: "all .18s", boxShadow: active ? "0 4px 12px rgba(190,24,93,0.32)" : "none", letterSpacing: "0.01em", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 10 }}>
+                      {t.label}
+                    </button>
+                  );
+                })}
+              </div>
+              {/* Cross-branch mid-cycle publisher. Lives here (not Manager
+                  Coverage) because the schedule draft is the source of truth
+                  mirrored to attendance / kiosk / My BOA, and this covers BOTH
+                  nail techs and managers — it is the "publish the latest draft"
+                  step, done in one pass for every branch's current-cycle edits. */}
+              {currentUser?.isOwner && (
+                <button onClick={openPublishCycle} disabled={pubCycleBusy}
+                  title="Scan every branch — nail techs AND managers — for schedule edits made mid-cycle (leave approvals, extra days, day-off swaps) and publish them live to staff, kiosk and My BOA. Scoped to the CURRENT payroll cycle only; you review every change before anything goes live."
+                  style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6, padding: "12px 18px", borderRadius: 11, fontSize: 14, fontWeight: 800, background: pubCycleBusy ? "#FBCFE8" : "#831843", color: "#fff", border: "none", cursor: pubCycleBusy ? "default" : "pointer", boxShadow: pubCycleBusy ? "none" : "0 4px 12px rgba(131,24,67,0.28)", whiteSpace: "nowrap" }}>
+                  {pubCycleBusy && !pubCycleOpen ? "Scanning…" : "⚡ Publish current cycle"}
                 </button>
-              );
-            })}
-          </div></div>
+              )}
+            </div>
+          </div>
         )}
         {tab === "scheduling" && schedSubTab === "techs" && (
           <Schedule

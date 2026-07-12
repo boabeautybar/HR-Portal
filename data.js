@@ -388,6 +388,63 @@
     if (res.error) { console.error("deleteApprovedSchedule:", res.error); throw res.error; }
     return next;
   }
+  // One-pass read of every branch's DRAFT + newest PUBLISHED grid for the two
+  // yms that make up ONE payroll cycle: manager grids live under the START-month
+  // ym (full-date cell keys), tech grids under the END-month ym (day-of-month
+  // keys). Powers the "Publish current cycle" preview — the JS mirror of the SQL
+  // invariant Q7. Returns one entry per (isMgr, branch): { isMgr, branch, ym,
+  // draft, pub } where draft/pub are grid objects (pub = published value[0].grid,
+  // or null when the cycle isn't published). Read-only.
+  //
+  // The two LIKE scans lean on a Postgres quirk: "boa_sched_%_<ym>" (every "_"
+  // is a single-char wildcard) also matches "boa_schedapproved_…_<ym>" and
+  // "boa_schedhist_…_<ym>", so ONE scan returns tech draft + approved + history
+  // for that ym; we re-classify each key with an exact, order-sensitive regex
+  // chain (approved and history are tested BEFORE draft, whose pattern is a
+  // superset). Anchoring the pattern to the ym suffix keeps the read small —
+  // without it, every branch's full 25-deep approved-version array for EVERY
+  // month would come back. The "boa_sched_%" scan never leaks manager keys
+  // ("boa_mgrsched…" has 'm' where the pattern wants a literal 's') and
+  // vice-versa.
+  async function loadCycleScheduleGrids(techYm, mgrYm) {
+    if (!techYm || !mgrYm) return [];
+    async function scan(likePat) {
+      var res = await sb.from("app_state").select("key, value").like("key", likePat);
+      if (res.error) { console.error("loadCycleScheduleGrids scan " + likePat + ":", res.error); return []; }
+      return res.data || [];
+    }
+    // kind: 'appr' | 'draft' | null (history / unrecognised → dropped)
+    function classify(key, isMgr) {
+      var m;
+      if (isMgr) {
+        if ((m = /^boa_mgrschedapproved_(.+)_(\d{4}-\d{2})$/.exec(key))) return { kind: "appr", branch: m[1], ym: m[2] };
+        if (/^boa_mgrschedhist_/.test(key)) return null;
+        if ((m = /^boa_mgrsched_(.+)_(\d{4}-\d{2})$/.exec(key))) return { kind: "draft", branch: m[1], ym: m[2] };
+      } else {
+        if ((m = /^boa_schedapproved_(.+)_(\d{4}-\d{2})$/.exec(key))) return { kind: "appr", branch: m[1], ym: m[2] };
+        if (/^boa_schedhist_/.test(key)) return null;
+        if ((m = /^boa_sched_(.+)_(\d{4}-\d{2})$/.exec(key))) return { kind: "draft", branch: m[1], ym: m[2] };
+      }
+      return null;
+    }
+    var results = await Promise.all([scan("boa_sched_%_" + techYm), scan("boa_mgrsched_%_" + mgrYm)]);
+    var byBranch = {};   // "<isMgr>|<branch>" -> { isMgr, branch, ym, draft, pub }
+    [[results[0], false, techYm], [results[1], true, mgrYm]].forEach(function (pair) {
+      var rows = pair[0], isMgr = pair[1], wantYm = pair[2];
+      rows.forEach(function (r) {
+        var c = classify(r.key, isMgr);
+        if (!c || c.ym !== wantYm) return;
+        var mk = (isMgr ? "1" : "0") + "|" + c.branch;
+        var slot = byBranch[mk] || (byBranch[mk] = { isMgr: isMgr, branch: c.branch, ym: wantYm, draft: null, pub: null });
+        if (c.kind === "draft") {
+          slot.draft = (r.value && r.value.grid) ? r.value.grid : null;
+        } else {   // 'appr' — newest-first array, live = [0]
+          slot.pub = (Array.isArray(r.value) && r.value[0] && r.value[0].grid) ? r.value[0].grid : null;
+        }
+      });
+    });
+    return Object.keys(byBranch).map(function (k) { return byBranch[k]; });
+  }
   async function saveSchedule(branch, ym, grid, isManager, names) {
     // Snapshot existing schedule into history BEFORE overwriting. We only
     // record the previous saved state if one actually exists and has at
@@ -2421,6 +2478,7 @@
     loadApprovedSchedules: loadApprovedSchedules,
     saveApprovedSchedule: saveApprovedSchedule,
     deleteApprovedSchedule: deleteApprovedSchedule,
+    loadCycleScheduleGrids: loadCycleScheduleGrids,
     deleteSchedule: deleteSchedule,
     listDeletedSchedules: listDeletedSchedules,
     restoreSchedule: restoreSchedule,
