@@ -21,6 +21,7 @@
   // .slice() copies it so the per-page DB-augment below can't mutate the
   // shared registry.
   var STORES = (window.BOA_STORES || []).slice();
+  if (!STORES.length) console.error("[My BOA] stores.js missing or empty — store picker will be blank (stale page? reload)");
 
   var CATEGORIES = [
     { v: "Safety", l: "Safety / accident / injury" },

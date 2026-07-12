@@ -323,6 +323,12 @@
   }
 
   // ---------- Schedule (boa_sched_<branch>_<ym>) ----------
+  // ⚠ ym CONTRACT: these builders use `ym` RAW — the caller must already hold
+  // the grid-correct ym (tech = END-month, manager = START-month, i.e. the
+  // caller pre-shifts for managers). This is the OPPOSITE of the same-named
+  // builders in kiosk/data.js and myboa/cycle.js, which take the END-month ym
+  // for BOTH and start-shift manager keys internally. Passing an END-month ym
+  // here with isManager=true silently reads/writes the wrong cycle's grid.
   function schedKey(branch, ym, isManager) {
     return (isManager ? "boa_mgrsched_" : "boa_sched_") + branch + "_" + ym;
   }
@@ -2487,8 +2493,8 @@
     // Schedules
     // Key builders (branch, ym, isManager) — exposed so the portal app builds
     // schedule keys via the ONE canonical format instead of inline strings.
-    // (Companion builders: kiosk/data.js schedKey/schedApprovedKey,
-    // myboa/cycle.js liveKey/approvedKey.)
+    // ⚠ ym is used RAW (caller pre-shifts manager ym) — see the contract note
+    // at the schedKey definition; the kiosk/myboa same-named builders differ.
     schedKey: schedKey,
     schedHistKey: schedHistKey,
     schedApprovedKey: schedApprovedKey,

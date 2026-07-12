@@ -20,6 +20,7 @@
   // .slice() copies it so the per-page DB-augment below can't mutate the
   // shared registry.
   var STORES = (window.BOA_STORES || []).slice();
+  if (!STORES.length) console.error("[My BOA] stores.js missing or empty — store picker will be blank (stale page? reload)");
   var DOW = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
   var MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
   var LS_KEY = "myboa_sched_v1";
@@ -72,10 +73,10 @@
   }
 
   // ── Shift times (replicated from the portal's shiftTimes) ────
-  // Thin wrapper over the shared rule set in ../shift-rules.js
+  // Thin wrapper over the shared rule set in shift-rules.js (local mirror)
   // (window.BOA_SHIFT) — same hours as the portal + kiosk.
   function shiftTimes(role, code, branch, dow) {
-    return window.BOA_SHIFT.times(role, code, branch, dow);
+    return window.BOA_SHIFT ? window.BOA_SHIFT.times(role, code, branch, dow) : "";
   }
 
   function ymdStr(dt) { return dt.getFullYear() + "-" + pad(dt.getMonth() + 1) + "-" + pad(dt.getDate()); }
@@ -187,7 +188,11 @@
   // app.jsx (applyMgrShiftSplit / applyRiverlandsShifts / applyBallitoShifts /
   // applyFourwaysShifts) — all re-run-safe: working cells reset to "W" first,
   // then re-assign purely from the work/off pattern + roles.
-  var SPLIT_SHIFT_STORES = window.BOA_SHIFT.SPLIT_SHIFT_STORES;   // one source: ../shift-rules.js
+  // One source: shift-rules.js (local mirror). Guarded so a failed/stale
+  // shift-rules.js load degrades instead of a parse-time TypeError killing
+  // the whole schedule viewer IIFE.
+  var SPLIT_SHIFT_STORES = (window.BOA_SHIFT || {}).SPLIT_SHIFT_STORES || {};
+  if (!window.BOA_SHIFT) console.error("[My BOA] shift-rules.js missing — shift hours unavailable");
   function _isSMrole(m) { return /^(SSM|SM)$/i.test((m && m.role) || ""); }
   function _pickLowest(list, counter) {
     var sorted = list.slice().sort(function (a, b) {

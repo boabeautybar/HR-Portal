@@ -23,8 +23,30 @@ function read(rel) {
   catch (e) { console.error("✗ cannot read " + rel + ": " + e.message); process.exit(2); }
 }
 
+// Remove // and /* */ comments WITHOUT touching string literals, so a quoted
+// name inside a comment (e.g. `// replaced "Betty" 2026-08` — comments inside
+// array literals are house style in kiosk/config.js) can't become a phantom
+// entry, and a bracket in a comment can't derail sliceArray's balancing.
+function stripComments(text) {
+  let out = "", i = 0;
+  while (i < text.length) {
+    const ch = text[i], next = text[i + 1];
+    if (ch === '"' || ch === "'") {                       // string literal: copy verbatim
+      const q = ch; out += ch; i++;
+      while (i < text.length && text[i] !== q) { out += text[i]; if (text[i] === "\\") { out += text[i + 1]; i++; } i++; }
+      out += text[i] || ""; i++;
+    } else if (ch === "/" && next === "/") {               // line comment
+      while (i < text.length && text[i] !== "\n") i++;
+    } else if (ch === "/" && next === "*") {               // block comment
+      i += 2; while (i < text.length && !(text[i] === "*" && text[i + 1] === "/")) i++;
+      i += 2;
+    } else { out += ch; i++; }
+  }
+  return out;
+}
+
 // Grab the [...] block that follows `marker`, balancing brackets so nested
-// objects/arrays don't end it early.
+// objects/arrays don't end it early. Expects comment-stripped text.
 function sliceArray(text, marker) {
   const i = text.indexOf(marker);
   if (i < 0) { console.error("✗ marker not found: " + marker); process.exit(2); }
@@ -39,14 +61,19 @@ function sliceArray(text, marker) {
   process.exit(2);
 }
 
-// Object-array (kiosk BRANCHES / portal SALONS): pull every name: "..."
-function names(block) { return (block.match(/name:\s*"([^"]+)"/g) || []).map(s => s.replace(/name:\s*"/, "").replace(/"$/, "")); }
-// String-array (BOA_STORES): pull every "..."
-function strings(block) { return (block.match(/"([^"]+)"/g) || []).map(s => s.slice(1, -1)); }
+// Object-array (kiosk BRANCHES / portal SALONS): pull every name: "..." / name: '...'
+function names(block) {
+  return (block.match(/name:\s*("([^"]+)"|'([^']+)')/g) || []).map(s => s.replace(/name:\s*["']/, "").replace(/["']$/, ""));
+}
+// String-array (BOA_STORES): pull every "..." or '...' (single quotes would
+// otherwise be silently dropped — the drift gate must not pass green on them).
+function strings(block) {
+  return (block.match(/"([^"]+)"|'([^']+)'/g) || []).map(s => s.slice(1, -1));
+}
 
-const boaStores = strings(sliceArray(read("myboa/stores.js"), "window.BOA_STORES ="));
-const branches  = names(sliceArray(read("kiosk/config.js"), "BRANCHES = ["));
-const salons    = names(sliceArray(read("app.jsx"), "SALONS = ["));
+const boaStores = strings(sliceArray(stripComments(read("myboa/stores.js")), "window.BOA_STORES ="));
+const branches  = names(sliceArray(stripComments(read("kiosk/config.js")), "BRANCHES = ["));
+const salons    = names(sliceArray(stripComments(read("app.jsx")), "SALONS = ["));
 
 const setBoa = new Set(boaStores), setBr = new Set(branches), setSal = new Set(salons);
 const diff = (a, b) => [...a].filter(x => !b.has(x));

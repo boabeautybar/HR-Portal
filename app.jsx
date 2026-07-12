@@ -1919,7 +1919,7 @@ const KIOSK_DEFAULT_PINS = {
 // Returns a "HH:MM - HH:MM" string. Per-day CUSTOM hours (boa_mgr_times_v1)
 // override this where set.
 function shiftTimes(role, code, branch, dow) {
-  return window.BOA_SHIFT.times(role, code, branch, dow);
+  return window.BOA_SHIFT ? window.BOA_SHIFT.times(role, code, branch, dow) : "";
 }
 
 // ─── PER-STORE MANAGER SHIFT LABELLING ────────────────────────────────────────────
@@ -2181,8 +2181,10 @@ function applyBranchShiftRules(grid, dates, managers, branch) {
 // Branches whose manager shifts carry a per-day WE/WM/WL split (used to decide
 // whether Coverage needs to re-derive labels for a store). ONE source of truth
 // in shift-rules.js (window.BOA_SHIFT) — the same stores shiftTimes gives a
-// multi-shift window.
-const SPLIT_SHIFT_STORES = window.BOA_SHIFT.SPLIT_SHIFT_STORES;
+// multi-shift window. Guarded: a stale-cached index.html without the
+// shift-rules.js tag must degrade, not blank the whole portal at Babel-eval.
+const SPLIT_SHIFT_STORES = (window.BOA_SHIFT || {}).SPLIT_SHIFT_STORES || {};
+if (!window.BOA_SHIFT) console.error("[portal] shift-rules.js missing — shift hours unavailable (stale index.html? hard-refresh)");
 
 // Parse a "HH:MM - HH:MM" range into {start,end} minutes-from-midnight, or null.
 function parseShiftRange(s) {
@@ -10701,7 +10703,10 @@ function assessLeaveOps(r, enriched, managers, leaveRecs) {
 async function patchApprovedSnapshotGrid(branch, ym, isMgr, mutateGrid) {
   try {
     if (!branch || !ym) return false;
-    if (!window.BOA_DB || !window.BOA_DB.loadApprovedSchedules || !window.BOA_DB.saveByKey) return false;
+    // schedApprovedKey is a NEW export — a stale-cached data.js won't have it,
+    // so guard it like the others (clean no-op instead of a swallowed TypeError).
+    if (!window.BOA_DB || !window.BOA_DB.loadApprovedSchedules || !window.BOA_DB.saveByKey ||
+        typeof window.BOA_DB.schedApprovedKey !== "function") return false;
     const approved = await window.BOA_DB.loadApprovedSchedules(branch, ym, isMgr);
     if (!Array.isArray(approved) || !approved.length || !approved[0] || !approved[0].grid) return false;
     if (!mutateGrid(approved[0].grid)) return false;
@@ -19148,7 +19153,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         if (!ec || !oldBranch) return;
         const ecU = String(ec).trim().toUpperCase();
         const ym = isManager ? _xfStartYm : _xfEndYm;
-        const key = window.BOA_DB.schedKey(oldBranch, ym, isManager);
         const _delRow = (grid) => {
           if (!grid) return false;
           const k = Object.keys(grid).find(x => String(x).trim().toUpperCase() === ecU);
@@ -19157,6 +19161,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           return true;
         };
         try {
+          // Key build inside the try: schedKey is a NEW BOA_DB export, and a
+          // TypeError thrown OUTSIDE the try would reject this fn and abort
+          // the caller's settle loop mid-flight (remaining saves skipped).
+          const key = window.BOA_DB.schedKey ? window.BOA_DB.schedKey(oldBranch, ym, isManager)
+            : (isManager ? "boa_mgrsched_" : "boa_sched_") + oldBranch + "_" + ym;
           const draft = window.BOA_DB.loadByKey ? await window.BOA_DB.loadByKey(key) : null;
           if (draft && draft.grid && _delRow(draft.grid)) {
             if (draft.names) { const nk = Object.keys(draft.names).find(x => String(x).trim().toUpperCase() === ecU); if (nk) delete draft.names[nk]; }

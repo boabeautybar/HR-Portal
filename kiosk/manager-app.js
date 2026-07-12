@@ -2769,10 +2769,10 @@
     return null;
   }
 
-  // Thin wrapper over the shared rule set in ../shift-rules.js
+  // Thin wrapper over the shared rule set in shift-rules.js (local mirror)
   // (window.BOA_SHIFT) — same hours as the portal, staff-app, and My BOA.
   function shiftTimes(role, code, branchName, dow) {
-    return window.BOA_SHIFT.times(role, code, branchName, dow);
+    return window.BOA_SHIFT ? window.BOA_SHIFT.times(role, code, branchName, dow) : "";
   }
   function fmtDate(s) {
     try {

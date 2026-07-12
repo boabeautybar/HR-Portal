@@ -1177,8 +1177,9 @@
     if (res.error) throw res.error;
     // Mirror into the kiosk audit log so the HR portal's Daily Check-ins tab
     // can show the deduction inline next to the tech's status for that day.
-    // Key + calendar math both use the START-month of the cycle, matching
-    // the convention setAttendanceStatus uses for its own log writes.
+    // The log BUCKET is keyed by the cycle's START-month (matching
+    // setAttendanceStatus); the calendar DATE comes from scheduleDayToYmd,
+    // which takes the END-month ym — see below.
     try {
       var sp = ym.split("-");
       var sY = +sp[0], sM = +sp[1] - 1;
@@ -1261,11 +1262,12 @@
   function currentSchedYm() { return ymForDate(new Date()); }
 
   // Schedule app_state key builders — the ONE place the boa_sched* key
-  // format lives. Tech grids key by END-month ym; manager grids by the
-  // START-month ym (END minus 1, via _toStartMonthYm). getSchedule /
-  // getApprovedSchedule route through these instead of rebuilding the
-  // string inline. (Companion builders: portal data.js schedKey/
-  // schedApprovedKey, myboa cycle.js liveKey/approvedKey.)
+  // format lives kiosk-side. ym CONTRACT: takes the END-month ym for BOTH
+  // kinds; manager keys are start-shifted internally via _toStartMonthYm
+  // (myboa cycle.js liveKey/approvedKey work the same way). ⚠ The portal's
+  // BOA_DB.schedKey/schedApprovedKey are NOT equivalent — they use ym RAW
+  // and the portal caller pre-shifts manager ym itself. getSchedule /
+  // getApprovedSchedule route through these instead of rebuilding inline.
   function schedKey(br, ym, isMgr) {
     return (isMgr ? "boa_mgrsched_" : "boa_sched_") + br + "_" + (isMgr ? _toStartMonthYm(ym) : ym);
   }

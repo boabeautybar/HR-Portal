@@ -1034,17 +1034,22 @@
     for (var i = 0; i < keys.length; i++) { if (String(keys[i]).trim().toUpperCase() === u) return map[keys[i]]; }
     return null;
   }
-  // Head Office shift hours — the single source of truth for both the per-cell
-  // times (_shiftTimes) and the schedule hours banner (_techHoursBannerHtml).
-  // Call Centre & Sales work an early/late split (WE / WL); "Office Staff" work
-  // one day shift. Change the hours here and both surfaces follow.
-  var HO_HOURS = {
-    ccEarly: { start: "07:00", end: "16:00" },  // WE — Call Centre & Sales early
-    ccLate:  { start: "09:00", end: "18:30" },  // WL — Call Centre & Sales late
-    office:  { start: "08:00", end: "17:00" }   // everyone else
-  };
-  function _hoCellHours(h) { return h.start + " - " + h.end; }  // per-cell: "07:00 - 16:00"
-  function _hoDashHours(h) { return h.start + "–" + h.end; }    // banner:   "07:00–16:00"
+  // Head Office banner hours — DERIVED from the shared rules (shift-rules.js)
+  // at load, so the schedule banner can never disagree with the grid cells
+  // (which resolve through _shiftTimes → window.BOA_SHIFT.times). To change
+  // Head Office hours, edit shift-rules.js — both surfaces follow. The string
+  // literals below are only the last-resort fallback when shift-rules.js
+  // failed to load (in which case cells show no hours at all).
+  var HO_HOURS = (function () {
+    function parse(s) { var p = String(s || "").split(" - "); return { start: p[0] || "", end: p[1] || "" }; }
+    var t = window.BOA_SHIFT && window.BOA_SHIFT.times;
+    return {
+      ccEarly: parse(t ? t("CC", "WE", "Head Office", 1) : "07:00 - 16:00"),  // WE — Call Centre & Sales early
+      ccLate:  parse(t ? t("CC", "WL", "Head Office", 1) : "09:00 - 18:30"),  // WL — Call Centre & Sales late
+      office:  parse(t ? t("",   "W",  "Head Office", 1) : "08:00 - 17:00")   // everyone else
+    };
+  })();
+  function _hoDashHours(h) { return h.start + "–" + h.end; }    // banner: "07:00–16:00"
 
   async function renderScheduleKind(kind, ym) {
     // Head Office has no manager/tech split — its two views are DEPARTMENT
@@ -3677,7 +3682,11 @@
   // Ported verbatim from myboa/schedule.js (itself a verbatim port of app.jsx)
   // so the kiosk matches them exactly. All re-run-safe: working cells reset to
   // "W" first, then re-assign purely from the work/off pattern + roles.
-  var SPLIT_SHIFT_STORES = window.BOA_SHIFT.SPLIT_SHIFT_STORES;   // one source: ../shift-rules.js
+  // One source: shift-rules.js (local mirror). Guarded so a failed/stale
+  // shift-rules.js load degrades (labels un-derived, hours blank) instead of
+  // a parse-time TypeError killing the whole kiosk bundle.
+  var SPLIT_SHIFT_STORES = (window.BOA_SHIFT || {}).SPLIT_SHIFT_STORES || {};
+  if (!window.BOA_SHIFT) console.error("[kiosk] shift-rules.js missing — shift hours unavailable");
   var _MGR_WORK_CODES = { W: 1, WE: 1, WL: 1, WM: 1, WB: 1, E: 1 };
   function _isSMrole(m) { return /^(SSM|SM)$/i.test((m && m.role) || ""); }
   function _pickLowest(list, counter) {
@@ -3903,12 +3912,12 @@
     return out;
   }
 
-  // Thin wrapper over the shared rule set in ../shift-rules.js
+  // Thin wrapper over the shared rule set in shift-rules.js (local mirror)
   // (window.BOA_SHIFT) so the kiosk Manager Schedule grid stamps the exact
   // same hours as the portal, manager-app, and My BOA. window.BOA_SHIFT
   // is loaded before this script (see kiosk/index.html).
   function _shiftTimes(role, code, branchName, dow) {
-    return window.BOA_SHIFT.times(role, code, branchName, dow);
+    return window.BOA_SHIFT ? window.BOA_SHIFT.times(role, code, branchName, dow) : "";
   }
   // Compact a "HH:MM - HH:MM" range so it fits in a narrow grid cell:
   //   "09:00 - 18:00" → "9–18"

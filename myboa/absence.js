@@ -22,6 +22,7 @@
   // .slice() copies it so the per-page DB-augment below can't mutate the
   // shared registry.
   var STORES = (window.BOA_STORES || []).slice();
+  if (!STORES.length) console.error("[My BOA] stores.js missing or empty — store picker will be blank (stale page? reload)");
 
   // Employee-code format: a letter + number, no spaces/dashes; managers end in M
   // (e.g. B379 / B379M). Strip non-alphanumerics + upper-case, then check shape.

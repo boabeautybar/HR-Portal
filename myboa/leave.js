@@ -29,6 +29,7 @@
   // .slice() copies it so the per-page DB-augment below can't mutate the
   // shared registry.
   var STORES = (window.BOA_STORES || []).slice();
+  if (!STORES.length) console.error("[My BOA] stores.js missing or empty — store picker will be blank (stale page? reload)");
   var MAX_DAYS = 21; // annual leave requests longer than this must go via HR.
 
   // Employee-code format: a letter + number, no spaces/dashes; managers end in M
