@@ -834,7 +834,10 @@
     if (res.error) { console.error("saveByKey(" + key + "):", res.error); throw res.error; }
     return value;
   }
-  // helpers used by the grid UI
+  // helpers used by the grid UI.
+  // Portal-data copy of the 25th→24th END-month rollover. Companions:
+  // app.jsx (_schedYmForYmd), kiosk/data.js (ymForDate), myboa/cycle.js.
+  // Keep them in step if the cycle boundary ever changes.
   function currentSchedYm() {
     var d = new Date(), y = d.getFullYear(), m = d.getMonth() + 1;
     if (d.getDate() > 24) { m += 1; if (m > 12) { m = 1; y += 1; } }
@@ -2482,6 +2485,13 @@
     auditUnredeemedLookups: auditUnredeemedLookups,
 
     // Schedules
+    // Key builders (branch, ym, isManager) — exposed so the portal app builds
+    // schedule keys via the ONE canonical format instead of inline strings.
+    // (Companion builders: kiosk/data.js schedKey/schedApprovedKey,
+    // myboa/cycle.js liveKey/approvedKey.)
+    schedKey: schedKey,
+    schedHistKey: schedHistKey,
+    schedApprovedKey: schedApprovedKey,
     loadSchedule: loadSchedule,
     saveSchedule: saveSchedule,
     loadScheduleHistory: loadScheduleHistory,

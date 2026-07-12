@@ -239,13 +239,36 @@ const MGR_REASON_OPTIONS = [
   { code: "absent", label: "🚫 Absent", needsProof: false, needsNote: true, payroll: "Unpaid" },
   { code: "no", label: "⛔ NO SHOW", needsProof: false, needsNote: false, payroll: "Unpaid" }
 ];
+// ── Pay-cycle helpers (25th → 24th) — the ONE implementation for this file.
+// Everything below (payrollYmFor, ymdToSchedYm, schedYmOf, the cycle-start
+// computations) delegates here so a single rollover/anchor rule lives in one
+// place. Kept file-local (pure date math, no dependency on the data layer's
+// init). Companion copies: data.js (currentSchedYm), kiosk/data.js
+// (ymForDate/scheduleDayToDate), myboa/cycle.js.
+//   • END-month ym: the cycle is named by the month its 24th falls in, so a
+//     day-of-month > 24 belongs to the NEXT calendar month's cycle.
+//   • cycle-start date: the 25th that opens the cycle containing `d`.
+function _rollToEndMonthYm(y, m, dom) {   // y, 1-indexed m, day-of-month → "YYYY-MM"
+  if (dom > 24) { m += 1; if (m > 12) { m = 1; y += 1; } }
+  return y + "-" + String(m).padStart(2, "0");
+}
+function _schedYmForYmd(ymd) {            // "YYYY-MM-DD" → END-month ym
+  const [y, m, d] = ymd.split("-").map(Number);
+  return _rollToEndMonthYm(y, m, d);
+}
+function _schedYmOfDate(dt) {             // Date → END-month ym
+  return _rollToEndMonthYm(dt.getFullYear(), dt.getMonth() + 1, dt.getDate());
+}
+function _cycleStartDate(d) {             // Date → the 25th opening d's cycle
+  return d.getDate() >= 25
+    ? new Date(d.getFullYear(), d.getMonth(), 25)
+    : new Date(d.getFullYear(), d.getMonth() - 1, 25);
+}
+
 // Payroll cycle (25th → 24th) helper. Used to lock editing for closed
 // cycles so payroll figures don't shift after a run.
 function payrollYmFor(ymd) {
-  const [y, m, d] = ymd.split("-").map(Number);
-  let yy = y, mm = m;
-  if (d > 24) { mm += 1; if (mm > 12) { mm = 1; yy++; } }
-  return yy + "-" + String(mm).padStart(2, "0");
+  return _schedYmForYmd(ymd);
 }
 
 // Attendance grids (boa_att_<branch>_<ym>) are saved under the START-month ym
@@ -10767,7 +10790,7 @@ async function patchApprovedSnapshotGrid(branch, ym, isMgr, mutateGrid) {
     const approved = await window.BOA_DB.loadApprovedSchedules(branch, ym, isMgr);
     if (!Array.isArray(approved) || !approved.length || !approved[0] || !approved[0].grid) return false;
     if (!mutateGrid(approved[0].grid)) return false;
-    await window.BOA_DB.saveByKey((isMgr ? "boa_mgrschedapproved_" : "boa_schedapproved_") + branch + "_" + ym, approved);
+    await window.BOA_DB.saveByKey(window.BOA_DB.schedApprovedKey(branch, ym, isMgr), approved);
     return true;
   } catch (e) { console.error("patchApprovedSnapshotGrid " + branch + " " + ym + ":", e); return false; }
 }
@@ -10955,9 +10978,8 @@ async function publishLeaveToSchedule(ec, branch, startDate, endDate) {
   // cycle's END-month ym (25th→24th), cells keyed by day-of-month.
   const byYm = {};
   for (let cur = new Date(sd); cur <= ed; cur.setDate(cur.getDate() + 1)) {
-    let y = cur.getFullYear(), m = cur.getMonth() + 1; const dom = cur.getDate();
-    if (dom >= 25) { m += 1; if (m > 12) { m = 1; y += 1; } }
-    const ym = y + "-" + String(m).padStart(2, "0");
+    const dom = cur.getDate();
+    const ym = _schedYmOfDate(cur);
     (byYm[ym] = byYm[ym] || []).push(dom);
   }
   const KEEP = { O: 1, R: 1, X: 1, ML: 1, L: 1 };
@@ -12694,8 +12716,7 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
       if (!window.BOA_DB || !window.BOA_DB.loadSchedule || !window.BOA_DB.saveSchedule) return;
       const p = String(r.work_date).split("-"); let y = +p[0], m = +p[1]; const dom = +p[2];
       if (!y || !m || !dom) return;
-      if (dom >= 25) { m += 1; if (m > 12) { m = 1; y += 1; } }   // END-month ym (25th→24th cycle)
-      const endYm = y + "-" + String(m).padStart(2, "0");
+      const endYm = _schedYmForYmd(r.work_date);   // END-month ym (25th→24th cycle)
       const dayKey = String(dom);
       const ymdKey = String(r.work_date).trim().slice(0, 10);    // full date, e.g. "2026-06-23"
       // Managers live on the manager schedule (boa_mgrsched), stored under the
@@ -13994,7 +14015,7 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
   // Current payroll cycle (25th → 24th) — used to flag short-notice requests
   // (leave falling in the cycle we're already in, rather than booked ahead).
   const _ct = new Date();
-  const _cycStart = _ct.getDate() >= 25 ? new Date(_ct.getFullYear(), _ct.getMonth(), 25) : new Date(_ct.getFullYear(), _ct.getMonth() - 1, 25);
+  const _cycStart = _cycleStartDate(_ct);
   const _cycEnd = new Date(_cycStart.getFullYear(), _cycStart.getMonth() + 1, 24);
   const _ymdOf = (d) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
   const cycleStartYmd = _ymdOf(_cycStart), cycleEndYmd = _ymdOf(_cycEnd);
@@ -17240,9 +17261,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       const p2 = n => String(n).padStart(2, "0");
       const ymd = d => d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate());
       const now = new Date();
-      const cs = now.getDate() >= 25
-        ? new Date(now.getFullYear(), now.getMonth(), 25)
-        : new Date(now.getFullYear(), now.getMonth() - 1, 25);
+      const cs = _cycleStartDate(now);
       const ce = new Date(cs.getFullYear(), cs.getMonth() + 1, 24);
       const surfaces = await window.BOA_DB.loadCycleScheduleGrids(techYm, mgrYm);
       const rows = computeCyclePendingRows(surfaces, {
@@ -17711,12 +17730,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
   // Helper: convert a "YYYY-MM-DD" string to the schedule period <ym> that covers it.
   // Schedule periods run 25th-24th, so day > 24 belongs to the NEXT calendar month.
-  const ymdToSchedYm = (ymd) => {
-    const [y, m, d] = ymd.split("-").map(Number);
-    let ym, yy = y, mm = m;
-    if (d > 24) { mm = m + 1; if (mm > 12) { mm = 1; yy = y + 1; } }
-    return yy + "-" + String(mm).padStart(2, "0");
-  };
+  const ymdToSchedYm = (ymd) => _schedYmForYmd(ymd);
 
   // Pre-fetch schedule grids for all (branch, ym) pairs touched by leave records
   // and the currently-visible 6-month calendar range. Cached to avoid re-fetching.
@@ -18928,7 +18942,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const pad = (n) => String(n).padStart(2, "0");
     const ymdOf = (dt) => dt.getFullYear() + "-" + pad(dt.getMonth() + 1) + "-" + pad(dt.getDate());
     // END-month ym (tech-schedule convention) for the cycle a date sits in.
-    const schedYmOf = (dt) => { let y = dt.getFullYear(), m = dt.getMonth() + 1; if (dt.getDate() > 24) { m += 1; if (m > 12) { m = 1; y += 1; } } return y + "-" + pad(m); };
+    const schedYmOf = (dt) => _schedYmOfDate(dt);
     // START-month ym (attendance convention) for the same cycle.
     const attYmOf = (dt) => { let y = dt.getFullYear(), m = dt.getMonth() + 1; if (dt.getDate() <= 24) { m -= 1; if (m < 1) { m = 12; y -= 1; } } return y + "-" + pad(m); };
     const isWorking = (v) => v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E";
@@ -19219,7 +19233,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         if (!ec || !oldBranch) return;
         const ecU = String(ec).trim().toUpperCase();
         const ym = isManager ? _xfStartYm : _xfEndYm;
-        const key = (isManager ? "boa_mgrsched_" : "boa_sched_") + oldBranch + "_" + ym;
+        const key = window.BOA_DB.schedKey(oldBranch, ym, isManager);
         const _delRow = (grid) => {
           if (!grid) return false;
           const k = Object.keys(grid).find(x => String(x).trim().toUpperCase() === ecU);
@@ -19588,9 +19602,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // cycle, so make sure the loaded window always reaches its opening 25th.
         if (tab === "dashboard") {
           const _n = new Date();
-          const cyStart = _n.getDate() >= 25
-            ? new Date(_n.getFullYear(), _n.getMonth(), 25)
-            : new Date(_n.getFullYear(), _n.getMonth() - 1, 25);
+          const cyStart = _cycleStartDate(_n);
           const spanDays = Math.ceil((Date.now() - cyStart.getTime()) / 86400000) + 2;
           if (spanDays > effDays) effDays = spanDays;
         }
@@ -21147,7 +21159,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const nLoan = rows.filter(r => r.needsLoanRecord).length;
         const p2 = n => String(n).padStart(2, "0");
         const now = new Date();
-        const cs = now.getDate() >= 25 ? new Date(now.getFullYear(), now.getMonth(), 25) : new Date(now.getFullYear(), now.getMonth() - 1, 25);
+        const cs = _cycleStartDate(now);
         const ce = new Date(cs.getFullYear(), cs.getMonth() + 1, 24);
         const mo = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
         const cycleLbl = mo[cs.getMonth()] + " " + cs.getDate() + " – " + mo[ce.getMonth()] + " " + ce.getDate() + ", " + ce.getFullYear();
@@ -22349,9 +22361,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 const _p2 = n => String(n).padStart(2, "0");
                 const _todayYmd = _t.getFullYear() + "-" + _p2(_t.getMonth() + 1) + "-" + _p2(_t.getDate());
                 // Current pay-cycle days (25th → 24th) up to today, oldest→newest.
-                const cyStart = new Date(_t);
-                if (_t.getDate() >= 25) cyStart.setDate(25);
-                else { cyStart.setMonth(cyStart.getMonth() - 1); cyStart.setDate(25); }
+                const cyStart = _cycleStartDate(_t);
                 const cycleDays = [];
                 for (let dd = new Date(cyStart); dd <= _t; dd.setDate(dd.getDate() + 1)) {
                   cycleDays.push({ dom: dd.getDate(), ymd: dd.getFullYear() + "-" + _p2(dd.getMonth() + 1) + "-" + _p2(dd.getDate()) });
@@ -22955,9 +22965,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       // inflated the count with days from a cycle already
                       // closed off — anchor to this cycle's opening 25th instead.
                       const pending = [];
-                      const since = new Date(); since.setHours(0, 0, 0, 0);
-                      if (since.getDate() >= 25) { since.setDate(25); }
-                      else { since.setMonth(since.getMonth() - 1); since.setDate(25); }
+                      const since = _cycleStartDate(new Date());
                       for (let dt = new Date(since); dt < tdY && dt.toISOString().slice(0, 10) < _t0; dt.setDate(dt.getDate() + 1)) {
                         const ymd = dt.getFullYear() + "-" + String(dt.getMonth() + 1).padStart(2, "0") + "-" + String(dt.getDate()).padStart(2, "0");
                         const dom = dt.getDate();
