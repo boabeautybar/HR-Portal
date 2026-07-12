@@ -16,13 +16,12 @@
   }
   var sb = window.supabase.createClient(cfg.url, cfg.anonKey, { auth: { persistSession: false } });
 
-  var STORES = [
-    "Sea Point", "Bree", "Kloof", "Claremont", "Rondebosch", "Durbanville", "Cobble Walk",
-    "Table Bay", "Somerset West", "Riverlands", "Kuils River", "Westlake",
-    "Green Point", "Plumstead", "Sandown", "Cape Gate", "Winelands", "Betty",
-    "Fourways", "Eastgate", "Mall of the South", "Mushroom Farm", "Verdi", "Ballito",
-    "Head Office"
-  ];
+  // Store list — single source in stores.js (window.BOA_STORES), loaded via
+  // <script src="stores.js"> before this file (see it for companion lists).
+  // .slice() copies it so the per-page DB-augment below can't mutate the
+  // shared registry.
+  var STORES = (window.BOA_STORES || []).slice();
+  if (!STORES.length) console.error("[My BOA] stores.js missing or empty — store picker will be blank (stale page? reload)");
   var WORK_CODES = { W: 1, WE: 1, WL: 1, WM: 1, WB: 1, E: 1 };
   var DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   var MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -39,18 +38,13 @@
 
   var state = { busy: false, name: "", store: "", ec: "", isManager: false, offDays: [] };
 
-  // ── Cycle helpers (mirror the schedule viewer / portal 25th→24th logic) ──
-  function pad(n) { return String(n).padStart(2, "0"); }
-  function currentSchedYm() {
-    var d = new Date(), y = d.getFullYear(), m = d.getMonth() + 1;
-    if (d.getDate() > 24) { m += 1; if (m > 12) { m = 1; y += 1; } }
-    return y + "-" + pad(m);
-  }
-  function shiftYm(ym, delta) {
-    var p = ym.split("-"), y = +p[0], m = +p[1] + delta;
-    while (m > 12) { m -= 12; y += 1; } while (m < 1) { m += 12; y -= 1; }
-    return y + "-" + pad(m);
-  }
+  // ── Cycle helpers — rollover + shiftYm live once in cycle.js
+  //    (window.BOA_CYCLE, loaded before this file). Thin wrappers keep
+  //    the call sites below unchanged. periodDays/ymdStr stay local
+  //    (period enumeration, bare-Date shape used only here).
+  function pad(n) { return window.BOA_CYCLE.pad(n); }
+  function currentSchedYm() { return window.BOA_CYCLE.currentYm(); }
+  function shiftYm(ym, delta) { return window.BOA_CYCLE.shiftYm(ym, delta); }
   function periodDays(ym) {
     var p = ym.split("-"), y = +p[0], m = +p[1];
     var prevM = m === 1 ? 12 : m - 1, prevY = m === 1 ? y - 1 : y;
@@ -68,7 +62,7 @@
   }
 
   function fetchGrid(store, isManager, ymEnd) {
-    var key = (isManager ? "boa_mgrsched_" : "boa_sched_") + store + "_" + (isManager ? shiftYm(ymEnd, -1) : ymEnd);
+    var key = window.BOA_CYCLE.liveKey(store, ymEnd, isManager);
     return sb.from("app_state").select("value").eq("key", key).maybeSingle().then(function (res) {
       return (res && res.data && res.data.value && res.data.value.grid) || null;
     });

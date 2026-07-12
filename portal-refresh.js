@@ -41,12 +41,22 @@
   }
   function reload() { if (typing()) return; try { location.reload(); } catch (_e) { } }
 
-  // app.jsx's ETag / Last-Modified changes on every redeploy, so a difference
-  // means new code is live. Netlify serves both for static files.
+  // A file's ETag / Last-Modified changes on every redeploy, so a difference
+  // means new code is live. Netlify serves both for static files. Watch every
+  // file the portal executes — the shift-hour rules moved out of app.jsx into
+  // shift-rules.js, and data.js is the other half of the bundle: a deploy
+  // touching only one of them must still be detected.
+  var WATCH = ["app.jsx", "data.js", "shift-rules.js"];
   function versionTag() {
-    return fetch("app.jsx", { method: "HEAD", cache: "no-store" })
-      .then(function (r) { return r.headers.get("etag") || r.headers.get("last-modified") || null; })
-      .catch(function () { return null; });
+    return Promise.all(WATCH.map(function (f) {
+      return fetch(f, { method: "HEAD", cache: "no-store" })
+        .then(function (r) { return f + ":" + (r.headers.get("etag") || r.headers.get("last-modified") || ""); })
+        .catch(function () { return null; });
+    })).then(function (tags) {
+      // Any failed HEAD → null (skip this round), same as the old single-file
+      // behaviour — one flaky request must not read as "new deploy".
+      return tags.indexOf(null) !== -1 ? null : tags.join("|");
+    });
   }
   versionTag().then(function (t) { baseTag = t; });
 

@@ -16,13 +16,12 @@
 
   // Built-in store names (matches the kiosk's default branch list). We also
   // try to merge any stores added later (boa_custom_salons, public-safe).
-  var STORES = [
-    "Sea Point", "Bree", "Kloof", "Claremont", "Rondebosch", "Durbanville", "Cobble Walk",
-    "Table Bay", "Somerset West", "Riverlands", "Kuils River", "Westlake",
-    "Green Point", "Plumstead", "Sandown", "Cape Gate", "Winelands", "Betty",
-    "Fourways", "Eastgate", "Mall of the South", "Mushroom Farm", "Verdi", "Ballito",
-    "Head Office"
-  ];
+  // Store list — single source in stores.js (window.BOA_STORES), loaded via
+  // <script src="stores.js"> before this file (see it for companion lists).
+  // .slice() copies it so the per-page DB-augment below can't mutate the
+  // shared registry.
+  var STORES = (window.BOA_STORES || []).slice();
+  if (!STORES.length) console.error("[My BOA] stores.js missing or empty — store picker will be blank (stale page? reload)");
 
   var CATEGORIES = [
     { v: "Safety", l: "Safety / accident / injury" },

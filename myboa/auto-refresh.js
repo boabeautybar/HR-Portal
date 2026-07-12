@@ -52,7 +52,10 @@
   // Watch every My BOA page script (all live alongside this file in myboa/), so
   // a deploy that changes ANY of them is detected. Each file's ETag / Last-Modified
   // changes when its content changes (Netlify serves both for static files).
-  var WATCH = ["schedule.js", "leave.js", "absence.js", "extra.js", "bonus.js", "report.js"];
+  // stores.js / cycle.js / shift-rules.js are the shared registries the page
+  // scripts delegate to — e.g. opening a store now edits ONLY stores.js, so a
+  // deploy touching just a shared file must still trigger the refresh.
+  var WATCH = ["schedule.js", "leave.js", "absence.js", "extra.js", "bonus.js", "report.js", "stores.js", "cycle.js", "shift-rules.js"];
   function versionTag() {
     return Promise.all(WATCH.map(function (f) {
       return fetch(f, { method: "HEAD", cache: "no-store" })

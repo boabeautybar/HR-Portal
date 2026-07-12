@@ -1034,17 +1034,22 @@
     for (var i = 0; i < keys.length; i++) { if (String(keys[i]).trim().toUpperCase() === u) return map[keys[i]]; }
     return null;
   }
-  // Head Office shift hours — the single source of truth for both the per-cell
-  // times (_shiftTimes) and the schedule hours banner (_techHoursBannerHtml).
-  // Call Centre & Sales work an early/late split (WE / WL); "Office Staff" work
-  // one day shift. Change the hours here and both surfaces follow.
-  var HO_HOURS = {
-    ccEarly: { start: "07:00", end: "16:00" },  // WE — Call Centre & Sales early
-    ccLate:  { start: "09:00", end: "18:30" },  // WL — Call Centre & Sales late
-    office:  { start: "08:00", end: "17:00" }   // everyone else
-  };
-  function _hoCellHours(h) { return h.start + " - " + h.end; }  // per-cell: "07:00 - 16:00"
-  function _hoDashHours(h) { return h.start + "–" + h.end; }    // banner:   "07:00–16:00"
+  // Head Office banner hours — DERIVED from the shared rules (shift-rules.js)
+  // at load, so the schedule banner can never disagree with the grid cells
+  // (which resolve through _shiftTimes → window.BOA_SHIFT.times). To change
+  // Head Office hours, edit shift-rules.js — both surfaces follow. The string
+  // literals below are only the last-resort fallback when shift-rules.js
+  // failed to load (in which case cells show no hours at all).
+  var HO_HOURS = (function () {
+    function parse(s) { var p = String(s || "").split(" - "); return { start: p[0] || "", end: p[1] || "" }; }
+    var t = window.BOA_SHIFT && window.BOA_SHIFT.times;
+    return {
+      ccEarly: parse(t ? t("CC", "WE", "Head Office", 1) : "07:00 - 16:00"),  // WE — Call Centre & Sales early
+      ccLate:  parse(t ? t("CC", "WL", "Head Office", 1) : "09:00 - 18:30"),  // WL — Call Centre & Sales late
+      office:  parse(t ? t("",   "W",  "Head Office", 1) : "08:00 - 17:00")   // everyone else
+    };
+  })();
+  function _hoDashHours(h) { return h.start + "–" + h.end; }    // banner: "07:00–16:00"
 
   async function renderScheduleKind(kind, ym) {
     // Head Office has no manager/tech split — its two views are DEPARTMENT
@@ -1131,6 +1136,7 @@
     //   4. fall back to the newest APPROVED snapshot when the live cell is empty
     var approvedGrid = {};
     var approvedNames = {};
+    var approvedHours = {};   // Phase 1.1: portal-baked hours { ec: { ymd: {t,c} } }
     if ((isMgr || isHo) && window.APP_DATA.getApprovedSchedule) {
       try {
         // HO renders the PUBLISHED truth like managers do — read its tech-style
@@ -1139,6 +1145,7 @@
         var _ap = await window.APP_DATA.getApprovedSchedule(ym, isMgr ? "mgr" : "tech");
         approvedGrid = (_ap && _ap.grid) || {};
         approvedNames = (_ap && _ap.names) || {};
+        approvedHours = (_ap && _ap.hours) || {};
       } catch (_apErr) { /* fallback only — never block the live view */ }
     }
     // Leave-Planner overlay: ec → { ymd: true } for every covered leave day
@@ -1222,6 +1229,10 @@
     })();
     grid = _canonGrid(grid, (sched && sched.names) || {});
     approvedGrid = _canonGrid(approvedGrid, approvedNames);
+    // Canonicalise baked hours onto the SAME current-code keys as approvedGrid
+    // (structurally identical — key → {ymd:…} map — so _canonGrid re-homes it
+    // the same way), so an ec lookup below hits both grid and hours alike.
+    approvedHours = _canonGrid(approvedHours, approvedNames);
     // Per-manager custom shift hours (set in the HR portal coverage view),
     // layered over the computed times on the Manager Schedule view.
     var customTimes = (isMgr && window.APP_DATA.getMgrTimes) ? ((await window.APP_DATA.getMgrTimes()) || {}) : {};
@@ -1405,18 +1416,31 @@
           var _mark = "";
           if (isMgr && (cell === "W" || cell === "WE" || cell === "WL" || cell === "WM" || cell === "WB" || cell === "E")) {
             var _dt = new Date(d.year, d.monthIdx, d.day);
-            var _hrs = _shiftTimes(s.role, cell, thisBranch, _dt.getDay());
-            // Manual override for this manager on this exact day wins over
-            // the computed hours and is flagged with a ★ + summary row.
-            // Employee codes can carry a trailing space in older data, so
-            // fall back to the trimmed key.
+            // Hours precedence (Phase 1.1): live custom override wins; else the
+            // portal-baked snapshot hours (when the baked code still matches this
+            // cell — a post-publish code change invalidates it); else this
+            // kiosk's own shiftTimes copy. Reading baked keeps the kiosk showing
+            // the EXACT times the portal published even if the two shiftTimes
+            // copies have drifted. Employee codes can carry a trailing space in
+            // older data, so lookups fall back to the trimmed/upper key.
             var _custRow = _custHoursRow(customTimes, s.employee_code);
             var _cust = _custRow && _custRow[_ymd];
+            var _hrs;
             if (_cust) {
               _hrs = _cust;
               _custCls = " sched-cell-custom";
               _mark = '<span class="sched-cust-star" aria-hidden="true">★</span>';
               customList.push({ name: s.name, mon: monthAbbr[d.monthIdx], day: d.day, dow: dowAbbr[_dt.getDay()], hrs: _cust });
+            } else {
+              // NB: unlike the manager card / auto-out / My BOA, this hover-only
+              // tooltip does NOT role-check the bake — staff-app carries no SM-trial
+              // data, and comparing baked (SM-adjusted) role against the raw s.role
+              // would make trial managers fall back to raw-role hours at publish and
+              // disagree with the other surfaces. The only exposure is a stale
+              // tooltip after a mid-cycle role change without re-publish (accepted).
+              var _bkRow = _custHoursRow(approvedHours, s.employee_code);
+              var _bk = _bkRow && _bkRow[_ymd];
+              _hrs = (_bk && _bk.c === cell) ? _bk.t : _shiftTimes(s.role, cell, thisBranch, _dt.getDay());
             }
             if (_hrs) _title = ' title="' + esc(_hrs + (_cust ? " (custom hours)" : "")) + '"';
           }
@@ -3658,7 +3682,11 @@
   // Ported verbatim from myboa/schedule.js (itself a verbatim port of app.jsx)
   // so the kiosk matches them exactly. All re-run-safe: working cells reset to
   // "W" first, then re-assign purely from the work/off pattern + roles.
-  var SPLIT_SHIFT_STORES = { "Sandown": 1, "Table Bay": 1, "Riverlands": 1, "Ballito": 1, "Mall of the South": 1, "Fourways": 1 };
+  // One source: shift-rules.js (local mirror). Guarded so a failed/stale
+  // shift-rules.js load degrades (labels un-derived, hours blank) instead of
+  // a parse-time TypeError killing the whole kiosk bundle.
+  var SPLIT_SHIFT_STORES = (window.BOA_SHIFT || {}).SPLIT_SHIFT_STORES || {};
+  if (!window.BOA_SHIFT) console.error("[kiosk] shift-rules.js missing — shift hours unavailable");
   var _MGR_WORK_CODES = { W: 1, WE: 1, WL: 1, WM: 1, WB: 1, E: 1 };
   function _isSMrole(m) { return /^(SSM|SM)$/i.test((m && m.role) || ""); }
   function _pickLowest(list, counter) {
@@ -3884,84 +3912,12 @@
     return out;
   }
 
-  // Mirror of the HR portal's shiftTimes() so the kiosk Manager Schedule
-  // view can stamp each working cell with its actual hours. Kept in sync
-  // with the portal copy (app.jsx Manager Coverage) and with the
-  // equivalent helper in manager-app.js — those two are the source of
-  // truth, this one just renders the schedule grid.
-  //   role: "SM" | "SSM" | "AM"
-  //   code: W / WE / WL / WM / WB / E
-  //   branchName: store name (APP_CONFIG.branchName)
-  //   dow: 0=Sun … 6=Sat
+  // Thin wrapper over the shared rule set in shift-rules.js (local mirror)
+  // (window.BOA_SHIFT) so the kiosk Manager Schedule grid stamps the exact
+  // same hours as the portal, manager-app, and My BOA. window.BOA_SHIFT
+  // is loaded before this script (see kiosk/index.html).
   function _shiftTimes(role, code, branchName, dow) {
-    var r = (role || "").toUpperCase();
-    var isSM = r === "SM" || r === "SSM";
-    var isAM = r === "AM";
-    var b = branchName || "";
-
-    // Head Office hours (mirrors the portal): office staff a single day shift;
-    // the Call Centre & Sales floor a two-shift early/late split (WE / WL).
-    if (_isHoBranch(b)) {
-      if (_hoIsCcSales({ role: r })) return _hoCellHours(code === "WL" ? HO_HOURS.ccLate : HO_HOURS.ccEarly);
-      return _hoCellHours(HO_HOURS.office);
-    }
-
-    if (b === "Sandown" || b === "Table Bay") {
-      if (isSM) return "08:00 - 17:00";
-      if (dow === 0) {
-        if (code === "WE") return "08:00 - 17:00";
-        return "09:00 - 18:00";
-      }
-      if (dow === 6 && b === "Sandown") {
-        if (code === "WE") return "08:00 - 17:00";
-        return "10:00 - 19:00";
-      }
-      if (code === "WE") return "08:00 - 17:00";
-      if (code === "WM") return "09:00 - 18:00";
-      return "11:00 - 20:00";
-    }
-    if (b === "Riverlands") {
-      if (isSM) return "08:00 - 17:00";               // SM/SSM always 08:00-17:00, every day
-      if (dow === 6) return "09:00 - 18:00";
-      if (dow === 0) return "08:30 - 17:00";          // Sun single AM (08:30 open)
-      if (code === "WE") return "09:00 - 18:00";
-      if (code === "WB") return "08:00 - 17:00";
-      if (code === "WM") return "09:00 - 18:00";      // AM mid shift
-      return "10:00 - 19:00";
-    }
-    if (b === "Ballito" || b === "Mall of the South") {
-      if (isSM) return "08:00 - 17:00";
-      if (dow === 0) return isAM ? "08:30 - 17:00" : "08:00 - 17:00";
-      if (code === "WE") return "08:00 - 17:00";
-      if (code === "WM") return "09:00 - 18:00";
-      return "10:00 - 19:00";
-    }
-    if (b === "Fourways") {
-      if (isSM) return "08:00 - 17:00";   // SM/SSM always open, never close
-      if (dow === 0) {
-        if (code === "WE") return "08:00 - 17:00";
-        return "10:00 - 19:00";
-      }
-      if (code === "WE") return "08:00 - 17:00";   // AM opener when no SM is in
-      if (code === "WM") return "10:00 - 19:00";
-      return "11:00 - 20:00";
-    }
-    // Generic stores. SM flat 08-17 on weekends. AM Sat 09-18, Sun 8:30-17.
-    if (isSM) {
-      if (dow === 0 || dow === 6) return "08:00 - 17:00";
-      if (code === "WL") return "08:30 - 17:30";
-      if (code === "WE") return "07:30 - 16:30";
-      if (code === "WM") return "08:00 - 13:00";
-      return "08:00 - 17:00";
-    }
-    if (dow === 6) return "09:00 - 18:00";
-    if (dow === 0) return "08:30 - 17:00";
-    if (code === "WL") return "10:00 - 19:00";
-    if (code === "WE") return "08:30 - 18:00";
-    if (code === "WM") return "09:00 - 13:00";
-    if (code === "WB") return "08:00 - 19:00";
-    if (code === "E")  return "09:00 - 18:30";
-    return "09:00 - 18:30";
+    return window.BOA_SHIFT ? window.BOA_SHIFT.times(role, code, branchName, dow) : "";
   }
   // Compact a "HH:MM - HH:MM" range so it fits in a narrow grid cell:
   //   "09:00 - 18:00" → "9–18"

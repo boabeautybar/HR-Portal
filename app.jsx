@@ -239,13 +239,36 @@ const MGR_REASON_OPTIONS = [
   { code: "absent", label: "🚫 Absent", needsProof: false, needsNote: true, payroll: "Unpaid" },
   { code: "no", label: "⛔ NO SHOW", needsProof: false, needsNote: false, payroll: "Unpaid" }
 ];
+// ── Pay-cycle helpers (25th → 24th) — the ONE implementation for this file.
+// Everything below (payrollYmFor, ymdToSchedYm, schedYmOf, the cycle-start
+// computations) delegates here so a single rollover/anchor rule lives in one
+// place. Kept file-local (pure date math, no dependency on the data layer's
+// init). Companion copies: data.js (currentSchedYm), kiosk/data.js
+// (ymForDate/scheduleDayToDate), myboa/cycle.js.
+//   • END-month ym: the cycle is named by the month its 24th falls in, so a
+//     day-of-month > 24 belongs to the NEXT calendar month's cycle.
+//   • cycle-start date: the 25th that opens the cycle containing `d`.
+function _rollToEndMonthYm(y, m, dom) {   // y, 1-indexed m, day-of-month → "YYYY-MM"
+  if (dom > 24) { m += 1; if (m > 12) { m = 1; y += 1; } }
+  return y + "-" + String(m).padStart(2, "0");
+}
+function _schedYmForYmd(ymd) {            // "YYYY-MM-DD" → END-month ym
+  const [y, m, d] = ymd.split("-").map(Number);
+  return _rollToEndMonthYm(y, m, d);
+}
+function _schedYmOfDate(dt) {             // Date → END-month ym
+  return _rollToEndMonthYm(dt.getFullYear(), dt.getMonth() + 1, dt.getDate());
+}
+function _cycleStartDate(d) {             // Date → the 25th opening d's cycle
+  return d.getDate() >= 25
+    ? new Date(d.getFullYear(), d.getMonth(), 25)
+    : new Date(d.getFullYear(), d.getMonth() - 1, 25);
+}
+
 // Payroll cycle (25th → 24th) helper. Used to lock editing for closed
 // cycles so payroll figures don't shift after a run.
 function payrollYmFor(ymd) {
-  const [y, m, d] = ymd.split("-").map(Number);
-  let yy = y, mm = m;
-  if (d > 24) { mm += 1; if (mm > 12) { mm = 1; yy++; } }
-  return yy + "-" + String(mm).padStart(2, "0");
+  return _schedYmForYmd(ymd);
 }
 
 // Attendance grids (boa_att_<branch>_<ym>) are saved under the START-month ym
@@ -1890,100 +1913,13 @@ const KIOSK_DEFAULT_PINS = {
 };
 
 // Manager scheduled shift times for a (role, schedule-code, branch, day-of-week).
-// Pure lookup of the store/role hour rules — module-scope so BOTH the Manager
-// Coverage grid and the Attendance sheet (which derives a manager's early-leave
-// deduction from their clock-out vs this end time) use the exact same rules.
+// Thin wrapper over the ONE shared rule set in shift-rules.js
+// (window.BOA_SHIFT), so the Manager Coverage grid, the Attendance early-leave
+// deduction, the kiosk, and My BOA all resolve the exact same hours.
 // Returns a "HH:MM - HH:MM" string. Per-day CUSTOM hours (boa_mgr_times_v1)
 // override this where set.
 function shiftTimes(role, code, branch, dow) {
-  const r = (role || "").toUpperCase();
-  const isSM = r === "SM" || r === "SSM";
-  const isAM = r === "AM";
-  const _b = branch || "";
-
-  // Head Office runs its own hours, driven by the HO department (role) + code:
-  // office staff a single day shift; the Call Centre & Sales floor a two-shift
-  // early/late split (WE 07:00–16:00 · WL 09:00–18:30).
-  if (isHeadOfficeBranch(_b)) {
-    if (r === "CC" || r === "MCC" || r === "SALES") return code === "WL" ? "09:00 - 18:30" : "07:00 - 16:00";
-    return "08:00 - 17:00";
-  }
-
-  // Sandown / Table Bay share the same Mon-Fri split (and
-  // Table Bay extends it to Saturday). SM is a flat 08:00-17:00
-  // every working day.
-  if (_b === "Sandown" || _b === "Table Bay") {
-    if (isSM) return "08:00 - 17:00";
-    if (dow === 0) {                                // Sunday
-      if (code === "WE") return "08:00 - 17:00";
-      if (code === "WL") return "09:00 - 18:00";
-      return "09:00 - 18:00";
-    }
-    if (dow === 6 && _b === "Sandown") {            // Sandown Saturday
-      if (code === "WE") return "08:00 - 17:00";
-      if (code === "WL") return "10:00 - 19:00";
-      return "10:00 - 19:00";
-    }
-    // Mon-Fri (and Mon-Sat for Table Bay)
-    if (code === "WE") return "08:00 - 17:00";
-    if (code === "WM") return "09:00 - 18:00";
-    if (code === "WL") return "11:00 - 20:00";
-    return "11:00 - 20:00";
-  }
-
-  // Riverlands — Mon-Fri split, Sat/Sun single shift.
-  if (_b === "Riverlands") {
-    if (isSM) return "08:00 - 17:00";               // SM/SSM always 08:00-17:00, every day
-    if (dow === 6) return "09:00 - 18:00";          // Sat single AM
-    if (dow === 0) return "08:30 - 17:00";          // Sun single AM (08:30 open)
-    if (code === "WE") return "09:00 - 18:00";      // AM opener
-    if (code === "WB") return "08:00 - 17:00";      // 4+ bonus opener
-    if (code === "WM") return "09:00 - 18:00";      // AM mid shift
-    if (code === "WL") return "10:00 - 19:00";
-    return "10:00 - 19:00";
-  }
-
-  // Ballito / Mall of the South — SM-only WE opener, AM closers.
-  if (_b === "Ballito" || _b === "Mall of the South") {
-    if (isSM) return "08:00 - 17:00";
-    if (dow === 0) return isAM ? "08:30 - 17:00" : "08:00 - 17:00"; // Sunday: AM opens 08:30, others 08:00
-    if (code === "WE") return "08:00 - 17:00";
-    if (code === "WM") return "09:00 - 18:00";
-    if (code === "WL") return "10:00 - 19:00";
-    return "10:00 - 19:00";
-  }
-
-  // Fourways — store hours differ; SM/SSM always open (08-17),
-  // AMs/techs carry the late close.
-  if (_b === "Fourways") {
-    if (isSM) return "08:00 - 17:00";   // SM/SSM always open, never close
-    if (dow === 0) {                                // Sunday (store 09-19)
-      if (code === "WE") return "08:00 - 17:00";
-      if (code === "WL") return "10:00 - 19:00";
-      return "10:00 - 19:00";
-    }
-    if (code === "WE") return "08:00 - 17:00";   // AM opener when no SM is in
-    if (code === "WM") return "10:00 - 19:00";
-    if (code === "WL") return "11:00 - 20:00";
-    return "11:00 - 20:00";
-  }
-
-  // Generic stores — generic SM 08-17 / AM 09:00-18:30 hours.
-  if (isSM) {
-    if (dow === 0 || dow === 6) return "08:00 - 17:00";
-    if (code === "WL") return "08:30 - 17:30";
-    if (code === "WE") return "07:30 - 16:30";
-    if (code === "WM") return "08:00 - 13:00";
-    return "08:00 - 17:00";
-  }
-  if (dow === 6) return "09:00 - 18:00";        // Saturday AM
-  if (dow === 0) return "08:30 - 17:00";        // Sunday AM
-  if (code === "WL") return "10:00 - 19:00";
-  if (code === "WE") return "08:30 - 18:00";
-  if (code === "WM") return "09:00 - 13:00";
-  if (code === "WB") return "08:00 - 19:00";
-  if (code === "E") return "09:00 - 18:30";
-  return "09:00 - 18:30";
+  return window.BOA_SHIFT ? window.BOA_SHIFT.times(role, code, branch, dow) : "";
 }
 
 // ─── PER-STORE MANAGER SHIFT LABELLING ────────────────────────────────────────────
@@ -2243,8 +2179,12 @@ function applyBranchShiftRules(grid, dates, managers, branch) {
   if (branch === "Fourways") return applyFourwaysShifts(grid, dates, managers);
 }
 // Branches whose manager shifts carry a per-day WE/WM/WL split (used to decide
-// whether Coverage needs to re-derive labels for a store).
-const SPLIT_SHIFT_STORES = { "Sandown": 1, "Table Bay": 1, "Riverlands": 1, "Ballito": 1, "Mall of the South": 1, "Fourways": 1 };
+// whether Coverage needs to re-derive labels for a store). ONE source of truth
+// in shift-rules.js (window.BOA_SHIFT) — the same stores shiftTimes gives a
+// multi-shift window. Guarded: a stale-cached index.html without the
+// shift-rules.js tag must degrade, not blank the whole portal at Babel-eval.
+const SPLIT_SHIFT_STORES = (window.BOA_SHIFT || {}).SPLIT_SHIFT_STORES || {};
+if (!window.BOA_SHIFT) console.error("[portal] shift-rules.js missing — shift hours unavailable (stale index.html? hard-refresh)");
 
 // Parse a "HH:MM - HH:MM" range into {start,end} minutes-from-midnight, or null.
 function parseShiftRange(s) {
@@ -10763,11 +10703,14 @@ function assessLeaveOps(r, enriched, managers, leaveRecs) {
 async function patchApprovedSnapshotGrid(branch, ym, isMgr, mutateGrid) {
   try {
     if (!branch || !ym) return false;
-    if (!window.BOA_DB || !window.BOA_DB.loadApprovedSchedules || !window.BOA_DB.saveByKey) return false;
+    // schedApprovedKey is a NEW export — a stale-cached data.js won't have it,
+    // so guard it like the others (clean no-op instead of a swallowed TypeError).
+    if (!window.BOA_DB || !window.BOA_DB.loadApprovedSchedules || !window.BOA_DB.saveByKey ||
+        typeof window.BOA_DB.schedApprovedKey !== "function") return false;
     const approved = await window.BOA_DB.loadApprovedSchedules(branch, ym, isMgr);
     if (!Array.isArray(approved) || !approved.length || !approved[0] || !approved[0].grid) return false;
     if (!mutateGrid(approved[0].grid)) return false;
-    await window.BOA_DB.saveByKey((isMgr ? "boa_mgrschedapproved_" : "boa_schedapproved_") + branch + "_" + ym, approved);
+    await window.BOA_DB.saveByKey(window.BOA_DB.schedApprovedKey(branch, ym, isMgr), approved);
     return true;
   } catch (e) { console.error("patchApprovedSnapshotGrid " + branch + " " + ym + ":", e); return false; }
 }
@@ -10784,6 +10727,61 @@ async function patchApprovedSnapshotRow(branch, ym, isMgr, ec, mutateRow) {
     grid[ecKey] = row;
     return true;
   });
+}
+// ── Phase 1.1: bake resolved shift hours into the published snapshot ─────────
+// Read-only surfaces (kiosk, My BOA) derive a manager's displayed hours by
+// calling their OWN copy of shiftTimes(role, code, branch, dow). Those copies
+// can drift from the portal's, and the role/branch/dow each surface resolves
+// can differ (SM-trial role, loan branch) — so the SAME published cell can show
+// different hours on different surfaces. To kill that, we bake the portal's
+// authoritative "HH:MM - HH:MM" per WORKING cell into the snapshot at publish
+// time and have those surfaces PREFER the baked value.
+//
+// Shape: version.hours = { <grid row key>: { "YYYY-MM-DD": { t, c } } }, keyed
+// by the snapshot's OWN row keys so a consumer indexes it with the key it has
+// already resolved against the grid. `c` is the cell code the hours were derived
+// from: a later cell-code change (Apply-to-live patches the grid, never .hours)
+// makes `c` mismatch the live cell, so consumers fall back to shiftTimes — the
+// baked value self-invalidates. Only STANDARD derived hours are baked; per-day
+// custom overrides (boa_mgr_times_v1) are deliberately NOT folded in — consumers
+// read those live FIRST, so a custom set or cleared after publish is honoured
+// with no stale baked value. Managers only. Roles arrive already SM-trial-
+// adjusted on `managers` (allMgrs rewrites trial AMs to "SM" before mgrSched),
+// so shiftTimes here matches what Coverage/Attendance show. Old snapshots have
+// no .hours → consumers fall straight through to custom||shiftTimes, byte-
+// identical to today.
+function _bakeSnapshotHours(grid, managers, branch) {
+  const hours = {};
+  const roleByEc = {};
+  (managers || []).forEach(m => { if (m && m.ec) roleByEc[_normEc(m.ec)] = m.role || ""; });
+  const _isWork = (v) => v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E";
+  Object.keys(grid || {}).forEach(rowKey => {
+    const row = grid[rowKey];
+    if (!row || typeof row !== "object") return;
+    // Bake ONLY rows for managers we have an authoritative (SM-adjusted) role
+    // for. A guest / loaned-in row not in `managers` has no reliable role here,
+    // and since consumers PREFER baked, an ""-role bake could show wrong hours —
+    // skipping it leaves those rows on the consumer's own shiftTimes(realRole).
+    const _nk = _normEc(rowKey);
+    if (!Object.prototype.hasOwnProperty.call(roleByEc, _nk)) return;
+    const role = roleByEc[_nk];
+    Object.keys(row).forEach(cellKey => {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(cellKey)) return;   // full-date cells only (skip dom masks)
+      const code = row[cellKey];
+      if (!_isWork(code)) return;
+      let dow; try { dow = new Date(cellKey + "T12:00:00").getDay(); } catch (_) { return; }
+      const t = shiftTimes(role, code, branch, dow);
+      if (!t) return;
+      // Tag the ROLE too, not just the cell code: shiftTimes depends on the
+      // (SM-trial-adjusted) role, and that can change AFTER publish (SM trial
+      // starts/ends, a promotion) WITHOUT changing the cell code. Consumers
+      // compare bk.r against their live effective role, so a post-publish role
+      // change self-invalidates the bake and they recompute — otherwise a
+      // trial-flipped manager would show/auto-clock-out at stale frozen hours.
+      (hours[rowKey] = hours[rowKey] || {})[cellKey] = { t: t, c: code, r: role };
+    });
+  });
+  return hours;
 }
 // ── "Publish current cycle" engine ─────────────────────────────────────────
 // Diff every branch's draft schedule against its published snapshot, keep only
@@ -10900,9 +10898,8 @@ async function publishLeaveToSchedule(ec, branch, startDate, endDate) {
   // cycle's END-month ym (25th→24th), cells keyed by day-of-month.
   const byYm = {};
   for (let cur = new Date(sd); cur <= ed; cur.setDate(cur.getDate() + 1)) {
-    let y = cur.getFullYear(), m = cur.getMonth() + 1; const dom = cur.getDate();
-    if (dom >= 25) { m += 1; if (m > 12) { m = 1; y += 1; } }
-    const ym = y + "-" + String(m).padStart(2, "0");
+    const dom = cur.getDate();
+    const ym = _schedYmOfDate(cur);
     (byYm[ym] = byYm[ym] || []).push(dom);
   }
   const KEEP = { O: 1, R: 1, X: 1, ML: 1, L: 1 };
@@ -12639,8 +12636,7 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
       if (!window.BOA_DB || !window.BOA_DB.loadSchedule || !window.BOA_DB.saveSchedule) return;
       const p = String(r.work_date).split("-"); let y = +p[0], m = +p[1]; const dom = +p[2];
       if (!y || !m || !dom) return;
-      if (dom >= 25) { m += 1; if (m > 12) { m = 1; y += 1; } }   // END-month ym (25th→24th cycle)
-      const endYm = y + "-" + String(m).padStart(2, "0");
+      const endYm = _schedYmForYmd(r.work_date);   // END-month ym (25th→24th cycle)
       const dayKey = String(dom);
       const ymdKey = String(r.work_date).trim().slice(0, 10);    // full date, e.g. "2026-06-23"
       // Managers live on the manager schedule (boa_mgrsched), stored under the
@@ -13939,7 +13935,7 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
   // Current payroll cycle (25th → 24th) — used to flag short-notice requests
   // (leave falling in the cycle we're already in, rather than booked ahead).
   const _ct = new Date();
-  const _cycStart = _ct.getDate() >= 25 ? new Date(_ct.getFullYear(), _ct.getMonth(), 25) : new Date(_ct.getFullYear(), _ct.getMonth() - 1, 25);
+  const _cycStart = _cycleStartDate(_ct);
   const _cycEnd = new Date(_cycStart.getFullYear(), _cycStart.getMonth() + 1, 24);
   const _ymdOf = (d) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
   const cycleStartYmd = _ymdOf(_cycStart), cycleEndYmd = _ymdOf(_cycEnd);
@@ -17185,9 +17181,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       const p2 = n => String(n).padStart(2, "0");
       const ymd = d => d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate());
       const now = new Date();
-      const cs = now.getDate() >= 25
-        ? new Date(now.getFullYear(), now.getMonth(), 25)
-        : new Date(now.getFullYear(), now.getMonth() - 1, 25);
+      const cs = _cycleStartDate(now);
       const ce = new Date(cs.getFullYear(), cs.getMonth() + 1, 24);
       const surfaces = await window.BOA_DB.loadCycleScheduleGrids(techYm, mgrYm);
       const rows = computeCyclePendingRows(surfaces, {
@@ -17225,8 +17219,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         (groups[k] = groups[k] || { isMgr: r.isMgr, branch: r.branch, ym: r.ym, cells: [] }).cells.push(r);
       });
       let okSurfaces = 0; const notPublished = [];
+      const _mgrCacheUpdates = {};   // branch|ym -> patched manager snapshot grid
       for (const k of Object.keys(groups)) {
         const g = groups[k];
+        let _patchedGrid = null;
         const applied = await patchApprovedSnapshotGrid(g.branch, g.ym, g.isMgr, (grid) => {
           let changed = false;
           g.cells.forEach(r => {
@@ -17242,10 +17238,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             }
             if (row[wk] !== r.draftCode) { row[wk] = r.draftCode; changed = true; }
           });
+          if (changed) _patchedGrid = grid;   // reference to the just-mutated snapshot grid
           return changed;
         });
-        if (applied) okSurfaces++; else notPublished.push(g.branch + (g.isMgr ? " · mgr" : " · tech"));
+        if (applied) {
+          okSurfaces++;
+          // Keep Manager Coverage's in-memory snapshot cache in lock-step so the
+          // "Unpublished changes" badge + no-show scanners judge against THIS
+          // publish immediately — same cache the branch-level publish refreshes
+          // (app.jsx:34894). Manager surfaces only; tech viewers read the DB
+          // snapshot directly, no portal cache to update.
+          if (g.isMgr && _patchedGrid) _mgrCacheUpdates[g.branch + "|" + g.ym] = JSON.parse(JSON.stringify(_patchedGrid));
+        } else notPublished.push(g.branch + (g.isMgr ? " · mgr" : " · tech"));
       }
+      if (Object.keys(_mgrCacheUpdates).length) setMgrApprovedFallbackCache(prev => ({ ...prev, ..._mgrCacheUpdates }));
       try { await logActivity("Published current cycle", chosen.length + " change" + (chosen.length === 1 ? "" : "s"), "Patched " + okSurfaces + " published snapshot" + (okSurfaces === 1 ? "" : "s"), "Schedule"); } catch (_e) { }
       alert("✓ Published " + chosen.length + " change" + (chosen.length === 1 ? "" : "s") + " across " + okSurfaces + " schedule" + (okSurfaces === 1 ? "" : "s") + "." +
         (notPublished.length ? "\n\n⚠ Skipped (cycle has no published snapshot yet — use that branch's own Approve & Publish): " + notPublished.join(", ") : ""));
@@ -17644,12 +17650,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
   // Helper: convert a "YYYY-MM-DD" string to the schedule period <ym> that covers it.
   // Schedule periods run 25th-24th, so day > 24 belongs to the NEXT calendar month.
-  const ymdToSchedYm = (ymd) => {
-    const [y, m, d] = ymd.split("-").map(Number);
-    let ym, yy = y, mm = m;
-    if (d > 24) { mm = m + 1; if (mm > 12) { mm = 1; yy = y + 1; } }
-    return yy + "-" + String(mm).padStart(2, "0");
-  };
+  const ymdToSchedYm = (ymd) => _schedYmForYmd(ymd);
 
   // Pre-fetch schedule grids for all (branch, ym) pairs touched by leave records
   // and the currently-visible 6-month calendar range. Cached to avoid re-fetching.
@@ -18861,7 +18862,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const pad = (n) => String(n).padStart(2, "0");
     const ymdOf = (dt) => dt.getFullYear() + "-" + pad(dt.getMonth() + 1) + "-" + pad(dt.getDate());
     // END-month ym (tech-schedule convention) for the cycle a date sits in.
-    const schedYmOf = (dt) => { let y = dt.getFullYear(), m = dt.getMonth() + 1; if (dt.getDate() > 24) { m += 1; if (m > 12) { m = 1; y += 1; } } return y + "-" + pad(m); };
+    const schedYmOf = (dt) => _schedYmOfDate(dt);
     // START-month ym (attendance convention) for the same cycle.
     const attYmOf = (dt) => { let y = dt.getFullYear(), m = dt.getMonth() + 1; if (dt.getDate() <= 24) { m -= 1; if (m < 1) { m = 12; y -= 1; } } return y + "-" + pad(m); };
     const isWorking = (v) => v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E";
@@ -19152,7 +19153,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         if (!ec || !oldBranch) return;
         const ecU = String(ec).trim().toUpperCase();
         const ym = isManager ? _xfStartYm : _xfEndYm;
-        const key = (isManager ? "boa_mgrsched_" : "boa_sched_") + oldBranch + "_" + ym;
         const _delRow = (grid) => {
           if (!grid) return false;
           const k = Object.keys(grid).find(x => String(x).trim().toUpperCase() === ecU);
@@ -19161,6 +19161,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           return true;
         };
         try {
+          // Key build inside the try: schedKey is a NEW BOA_DB export, and a
+          // TypeError thrown OUTSIDE the try would reject this fn and abort
+          // the caller's settle loop mid-flight (remaining saves skipped).
+          const key = window.BOA_DB.schedKey ? window.BOA_DB.schedKey(oldBranch, ym, isManager)
+            : (isManager ? "boa_mgrsched_" : "boa_sched_") + oldBranch + "_" + ym;
           const draft = window.BOA_DB.loadByKey ? await window.BOA_DB.loadByKey(key) : null;
           if (draft && draft.grid && _delRow(draft.grid)) {
             if (draft.names) { const nk = Object.keys(draft.names).find(x => String(x).trim().toUpperCase() === ecU); if (nk) delete draft.names[nk]; }
@@ -19521,9 +19526,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // cycle, so make sure the loaded window always reaches its opening 25th.
         if (tab === "dashboard") {
           const _n = new Date();
-          const cyStart = _n.getDate() >= 25
-            ? new Date(_n.getFullYear(), _n.getMonth(), 25)
-            : new Date(_n.getFullYear(), _n.getMonth() - 1, 25);
+          const cyStart = _cycleStartDate(_n);
           const spanDays = Math.ceil((Date.now() - cyStart.getTime()) / 86400000) + 2;
           if (spanDays > effDays) effDays = spanDays;
         }
@@ -21080,7 +21083,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const nLoan = rows.filter(r => r.needsLoanRecord).length;
         const p2 = n => String(n).padStart(2, "0");
         const now = new Date();
-        const cs = now.getDate() >= 25 ? new Date(now.getFullYear(), now.getMonth(), 25) : new Date(now.getFullYear(), now.getMonth() - 1, 25);
+        const cs = _cycleStartDate(now);
         const ce = new Date(cs.getFullYear(), cs.getMonth() + 1, 24);
         const mo = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
         const cycleLbl = mo[cs.getMonth()] + " " + cs.getDate() + " – " + mo[ce.getMonth()] + " " + ce.getDate() + ", " + ce.getFullYear();
@@ -22282,9 +22285,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 const _p2 = n => String(n).padStart(2, "0");
                 const _todayYmd = _t.getFullYear() + "-" + _p2(_t.getMonth() + 1) + "-" + _p2(_t.getDate());
                 // Current pay-cycle days (25th → 24th) up to today, oldest→newest.
-                const cyStart = new Date(_t);
-                if (_t.getDate() >= 25) cyStart.setDate(25);
-                else { cyStart.setMonth(cyStart.getMonth() - 1); cyStart.setDate(25); }
+                const cyStart = _cycleStartDate(_t);
                 const cycleDays = [];
                 for (let dd = new Date(cyStart); dd <= _t; dd.setDate(dd.getDate() + 1)) {
                   cycleDays.push({ dom: dd.getDate(), ymd: dd.getFullYear() + "-" + _p2(dd.getMonth() + 1) + "-" + _p2(dd.getDate()) });
@@ -22888,9 +22889,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       // inflated the count with days from a cycle already
                       // closed off — anchor to this cycle's opening 25th instead.
                       const pending = [];
-                      const since = new Date(); since.setHours(0, 0, 0, 0);
-                      if (since.getDate() >= 25) { since.setDate(25); }
-                      else { since.setMonth(since.getMonth() - 1); since.setDate(25); }
+                      const since = _cycleStartDate(new Date());
                       for (let dt = new Date(since); dt < tdY && dt.toISOString().slice(0, 10) < _t0; dt.setDate(dt.getDate() + 1)) {
                         const ymd = dt.getFullYear() + "-" + String(dt.getMonth() + 1).padStart(2, "0") + "-" + String(dt.getDate()).padStart(2, "0");
                         const dom = dt.getDate();
@@ -34864,10 +34863,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const _approvedGrid = JSON.parse(JSON.stringify(draft));
             _applyBranchShiftRules(_approvedGrid, result.dates, result.managers);
             const _apNames = {}; (result.managers || []).forEach(m => { if (m && m.ec) _apNames[String(m.ec).trim()] = m.name || ""; });
+            // Phase 1.1: bake the portal-authoritative shift hours per working
+            // cell so kiosk / My BOA render the SAME times this tab shows instead
+            // of re-deriving them from their own (drift-prone) shiftTimes copies.
+            const _apHours = _bakeSnapshotHours(_approvedGrid, result.managers, branch);
             const saved = await window.BOA_DB.saveApprovedSchedule(branch, ymKey, true, {
               name: name.trim(),
               grid: _approvedGrid,
               names: _apNames,
+              hours: _apHours,
               madeBy: madeBy.trim(),
               approvedBy: approvedBy.trim(),
               note: note.trim(),
@@ -36607,6 +36611,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           sick: { lbl: "SICK", bg: "#fee2e2", fg: "#7f1d1d" },
                           sick_n: { lbl: "SICK-N", bg: "#fee2e2", fg: "#7f1d1d" },
                           al: { lbl: "ANNUAL", bg: "#e0f2fe", fg: "#075985" },
+                          el: { lbl: "EMERGENCY", bg: "#fed7aa", fg: "#9a3412" },
                           ph: { lbl: "PH", bg: "#e0f2fe", fg: "#075985" },
                           mat: { lbl: "MAT", bg: "#fce7f3", fg: "#9d174d" },
                           term: { lbl: "TERM", bg: "#fee2e2", fg: "#7f1d1d" },
@@ -37528,9 +37533,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           return BRANCH_PALETTE[Math.abs(h) % BRANCH_PALETTE.length];
         };
         // Non-working cell styling (kept muted so the working blocks pop).
-        const NON_WORK_BG = { O: "#FDF2F8", L: "#FEF3C7", R: "#FCE7F3", ML: "#EDE9FE" };
-        const NON_WORK_FG = { O: "#9D174D", L: "#92400E", R: "#9D174D", ML: "#5B21B6" };
-        const NON_WORK_LBL = { O: "OFF", L: "LEAVE", R: "REQ", ML: "MATERNITY" };
+        const NON_WORK_BG = { O: "#FDF2F8", L: "#FEF3C7", R: "#FCE7F3", ML: "#EDE9FE", EL: "#FFEDD5" };
+        const NON_WORK_FG = { O: "#9D174D", L: "#92400E", R: "#9D174D", ML: "#5B21B6", EL: "#9A3412" };
+        const NON_WORK_LBL = { O: "OFF", L: "LEAVE", R: "REQ", ML: "MATERNITY", EL: "UNPAID" };
         // Cell code → suffix the role-default shift times. Lets us show
         // "9:00a - 6:30p" inside a manager's working block the way
         // Connecteam does, without needing per-shift data on each cell.
@@ -37649,6 +37654,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             (_onLeaveByEcYmdCov[ec] = _onLeaveByEcYmdCov[ec] || {})[ymd] = true;
           }
         });
+        // Unpaid Leave (Legal) overlay — lives in its OWN store (boa_unpaid_legal_v1),
+        // never written onto the schedule grid, so like the Leave Planner overlay a
+        // manager on it reads as 'EL' on covered days regardless of the saved cell.
+        // Coverage was the last surface still missing this (Attendance already does
+        // it at _onUnpaidLegal); without it a manager on legal unpaid leave showed
+        // as working here. Prebuild an ec→ranges map ONCE per render (mirrors
+        // _onLeaveByEcYmdCov above) instead of re-scanning all records per cell —
+        // readWithFallback runs per manager × per day × per branch.
+        const _unpaidLegalRangesCov = {};
+        (unpaidLegalRecs || []).forEach(r => {
+          if (!r || r.status !== "on_leave" || !r.ec) return;
+          (_unpaidLegalRangesCov[String(r.ec).trim()] = _unpaidLegalRangesCov[String(r.ec).trim()] || [])
+            .push({ start: r.startDate || null, end: r.endDate || null });
+        });
+        const _onUnpaidLegalCov = (ec, ymd) => {
+          const rs = _unpaidLegalRangesCov[String(ec || "").trim()];
+          return !!(rs && ymd) && rs.some(rg => (!rg.start || ymd >= rg.start) && (!rg.end || ymd <= rg.end));
+        };
         const readWithFallback = (branchName, ec, d) => {
           // Leave overlay wins over the saved grid + draft. Drafts can still
           // override leave on purpose (ROM manually re-stamps a shift on top
@@ -37656,6 +37679,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // them through.
           const draftCell = readCell(mgrCoverageDraft[_draftKey(branchName, d.mgrYm)], ec, d);
           if (!draftCell && ec && d && d.ymd && (_onLeaveByEcYmdCov[String(ec).trim()] || {})[d.ymd]) return "L";
+          if (!draftCell && ec && d && d.ymd && _onUnpaidLegalCov(ec, d.ymd)) return "EL";
           const grid = _gridForView(branchName, d.mgrYm);
           const v = readCell(grid, ec, d);
           if (v) return v;

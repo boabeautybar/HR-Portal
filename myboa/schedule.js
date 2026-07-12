@@ -15,13 +15,12 @@
   }
   var sb = window.supabase.createClient(cfg.url, cfg.anonKey, { auth: { persistSession: false } });
 
-  var STORES = [
-    "Sea Point", "Bree", "Kloof", "Claremont", "Rondebosch", "Durbanville", "Cobble Walk",
-    "Table Bay", "Somerset West", "Riverlands", "Kuils River", "Westlake",
-    "Green Point", "Plumstead", "Sandown", "Cape Gate", "Winelands", "Betty",
-    "Fourways", "Eastgate", "Mall of the South", "Mushroom Farm", "Verdi", "Ballito",
-    "Head Office"
-  ];
+  // Store list — single source in stores.js (window.BOA_STORES), loaded via
+  // <script src="stores.js"> before this file (see it for companion lists).
+  // .slice() copies it so the per-page DB-augment below can't mutate the
+  // shared registry.
+  var STORES = (window.BOA_STORES || []).slice();
+  if (!STORES.length) console.error("[My BOA] stores.js missing or empty — store picker will be blank (stale page? reload)");
   var DOW = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
   var MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
   var LS_KEY = "myboa_sched_v1";
@@ -31,9 +30,11 @@
     homeBranch: "", typedStore: "",   // typedStore = what they entered; store = home anchor
     transferring: false, transferTo: "", transferDate: "",   // permanent branch move (effective date)
     custom: {},              // ymd -> "HH:MM - HH:MM" custom hours for this person
+    leaveRanges: [],         // [{start,end,emergency}] annual/emergency leave (boa_leave_v1)
     view: "soon",            // soon | week | month
     monthYm: null,
     cache: {},               // "<branch>|<ymEnd>" -> grid object (effective branch can vary per day)
+    hoursCache: {},          // "<branch>|<ymEnd>" -> portal-baked hours { ec: { ymd: {t,c} } } (Phase 1.1)
     awayMap: {},             // "<branch>|<ymEnd>" -> { ymd: { branch, code } } — loan_out day resolution
     mgrRoles: {},            // EC(upper/trim) -> role, for split-store shift labelling
     smTrialEcs: {},          // EC(upper/trim) -> 1 for AMs on an active SM trial
@@ -41,25 +42,14 @@
     busy: false
   };
 
-  // ── Cycle helpers (mirror the HR portal's 25th→24th logic) ───
-  function pad(n) { return String(n).padStart(2, "0"); }
-  function currentSchedYm() {
-    var d = new Date(), y = d.getFullYear(), m = d.getMonth() + 1;
-    if (d.getDate() > 24) { m += 1; if (m > 12) { m = 1; y += 1; } }
-    return y + "-" + pad(m);
-  }
-  function shiftYm(ym, delta) {
-    var p = ym.split("-"), y = +p[0], m = +p[1] + delta;
-    while (m > 12) { m -= 12; y += 1; }
-    while (m < 1) { m += 12; y -= 1; }
-    return y + "-" + pad(m);
-  }
+  // ── Cycle helpers — one implementation in cycle.js (window.BOA_CYCLE,
+  //    loaded before this file). These are thin wrappers so call sites
+  //    below stay unchanged; the 25th→24th rollover + key format live once.
+  function pad(n) { return window.BOA_CYCLE.pad(n); }
+  function currentSchedYm() { return window.BOA_CYCLE.currentYm(); }
+  function shiftYm(ym, delta) { return window.BOA_CYCLE.shiftYm(ym, delta); }
   // Which cycle (end-month ym) does a calendar date belong to?
-  function ymForDate(dt) {
-    var y = dt.getFullYear(), m = dt.getMonth() + 1;
-    if (dt.getDate() >= 25) { m += 1; if (m > 12) { m = 1; y += 1; } }
-    return y + "-" + pad(m);
-  }
+  function ymForDate(dt) { return window.BOA_CYCLE.ymForDate(dt); }
   function periodDays(ym) {
     var p = ym.split("-"), y = +p[0], m = +p[1];
     var prevM = m === 1 ? 12 : m - 1, prevY = m === 1 ? y - 1 : y;
@@ -83,67 +73,10 @@
   }
 
   // ── Shift times (replicated from the portal's shiftTimes) ────
+  // Thin wrapper over the shared rule set in shift-rules.js (local mirror)
+  // (window.BOA_SHIFT) — same hours as the portal + kiosk.
   function shiftTimes(role, code, branch, dow) {
-    var r = (role || "").toUpperCase();
-    var isSM = r === "SM" || r === "SSM";
-    var isAM = r === "AM";
-    var _b = branch || "";
-    // Head Office hours (mirrors the portal): office staff a single day shift;
-    // the Call Centre & Sales floor a two-shift early/late split (WE / WL).
-    if (String(_b).trim().toLowerCase() === "head office") {
-      if (r === "CC" || r === "MCC" || r === "SALES") return code === "WL" ? "09:00 - 18:30" : "07:00 - 16:00";
-      return "08:00 - 17:00";
-    }
-    if (_b === "Sandown" || _b === "Table Bay") {
-      if (isSM) return "08:00 - 17:00";
-      if (dow === 0) { if (code === "WE") return "08:00 - 17:00"; return "09:00 - 18:00"; }
-      if (dow === 6 && _b === "Sandown") { if (code === "WE") return "08:00 - 17:00"; return "10:00 - 19:00"; }
-      if (code === "WE") return "08:00 - 17:00";
-      if (code === "WM") return "09:00 - 18:00";
-      if (code === "WL") return "11:00 - 20:00";
-      return "11:00 - 20:00";
-    }
-    if (_b === "Riverlands") {
-      if (isSM) return "08:00 - 17:00";
-      if (dow === 6) return "09:00 - 18:00";
-      if (dow === 0) return "08:30 - 17:00";
-      if (code === "WE") return "09:00 - 18:00";
-      if (code === "WB") return "08:00 - 17:00";
-      if (code === "WM") return "09:00 - 18:00";
-      if (code === "WL") return "10:00 - 19:00";
-      return "10:00 - 19:00";
-    }
-    if (_b === "Ballito" || _b === "Mall of the South") {
-      if (isSM) return "08:00 - 17:00";
-      if (dow === 0) return isAM ? "08:30 - 17:00" : "08:00 - 17:00";
-      if (code === "WE") return "08:00 - 17:00";
-      if (code === "WM") return "09:00 - 18:00";
-      if (code === "WL") return "10:00 - 19:00";
-      return "10:00 - 19:00";
-    }
-    if (_b === "Fourways") {
-      if (isSM) return "08:00 - 17:00";
-      if (dow === 0) { if (code === "WE") return "08:00 - 17:00"; return "10:00 - 19:00"; }
-      if (code === "WE") return "08:00 - 17:00";   // AM opener when no SM is in
-      if (code === "WM") return "10:00 - 19:00";
-      if (code === "WL") return "11:00 - 20:00";
-      return "11:00 - 20:00";
-    }
-    if (isSM) {
-      if (dow === 0 || dow === 6) return "08:00 - 17:00";
-      if (code === "WL") return "08:30 - 17:30";
-      if (code === "WE") return "07:30 - 16:30";
-      if (code === "WM") return "08:00 - 13:00";
-      return "08:00 - 17:00";
-    }
-    if (dow === 6) return "09:00 - 18:00";
-    if (dow === 0) return "08:30 - 17:00";
-    if (code === "WL") return "10:00 - 19:00";
-    if (code === "WE") return "08:30 - 18:00";
-    if (code === "WM") return "09:00 - 13:00";
-    if (code === "WB") return "08:00 - 19:00";
-    if (code === "E")  return "09:00 - 18:30";
-    return "09:00 - 18:30";
+    return window.BOA_SHIFT ? window.BOA_SHIFT.times(role, code, branch, dow) : "";
   }
 
   function ymdStr(dt) { return dt.getFullYear() + "-" + pad(dt.getMonth() + 1) + "-" + pad(dt.getDate()); }
@@ -201,9 +134,6 @@
 
   // Default nail-tech hours for normal stores (single shift every day).
   var NORMAL_TECH = { 1: "09:30 - 18:30", 6: "09:00 - 18:00", 0: "09:00 - 17:00" };
-  // Stores where weekday techs are split into early/late shifts (so a plain "W"
-  // weekday has no single time). Sandown/Fourways have full tables below.
-  var SPLIT_STORES = { "Sandown": 1, "Table Bay": 1, "Fourways": 1, "Mall of the South": 1, "Ballito": 1 };
 
   // NAIL-TECH shift times, taken straight from the schedule tab's per-store
   // banners (these differ from the manager shiftTimes rules — e.g. Sandown WE
@@ -258,7 +188,11 @@
   // app.jsx (applyMgrShiftSplit / applyRiverlandsShifts / applyBallitoShifts /
   // applyFourwaysShifts) — all re-run-safe: working cells reset to "W" first,
   // then re-assign purely from the work/off pattern + roles.
-  var SPLIT_SHIFT_STORES = { "Sandown": 1, "Table Bay": 1, "Riverlands": 1, "Ballito": 1, "Mall of the South": 1, "Fourways": 1 };
+  // One source: shift-rules.js (local mirror). Guarded so a failed/stale
+  // shift-rules.js load degrades instead of a parse-time TypeError killing
+  // the whole schedule viewer IIFE.
+  var SPLIT_SHIFT_STORES = (window.BOA_SHIFT || {}).SPLIT_SHIFT_STORES || {};
+  if (!window.BOA_SHIFT) console.error("[My BOA] shift-rules.js missing — shift hours unavailable");
   function _isSMrole(m) { return /^(SSM|SM)$/i.test((m && m.role) || ""); }
   function _pickLowest(list, counter) {
     var sorted = list.slice().sort(function (a, b) {
@@ -480,7 +414,15 @@
     if (state.isManager) {
       var custom = state.custom && state.custom[ymdStr(dt)];
       if (custom) return custom + " · custom hours";
-      return shiftTimes(state.effRole || state.role, c || "W", branch, dt.getDay());
+      // Phase 1.1: prefer the portal-baked hours (when the baked code AND role
+      // still match this cell) so My BOA shows the EXACT times the portal
+      // published, rather than re-deriving them from this app's own shiftTimes
+      // copy (which can drift). The role guard means a post-publish SM-trial flip
+      // recomputes live; fall back to shiftTimes for legacy snapshots / changes.
+      var _liveRole = state.effRole || state.role;
+      var bk = bakedHoursFor(dt, branch);
+      if (bk && bk.c === (c || "W") && bk.r === _liveRole) return bk.t;
+      return shiftTimes(_liveRole, c || "W", branch, dt.getDay());
     }
     var dow = dt.getDay();
     var code = (c === "WE" || c === "WL" || c === "WM" || c === "WB") ? c : "W";
@@ -490,15 +432,7 @@
     var tt = techTime(branch, dow, code);
     if (tt !== null) return tt ? tt + variant : variant.replace(" · ", "");
 
-    // 2) Split-shift store without a full table: explicit codes show their time;
-    // a plain "W" only has one known time on weekends, weekdays show just "Work".
-    if (SPLIT_STORES[branch]) {
-      if (code !== "W") return shiftTimes(state.role, code, branch, dow) + variant;
-      if (dow === 0 || dow === 6) return shiftTimes(state.role, "W", branch, dow);
-      return "";
-    }
-
-    // 3) Normal store: a single shift every day (Mon–Fri / Sat / Sun).
+    // 2) Normal store: a single shift every day (Mon–Fri / Sat / Sun).
     return NORMAL_TECH[dow === 0 ? 0 : dow === 6 ? 6 : 1] + variant;
   }
 
@@ -528,6 +462,19 @@
   }
   var LEGAL_INFO = { kind: "leave", label: "Unpaid leave (legal)", sub: "" };
 
+  // Leave Planner overlay (boa_leave_v1) — annual or emergency leave recorded in
+  // its own store, not always on the grid. Returns the matched record (for the
+  // annual/emergency label) or null. Mirrors matMlOn / legalUnpaidOn.
+  function annualLeaveOn(dt) {
+    var ranges = state.leaveRanges || [];
+    if (!ranges.length) return null;
+    var ymd = ymdStr(dt);
+    for (var i = 0; i < ranges.length; i++) {
+      if (ymd >= ranges[i].start && ymd <= ranges[i].end) return ranges[i];
+    }
+    return null;
+  }
+
   // Cross-store day-loans (boa_mgr_loans_v1 / boa_tech_loans_v1) for this person,
   // keyed by date. A loan day means they're borrowed to loan.toBranch.
   function loanForDate(dt) {
@@ -548,6 +495,16 @@
     branch = branch || state.store;
     if (matMlOn(dt)) return ML_INFO;
     if (legalUnpaidOn(dt)) return LEGAL_INFO;
+    var _alv = annualLeaveOn(dt);
+    if (_alv) {
+      // Don't stamp annual/emergency leave onto an explicit day off / ghost day
+      // inside the leave range — you don't "take leave" on a day off. Matches the
+      // kiosk staff schedule (which skips O/R/X) so the two surfaces agree.
+      var _offCode = String(getCell(row, dt) == null ? "" : getCell(row, dt)).toUpperCase().trim();
+      if (_offCode !== "O" && _offCode !== "R" && _offCode !== "X") {
+        return { kind: "leave", label: _alv.emergency ? "Emergency leave" : "On leave", sub: "" };
+      }
+    }
     // Cross-store day-loan (swap/borrow): borrowed to ANOTHER branch this day.
     var loan = loanForDate(dt);
     if (loan && loan.toBranch && loan.toBranch !== branch) return loanInfo(loan);
@@ -604,8 +561,7 @@
   // id everywhere and translate when building the storage key / reading a cell.
   function storageKey(ymEnd, branch) {
     branch = branch || state.store;
-    if (state.isManager) return "boa_mgrsched_" + branch + "_" + shiftYm(ymEnd, -1);
-    return "boa_sched_" + branch + "_" + ymEnd;
+    return window.BOA_CYCLE.liveKey(branch, ymEnd, state.isManager);
   }
   // The branch a person is effectively at on a date — after a branch transfer's
   // effective date, that's the destination store (mirrors the portal's
@@ -620,15 +576,18 @@
   // first; the live grid (storageKey) can hold an unpublished draft, so we read
   // the published snapshot for display.
   function approvedKey(store, isManager, ymEnd) {
-    return (isManager ? "boa_mgrschedapproved_" : "boa_schedapproved_") + store + "_" + (isManager ? shiftYm(ymEnd, -1) : ymEnd);
+    return window.BOA_CYCLE.approvedKey(store, ymEnd, isManager);
   }
   // Is this cycle later than the one containing today? (string "YYYY-MM" compares lexically)
   function isFutureCycle(ymEnd) { return ymEnd > currentSchedYm(); }
-  // The newest PUBLISHED grid for a store+cycle, or null if never published.
+  // The newest PUBLISHED snapshot for a store+cycle: { grid, hours } (both null
+  // if never published). `hours` is the Phase 1.1 portal-baked authoritative
+  // shift times { ec: { ymd: {t,c} } }, absent (null) on legacy snapshots.
   async function fetchApprovedGrid(store, isManager, ymEnd) {
     var res = await sb.from("app_state").select("value").eq("key", approvedKey(store, isManager, ymEnd)).maybeSingle();
     var arr = res && res.data && res.data.value;
-    return (Array.isArray(arr) && arr.length && arr[0] && arr[0].grid) || null;
+    var top = (Array.isArray(arr) && arr.length && arr[0]) || null;
+    return { grid: (top && top.grid) || null, hours: (top && top.hours) || null };
   }
   function rowFor(grid) {
     if (!grid) return null;
@@ -655,13 +614,25 @@
     branch = branch || state.store;
     var ck = branch + "|" + ymEnd;
     if (state.cache[ck] !== undefined) return state.cache[ck];
-    var grid = await fetchApprovedGrid(branch, state.isManager, ymEnd);
+    var ap = await fetchApprovedGrid(branch, state.isManager, ymEnd);
+    var grid = ap.grid, hours = ap.hours;
     if (!grid && !isFutureCycle(ymEnd)) {
       var res = await sb.from("app_state").select("value").eq("key", storageKey(ymEnd, branch)).maybeSingle();
       grid = (res && res.data && res.data.value && res.data.value.grid) || null;
+      hours = null;   // an unpublished draft carries no baked hours
     }
     state.cache[ck] = grid;
+    state.hoursCache[ck] = hours || null;
     return grid;
+  }
+  // Portal-baked {t,c} for the current person on a date at `branch` (Phase 1.1),
+  // or null. Case/space-tolerant on the ec key, exactly like rowFor for grids.
+  function bakedHoursFor(dt, branch) {
+    var h = state.hoursCache && state.hoursCache[(branch || state.store) + "|" + ymForDate(dt)];
+    if (!h) return null;
+    var row = h[state.ec];
+    if (!row) { var up = state.ec.toUpperCase(); for (var k in h) { if (k.toUpperCase() === up) { row = h[k]; break; } } }
+    return (row && row[ymdStr(dt)]) || null;
   }
   function isLoanOut(v) { return String(v == null ? "" : v).toUpperCase().trim() === "LOAN_OUT"; }
   function isWorkCode(v) { var c = String(v == null ? "" : v).toUpperCase().trim(); return c === "E" || !!WORK_CODES[c]; }
@@ -681,10 +652,8 @@
     var loanDays = row ? periodDays(ymEnd).filter(function (x) { return isLoanOut(getCell(row, x.date)); }) : [];
     if (!loanDays.length) { state.awayMap[ck] = {}; return state.awayMap[ck]; }
 
-    var prefix = state.isManager ? "boa_mgrschedapproved_" : "boa_schedapproved_";
-    var ymPart = state.isManager ? shiftYm(ymEnd, -1) : ymEnd;
     var keys = STORES.filter(function (s) { return s !== branch; })
-      .map(function (s) { return prefix + s + "_" + ymPart; });
+      .map(function (s) { return approvedKey(s, state.isManager, ymEnd); });
     var byBranch = {};
     try {
       var res = await sb.from("app_state").select("key,value").in("key", keys);
@@ -753,7 +722,7 @@
 
   // Raw grid fetch independent of state (used while we work out who they are).
   async function fetchGrid(store, isManager, ymEnd) {
-    var key = (isManager ? "boa_mgrsched_" : "boa_sched_") + store + "_" + (isManager ? shiftYm(ymEnd, -1) : ymEnd);
+    var key = window.BOA_CYCLE.liveKey(store, ymEnd, isManager);
     var res = await sb.from("app_state").select("value").eq("key", key).maybeSingle();
     return (res && res.data && res.data.value && res.data.value.grid) || null;
   }
@@ -810,8 +779,10 @@
       state.legalOn = false;
       state.legalStart = null;
       state.legalEnd = null;
+      state.leaveRanges = [];
       state.custom = {};
       state.cache = {};
+      state.hoursCache = {};
       state.awayMap = {};
       state.mgrRoles = {};
       state.smTrialEcs = {};
@@ -841,7 +812,11 @@
           // Legal unpaid-leave records (Compliance → "Unpaid Leave (Legal)") so
           // EL shows the moment HR puts someone on it — same as maternity, no
           // roster regenerate needed.
-          sb.from("app_state").select("value").eq("key", "boa_unpaid_legal_v1").maybeSingle()
+          sb.from("app_state").select("value").eq("key", "boa_unpaid_legal_v1").maybeSingle(),
+          // Annual/emergency leave from the Leave Planner (boa_leave_v1) — batched
+          // here (not a separate serial round-trip) so the overlay costs no extra
+          // boot latency.
+          sb.from("app_state").select("value").eq("key", "boa_leave_v1").maybeSingle()
         ]);
         var rows = (rr[0] && rr[0].data) || [];
         var row = rows.filter(function (x) { return String(x.employee_code || "").trim().toUpperCase() === ecUp; })[0];
@@ -893,6 +868,18 @@
             state.legalEnd = legalRow.endDate || null;
           }
         }
+        // Annual/emergency leave from the Leave Planner (boa_leave_v1). It lives in
+        // its own store and is often NOT written onto the grid, so without this
+        // overlay a person granted leave after publish still reads as working here.
+        state.leaveRanges = [];
+        var lvs = (rr[5] && rr[5].data && rr[5].data.value);
+        if (Array.isArray(lvs)) {
+          lvs.forEach(function (lv) {
+            if (lv && lv.ec && lv.startDate && lv.endDate && String(lv.ec).trim().toUpperCase() === ecUp) {
+              state.leaveRanges.push({ start: lv.startDate, end: lv.endDate, emergency: !!lv.emergency });
+            }
+          });
+        }
       } catch (_e) {}
 
       // Split-shift stores re-derive WE/WM/WL labels from who's working each day
@@ -927,7 +914,7 @@
       // Each day then resolves to its EFFECTIVE branch — after a transfer's
       // effective date, that's the destination store — via effectiveBranchOn().
       state.typedStore = store;
-      if (state.homeBranch) { state.store = state.homeBranch; state.cache = {}; state.awayMap = {}; }
+      if (state.homeBranch) { state.store = state.homeBranch; state.cache = {}; state.hoursCache = {}; state.awayMap = {}; }
 
       try { localStorage.setItem(LS_KEY, JSON.stringify({ store: store, ec: found.ecKey })); } catch (_e) {}
 

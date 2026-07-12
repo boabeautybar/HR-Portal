@@ -323,6 +323,12 @@
   }
 
   // ---------- Schedule (boa_sched_<branch>_<ym>) ----------
+  // ⚠ ym CONTRACT: these builders use `ym` RAW — the caller must already hold
+  // the grid-correct ym (tech = END-month, manager = START-month, i.e. the
+  // caller pre-shifts for managers). This is the OPPOSITE of the same-named
+  // builders in kiosk/data.js and myboa/cycle.js, which take the END-month ym
+  // for BOTH and start-shift manager keys internally. Passing an END-month ym
+  // here with isManager=true silently reads/writes the wrong cycle's grid.
   function schedKey(branch, ym, isManager) {
     return (isManager ? "boa_mgrsched_" : "boa_sched_") + branch + "_" + ym;
   }
@@ -370,12 +376,22 @@
       name: (entry.name || "Untitled").toString().slice(0, 80),
       grid: entry.grid,
       names: (entry.names && typeof entry.names === "object") ? entry.names : null,
+      // Phase 1.1: portal-authoritative "HH:MM - HH:MM" per working cell, baked
+      // at publish so kiosk / My BOA read ONE hours value instead of each
+      // re-deriving it from their own shiftTimes copy (which can drift). Shape:
+      // { <row key>: { "YYYY-MM-DD": { t, c } } }. Absent on legacy snapshots.
+      hours: (entry.hours && typeof entry.hours === "object") ? entry.hours : null,
       madeBy: (entry.madeBy || "").toString().slice(0, 80),
       approvedBy: (entry.approvedBy || "").toString().slice(0, 80),
       note: (entry.note || "").toString().slice(0, 500),
       savedAt: new Date().toISOString(),
       savedBy: (entry.savedBy || "").toString().slice(0, 80)
     };
+    // Only the newest version [0] is ever read for hours; strip the (Phase 1.1)
+    // hours blob off superseded versions so the retained-version array doesn't
+    // accumulate ~25 hours blobs that every kiosk / My BOA read re-downloads in
+    // full. A restored older version is re-baked on its next publish.
+    (existing || []).forEach(function (v) { if (v && v.hours) delete v.hours; });
     var next = [rec].concat(existing).slice(0, SCHED_APPROVED_LIMIT);
     var res = await sb.from("app_state").upsert({ key: schedApprovedKey(branch, ym, isManager), value: next });
     if (res.error) { console.error("saveApprovedSchedule:", res.error); throw res.error; }
@@ -824,7 +840,10 @@
     if (res.error) { console.error("saveByKey(" + key + "):", res.error); throw res.error; }
     return value;
   }
-  // helpers used by the grid UI
+  // helpers used by the grid UI.
+  // Portal-data copy of the 25th→24th END-month rollover. Companions:
+  // app.jsx (_schedYmForYmd), kiosk/data.js (ymForDate), myboa/cycle.js.
+  // Keep them in step if the cycle boundary ever changes.
   function currentSchedYm() {
     var d = new Date(), y = d.getFullYear(), m = d.getMonth() + 1;
     if (d.getDate() > 24) { m += 1; if (m > 12) { m = 1; y += 1; } }
@@ -2472,6 +2491,13 @@
     auditUnredeemedLookups: auditUnredeemedLookups,
 
     // Schedules
+    // Key builders (branch, ym, isManager) — exposed so the portal app builds
+    // schedule keys via the ONE canonical format instead of inline strings.
+    // ⚠ ym is used RAW (caller pre-shifts manager ym) — see the contract note
+    // at the schedKey definition; the kiosk/myboa same-named builders differ.
+    schedKey: schedKey,
+    schedHistKey: schedHistKey,
+    schedApprovedKey: schedApprovedKey,
     loadSchedule: loadSchedule,
     saveSchedule: saveSchedule,
     loadScheduleHistory: loadScheduleHistory,

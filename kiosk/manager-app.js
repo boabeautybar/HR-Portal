@@ -476,9 +476,9 @@
       // and a manager who was scheduled to WORK on the same date last
       // cycle but is OFF today incorrectly flagged as "not clocked in".
       var schedByEc = {};
-      var _endY = nowD.getFullYear(), _endM = nowD.getMonth() + 1;
-      if (nowD.getDate() >= 25) { _endM += 1; if (_endM > 12) { _endM = 1; _endY += 1; } }
-      var schedYm = _endY + "-" + String(_endM).padStart(2, "0");
+      // END-month ym for today — the one rollover helper (getSchedule subtracts
+      // one internally for the manager start-month key, per the comment above).
+      var schedYm = window.APP_DATA.currentSchedYm();
       try {
         if (window.APP_DATA.getSchedule) {
           var res = await window.APP_DATA.getSchedule(schedYm, "mgr");
@@ -1770,7 +1770,10 @@
   // map ec → manager record carrying role + branch, customTimes: optional
   // per-day custom hours map from Manager Coverage (boa_mgr_times_v1) —
   // a custom range for the day overrides the computed shift end.
-  async function ensureAutoOuts(recentRows, schedLookup, mgrByEc, customTimes) {
+  // schedHoursLookup: optional fn (ec, ymd) → {t,c} of portal-baked hours
+  // (Phase 1.1) — preferred over the local shiftTimes copy for the auto-out
+  // end time so a drifted copy can't clock a manager out early/late.
+  async function ensureAutoOuts(recentRows, schedLookup, mgrByEc, customTimes, schedHoursLookup) {
     var groups = {};                                 // {ec: {ymd: [rows...]}}
     recentRows.forEach(function (r) {
       var ec = r.staff && r.staff.employee_code; if (!ec) return;
@@ -1799,7 +1802,18 @@
         var mgr = mgrByEc && mgrByEc[String(ec).trim()];
         var schedCode = schedLookup ? schedLookup(ec, k) : null;
         var custRange = customTimes ? ((customTimes[ec] || customTimes[String(ec).trim()] || {})[k] || null) : null;
-        var schedEnd = (mgr && (schedCode || custRange)) ? _scheduledEndDate(k, mgr._effRole || mgr.role, schedCode, mgr.branch || (last.staff && last.staff.branch), custRange) : null;
+        // Phase 1.1: when there's no per-day custom override, use the portal-
+        // baked range (if its code still matches the schedule cell) instead of
+        // the local shiftTimes copy — same value every surface published.
+        var _bkH = (!custRange && schedHoursLookup) ? schedHoursLookup(ec, k) : null;
+        // Only trust the baked range when BOTH the cell code AND the role it was
+        // baked from still match live — a post-publish role change (SM trial
+        // flip / promotion) leaves the baked end time stale, and auto-clocking
+        // out at a frozen end mis-stamps paid hours. On mismatch fall through to
+        // the live-role shiftTimes path in _scheduledEndDate.
+        var _liveRole = (mgr && (mgr._effRole || mgr.role)) || "";
+        var _bkRange = (_bkH && _bkH.c === schedCode && _bkH.r === _liveRole) ? _bkH.t : null;
+        var schedEnd = (mgr && (schedCode || custRange)) ? _scheduledEndDate(k, mgr._effRole || mgr.role, schedCode, mgr.branch || (last.staff && last.staff.branch), custRange || _bkRange) : null;
         var endIso, fireCutoff;
         if (schedEnd) {
           // Auto-out only past (scheduled end + grace). Record at scheduled end.
@@ -1855,6 +1869,7 @@
     // the EXACT times coverage shows and they override the computed defaults.
     var mgrCustomTimes = {};
     var schedByEcYmd = {};
+    var schedHoursByEcYmd = {};   // Phase 1.1: portal-baked hours ec → { ymd: {t,c} }
     // Resolve current + previous cycle ym (25th-of-month convention) up
     // front so we can fire the schedule loads in parallel below.
     var _nowD0 = new Date();
@@ -1900,6 +1915,16 @@
           (schedByEcYmd[ec] = schedByEcYmd[ec] || {})[ymd] = v;
         });
       });
+      // Phase 1.1: ingest the portal-baked hours alongside the codes. Always
+      // full-date keyed, so no dom→ymd conversion — mirror straight in.
+      var hoursG = (res && res.hours) || {};
+      Object.keys(hoursG).forEach(function (ec) {
+        var hrow = hoursG[ec] || {};
+        Object.keys(hrow).forEach(function (ymd) {
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return;
+          (schedHoursByEcYmd[ec] = schedHoursByEcYmd[ec] || {})[ymd] = hrow[ymd];
+        });
+      });
     }
     // Load managers FIRST so the clockins query can filter server-side
     // by their staff_ids — clockins is dominated by nail-tech rows and
@@ -1940,14 +1965,43 @@
         _loadMgrSched(_prevEndYm),
         window.APP_DATA.listManagerDayStatusesToday ? window.APP_DATA.listManagerDayStatusesToday().catch(function () { return []; }) : Promise.resolve([]),
         _onLeaveEcsToday(false).catch(function () { return {}; }),   // ec → al/el on approved leave today
-        window.APP_DATA.getMgrTimes ? window.APP_DATA.getMgrTimes().catch(function () { return {}; }) : Promise.resolve({})
+        window.APP_DATA.getMgrTimes ? window.APP_DATA.getMgrTimes().catch(function () { return {}; }) : Promise.resolve({}),
+        window.APP_DATA.listUnpaidLegal ? window.APP_DATA.listUnpaidLegal().catch(function () { return []; }) : Promise.resolve([]),
+        window.APP_DATA.listMaternity ? window.APP_DATA.listMaternity().catch(function () { return []; }) : Promise.resolve([])
       ]);
       recent = _stage2[0];
       _ingestSched(_curCycleYm, _stage2[1]);
       _ingestSched(_prevCycleYm, _stage2[2]);
       (_stage2[3] || []).forEach(function (r) { if (r && r.staff_id) mgrTaggedStaffIds[r.staff_id] = true; });
-      mgrOnLeaveToday = _stage2[4] || {};
       mgrCustomTimes = _stage2[5] || {};
+      // Re-key the approved-leave map to canonical trim+UPPER EC so the overlay
+      // merge below and the card read are case/space-robust — records can carry
+      // the EC in a different case than the staff row (the portal's legal-leave
+      // modal has a free-text EC field), and mixed-case keys would both miss the
+      // read AND break the ML>EL>leave precedence (plan §7 rule 5: normalize at
+      // write AND read).
+      var _norm = function (x) { return String(x == null ? "" : x).trim().toUpperCase(); };
+      mgrOnLeaveToday = {};
+      Object.keys(_stage2[4] || {}).forEach(function (k) { mgrOnLeaveToday[_norm(k)] = _stage2[4][k]; });
+      // Overlay the two "off today" reasons that live in their OWN stores and
+      // never touch the schedule grid — Unpaid Leave (Legal) and Maternity — so a
+      // manager on either isn't nagged to clock in or shown a working shift here.
+      // Mirrors what the kiosk STAFF schedule already overlays; matrix EL/ML gaps.
+      // Precedence (matching My BOA + Attendance): maternity > unpaid-legal >
+      // annual/emergency leave — so unpaid overwrites al/el and ml overwrites all.
+      var _todayKML = _ymdToday(new Date());
+      (_stage2[6] || []).forEach(function (r) {   // unpaid legal (boa_unpaid_legal_v1)
+        if (!r || !r.ec || r.status !== "on_leave") return;
+        if ((r.startDate && _todayKML < r.startDate) || (r.endDate && _todayKML > r.endDate)) return;
+        mgrOnLeaveToday[_norm(r.ec)] = "unpaid";
+      });
+      (_stage2[7] || []).forEach(function (m) {   // maternity (on_mat / dates_tbc)
+        if (!m || !m.employee_code) return;
+        if (m.mat_status !== "on_mat" && m.mat_status !== "dates_tbc") return;
+        var _ms = m.mat_start ? String(m.mat_start).replace(/\//g, "-") : "";
+        if (_ms && _todayKML < _ms) return;   // dated maternity hasn't started yet
+        mgrOnLeaveToday[_norm(m.employee_code)] = "ml";
+      });
     } catch (e) {
       document.getElementById("mc-body").innerHTML =
         '<div class="warn">Could not load: ' + esc(e.message || e) + '</div>';
@@ -1988,9 +2042,13 @@
       var row = schedByEcYmd[String(ec).trim()];
       return row ? row[ymd] : null;
     };
+    var _schedHoursLookup = function (ec, ymd) {
+      var row = schedHoursByEcYmd[String(ec).trim()];
+      return row ? row[ymd] : null;
+    };
 
     // Run auto-out routine (schedule-aware) and find anyone auto-outed yesterday
-    var autoYesterday = await ensureAutoOuts(recent, _schedLookup, mgrByEc, mgrCustomTimes);
+    var autoYesterday = await ensureAutoOuts(recent, _schedLookup, mgrByEc, mgrCustomTimes, _schedHoursLookup);
     if (Object.keys(autoYesterday).length > 0) {
       // Rebuild recent so the per-row "today" status reflects the new auto-outs
       recent = await window.APP_DATA.listRecentManagerClockins(2);
@@ -2001,6 +2059,11 @@
     Object.keys(schedByEcYmd).forEach(function (ec) {
       var v = schedByEcYmd[ec][todayK];
       if (v != null) mgrTodaySched[ec] = v;
+    });
+    var mgrTodayHours = {};   // Phase 1.1: portal-baked {t,c} for today, per ec
+    Object.keys(schedHoursByEcYmd).forEach(function (ec) {
+      var h = schedHoursByEcYmd[ec][todayK];
+      if (h != null) mgrTodayHours[ec] = h;
     });
     var byEc = {};
     var inTodayByEc = {};   // earliest "in" record today per ec — only one clock-in/day allowed
@@ -2075,10 +2138,15 @@
       // so show a calm pill and never nag. The schedule grid often still
       // carries a working code (W) because leave is recorded in the Leave
       // Calendar rather than re-written onto the grid.
-      var _onLeaveCode = mgrOnLeaveToday[ec];
-      var _leaveBadge = _onLeaveCode
-        ? ' <span class="pill" style="background:#dbeafe;color:#1e3a8a">🌴 on leave today' + (_onLeaveCode === "el" ? " (emergency)" : "") + '</span>'
-        : "";
+      var _onLeaveCode = mgrOnLeaveToday[String(ecRaw || ec).trim().toUpperCase()];   // map is canonical trim+UPPER
+      var _leaveBadge = "";
+      if (_onLeaveCode === "ml") {
+        _leaveBadge = ' <span class="pill" style="background:#fce7f3;color:#9d174d">🤱 on maternity leave</span>';
+      } else if (_onLeaveCode === "unpaid") {
+        _leaveBadge = ' <span class="pill" style="background:#f3e8ff;color:#581c87">⏸️ unpaid leave (legal)</span>';
+      } else if (_onLeaveCode) {
+        _leaveBadge = ' <span class="pill" style="background:#dbeafe;color:#1e3a8a">🌴 on leave today' + (_onLeaveCode === "el" ? " (emergency)" : "") + '</span>';
+      }
       // Blinking nag: scheduled, no clock-in today, not ROM-tagged, not on
       // leave, past the warning cutoff time. Only nag for THIS branch's managers.
       var _nagBadge = "";
@@ -2108,8 +2176,19 @@
           _hrs = _custHrs;
           _custMark = ' <span title="Custom hours for today, set on Manager Coverage" style="color:#9A3412">★ custom</span>';
         } else {
+          // Phase 1.1: prefer the portal-baked hours (when the baked code AND
+          // role still match today's schedule cell) so this kiosk shows the EXACT
+          // times the portal published, even if the two shiftTimes copies have
+          // drifted; fall back to this kiosk's own shiftTimes otherwise. The role
+          // guard means a post-publish SM-trial flip / promotion recomputes live
+          // instead of showing stale frozen hours.
           var _effRole = onSmTrial ? "SM" : (m.role || "");
-          _hrs = shiftTimes(_effRole, _schedCodeToday, thisBranch, _todayDow);
+          var _bk = _custHoursRow(mgrTodayHours, ecRaw || ec);
+          if (_bk && _bk.c === _schedCodeToday && _bk.r === _effRole) {
+            _hrs = _bk.t;
+          } else {
+            _hrs = shiftTimes(_effRole, _schedCodeToday, thisBranch, _todayDow);
+          }
         }
         shiftLine = '<div class="staff-shift-hours" style="font-size:11px;color:var(--pink-700);font-weight:700;letter-spacing:0.02em;margin-top:2px">🕐 Today · ' + esc(_hrs) + _custMark + '</div>';
       }
@@ -2690,84 +2769,10 @@
     return null;
   }
 
+  // Thin wrapper over the shared rule set in shift-rules.js (local mirror)
+  // (window.BOA_SHIFT) — same hours as the portal, staff-app, and My BOA.
   function shiftTimes(role, code, branchName, dow) {
-    var r = (role || "").toUpperCase();
-    var isSM = r === "SM" || r === "SSM";
-    var isAM = r === "AM";
-    var b = branchName || "";
-
-    // Head Office runs its own hours (mirrors app.jsx / staff-app / myboa):
-    // Call Centre & Sales split early (WE → 07:00-16:00) / late (WL → 09:00-18:30);
-    // everyone else ("Office Staff") one day shift 08:00-17:00.
-    if (String(b).trim().toLowerCase() === "head office") {
-      if (r === "CC" || r === "MCC" || r === "SALES") return code === "WL" ? "09:00 - 18:30" : "07:00 - 16:00";
-      return "08:00 - 17:00";
-    }
-
-    if (b === "Sandown" || b === "Table Bay") {
-      if (isSM) return "08:00 - 17:00";
-      if (dow === 0) {
-        if (code === "WE") return "08:00 - 17:00";
-        if (code === "WL") return "09:00 - 18:00";
-        return "09:00 - 18:00";
-      }
-      if (dow === 6 && b === "Sandown") {
-        if (code === "WE") return "08:00 - 17:00";
-        if (code === "WL") return "10:00 - 19:00";
-        return "10:00 - 19:00";
-      }
-      if (code === "WE") return "08:00 - 17:00";
-      if (code === "WM") return "09:00 - 18:00";
-      if (code === "WL") return "11:00 - 20:00";
-      return "11:00 - 20:00";
-    }
-    if (b === "Riverlands") {
-      if (isSM) return "08:00 - 17:00";               // SM/SSM always 08:00-17:00, every day
-      if (dow === 6) return "09:00 - 18:00";          // Sat single AM
-      if (dow === 0) return "08:30 - 17:00";          // Sun single AM (08:30 open)
-      if (code === "WE") return "09:00 - 18:00";      // AM opener
-      if (code === "WB") return "08:00 - 17:00";      // 4+ bonus opener
-      if (code === "WM") return "09:00 - 18:00";      // AM mid shift
-      if (code === "WL") return "10:00 - 19:00";
-      return "10:00 - 19:00";
-    }
-    if (b === "Ballito" || b === "Mall of the South") {
-      if (isSM) return "08:00 - 17:00";
-      if (dow === 0) return isAM ? "08:30 - 17:00" : "08:00 - 17:00";
-      if (code === "WE") return "08:00 - 17:00";
-      if (code === "WM") return "09:00 - 18:00";
-      if (code === "WL") return "10:00 - 19:00";
-      return "10:00 - 19:00";
-    }
-    if (b === "Fourways") {
-      if (isSM) return "08:00 - 17:00";   // SM/SSM always open, never close
-      if (dow === 0) {
-        if (code === "WE") return "08:00 - 17:00";
-        if (code === "WL") return "10:00 - 19:00";
-        return "10:00 - 19:00";
-      }
-      if (code === "WE") return "08:00 - 17:00";   // AM opener when no SM is in
-      if (code === "WM") return "10:00 - 19:00";
-      if (code === "WL") return "11:00 - 20:00";
-      return "11:00 - 20:00";
-    }
-    // Generic stores. Weekend override: SM flat 08:00-17:00 Sat & Sun.
-    // AM Sat 09:00-18:00, Sun 08:30-17:00. Weekdays keep code-specific.
-    if (isSM) {
-      if (dow === 0 || dow === 6) return "08:00 - 17:00";
-      if (code === "WL") return "08:30 - 17:30";
-      if (code === "WE") return "07:30 - 16:30";
-      if (code === "WM") return "08:00 - 13:00";
-      return "08:00 - 17:00";
-    }
-    if (dow === 6) return "09:00 - 18:00";
-    if (dow === 0) return "08:30 - 17:00";
-    if (code === "WL") return "10:00 - 19:00";
-    if (code === "WE") return "08:30 - 18:00";
-    if (code === "WM") return "09:00 - 13:00";
-    if (code === "WB") return "08:00 - 19:00";
-    if (code === "E")  return "09:00 - 18:30";
-    return "09:00 - 18:30";
+    return window.BOA_SHIFT ? window.BOA_SHIFT.times(role, code, branchName, dow) : "";
   }
   function fmtDate(s) {
     try {

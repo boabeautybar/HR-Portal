@@ -107,6 +107,12 @@ window.BOA_SUPABASE_CONFIG = {
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+  <script src="stores.js"></script>
+  <script src="cycle.js"></script>
+  <!-- Shared shift-hour rules — LOCAL mirror (this site deploys with myboa/ as
+       its publish root, so ../ can't reach the repo-root copy). Byte-identical
+       to /shift-rules.js; verified by scripts/check-shift-rules.js. -->
+  <script src="shift-rules.js"></script>
   <script src="schedule.js"></script>
   <script src="auto-refresh.js"></script>
 </body>

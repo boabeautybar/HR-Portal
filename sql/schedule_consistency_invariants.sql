@@ -309,6 +309,85 @@ order by c.dt;
 -- notify pgrst, 'reload schema';
 
 
+-- ============================================================================
+-- BACKFILL — B886M loan record (Sea Point roster sync, 2026-07-12)
+--
+-- Manager Coverage's "roster changed since this schedule was built" panel on the
+-- Sea Point manager schedule lists B886M (Micheala Williams, home Rondebosch)
+-- among the managers to drop. B886M worked Sea Point on 2026-07-05 as a loan-in
+-- (CONFIRMED by the HR owner) but has NO boa_mgr_loans_v1 record — it lived only
+-- as a draft loan_out. "Sync changes only" removes ALL flagged rows at once; if
+-- B886M's base row is dropped with no durable record, the loan overlay has
+-- nothing to re-add and Sea Point's 5 Jul coverage silently disappears. This
+-- inserts the missing record FIRST; then the sync is safe (the other four —
+-- B798M / B866M / B901 already have records, B560M genuinely moved to Riverlands).
+--
+--   B886M  Rondebosch -> Sea Point   2026-07-05
+--
+-- Same shape (data.js:1762), re-runnable, skip-existing as the Q3 backfill above.
+-- HOW TO RUN: run the PREVIEW (must return exactly 1 row); then uncomment the
+-- UPSERT, run it, and re-run query 2 of the roster-sync check — B886M must now
+-- show a Rondebosch -> Sea Point 2026-07-05 loan. THEN click "Sync changes only"
+-- on the Sea Point manager schedule.
+-- ============================================================================
+
+-- PREVIEW (safe SELECT) — must return exactly 1 row (B886M).
+with cand(ec_in, from_branch, to_branch, dt) as (
+  values ('B886M','Rondebosch','Sea Point','2026-07-05')
+),
+existing as (
+  select upper(regexp_replace(e->>'ec','[^A-Za-z0-9]','','g')) as ec_key, e->>'date' as dt
+  from app_state, lateral jsonb_array_elements(coalesce(app_state.value,'[]'::jsonb)) e
+  where key = 'boa_mgr_loans_v1' and jsonb_typeof(app_state.value) = 'array'  -- qualify: jsonb_array_elements() also exposes a "value" column
+)
+select st.employee_code as ec, st.name, c.from_branch, c.to_branch, c.dt
+from cand c
+join staff st on upper(regexp_replace(st.employee_code,'[^A-Za-z0-9]','','g'))
+              = upper(regexp_replace(c.ec_in,'[^A-Za-z0-9]','','g'))
+where not exists (
+  select 1 from existing x
+  where x.ec_key = upper(regexp_replace(c.ec_in,'[^A-Za-z0-9]','','g')) and x.dt = c.dt
+)
+order by c.dt;
+
+-- THE BACKFILL — uncomment, run, then re-run the roster-sync query 2.
+-- with cand(ec_in, from_branch, to_branch, dt) as (
+--   values ('B886M','Rondebosch','Sea Point','2026-07-05')
+-- ),
+-- existing as (
+--   select upper(regexp_replace(e->>'ec','[^A-Za-z0-9]','','g')) as ec_key, e->>'date' as dt
+--   from app_state, lateral jsonb_array_elements(coalesce(app_state.value,'[]'::jsonb)) e
+--   where key = 'boa_mgr_loans_v1' and jsonb_typeof(app_state.value) = 'array'
+-- ),
+-- new_recs as (
+--   select jsonb_build_object(
+--            '_id',        'ln_bf_' || replace(gen_random_uuid()::text,'-',''),
+--            'ec',         st.employee_code,
+--            'name',       coalesce(st.name,''),
+--            'date',       c.dt,
+--            'fromBranch', c.from_branch,
+--            'toBranch',   c.to_branch,
+--            'note',       'Backfilled 2026-07-12 (Sea Point roster sync): confirmed loan-in, record was missing',
+--            'createdBy',  'HR portal - roster-sync backfill',
+--            'createdAt',  to_char((now() at time zone 'utc'),'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+--          ) as rec
+--   from cand c
+--   join staff st on upper(regexp_replace(st.employee_code,'[^A-Za-z0-9]','','g'))
+--                 = upper(regexp_replace(c.ec_in,'[^A-Za-z0-9]','','g'))
+--   where not exists (
+--     select 1 from existing x
+--     where x.ec_key = upper(regexp_replace(c.ec_in,'[^A-Za-z0-9]','','g')) and x.dt = c.dt
+--   )
+-- )
+-- insert into app_state (key, value)
+-- select 'boa_mgr_loans_v1',
+--        coalesce((select value from app_state where key = 'boa_mgr_loans_v1'
+--                  and jsonb_typeof(value) = 'array'), '[]'::jsonb)
+--        || coalesce((select jsonb_agg(rec) from new_recs), '[]'::jsonb)
+-- on conflict (key) do update set value = excluded.value;
+-- notify pgrst, 'reload schema';
+
+
 -- ── Q4: working PUBLISHED cell inside an EL / ML / leave range — ZERO (G4) ────
 -- Anyone with a working cell (W/WE/WM/WL/WB/E) in the live published snapshot on
 -- a day they are on Unpaid Legal, Maternity, or approved Leave. The staff grid

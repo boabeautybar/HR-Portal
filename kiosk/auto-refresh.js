@@ -50,7 +50,9 @@
   // file's ETag / Last-Modified changes when its content changes (Netlify
   // serves both for static files); combine them, so a change to ANY means
   // fresh code is live.
-  var WATCH = ["config.js", "data.js", "security.js", "pin-gate.js", "staff-app.js", "manager-app.js"];
+  // shift-rules.js is the shared hours table the app scripts delegate to —
+  // an hours-only deploy touches nothing else, so it must be watched too.
+  var WATCH = ["config.js", "data.js", "security.js", "pin-gate.js", "shift-rules.js", "staff-app.js", "manager-app.js"];
   function versionTag() {
     return Promise.all(WATCH.map(function (f) {
       return fetch(f, { method: "HEAD", cache: "no-store" })
