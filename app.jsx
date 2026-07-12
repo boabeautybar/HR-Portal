@@ -10785,6 +10785,55 @@ async function patchApprovedSnapshotRow(branch, ym, isMgr, ec, mutateRow) {
     return true;
   });
 }
+// ── Phase 1.1: bake resolved shift hours into the published snapshot ─────────
+// Read-only surfaces (kiosk, My BOA) derive a manager's displayed hours by
+// calling their OWN copy of shiftTimes(role, code, branch, dow). Those copies
+// can drift from the portal's, and the role/branch/dow each surface resolves
+// can differ (SM-trial role, loan branch) — so the SAME published cell can show
+// different hours on different surfaces. To kill that, we bake the portal's
+// authoritative "HH:MM - HH:MM" per WORKING cell into the snapshot at publish
+// time and have those surfaces PREFER the baked value.
+//
+// Shape: version.hours = { <grid row key>: { "YYYY-MM-DD": { t, c } } }, keyed
+// by the snapshot's OWN row keys so a consumer indexes it with the key it has
+// already resolved against the grid. `c` is the cell code the hours were derived
+// from: a later cell-code change (Apply-to-live patches the grid, never .hours)
+// makes `c` mismatch the live cell, so consumers fall back to shiftTimes — the
+// baked value self-invalidates. Only STANDARD derived hours are baked; per-day
+// custom overrides (boa_mgr_times_v1) are deliberately NOT folded in — consumers
+// read those live FIRST, so a custom set or cleared after publish is honoured
+// with no stale baked value. Managers only. Roles arrive already SM-trial-
+// adjusted on `managers` (allMgrs rewrites trial AMs to "SM" before mgrSched),
+// so shiftTimes here matches what Coverage/Attendance show. Old snapshots have
+// no .hours → consumers fall straight through to custom||shiftTimes, byte-
+// identical to today.
+function _bakeSnapshotHours(grid, managers, branch) {
+  const hours = {};
+  const roleByEc = {};
+  (managers || []).forEach(m => { if (m && m.ec) roleByEc[_normEc(m.ec)] = m.role || ""; });
+  const _isWork = (v) => v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E";
+  Object.keys(grid || {}).forEach(rowKey => {
+    const row = grid[rowKey];
+    if (!row || typeof row !== "object") return;
+    // Bake ONLY rows for managers we have an authoritative (SM-adjusted) role
+    // for. A guest / loaned-in row not in `managers` has no reliable role here,
+    // and since consumers PREFER baked, an ""-role bake could show wrong hours —
+    // skipping it leaves those rows on the consumer's own shiftTimes(realRole).
+    const _nk = _normEc(rowKey);
+    if (!Object.prototype.hasOwnProperty.call(roleByEc, _nk)) return;
+    const role = roleByEc[_nk];
+    Object.keys(row).forEach(cellKey => {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(cellKey)) return;   // full-date cells only (skip dom masks)
+      const code = row[cellKey];
+      if (!_isWork(code)) return;
+      let dow; try { dow = new Date(cellKey + "T12:00:00").getDay(); } catch (_) { return; }
+      const t = shiftTimes(role, code, branch, dow);
+      if (!t) return;
+      (hours[rowKey] = hours[rowKey] || {})[cellKey] = { t: t, c: code };
+    });
+  });
+  return hours;
+}
 // ── "Publish current cycle" engine ─────────────────────────────────────────
 // Diff every branch's draft schedule against its published snapshot, keep only
 // the cells whose real calendar date falls inside the CURRENT payroll cycle,
@@ -34876,10 +34925,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const _approvedGrid = JSON.parse(JSON.stringify(draft));
             _applyBranchShiftRules(_approvedGrid, result.dates, result.managers);
             const _apNames = {}; (result.managers || []).forEach(m => { if (m && m.ec) _apNames[String(m.ec).trim()] = m.name || ""; });
+            // Phase 1.1: bake the portal-authoritative shift hours per working
+            // cell so kiosk / My BOA render the SAME times this tab shows instead
+            // of re-deriving them from their own (drift-prone) shiftTimes copies.
+            const _apHours = _bakeSnapshotHours(_approvedGrid, result.managers, branch);
             const saved = await window.BOA_DB.saveApprovedSchedule(branch, ymKey, true, {
               name: name.trim(),
               grid: _approvedGrid,
               names: _apNames,
+              hours: _apHours,
               madeBy: madeBy.trim(),
               approvedBy: approvedBy.trim(),
               note: note.trim(),

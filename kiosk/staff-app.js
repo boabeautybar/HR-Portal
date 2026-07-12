@@ -1131,6 +1131,7 @@
     //   4. fall back to the newest APPROVED snapshot when the live cell is empty
     var approvedGrid = {};
     var approvedNames = {};
+    var approvedHours = {};   // Phase 1.1: portal-baked hours { ec: { ymd: {t,c} } }
     if ((isMgr || isHo) && window.APP_DATA.getApprovedSchedule) {
       try {
         // HO renders the PUBLISHED truth like managers do — read its tech-style
@@ -1139,6 +1140,7 @@
         var _ap = await window.APP_DATA.getApprovedSchedule(ym, isMgr ? "mgr" : "tech");
         approvedGrid = (_ap && _ap.grid) || {};
         approvedNames = (_ap && _ap.names) || {};
+        approvedHours = (_ap && _ap.hours) || {};
       } catch (_apErr) { /* fallback only — never block the live view */ }
     }
     // Leave-Planner overlay: ec → { ymd: true } for every covered leave day
@@ -1222,6 +1224,10 @@
     })();
     grid = _canonGrid(grid, (sched && sched.names) || {});
     approvedGrid = _canonGrid(approvedGrid, approvedNames);
+    // Canonicalise baked hours onto the SAME current-code keys as approvedGrid
+    // (structurally identical — key → {ymd:…} map — so _canonGrid re-homes it
+    // the same way), so an ec lookup below hits both grid and hours alike.
+    approvedHours = _canonGrid(approvedHours, approvedNames);
     // Per-manager custom shift hours (set in the HR portal coverage view),
     // layered over the computed times on the Manager Schedule view.
     var customTimes = (isMgr && window.APP_DATA.getMgrTimes) ? ((await window.APP_DATA.getMgrTimes()) || {}) : {};
@@ -1405,18 +1411,25 @@
           var _mark = "";
           if (isMgr && (cell === "W" || cell === "WE" || cell === "WL" || cell === "WM" || cell === "WB" || cell === "E")) {
             var _dt = new Date(d.year, d.monthIdx, d.day);
-            var _hrs = _shiftTimes(s.role, cell, thisBranch, _dt.getDay());
-            // Manual override for this manager on this exact day wins over
-            // the computed hours and is flagged with a ★ + summary row.
-            // Employee codes can carry a trailing space in older data, so
-            // fall back to the trimmed key.
+            // Hours precedence (Phase 1.1): live custom override wins; else the
+            // portal-baked snapshot hours (when the baked code still matches this
+            // cell — a post-publish code change invalidates it); else this
+            // kiosk's own shiftTimes copy. Reading baked keeps the kiosk showing
+            // the EXACT times the portal published even if the two shiftTimes
+            // copies have drifted. Employee codes can carry a trailing space in
+            // older data, so lookups fall back to the trimmed/upper key.
             var _custRow = _custHoursRow(customTimes, s.employee_code);
             var _cust = _custRow && _custRow[_ymd];
+            var _hrs;
             if (_cust) {
               _hrs = _cust;
               _custCls = " sched-cell-custom";
               _mark = '<span class="sched-cust-star" aria-hidden="true">★</span>';
               customList.push({ name: s.name, mon: monthAbbr[d.monthIdx], day: d.day, dow: dowAbbr[_dt.getDay()], hrs: _cust });
+            } else {
+              var _bkRow = _custHoursRow(approvedHours, s.employee_code);
+              var _bk = _bkRow && _bkRow[_ymd];
+              _hrs = (_bk && _bk.c === cell) ? _bk.t : _shiftTimes(s.role, cell, thisBranch, _dt.getDay());
             }
             if (_hrs) _title = ' title="' + esc(_hrs + (_cust ? " (custom hours)" : "")) + '"';
           }

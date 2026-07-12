@@ -34,6 +34,7 @@
     view: "soon",            // soon | week | month
     monthYm: null,
     cache: {},               // "<branch>|<ymEnd>" -> grid object (effective branch can vary per day)
+    hoursCache: {},          // "<branch>|<ymEnd>" -> portal-baked hours { ec: { ymd: {t,c} } } (Phase 1.1)
     awayMap: {},             // "<branch>|<ymEnd>" -> { ymd: { branch, code } } — loan_out day resolution
     mgrRoles: {},            // EC(upper/trim) -> role, for split-store shift labelling
     smTrialEcs: {},          // EC(upper/trim) -> 1 for AMs on an active SM trial
@@ -480,6 +481,12 @@
     if (state.isManager) {
       var custom = state.custom && state.custom[ymdStr(dt)];
       if (custom) return custom + " · custom hours";
+      // Phase 1.1: prefer the portal-baked hours (when the baked code still
+      // matches this cell) so My BOA shows the EXACT times the portal published,
+      // rather than re-deriving them from this app's own shiftTimes copy (which
+      // can drift). Fall back to shiftTimes for legacy snapshots / code changes.
+      var bk = bakedHoursFor(dt, branch);
+      if (bk && bk.c === (c || "W")) return bk.t;
       return shiftTimes(state.effRole || state.role, c || "W", branch, dt.getDay());
     }
     var dow = dt.getDay();
@@ -624,11 +631,14 @@
   }
   // Is this cycle later than the one containing today? (string "YYYY-MM" compares lexically)
   function isFutureCycle(ymEnd) { return ymEnd > currentSchedYm(); }
-  // The newest PUBLISHED grid for a store+cycle, or null if never published.
+  // The newest PUBLISHED snapshot for a store+cycle: { grid, hours } (both null
+  // if never published). `hours` is the Phase 1.1 portal-baked authoritative
+  // shift times { ec: { ymd: {t,c} } }, absent (null) on legacy snapshots.
   async function fetchApprovedGrid(store, isManager, ymEnd) {
     var res = await sb.from("app_state").select("value").eq("key", approvedKey(store, isManager, ymEnd)).maybeSingle();
     var arr = res && res.data && res.data.value;
-    return (Array.isArray(arr) && arr.length && arr[0] && arr[0].grid) || null;
+    var top = (Array.isArray(arr) && arr.length && arr[0]) || null;
+    return { grid: (top && top.grid) || null, hours: (top && top.hours) || null };
   }
   function rowFor(grid) {
     if (!grid) return null;
@@ -655,13 +665,25 @@
     branch = branch || state.store;
     var ck = branch + "|" + ymEnd;
     if (state.cache[ck] !== undefined) return state.cache[ck];
-    var grid = await fetchApprovedGrid(branch, state.isManager, ymEnd);
+    var ap = await fetchApprovedGrid(branch, state.isManager, ymEnd);
+    var grid = ap.grid, hours = ap.hours;
     if (!grid && !isFutureCycle(ymEnd)) {
       var res = await sb.from("app_state").select("value").eq("key", storageKey(ymEnd, branch)).maybeSingle();
       grid = (res && res.data && res.data.value && res.data.value.grid) || null;
+      hours = null;   // an unpublished draft carries no baked hours
     }
     state.cache[ck] = grid;
+    state.hoursCache[ck] = hours || null;
     return grid;
+  }
+  // Portal-baked {t,c} for the current person on a date at `branch` (Phase 1.1),
+  // or null. Case/space-tolerant on the ec key, exactly like rowFor for grids.
+  function bakedHoursFor(dt, branch) {
+    var h = state.hoursCache && state.hoursCache[(branch || state.store) + "|" + ymForDate(dt)];
+    if (!h) return null;
+    var row = h[state.ec];
+    if (!row) { var up = state.ec.toUpperCase(); for (var k in h) { if (k.toUpperCase() === up) { row = h[k]; break; } } }
+    return (row && row[ymdStr(dt)]) || null;
   }
   function isLoanOut(v) { return String(v == null ? "" : v).toUpperCase().trim() === "LOAN_OUT"; }
   function isWorkCode(v) { var c = String(v == null ? "" : v).toUpperCase().trim(); return c === "E" || !!WORK_CODES[c]; }
@@ -812,6 +834,7 @@
       state.legalEnd = null;
       state.custom = {};
       state.cache = {};
+      state.hoursCache = {};
       state.awayMap = {};
       state.mgrRoles = {};
       state.smTrialEcs = {};
@@ -927,7 +950,7 @@
       // Each day then resolves to its EFFECTIVE branch — after a transfer's
       // effective date, that's the destination store — via effectiveBranchOn().
       state.typedStore = store;
-      if (state.homeBranch) { state.store = state.homeBranch; state.cache = {}; state.awayMap = {}; }
+      if (state.homeBranch) { state.store = state.homeBranch; state.cache = {}; state.hoursCache = {}; state.awayMap = {}; }
 
       try { localStorage.setItem(LS_KEY, JSON.stringify({ store: store, ec: found.ecKey })); } catch (_e) {}
 

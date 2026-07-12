@@ -1770,7 +1770,10 @@
   // map ec → manager record carrying role + branch, customTimes: optional
   // per-day custom hours map from Manager Coverage (boa_mgr_times_v1) —
   // a custom range for the day overrides the computed shift end.
-  async function ensureAutoOuts(recentRows, schedLookup, mgrByEc, customTimes) {
+  // schedHoursLookup: optional fn (ec, ymd) → {t,c} of portal-baked hours
+  // (Phase 1.1) — preferred over the local shiftTimes copy for the auto-out
+  // end time so a drifted copy can't clock a manager out early/late.
+  async function ensureAutoOuts(recentRows, schedLookup, mgrByEc, customTimes, schedHoursLookup) {
     var groups = {};                                 // {ec: {ymd: [rows...]}}
     recentRows.forEach(function (r) {
       var ec = r.staff && r.staff.employee_code; if (!ec) return;
@@ -1799,7 +1802,12 @@
         var mgr = mgrByEc && mgrByEc[String(ec).trim()];
         var schedCode = schedLookup ? schedLookup(ec, k) : null;
         var custRange = customTimes ? ((customTimes[ec] || customTimes[String(ec).trim()] || {})[k] || null) : null;
-        var schedEnd = (mgr && (schedCode || custRange)) ? _scheduledEndDate(k, mgr._effRole || mgr.role, schedCode, mgr.branch || (last.staff && last.staff.branch), custRange) : null;
+        // Phase 1.1: when there's no per-day custom override, use the portal-
+        // baked range (if its code still matches the schedule cell) instead of
+        // the local shiftTimes copy — same value every surface published.
+        var _bkH = (!custRange && schedHoursLookup) ? schedHoursLookup(ec, k) : null;
+        var _bkRange = (_bkH && _bkH.c === schedCode) ? _bkH.t : null;
+        var schedEnd = (mgr && (schedCode || custRange)) ? _scheduledEndDate(k, mgr._effRole || mgr.role, schedCode, mgr.branch || (last.staff && last.staff.branch), custRange || _bkRange) : null;
         var endIso, fireCutoff;
         if (schedEnd) {
           // Auto-out only past (scheduled end + grace). Record at scheduled end.
@@ -1855,6 +1863,7 @@
     // the EXACT times coverage shows and they override the computed defaults.
     var mgrCustomTimes = {};
     var schedByEcYmd = {};
+    var schedHoursByEcYmd = {};   // Phase 1.1: portal-baked hours ec → { ymd: {t,c} }
     // Resolve current + previous cycle ym (25th-of-month convention) up
     // front so we can fire the schedule loads in parallel below.
     var _nowD0 = new Date();
@@ -1898,6 +1907,16 @@
             ymd = y + "-" + String(m).padStart(2, "0") + "-" + String(dom).padStart(2, "0");
           }
           (schedByEcYmd[ec] = schedByEcYmd[ec] || {})[ymd] = v;
+        });
+      });
+      // Phase 1.1: ingest the portal-baked hours alongside the codes. Always
+      // full-date keyed, so no dom→ymd conversion — mirror straight in.
+      var hoursG = (res && res.hours) || {};
+      Object.keys(hoursG).forEach(function (ec) {
+        var hrow = hoursG[ec] || {};
+        Object.keys(hrow).forEach(function (ymd) {
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return;
+          (schedHoursByEcYmd[ec] = schedHoursByEcYmd[ec] || {})[ymd] = hrow[ymd];
         });
       });
     }
@@ -1988,9 +2007,13 @@
       var row = schedByEcYmd[String(ec).trim()];
       return row ? row[ymd] : null;
     };
+    var _schedHoursLookup = function (ec, ymd) {
+      var row = schedHoursByEcYmd[String(ec).trim()];
+      return row ? row[ymd] : null;
+    };
 
     // Run auto-out routine (schedule-aware) and find anyone auto-outed yesterday
-    var autoYesterday = await ensureAutoOuts(recent, _schedLookup, mgrByEc, mgrCustomTimes);
+    var autoYesterday = await ensureAutoOuts(recent, _schedLookup, mgrByEc, mgrCustomTimes, _schedHoursLookup);
     if (Object.keys(autoYesterday).length > 0) {
       // Rebuild recent so the per-row "today" status reflects the new auto-outs
       recent = await window.APP_DATA.listRecentManagerClockins(2);
@@ -2001,6 +2024,11 @@
     Object.keys(schedByEcYmd).forEach(function (ec) {
       var v = schedByEcYmd[ec][todayK];
       if (v != null) mgrTodaySched[ec] = v;
+    });
+    var mgrTodayHours = {};   // Phase 1.1: portal-baked {t,c} for today, per ec
+    Object.keys(schedHoursByEcYmd).forEach(function (ec) {
+      var h = schedHoursByEcYmd[ec][todayK];
+      if (h != null) mgrTodayHours[ec] = h;
     });
     var byEc = {};
     var inTodayByEc = {};   // earliest "in" record today per ec — only one clock-in/day allowed
@@ -2108,8 +2136,17 @@
           _hrs = _custHrs;
           _custMark = ' <span title="Custom hours for today, set on Manager Coverage" style="color:#9A3412">★ custom</span>';
         } else {
-          var _effRole = onSmTrial ? "SM" : (m.role || "");
-          _hrs = shiftTimes(_effRole, _schedCodeToday, thisBranch, _todayDow);
+          // Phase 1.1: prefer the portal-baked hours (when the baked code still
+          // matches today's schedule cell) so this kiosk shows the EXACT times
+          // the portal published, even if the two shiftTimes copies have drifted;
+          // fall back to this kiosk's own shiftTimes otherwise.
+          var _bk = _custHoursRow(mgrTodayHours, ecRaw || ec);
+          if (_bk && _bk.c === _schedCodeToday) {
+            _hrs = _bk.t;
+          } else {
+            var _effRole = onSmTrial ? "SM" : (m.role || "");
+            _hrs = shiftTimes(_effRole, _schedCodeToday, thisBranch, _todayDow);
+          }
         }
         shiftLine = '<div class="staff-shift-hours" style="font-size:11px;color:var(--pink-700);font-weight:700;letter-spacing:0.02em;margin-top:2px">🕐 Today · ' + esc(_hrs) + _custMark + '</div>';
       }

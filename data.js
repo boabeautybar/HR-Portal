@@ -370,6 +370,11 @@
       name: (entry.name || "Untitled").toString().slice(0, 80),
       grid: entry.grid,
       names: (entry.names && typeof entry.names === "object") ? entry.names : null,
+      // Phase 1.1: portal-authoritative "HH:MM - HH:MM" per working cell, baked
+      // at publish so kiosk / My BOA read ONE hours value instead of each
+      // re-deriving it from their own shiftTimes copy (which can drift). Shape:
+      // { <row key>: { "YYYY-MM-DD": { t, c } } }. Absent on legacy snapshots.
+      hours: (entry.hours && typeof entry.hours === "object") ? entry.hours : null,
       madeBy: (entry.madeBy || "").toString().slice(0, 80),
       approvedBy: (entry.approvedBy || "").toString().slice(0, 80),
       note: (entry.note || "").toString().slice(0, 500),

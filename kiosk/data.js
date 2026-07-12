@@ -1414,7 +1414,11 @@
     Object.keys(grid).forEach(function (ec) {
       out[ec] = isMgr ? _collapseMgrRow(grid[ec], ym) : grid[ec];
     });
-    return { grid: out, names: (top && top.names) || {}, ym: ym };
+    // Phase 1.1: portal-baked authoritative shift hours { ec: { ymd: {t,c} } }.
+    // Keyed by the same row keys as `grid` and always full-date, so the schedule
+    // view looks it up with the same ec+ymd it already resolves. Absent on
+    // legacy snapshots (→ {}), leaving consumers on their shiftTimes fallback.
+    return { grid: out, names: (top && top.names) || {}, hours: (top && top.hours) || {}, ym: ym };
   }
   // Per-manager custom shift hours set in the HR portal coverage view.
   // Shared global key, keyed { [ec]: { "YYYY-MM-DD": "HH:MM - HH:MM" } }.
