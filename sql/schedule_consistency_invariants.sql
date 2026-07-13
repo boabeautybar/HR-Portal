@@ -9,13 +9,15 @@
 --   Q1  override EC-key hygiene   → Case A (custom hours / pins silently dropped)
 --   Q2  draft vs published drift  → INFORMATIONAL (the badge's DB twin)
 --   Q3  loan_out without a record → ec55083 family (phantom "AWAY → store")
---   Q4  working cell in EL/ML/leave range → G4 (published grid says work)
+--   Q4a working cell in EL/ML range        → G4 (published grid says work) — ZERO
+--   Q4b working cell in LEAVE range (mgr)  → INFORMATIONAL (overlay-by-design)
 --   Q5  kiosk "absent/no" in EL/ML/leave  → Case B (Kimberley: ABSENT while on EL)
 --   Q6  extra-day ↔ finalised attendance reconciliation → INFO (back-pay list)
 --   Q7  pending publishes, classified → INFO (the "Publish current cycle" engine)
 --
--- Q1/Q3/Q4/Q5 SHOULD return ZERO rows. Q2/Q6/Q7 are informational lists — eyeball
--- them (Q2 mirrors the Coverage "Unpublished changes" badge; Q7 buckets it by cycle).
+-- Q1/Q3/Q4a/Q5 SHOULD return ZERO rows. Q2/Q4b/Q6/Q7 are informational lists —
+-- eyeball them (Q2 mirrors the Coverage "Unpublished changes" badge; Q4b rows are
+-- the overlay design working as intended, verify on-surface; Q7 buckets by cycle).
 --
 -- STORE SHAPES (app_state.value), all verified against data.js/kiosk/data.js:
 --   boa_(mgr)schedapproved_<branch>_<ym>  ARRAY, [0]=live, [0].grid={ec:{cell:code}}
@@ -388,11 +390,21 @@ order by c.dt;
 -- notify pgrst, 'reload schema';
 
 
--- ── Q4: working PUBLISHED cell inside an EL / ML / leave range — ZERO (G4) ────
+-- ── Q4a: working PUBLISHED cell inside an EL / ML range — ZERO (G4) ───────────
 -- Anyone with a working cell (W/WE/WM/WL/WB/E) in the live published snapshot on
--- a day they are on Unpaid Legal, Maternity, or approved Leave. The staff grid
--- says "work" while the truth stores say "away" — the exact G4 contradiction.
+-- a day they are on Unpaid Legal or Maternity. The staff grid says "work" while
+-- the exclusion stores say "away" — the exact G4 contradiction, always a defect.
 -- Manager grids only (full-date keys); the tech/nail-tech side is caught by Q5.
+--
+-- ⚠ ANNUAL/EMERGENCY LEAVE is deliberately NOT in this zero-expectation query:
+-- manager leave is never stamped into schedule grids (app.jsx publishLeaveToSchedule
+-- returns early for manager ECs), so a published working cell inside a
+-- boa_leave_v1 range is the OVERLAY DESIGN working as intended — every surface
+-- (Coverage, kiosk grid + manager card, My BOA) overlays the leave record live
+-- since Phase 1.4. Those rows are listed by Q4b below: verify the person shows
+-- as ON LEAVE on the staff surfaces; do NOT "fix" the snapshot data.
+-- (First verified 2026-07-13: Kuils River B272M Jul 16–17 + Table Bay B621M
+-- Jul 17 showed leave on kiosk and My BOA with exactly this divergence.)
 with pub as (
   select (regexp_match(key, '^boa_(?:mgr)?schedapproved_(.+)_(\d{4}-\d{2})$'))[1] as branch,
          value->0->'grid'                                                         as grid
@@ -413,6 +425,36 @@ el as (
   where key = 'boa_unpaid_legal_v1' and coalesce(r->>'status','') = 'on_leave'
     and (nullif(r->>'startDate','') is null or r->>'startDate' ~ '^\d{4}-\d{2}-\d{2}$')   -- skip malformed hand-edited dates (no abort)
     and (nullif(r->>'endDate','')   is null or r->>'endDate'   ~ '^\d{4}-\d{2}-\d{2}$')
+)
+select w.branch, w.ec, w.d, w.code,
+       case
+         when exists (select 1 from el where el.ec = w.ec and (el.s is null or w.d >= el.s::date) and (el.e is null or w.d <= el.e::date)) then 'unpaid_legal'
+         else 'maternity'
+       end as conflict
+from work_cells w
+where exists (select 1 from el where el.ec = w.ec and (el.s is null or w.d >= el.s::date) and (el.e is null or w.d <= el.e::date))
+   or exists (select 1 from maternity m where upper(regexp_replace(m.employee_code, '[^A-Za-z0-9]', '', 'g')) = w.ec and m.mat_start is not null and w.d >= m.mat_start and (m.mat_end is null or w.d <= m.mat_end))
+order by w.branch, w.ec, w.d;
+
+
+-- ── Q4b: working PUBLISHED cell inside an approved LEAVE range — INFORMATIONAL ─
+-- Manager leave is overlay-only (see the Q4a note): these rows are EXPECTED when
+-- a manager's leave was approved after (or independent of) publish. Action per
+-- row: confirm the person renders as ON LEAVE on kiosk + My BOA for those days
+-- (Phase 1.4 overlays) — investigate only if a surface shows them as working.
+with pub as (
+  select (regexp_match(key, '^boa_(?:mgr)?schedapproved_(.+)_(\d{4}-\d{2})$'))[1] as branch,
+         value->0->'grid'                                                         as grid
+  from app_state
+  where key ~ '^boa_mgrschedapproved_'
+    and jsonb_typeof(value) = 'array' and jsonb_array_length(value) > 0
+),
+work_cells as (
+  select p.branch, upper(regexp_replace(ec.key, '[^A-Za-z0-9]', '', 'g')) as ec, to_date(cell.key,'YYYY-MM-DD') as d, (cell.value #>> '{}') as code
+  from pub p, lateral jsonb_each(p.grid) ec(key, val), lateral jsonb_each(ec.val) cell(key, value)
+  where p.grid is not null
+    and cell.key ~ '^\d{4}-\d{2}-\d{2}$'
+    and (cell.value #>> '{}') in ('W','WE','WM','WL','WB','E')
 ),
 lv as (
   select upper(regexp_replace(r->>'ec', '[^A-Za-z0-9]', '', 'g')) as ec, to_date(nullif(r->>'startDate',''),'YYYY-MM-DD') as s, to_date(nullif(r->>'endDate',''),'YYYY-MM-DD') as e
@@ -421,17 +463,12 @@ lv as (
     and (nullif(r->>'startDate','') is null or r->>'startDate' ~ '^\d{4}-\d{2}-\d{2}$')   -- skip malformed hand-edited dates (no abort)
     and (nullif(r->>'endDate','')   is null or r->>'endDate'   ~ '^\d{4}-\d{2}-\d{2}$')
 )
-select w.branch, w.ec, w.d, w.code,
-       case
-         when exists (select 1 from el where el.ec = w.ec and (el.s is null or w.d >= el.s::date) and (el.e is null or w.d <= el.e::date)) then 'unpaid_legal'
-         when exists (select 1 from maternity m where upper(regexp_replace(m.employee_code, '[^A-Za-z0-9]', '', 'g')) = w.ec and m.mat_start is not null and w.d >= m.mat_start and (m.mat_end is null or w.d <= m.mat_end)) then 'maternity'
-         else 'leave'
-       end as conflict
+select w.branch, w.ec, w.d, w.code, 'leave' as conflict,
+       case when w.d >= current_date then 'UPCOMING — verify overlay on kiosk/My BOA'
+            else 'past cycle — history' end as action
 from work_cells w
-where exists (select 1 from el where el.ec = w.ec and (el.s is null or w.d >= el.s::date) and (el.e is null or w.d <= el.e::date))
-   or exists (select 1 from maternity m where upper(regexp_replace(m.employee_code, '[^A-Za-z0-9]', '', 'g')) = w.ec and m.mat_start is not null and w.d >= m.mat_start and (m.mat_end is null or w.d <= m.mat_end))
-   or exists (select 1 from lv where lv.ec = w.ec and lv.s is not null and lv.e is not null and w.d >= lv.s::date and w.d <= lv.e::date)
-order by w.branch, w.ec, w.d;
+where exists (select 1 from lv where lv.ec = w.ec and lv.s is not null and lv.e is not null and w.d >= lv.s::date and w.d <= lv.e::date)
+order by (w.d >= current_date) desc, w.branch, w.ec, w.d;
 
 
 -- ── Q5: kiosk "absent/no" tag inside an EL / ML / leave range — ZERO (Case B) ─
