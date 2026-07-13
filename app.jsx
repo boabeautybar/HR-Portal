@@ -5582,6 +5582,18 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
       alert("Nothing to save — the schedule is empty for this period.");
       return;
     }
+    // Phase 3.1: show per-person what STAFF WILL SEE change vs the live
+    // published[0] before committing. Fails open — a preview error never
+    // blocks the publish. (Tech snapshots carry no baked hours: code-only diff.)
+    try {
+      const _prevList = window.BOA_DB.loadApprovedSchedules
+        ? await window.BOA_DB.loadApprovedSchedules(branch, ym, false)
+        : [];
+      const _prev = (_prevList && _prevList[0]) || null;
+      const _diff = computePublishDiff(_prev && _prev.grid, _prev && _prev.hours, grid, null, _prev && _prev.names);
+      const _proceed = await showPublishDiffDialog({ kind: "Nail tech schedule", branch, ym, diff: _diff });
+      if (!_proceed) return;
+    } catch (_pd) { console.error("[saveFinal] tech — publish diff preview failed (continuing):", _pd); }
     const name = window.prompt("Name this version (e.g. \"Final v1\", \"After Theresa review\"):", "");
     if (name === null) return;
     if (!name.trim()) { alert("Cancelled — a name is required."); return; }
@@ -10793,6 +10805,193 @@ function _bakeSnapshotHours(grid, managers, branch) {
 const _CYCLE_WORK_CODES = { W: 1, WE: 1, WM: 1, WL: 1, WB: 1 };
 // Dash/space/case-tolerant EC key (matches _normGridKey used by the grids).
 function _normEc(s) { return String(s == null ? "" : s).replace(/[^A-Za-z0-9]/g, "").toUpperCase(); }
+
+// ── Phase 3.1: publish-time diff (docs/schedule-consistency-plan.md §6) ──────
+// Before "Save Final", show per-person what STAFF WILL SEE CHANGE (code +
+// baked hours per day) vs the current live published[0]. Guardrail only:
+// every failure path fails OPEN (publish proceeds) — a broken preview must
+// never block a publish.
+
+// Staff-visible view of one cell: "WE · 08:00 - 17:00", "O", "" (blank).
+function _pubCellView(code, hoursEntry) {
+  const c = String(code == null ? "" : code).trim();
+  if (!c) return "";
+  const t = hoursEntry && hoursEntry.t ? " · " + hoursEntry.t : "";
+  return c + t;
+}
+// Human day label: manager keys are full dates, tech keys are day-of-month.
+function _pubDayLabel(d) {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(d)) {
+    try {
+      const dt = new Date(d + "T12:00:00");
+      const dows = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+      const mons = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+      return dows[dt.getDay()] + " " + dt.getDate() + " " + mons[dt.getMonth()];
+    } catch (_e) { return d; }
+  }
+  return "Day " + d;
+}
+// Diff (newGrid + newHours) against the live snapshot (oldGrid + oldHours).
+// EC rows matched tolerantly (_normEc); day keys compared verbatim (both
+// sides share a shape: manager full-date / tech day-of-month). Returns
+// { firstPublish, people, cells, rows:[{ec, name, day, from, to}] }.
+function computePublishDiff(oldGrid, oldHours, newGrid, newHours, names) {
+  if (!oldGrid || typeof oldGrid !== "object" || !Object.keys(oldGrid).length) {
+    let people = 0, cells = 0;
+    Object.keys(newGrid || {}).forEach(ec => {
+      const row = newGrid[ec];
+      if (!row || typeof row !== "object") return;
+      people++;
+      Object.keys(row).forEach(k => { if (row[k] != null && String(row[k]).trim()) cells++; });
+    });
+    return { firstPublish: true, people, cells, rows: [] };
+  }
+  const namesByEc = {};
+  Object.keys(names || {}).forEach(k => { namesByEc[_normEc(k)] = names[k]; });
+  const oldByEc = {};
+  Object.keys(oldGrid).forEach(k => { oldByEc[_normEc(k)] = { key: k, row: oldGrid[k] }; });
+  const oldHoursByEc = {};
+  Object.keys(oldHours || {}).forEach(k => { oldHoursByEc[_normEc(k)] = oldHours[k]; });
+  const newHoursByEc = {};
+  Object.keys(newHours || {}).forEach(k => { newHoursByEc[_normEc(k)] = newHours[k]; });
+  const rows = [];
+  const seen = {};
+  Object.keys(newGrid || {}).forEach(ecKey => {
+    const nk = _normEc(ecKey);
+    seen[nk] = 1;
+    const newRow = (newGrid[ecKey] && typeof newGrid[ecKey] === "object") ? newGrid[ecKey] : {};
+    const oldRow = (oldByEc[nk] && oldByEc[nk].row && typeof oldByEc[nk].row === "object") ? oldByEc[nk].row : {};
+    const oh = oldHoursByEc[nk] || {}, nh = newHoursByEc[nk] || {};
+    const days = {};
+    Object.keys(newRow).forEach(d => { days[d] = 1; });
+    Object.keys(oldRow).forEach(d => { days[d] = 1; });
+    Object.keys(days).forEach(d => {
+      const from = _pubCellView(oldRow[d], oh[d]);
+      const to = _pubCellView(newRow[d], nh[d]);
+      if (from !== to) rows.push({ ec: ecKey, name: namesByEc[nk] || "", day: d, from, to });
+    });
+  });
+  // People in the live snapshot but no longer in this publish.
+  Object.keys(oldByEc).forEach(nk => {
+    if (seen[nk]) return;
+    const oldRow = (oldByEc[nk].row && typeof oldByEc[nk].row === "object") ? oldByEc[nk].row : {};
+    const oh = oldHoursByEc[nk] || {};
+    Object.keys(oldRow).forEach(d => {
+      const from = _pubCellView(oldRow[d], oh[d]);
+      if (from) rows.push({ ec: oldByEc[nk].key, name: namesByEc[nk] || "", day: d, from, to: "(removed)" });
+    });
+  });
+  rows.sort((a, b) =>
+    a.ec.localeCompare(b.ec) ||
+    String(a.day).padStart(10, "0").localeCompare(String(b.day).padStart(10, "0")));
+  return { firstPublish: false, rows };
+}
+// Plain-DOM modal (no React state — callable with `await` from the two
+// prompt-chain Save Final handlers). Resolves true = continue publishing.
+// Data lands via textContent only (no user data through innerHTML).
+function showPublishDiffDialog(opts) {
+  return new Promise((resolve) => {
+    try {
+      const diff = opts.diff || {};
+      const title = (opts.kind || "Schedule") + " · " + (opts.branch || "") + " · " + (opts.ym || "");
+      const ov = document.createElement("div");
+      ov.style.cssText = "position:fixed;inset:0;background:rgba(15,23,42,0.55);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px;";
+      const card = document.createElement("div");
+      card.style.cssText = "background:#fff;border-radius:14px;max-width:660px;width:100%;max-height:82vh;display:flex;flex-direction:column;box-shadow:0 25px 60px rgba(0,0,0,0.35);font-family:inherit;overflow:hidden;";
+      const head = document.createElement("div");
+      head.style.cssText = "padding:16px 20px 10px;border-bottom:1px solid #f1c8dc;";
+      const h = document.createElement("div");
+      h.style.cssText = "font-weight:800;font-size:15px;color:#831843;";
+      h.textContent = "📋 Review before publishing — " + title;
+      const sub = document.createElement("div");
+      sub.style.cssText = "font-size:12px;color:#6b7280;margin-top:4px;";
+      head.appendChild(h); head.appendChild(sub);
+      const body = document.createElement("div");
+      body.style.cssText = "padding:12px 20px;overflow-y:auto;flex:1;font-size:13px;";
+      if (diff.firstPublish) {
+        sub.textContent = "First publish for this cycle — nothing is live yet.";
+        const p = document.createElement("div");
+        p.style.cssText = "padding:14px;background:#fdf2f8;border:1px solid #f9a8d4;border-radius:10px;color:#831843;";
+        p.textContent = "This makes the whole schedule visible to staff for the first time: " +
+          (diff.people || 0) + " people · " + (diff.cells || 0) + " scheduled days. There is no previous version to compare against.";
+        body.appendChild(p);
+      } else if (!diff.rows || !diff.rows.length) {
+        sub.textContent = "No staff-visible changes.";
+        const p = document.createElement("div");
+        p.style.cssText = "padding:14px;background:#f0fdf4;border:1px solid #86efac;border-radius:10px;color:#14532d;";
+        p.textContent = "What staff see stays exactly the same as the current live version (this publish still archives a new named snapshot).";
+        body.appendChild(p);
+      } else {
+        const people = {};
+        diff.rows.forEach(r => { people[r.ec] = 1; });
+        sub.textContent = diff.rows.length + " staff-visible change" + (diff.rows.length === 1 ? "" : "s") +
+          " across " + Object.keys(people).length + " " + (Object.keys(people).length === 1 ? "person" : "people") +
+          " vs the current live version.";
+        const CAP = 400;
+        let lastEc = null, list = null;
+        diff.rows.slice(0, CAP).forEach(r => {
+          if (r.ec !== lastEc) {
+            lastEc = r.ec;
+            const ph = document.createElement("div");
+            ph.style.cssText = "font-weight:800;color:#111827;margin:10px 0 4px;";
+            ph.textContent = r.ec + (r.name ? " — " + r.name : "");
+            body.appendChild(ph);
+            list = document.createElement("div");
+            list.style.cssText = "display:flex;flex-direction:column;gap:2px;";
+            body.appendChild(list);
+          }
+          const line = document.createElement("div");
+          line.style.cssText = "display:flex;gap:8px;align-items:baseline;padding:2px 0 2px 12px;";
+          const dl = document.createElement("span");
+          dl.style.cssText = "color:#6b7280;min-width:86px;flex:none;font-size:12px;";
+          dl.textContent = _pubDayLabel(r.day);
+          const fr = document.createElement("span");
+          fr.style.cssText = "color:#9ca3af;text-decoration:line-through;";
+          fr.textContent = r.from || "—";
+          const ar = document.createElement("span");
+          ar.style.cssText = "color:#9ca3af;flex:none;";
+          ar.textContent = "→";
+          const to = document.createElement("span");
+          to.style.cssText = "color:#111827;font-weight:700;";
+          to.textContent = r.to || "—";
+          line.appendChild(dl); line.appendChild(fr); line.appendChild(ar); line.appendChild(to);
+          list.appendChild(line);
+        });
+        if (diff.rows.length > CAP) {
+          const more = document.createElement("div");
+          more.style.cssText = "color:#6b7280;font-style:italic;margin-top:8px;";
+          more.textContent = "…and " + (diff.rows.length - CAP) + " more.";
+          body.appendChild(more);
+        }
+      }
+      const footNote = document.createElement("div");
+      footNote.style.cssText = "padding:0 20px 8px;font-size:11px;color:#9ca3af;";
+      footNote.textContent = "Per-day custom hours (Coverage cell editor) override the listed hours where set. Loan days overlay live.";
+      const foot = document.createElement("div");
+      foot.style.cssText = "padding:12px 20px 16px;border-top:1px solid #f3f4f6;display:flex;justify-content:flex-end;gap:10px;";
+      const cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.style.cssText = "background:#fff;border:1px solid #d1d5db;border-radius:10px;padding:9px 18px;font-weight:700;font-size:13px;cursor:pointer;font-family:inherit;color:#374151;";
+      cancel.textContent = "Cancel";
+      const go = document.createElement("button");
+      go.type = "button";
+      go.style.cssText = "background:linear-gradient(135deg,#BE185D,#E84B9B);color:#fff;border:none;border-radius:10px;padding:9px 20px;font-weight:800;font-size:13px;cursor:pointer;font-family:inherit;box-shadow:0 6px 16px rgba(190,24,93,0.3);";
+      go.textContent = "Looks right — publish";
+      const done = (v) => { try { document.body.removeChild(ov); } catch (_e) { } resolve(v); };
+      cancel.onclick = () => done(false);
+      go.onclick = () => done(true);
+      ov.onclick = (e) => { if (e.target === ov) done(false); };
+      foot.appendChild(cancel); foot.appendChild(go);
+      card.appendChild(head); card.appendChild(body); card.appendChild(footNote); card.appendChild(foot);
+      ov.appendChild(card);
+      document.body.appendChild(ov);
+    } catch (e) {
+      // Guardrail must never block a publish — fail open.
+      console.error("[publish diff] dialog failed (continuing without review):", e);
+      resolve(true);
+    }
+  });
+}
 // Collapse shift-label variants to "W" so a WE↔WM relabel is NOT flagged as a
 // change (only real work/off/leave transitions surface). Blank → "".
 function _cycleNormCode(c) { if (c == null || c === "") return ""; return _CYCLE_WORK_CODES[c] ? "W" : c; }
@@ -34844,6 +35043,30 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             alert("Nothing to save — the manager schedule is empty for this cycle.");
             return;
           }
+          // Bake the per-store shift labels (WE/WL/WM) into the approved
+          // snapshot so Manager Coverage reads the same shift times this tab
+          // shows (idempotent — the grid is re-labelled on render anyway).
+          // Hoisted before the prompts so the publish diff below compares the
+          // EXACT baked grid + hours staff will see.
+          const _approvedGrid = JSON.parse(JSON.stringify(draft));
+          _applyBranchShiftRules(_approvedGrid, result.dates, result.managers);
+          const _apNames = {}; (result.managers || []).forEach(m => { if (m && m.ec) _apNames[String(m.ec).trim()] = m.name || ""; });
+          // Phase 1.1: bake the portal-authoritative shift hours per working
+          // cell so kiosk / My BOA render the SAME times this tab shows instead
+          // of re-deriving them from their own (drift-prone) shiftTimes copies.
+          const _apHours = _bakeSnapshotHours(_approvedGrid, result.managers, branch);
+          // Phase 3.1: show per-person what STAFF WILL SEE change (code + baked
+          // hours per day) vs the live published[0] before committing. Fails
+          // open — a preview error never blocks the publish.
+          try {
+            const _prevList = window.BOA_DB.loadApprovedSchedules
+              ? await window.BOA_DB.loadApprovedSchedules(branch, ymKey, true)
+              : [];
+            const _prev = (_prevList && _prevList[0]) || null;
+            const _diff = computePublishDiff(_prev && _prev.grid, _prev && _prev.hours, _approvedGrid, _apHours, _apNames);
+            const _proceed = await showPublishDiffDialog({ kind: "Manager schedule", branch, ym: ymKey, diff: _diff });
+            if (!_proceed) return;
+          } catch (_pd) { console.error("[saveFinal] manager — publish diff preview failed (continuing):", _pd); }
           const name = window.prompt("Name this version (e.g. \"Final v1\", \"After Theresa review\"):", "");
           if (name === null) return;
           if (!name.trim()) { alert("Cancelled — a name is required."); return; }
@@ -34857,16 +35080,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           console.log("[saveFinal] manager — saving", { branch, ymKey, ecCount: Object.keys(draft).length, name: name.trim(), madeBy: madeBy.trim(), approvedBy: approvedBy.trim() });
           try {
             const u = window.BOA_CURRENT_USER || currentUser || {};
-            // Bake the per-store shift labels (WE/WL/WM) into the approved
-            // snapshot so Manager Coverage reads the same shift times this tab
-            // shows (idempotent — the grid is re-labelled on render anyway).
-            const _approvedGrid = JSON.parse(JSON.stringify(draft));
-            _applyBranchShiftRules(_approvedGrid, result.dates, result.managers);
-            const _apNames = {}; (result.managers || []).forEach(m => { if (m && m.ec) _apNames[String(m.ec).trim()] = m.name || ""; });
-            // Phase 1.1: bake the portal-authoritative shift hours per working
-            // cell so kiosk / My BOA render the SAME times this tab shows instead
-            // of re-deriving them from their own (drift-prone) shiftTimes copies.
-            const _apHours = _bakeSnapshotHours(_approvedGrid, result.managers, branch);
             const saved = await window.BOA_DB.saveApprovedSchedule(branch, ymKey, true, {
               name: name.trim(),
               grid: _approvedGrid,
