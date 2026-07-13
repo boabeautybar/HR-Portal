@@ -17384,6 +17384,56 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     return m;
   }, [staff, managers, hoStaff]);
 
+  // Dashboard "changes awaiting publish" alert (Owner + National Ops): a
+  // passive run of the SAME scan the review modal uses, summarised, so a
+  // leave approval / extra day / loan that only lives in the draft can't sit
+  // unnoticed until someone happens to open the publisher.
+  // null = not scanned yet; {count, branches, kinds, scannedAt} after a scan.
+  const [pubCycleAlert, setPubCycleAlert] = useState(null);
+  const _summarizePendingRows = (rows) => {
+    // Placeholder rows (codes with no employee record) are excluded — the
+    // modal pre-unchecks them, and they shouldn't nag anyone to publish.
+    const real = (rows || []).filter(r => r && !r.isPlaceholder);
+    const branches = {}, kinds = {};
+    real.forEach(r => {
+      branches[r.branch] = 1;
+      kinds[r.changeType] = (kinds[r.changeType] || 0) + 1;
+    });
+    return { count: real.length, branches: Object.keys(branches).length, kinds, scannedAt: Date.now() };
+  };
+  useEffect(() => {
+    if (tab !== "dashboard") return;
+    const _senior = currentUser?.isOwner || (currentUser?.role || "").toLowerCase().includes("national");
+    if (!_senior) return;
+    // Names must be loaded first, or every row misreads as a placeholder
+    // (isPlaceholder = no resolvable name) and the alert under-counts.
+    if (!((staff && staff.length) || (managers && managers.length))) return;
+    if (pubCycleAlert && Date.now() - pubCycleAlert.scannedAt < 5 * 60 * 1000) return;   // throttle re-scans
+    if (!window.BOA_DB || !window.BOA_DB.loadCycleScheduleGrids) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const techYm = window.BOA_DB.currentSchedYm();
+        const mgrYm = window.BOA_DB.currentAttYm();
+        const p2 = n => String(n).padStart(2, "0");
+        const ymd = d => d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate());
+        const now = new Date();
+        const cs = _cycleStartDate(now);
+        const ce = new Date(cs.getFullYear(), cs.getMonth() + 1, 24);
+        const surfaces = await window.BOA_DB.loadCycleScheduleGrids(techYm, mgrYm);
+        const rows = computeCyclePendingRows(surfaces, {
+          techYm, cycStart: ymd(cs), cycEnd: ymd(ce), todayYmd: ymd(now),
+          nameFor: (ec) => _pubCycleNameMap[_normEc(ec)] || null
+        });
+        if (!cancelled) setPubCycleAlert(_summarizePendingRows(rows));
+      } catch (e) {
+        console.warn("[publish alert] scan failed (non-fatal):", e);
+        if (!cancelled) setPubCycleAlert({ count: 0, branches: 0, kinds: {}, scannedAt: Date.now() });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [tab, currentUser, pubCycleAlert, _pubCycleNameMap, staff, managers]);
+
   // Scan every branch's draft-vs-published for the current cycle and open the
   // review modal. Mirrors SQL Q7 — see computeCyclePendingRows.
   const openPublishCycle = async () => {
@@ -17412,6 +17462,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       rows.forEach(r => { if (r.isPlaceholder) initSkip[r.id] = true; });
       setPubCycleSkip(initSkip);
       setPubCycleRows(rows);
+      setPubCycleAlert(_summarizePendingRows(rows));   // keep the dashboard alert in step with the fresh scan
     } catch (e) {
       setPubCycleErr(e && e.message ? e.message : String(e));
       setPubCycleRows([]);
@@ -17472,6 +17523,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       try { await logActivity("Published current cycle", chosen.length + " change" + (chosen.length === 1 ? "" : "s"), "Patched " + okSurfaces + " published snapshot" + (okSurfaces === 1 ? "" : "s"), "Schedule"); } catch (_e) { }
       alert("✓ Published " + chosen.length + " change" + (chosen.length === 1 ? "" : "s") + " across " + okSurfaces + " schedule" + (okSurfaces === 1 ? "" : "s") + "." +
         (notPublished.length ? "\n\n⚠ Skipped (cycle has no published snapshot yet — use that branch's own Approve & Publish): " + notPublished.join(", ") : ""));
+      // Whatever stayed unchecked is still pending — the dashboard alert
+      // shows the remainder instead of waiting for the next throttled scan.
+      setPubCycleAlert(_summarizePendingRows((pubCycleRows || []).filter(r => pubCycleSkip[r.id] && !r.isPlaceholder)));
       setPubCycleOpen(false); setPubCycleRows(null); setPubCycleSkip({});
     } catch (e) {
       alert("Publish failed: " + (e && e.message ? e.message : e));
@@ -22340,6 +22394,37 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     </div>
                   );
                 })()}
+
+              {/* ── SECTION: SCHEDULE CHANGES AWAITING PUBLISH ──
+                  Owner + National Ops only. A passive run of the "Publish
+                  current cycle" scan: any draft edit this cycle (leave, extra
+                  day, loan, day-off swap…) that hasn't been published yet.
+                  Staff / kiosk / My BOA keep showing the OLD version until
+                  someone reviews + publishes — this is the nudge to do it. */}
+              {(currentUser?.isOwner || (currentUser?.role || "").toLowerCase().includes("national")) && pubCycleAlert && pubCycleAlert.count > 0 && (() => {
+                const a = pubCycleAlert;
+                const kindsTxt = Object.keys(a.kinds)
+                  .sort((x, y) => a.kinds[y] - a.kinds[x])
+                  .map(k => a.kinds[k] + "× " + k).join(" · ");
+                return (
+                  <div style={{ background: "#fffbeb", border: "1px solid #fcd34d", borderRadius: 16, padding: "16px 20px", marginBottom: 20, boxShadow: "0 4px 14px rgba(180,83,9,0.10)", display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+                    <div style={{ flex: 1, minWidth: 280 }}>
+                      <div style={{ fontSize: 15, fontWeight: 800, color: "#92400e", letterSpacing: "0.04em", textTransform: "uppercase" }}>📣 Schedule changes awaiting publish</div>
+                      <div style={{ fontSize: 12.5, color: "#b45309", fontWeight: 700, marginTop: 4 }}>
+                        {a.count} change{a.count === 1 ? "" : "s"} across {a.branches} branch{a.branches === 1 ? "" : "es"} this cycle{kindsTxt ? " — " + kindsTxt : ""}
+                      </div>
+                      <div style={{ fontSize: 11.5, color: "#a16207", marginTop: 3 }}>
+                        These edits live only in the draft — staff, kiosk and My BOA still show the old schedule until they're published.
+                      </div>
+                    </div>
+                    <button onClick={openPublishCycle} disabled={pubCycleBusy}
+                      title="Review every unpublished schedule change for the current cycle (leave, extra days, loans, day-off swaps) and publish the ones you keep checked."
+                      style={{ background: pubCycleBusy ? "#fde68a" : "#b45309", color: "#fff", border: "none", borderRadius: 10, padding: "10px 18px", fontWeight: 800, fontSize: 13, cursor: pubCycleBusy ? "default" : "pointer", fontFamily: "inherit", whiteSpace: "nowrap", boxShadow: pubCycleBusy ? "none" : "0 4px 12px rgba(180,83,9,0.3)" }}>
+                      {pubCycleBusy && !pubCycleOpen ? "Scanning…" : "Review & publish →"}
+                    </button>
+                  </div>
+                );
+              })()}
 
               {/* ── SECTION: FRESHA — DUE SOON (< 3 days) ──
                   The full Fresha open/close checklist now lives on the Fresha
