@@ -10856,6 +10856,7 @@ function computePublishDiff(oldGrid, oldHours, newGrid, newHours, names) {
   Object.keys(newHours || {}).forEach(k => { newHoursByEc[_normEc(k)] = newHours[k]; });
   const rows = [];
   const seen = {};
+  let hoursBaked = 0;   // code unchanged, hours newly baked (none were published before)
   Object.keys(newGrid || {}).forEach(ecKey => {
     const nk = _normEc(ecKey);
     seen[nk] = 1;
@@ -10868,7 +10869,14 @@ function computePublishDiff(oldGrid, oldHours, newGrid, newHours, names) {
     Object.keys(days).forEach(d => {
       const from = _pubCellView(oldRow[d], oh[d]);
       const to = _pubCellView(newRow[d], nh[d]);
-      if (from !== to) rows.push({ ec: ecKey, name: namesByEc[nk] || "", day: d, from, to });
+      if (from === to) return;
+      // Same code, hours simply baked where the old snapshot had none (the
+      // pre-Phase-1.1 → baked transition): true but not a schedule change —
+      // collapse into one summary count so real changes stay readable.
+      const oc = String(oldRow[d] == null ? "" : oldRow[d]).trim();
+      const nc = String(newRow[d] == null ? "" : newRow[d]).trim();
+      if (oc === nc && oc && !(oh[d] && oh[d].t) && nh[d] && nh[d].t) { hoursBaked++; return; }
+      rows.push({ ec: ecKey, name: namesByEc[nk] || "", day: d, from, to });
     });
   });
   // People in the live snapshot but no longer in this publish.
@@ -10884,7 +10892,7 @@ function computePublishDiff(oldGrid, oldHours, newGrid, newHours, names) {
   rows.sort((a, b) =>
     a.ec.localeCompare(b.ec) ||
     String(a.day).padStart(10, "0").localeCompare(String(b.day).padStart(10, "0")));
-  return { firstPublish: false, rows };
+  return { firstPublish: false, rows, hoursBaked };
 }
 // Plain-DOM modal (no React state — callable with `await` from the two
 // prompt-chain Save Final handlers). Resolves true = continue publishing.
@@ -10916,10 +10924,13 @@ function showPublishDiffDialog(opts) {
           (diff.people || 0) + " people · " + (diff.cells || 0) + " scheduled days. There is no previous version to compare against.";
         body.appendChild(p);
       } else if (!diff.rows || !diff.rows.length) {
-        sub.textContent = "No staff-visible changes.";
+        sub.textContent = "No staff-visible schedule changes.";
         const p = document.createElement("div");
         p.style.cssText = "padding:14px;background:#f0fdf4;border:1px solid #86efac;border-radius:10px;color:#14532d;";
-        p.textContent = "What staff see stays exactly the same as the current live version (this publish still archives a new named snapshot).";
+        p.textContent = diff.hoursBaked
+          ? "No shift/day changes. " + diff.hoursBaked + " working day" + (diff.hoursBaked === 1 ? "" : "s") +
+            " will now carry portal-published hours (codes unchanged — the old version predates baked hours)."
+          : "What staff see stays exactly the same as the current live version (this publish still archives a new named snapshot).";
         body.appendChild(p);
       } else {
         const people = {};
@@ -10962,6 +10973,13 @@ function showPublishDiffDialog(opts) {
           more.style.cssText = "color:#6b7280;font-style:italic;margin-top:8px;";
           more.textContent = "…and " + (diff.rows.length - CAP) + " more.";
           body.appendChild(more);
+        }
+        if (diff.hoursBaked) {
+          const hb = document.createElement("div");
+          hb.style.cssText = "margin-top:12px;padding:10px 12px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;color:#1e40af;font-size:12px;";
+          hb.textContent = "ⓘ Plus " + diff.hoursBaked + " working day" + (diff.hoursBaked === 1 ? "" : "s") +
+            " that only gain portal-published hours (code unchanged — the old version predates baked hours). Not listed individually.";
+          body.appendChild(hb);
         }
       }
       const footNote = document.createElement("div");
@@ -35043,12 +35061,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             alert("Nothing to save — the manager schedule is empty for this cycle.");
             return;
           }
+          // Publish WHAT THE EDITOR SHOWS (result.grid), not the raw draft:
+          // the render-time merge asserts L/X cells from approved leave records
+          // over the draft (see the newGrid merge above) — a draft saved BEFORE
+          // a leave approval still holds W on those days, and publishing it put
+          // working cells inside leave ranges (the Q4b audit family, seen live
+          // 2026-07-13: Kuils River B272M / Table Bay B621M). Also mirror the
+          // renderer's on-mat coercion (every cell of an on-mat row shows ML).
+          // The LIVE draft write below stays on the raw draft on purpose — the
+          // editor re-merges leave on render, and staff read only the snapshot.
+          const _approvedGrid = JSON.parse(JSON.stringify(result.grid));
+          (result.managers || []).forEach(m => {
+            if (m && m._onMat && _approvedGrid[m.ec]) {
+              Object.keys(_approvedGrid[m.ec]).forEach(k => { _approvedGrid[m.ec][k] = "ML"; });
+            }
+          });
           // Bake the per-store shift labels (WE/WL/WM) into the approved
           // snapshot so Manager Coverage reads the same shift times this tab
           // shows (idempotent — the grid is re-labelled on render anyway).
           // Hoisted before the prompts so the publish diff below compares the
           // EXACT baked grid + hours staff will see.
-          const _approvedGrid = JSON.parse(JSON.stringify(draft));
           _applyBranchShiftRules(_approvedGrid, result.dates, result.managers);
           const _apNames = {}; (result.managers || []).forEach(m => { if (m && m.ec) _apNames[String(m.ec).trim()] = m.name || ""; });
           // Phase 1.1: bake the portal-authoritative shift hours per working
