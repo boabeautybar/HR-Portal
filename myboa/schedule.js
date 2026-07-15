@@ -824,6 +824,12 @@
           state.name = (row.name || "").trim().split(" ")[0] || "";
           state.role = row.role || "";
           state.homeBranch = (row.branch || "").trim();   // their base store
+          // Call Centre & Sales split: these people carry branch "Head Office"
+          // in the staff table but schedule under their own store. Anchor them
+          // there so every schedule/published key resolves to the CC&S grid
+          // (they don't transfer between salons, so home == scheduling store).
+          // ONE shared classifier for all My BOA features — see cycle.js.
+          state.homeBranch = window.BOA_CYCLE.ccSchedStore(state.homeBranch, ecUp, state.role);
           // Branch transfer (permanent move with an effective date): from
           // transfer_date on, the destination store becomes their home/truth.
           state.transferring = !!row.transferring;

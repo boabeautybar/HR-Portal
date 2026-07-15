@@ -131,17 +131,25 @@
     setBusy(true, "find", "Looking up…");
     var ymEnd = currentSchedYm();
     var cycles = [ymEnd, shiftYm(ymEnd, 1)];
-    var found = { isManager: false, ecKey: null };
+    // Call Centre & Sales people pick "Head Office" (their staff branch) but
+    // schedule under the "Call Centre & Sales" store — so for Head Office we
+    // search BOTH grids, CC first (a stale pre-split row can linger in the HO
+    // grid; the CC grid is authoritative). See BOA_CYCLE.schedStoresFor.
+    var searchStores = window.BOA_CYCLE.schedStoresFor ? window.BOA_CYCLE.schedStoresFor(store) : [store];
+    var combos = [];
+    cycles.forEach(function (ym) { searchStores.forEach(function (st) { combos.push({ ym: ym, st: st }); }); });
+    var found = { isManager: false, ecKey: null, store: store };
 
-    // Find the person (tech then manager) in this or next cycle.
+    // Find the person (tech then manager) in this or next cycle, per store.
     (function chain(i) {
-      if (i >= cycles.length) return Promise.resolve();
-      return fetchGrid(store, false, cycles[i]).then(function (techGrid) {
+      if (i >= combos.length) return Promise.resolve();
+      var cmb = combos[i];
+      return fetchGrid(cmb.st, false, cmb.ym).then(function (techGrid) {
         var tk = findEcKey(techGrid, ec);
-        if (tk) { found = { isManager: false, ecKey: tk }; return; }
-        return fetchGrid(store, true, cycles[i]).then(function (mgrGrid) {
+        if (tk) { found = { isManager: false, ecKey: tk, store: cmb.st }; return; }
+        return fetchGrid(cmb.st, true, cmb.ym).then(function (mgrGrid) {
           var mk = findEcKey(mgrGrid, ec);
-          if (mk) { found = { isManager: true, ecKey: mk }; return; }
+          if (mk) { found = { isManager: true, ecKey: mk, store: cmb.st }; return; }
           return chain(i + 1);
         });
       });
@@ -151,7 +159,10 @@
         setErr("We couldn't find a published schedule for " + ec + " at " + store + ". " + EC_HINT + " Your manager may also not have published the schedule yet.");
         return;
       }
-      state.name = name; state.store = store; state.ec = found.ecKey; state.isManager = found.isManager;
+      // Anchor to the store whose grid actually holds them (Call Centre & Sales
+      // for CC&S people) so the off-day collection below and the submitted
+      // record's store both point at the real scheduling store.
+      state.name = name; state.store = found.store; state.ec = found.ecKey; state.isManager = found.isManager;
       try { localStorage.setItem("myboa_sched_v1", JSON.stringify({ store: store, ec: found.ecKey })); } catch (_e) {}
       // Collect OFF days that are today or later. We offer the rest of the
       // CURRENT pay cycle (25th → 24th) AND the whole NEXT cycle as soon as its
@@ -162,7 +173,7 @@
       var today = new Date(); today.setHours(0, 0, 0, 0);
       var cyclesToOffer = [ymEnd, shiftYm(ymEnd, 1)];
       return Promise.all(cyclesToOffer.map(function (ym) {
-        return fetchGrid(store, found.isManager, ym).then(function (grid) {
+        return fetchGrid(found.store, found.isManager, ym).then(function (grid) {
           var offs = [];
           if (grid) {
             var row = grid[findEcKey(grid, ec) || found.ecKey];

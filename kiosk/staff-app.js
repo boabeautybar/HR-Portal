@@ -203,15 +203,33 @@
   // Roster schedule for HO: prefer the PUBLISHED snapshot [0], fall back to the
   // live draft only for a cycle that was never published (mirrors the manager
   // kiosk — commit d9f6db6). Uses tech-style keys (boa_sched(approved)_<br>_<ym>).
-  async function _loadHoSchedule(ym) {
+  async function _loadHoScheduleFor(ym, brOverride) {
     if (window.APP_DATA.getApprovedSchedule) {
       try {
-        var ap = await window.APP_DATA.getApprovedSchedule(ym, "tech");
+        var ap = await window.APP_DATA.getApprovedSchedule(ym, "tech", brOverride);
         if (ap && ap.grid && Object.keys(ap.grid).length) return ap;
       } catch (_e) { /* fall through to draft */ }
     }
-    try { return await window.APP_DATA.getSchedule(ym, "tech"); }
+    try { return await window.APP_DATA.getSchedule(ym, "tech", brOverride); }
     catch (_e2) { return { grid: {} }; }
+  }
+  // The HO device serves both the office (Head Office grid) and the Call Centre
+  // & Sales floor (its own grid). Merge both so the combined Today roster sees
+  // everyone. The CC grid is written LAST and wins any EC collision: pre-split
+  // CC rows still linger in the Head Office grid (Supabase rows are never
+  // deleted, and the portal HO tab republishes its loaded grid verbatim), so a
+  // colliding EC is always a stale HO copy that must yield to the authoritative
+  // CC&S schedule. The two loads are independent — run them in parallel.
+  async function _loadHoSchedule(ym) {
+    var both = await Promise.all([
+      _loadHoScheduleFor(ym),                        // device branch = Head Office
+      _loadHoScheduleFor(ym, "Call Centre & Sales")
+    ]);
+    var grid = {};
+    var og = (both[0] && both[0].grid) || {}, cg = (both[1] && both[1].grid) || {};
+    Object.keys(og).forEach(function (ec) { grid[ec] = og[ec]; });
+    Object.keys(cg).forEach(function (ec) { grid[ec] = cg[ec]; });
+    return { grid: grid };
   }
 
   // Selfie is MANDATORY: resolves to a dataUrl, or null if the person cancels —
@@ -1015,7 +1033,11 @@
   // Recruiter, Trainer, Payroll, Hygienist, EPA, and anyone with no department).
   function _hoIsCcSales(s) {
     var r = String((s && s.role) || "").trim().toUpperCase();
-    return r === "CC" || r === "MCC" || r === "SALES";
+    var ec = String((s && s.employee_code) || "").trim().toUpperCase();
+    // -CC code suffix OR a Call-Centre role — same rule as the HR portal, so the
+    // two surfaces classify identically (a -CC person whose role isn't set still
+    // lands on the CC&S side).
+    return /-CC$/.test(ec) || r === "CC" || r === "MCC" || r === "SALES";
   }
   // True when a branch string is Head Office (tolerant of casing/whitespace),
   // mirroring the portal's isHeadOfficeBranch.
@@ -1123,10 +1145,12 @@
         staff.push(t);
       });
     }
-    // For HO, `kind` names a department (office/ccsales), not a data source —
-    // both read the one HO (tech-style) grid.
+    // For HO, `kind` names a department (office/ccsales), not a data source.
+    // Office reads the Head Office grid; Call Centre & Sales reads its own store
+    // grid (CC&S people schedule under "Call Centre & Sales", not Head Office).
     var dataKind = isHo ? "tech" : kind;
-    var sched = await window.APP_DATA.getSchedule(ym, dataKind);
+    var schedBranch = (isHo && hoDept === "ccsales") ? "Call Centre & Sales" : undefined;
+    var sched = await window.APP_DATA.getSchedule(ym, dataKind, schedBranch);
     var grid  = (sched && sched.grid) || {};
     // Mirror the HR portal's Manager Coverage resolution exactly, so the kiosk
     // can never disagree with it:
@@ -1142,7 +1166,7 @@
         // HO renders the PUBLISHED truth like managers do — read its tech-style
         // snapshot [0] (same source-of-truth as the HO check-in roster), so the
         // schedule view can't disagree with Today/Staff or show unpublished edits.
-        var _ap = await window.APP_DATA.getApprovedSchedule(ym, isMgr ? "mgr" : "tech");
+        var _ap = await window.APP_DATA.getApprovedSchedule(ym, isMgr ? "mgr" : "tech", schedBranch);
         approvedGrid = (_ap && _ap.grid) || {};
         approvedNames = (_ap && _ap.names) || {};
         approvedHours = (_ap && _ap.hours) || {};
