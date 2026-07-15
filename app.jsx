@@ -3457,17 +3457,23 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete, smTrialActive, onStar
 
 // ─── SCHEDULE EDITOR (Phase 2a — manual editing, save to Supabase) ──────────────
 function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, leaveRecs, obList, techLoans, onTechLoansChange, initialBranch, isOwner, branchList, requestStore }) {
-  // requestStore (optional, "ho") names the persistence target for off-day
-  // request edits — default is the nail-tech key. The Head Office scheduler
-  // passes "ho" so HO edits land in boa_ho_requests_v1, never the shared tech
-  // key. Resolved by NAME at call time and hard-fails if the saver is missing:
-  // a function-reference prop would silently be undefined on a stale-cached
-  // data.js and fall back to saveTechRequests — overwriting every salon tech
-  // request with the HO array. Failing loudly is the only safe degradation.
+  // requestStore (optional, "ho" | "cc") names the persistence target for
+  // off-day request edits — default is the nail-tech key. The Head Office
+  // scheduler passes "ho" (boa_ho_requests_v1) and the Call Centre & Sales
+  // scheduler passes "cc" (boa_cc_requests_v1) so neither ever touches the
+  // shared tech key. Resolved by NAME at call time and hard-fails if the saver
+  // is missing: a function-reference prop would silently be undefined on a
+  // stale-cached data.js and fall back to saveTechRequests — overwriting every
+  // salon tech request with the HO/CC array. Failing loudly is the only safe
+  // degradation.
   const _saveReqs = (arr) => {
     if (requestStore === "ho") {
       if (!window.BOA_DB.saveHoRequests) throw new Error("This portal build can't save Head Office requests yet — refresh the page to load the latest data.js.");
       return window.BOA_DB.saveHoRequests(arr);
+    }
+    if (requestStore === "cc") {
+      if (!window.BOA_DB.saveCcRequests) throw new Error("This portal build can't save Call Centre & Sales requests yet — refresh the page to load the latest data.js.");
+      return window.BOA_DB.saveCcRequests(arr);
     }
     return window.BOA_DB.saveTechRequests(arr);
   };
@@ -3477,6 +3483,12 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
   // surfaces). Defaults to the full salon list.
   const _branchOptions = (branchList && branchList.length) ? branchList : SALONS.map(s => s.name);
   const [branch, setBranch] = useState(initialBranch || _branchOptions[0]);
+  // The store a staff row SCHEDULES under. Call Centre & Sales people carry
+  // branch "Head Office" in the staff table (the split is derived, never
+  // stored), but they schedule under the CALL_CENTRE store — so every roster /
+  // leave-stamp filter in this component must compare against this, not the
+  // raw s.branch, or the CC&S mount matches nobody. Identity for salon rows.
+  const _schedBranchOf = (s) => (s && isHeadOfficeBranch(s.branch) && isCallCentreStaff(s)) ? CALL_CENTRE : (s && s.branch);
   // Head Office has no mani/pedi stations, so autoFill's station-capacity math
   // computes capacity 0 and generates a schedule with everyone off — the
   // feature is meaningless there (HO is a simple M–F pattern, filled by hand).
@@ -3587,6 +3599,14 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
   // in from the check-in app). Empty cells become R; cells the user has set
   // to anything else are preserved. If anything was added, the schedule goes
   // dirty so the user knows to Save.
+  // ECs of the staff actually rendered on THIS grid. A shared request key
+  // (boa_ho_requests_v1) can hold records for people who schedule elsewhere —
+  // after the Call Centre & Sales split, CC people's originals stay in the HO
+  // key (Supabase rows are never deleted) but they schedule on the CC&S tab.
+  // Scoping every request consumer to this set stops a foreign record from
+  // stamping a phantom row into (and being saved back onto) this grid.
+  const _gridEcSet = useMemo(() => new Set((allStaff || []).map(s => String(s.ec || "").trim().toUpperCase())), [allStaff]);
+  const _inGrid = (ec) => _gridEcSet.has(String(ec || "").trim().toUpperCase());
   useEffect(() => {
     if (loading) return;
     if (!techRequests || techRequests.length === 0) return;
@@ -3595,6 +3615,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
     const next = JSON.parse(JSON.stringify(grid || {}));
     for (const r of techRequests) {
       if (!r || r.branch !== branch || !r.date) continue;
+      if (!_inGrid(r.ec)) continue;
       const dt = new Date(r.date + "T00:00:00");
       if (isNaN(dt.getTime())) continue;
       const inPeriod = days.some(d => d.year === dt.getFullYear() && d.monthIdx === dt.getMonth() && d.d === dt.getDate());
@@ -3633,7 +3654,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
     // record was skipped or written under a key no row reads, leaving the
     // tech's whole row blank on the schedule.
     const ecByTrim = {};
-    allStaff.filter(s => s.branch === branch).forEach(s => { ecByTrim[String(s.ec).trim()] = s.ec; });
+    allStaff.filter(s => _schedBranchOf(s) === branch).forEach(s => { ecByTrim[String(s.ec).trim()] = s.ec; });
     let changed = false;
     const next = JSON.parse(JSON.stringify(grid || {}));
     for (const lv of leaveRecs) {
@@ -3707,7 +3728,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
     // time so the manager can still see what they're scheduled for up
     // to the move date.
     const regularTechs = allStaff
-      .filter(s => s.branch === branch && !s.isShadow)
+      .filter(s => _schedBranchOf(s) === branch && !s.isShadow)
       // Off-boarding visibility rule: a tech with a leftDate stays on the
       // grid for the cycle they leave in (greyed-out row + X cells after
       // leftDate, handled at render and in PHASE 18). From the next cycle
@@ -3750,6 +3771,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
     const out = new Set();
     for (const r of (techRequests || [])) {
       if (!r || r.branch !== branch || !r.date) continue;
+      if (!_inGrid(r.ec)) continue;
       const dt = new Date(r.date + "T00:00:00");
       // Only honour requests whose ymd falls in the current period.
       const inPeriod = days.some(d => d.year === dt.getFullYear() && d.monthIdx === dt.getMonth() && d.d === dt.getDate());
@@ -4294,6 +4316,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
     (techRequests || []).forEach(r => {
       if (!r || !r.ec || !r.date) return;
       if (r.branch && r.branch !== branch) return;
+      if (!_inGrid(r.ec)) return;
       const dt = new Date(r.date + "T00:00:00");
       if (isNaN(dt.getTime())) return;
       const inPeriod = days.some(d => d.year === dt.getFullYear() && d.monthIdx === dt.getMonth() && d.d === dt.getDate());
@@ -5089,7 +5112,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
     // auto-fill resets the grid). Ghost (X) cells are preserved so that
     // post-leftDate days don't get overwritten with L.
     if (leaveRecs && leaveRecs.length > 0) {
-      const branchEcs = new Set(allStaff.filter(s => s.branch === branch).map(s => s.ec));
+      const branchEcs = new Set(allStaff.filter(s => _schedBranchOf(s) === branch).map(s => s.ec));
       for (const lv of leaveRecs) {
         if (!lv || !lv.ec || !lv.startDate || !lv.endDate) continue;
         if (!branchEcs.has(lv.ec)) continue;
@@ -6358,10 +6381,10 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
         // Branch-aware list (in cycle) and a count of requests sitting outside
         // the current cycle so we can surface them as a hint instead of silently
         // dropping them.
-        const branchReqs = allReqs.filter(r => r && r.date && norm(r.branch) === branchKey);
+        const branchReqs = allReqs.filter(r => r && r.date && norm(r.branch) === branchKey && _inGrid(r.ec));
         const cycleReqs = branchReqs.filter(r => cycleYmds.has(r.date));
         const otherCycle = branchReqs.length - cycleReqs.length;
-        const otherBranch = allReqs.filter(r => r && r.date && norm(r.branch) !== branchKey).length;
+        const otherBranch = allReqs.filter(r => r && r.date && norm(r.branch) !== branchKey && _inGrid(r.ec)).length;
         const dowAbbrLocal = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
         const techsActive = techs.filter(t => !t.onMat);
         const persist = async (next) => {
@@ -7337,7 +7360,7 @@ function PinLogin(props) {
       setPin("");
       return;
     }
-    const session = { pin, name: u.name, role: u.role, demo: !!u.demo, isOwner: !!u.isOwner, voucherEntryOnly: !!u.voucherEntryOnly, hideCategories: u.hideCategories || [], hideTabs: u.hideTabs || [], showTabs: u.showTabs || [], readOnlyTabs: u.readOnlyTabs || [], stores: Array.isArray(u.stores) ? u.stores.slice() : [], signedInAt: new Date().toISOString() };
+    const session = { pin, name: u.name, role: u.role, demo: !!u.demo, isOwner: !!u.isOwner, voucherEntryOnly: !!u.voucherEntryOnly, ccOnly: !!u.ccOnly, hideCategories: u.hideCategories || [], hideTabs: u.hideTabs || [], showTabs: u.showTabs || [], readOnlyTabs: u.readOnlyTabs || [], stores: Array.isArray(u.stores) ? u.stores.slice() : [], signedInAt: new Date().toISOString() };
     try { sessionStorage.setItem(PIN_SESSION_KEY, JSON.stringify(session)); } catch (_) { }
     window.BOA_CURRENT_USER = session;
     onUnlock(session);
@@ -8620,6 +8643,7 @@ function AppGate() {
               name: u.name, role: u.role,
               demo: !!u.demo, isOwner: !!u.isOwner,
               voucherEntryOnly: !!u.voucherEntryOnly,
+              ccOnly: !!u.ccOnly,
               hideCategories: u.hideCategories || [],
               hideTabs: u.hideTabs || [],
               showTabs: u.showTabs || [],
@@ -8676,6 +8700,7 @@ function AppGate() {
         ...currentUser,
         name: u.name, role: u.role,
         demo: !!u.demo, isOwner: !!u.isOwner,
+        ccOnly: !!u.ccOnly,
         hideCategories: u.hideCategories || [],
         hideTabs: u.hideTabs || [],
         readOnlyTabs: u.readOnlyTabs || [],
@@ -8736,6 +8761,7 @@ const SETTINGS_TABS = [
   { t: "checkins", l: "Nail Tech Check-ins", cat: "Operations", icon: "📲" },
   { t: "mgrclockins", l: "Manager Check-ins", cat: "Operations", icon: "🕐" },
   { t: "hoCheckins", l: "Head Office Check-ins", cat: "Operations", icon: "🏢" },
+  { t: "ccCheckins", l: "Call Centre & Sales Check-ins", cat: "Operations", icon: "📞" },
   { t: "leave", l: "Leave Planner", cat: "Operations", icon: "🌴" },
   { t: "leaveRequests", l: "Leave Requests", cat: "Operations", icon: "📨" },
   { t: "calledInSick", l: "Called in Sick", cat: "Operations", icon: "🤒" },
@@ -8767,6 +8793,16 @@ const SETTINGS_TABS = [
 ];
 const SETTINGS_CATS = ["Home/Dashboard", "People", "Operations", "Payroll", "Insights", "Admin"];
 
+// "Call Centre & Sales only" accounts (e.g. the CC&S manager, PIN 0654) may see
+// ONLY these tabs — everything else is hidden entirely — and each is
+// additionally data-scoped to Call Centre & Sales (see the ccOnly checks in the
+// surfaces). Leave (planner + requests), Attendance and Manager PINs are
+// deliberately NOT here: CC&S staff submit leave via the kiosk/portal and Ops
+// actions it, so the CC&S manager needs only day-to-day scheduling and
+// check-ins. Whole-account flag `ccOnly` on the user record, toggleable in
+// Settings; modelled on voucherEntryOnly but keeps the normal App shell.
+const CC_ONLY_TABS = new Set(["scheduling", "ccCheckins"]);
+
 // Convert a stored user record (hideCategories + hideTabs + readOnlyTabs)
 // into a per-tab matrix the editor can flip checkboxes against.
 function userToPerms(u) {
@@ -8776,6 +8812,14 @@ function userToPerms(u) {
   const roTabs = new Set(u.readOnlyTabs || []);
   const perms = {};
   SETTINGS_TABS.forEach(({ t, cat }) => {
+    // A CC&S-only account is authoritative: it sees EXACTLY the CC&S tabs
+    // (editable) and nothing else, regardless of the stored hide/showTabs — so
+    // the toggle both grants the six surfaces and hides everything else.
+    if (u.ccOnly) {
+      const vis = CC_ONLY_TABS.has(t);
+      perms[t] = { visible: vis, editable: vis };
+      return;
+    }
     const visible = (!hideCats.has(cat) || showTabs.has(t)) && !hideTabs.has(t);
     const editable = visible && !roTabs.has(t);
     perms[t] = { visible, editable };
@@ -8787,20 +8831,33 @@ function userToPerms(u) {
 // nav renderer treats "every tab in a category hidden" the same as the
 // category itself being hidden.
 function permsToUser(base, perms, stores) {
+  // A ccOnly account's visible matrix is DERIVED (userToPerms overrides it to
+  // the CC&S set), so packing it back would overwrite the user's real stored
+  // hideTabs with "everything except CC&S" — permanently locking the account
+  // even after the flag is later turned off. While ccOnly is on, pass the
+  // stored hideTabs/readOnlyTabs through untouched; visibility is enforced at
+  // read time by userToPerms and the nav filters, and the underlying tab set
+  // survives a ccOnly on→off round-trip intact.
   const hideTabs = [];
   const readOnlyTabs = [];
-  SETTINGS_TABS.forEach(({ t }) => {
-    const p = perms[t] || { visible: true, editable: true };
-    if (!p.visible) { hideTabs.push(t); return; }
-    if (!p.editable) readOnlyTabs.push(t);
-  });
+  if (base.ccOnly) {
+    hideTabs.push(...(base.hideTabs || []));
+    readOnlyTabs.push(...(base.readOnlyTabs || []));
+  } else {
+    SETTINGS_TABS.forEach(({ t }) => {
+      const p = perms[t] || { visible: true, editable: true };
+      if (!p.visible) { hideTabs.push(t); return; }
+      if (!p.editable) readOnlyTabs.push(t);
+    });
+  }
   const out = {
     ...base,
     name: base.name || "",
     role: base.role || "",
     demo: !!base.demo,
     isOwner: !!base.isOwner,
-    hideCategories: [],     // superseded by hideTabs
+    ccOnly: !!base.ccOnly,  // whole-account "Call Centre & Sales only" flag
+    hideCategories: base.ccOnly ? (base.hideCategories || []) : [],  // superseded by hideTabs when packed
     hideTabs,
     readOnlyTabs
   };
@@ -8940,6 +8997,7 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFres
       role: "",
       demo: false,
       isOwner: false,
+      ccOnly: false,
       perms: blankPerms,
       stores: []
     });
@@ -8955,6 +9013,7 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFres
       role: u.role || "",
       demo: !!u.demo,
       isOwner: !!u.isOwner,
+      ccOnly: !!u.ccOnly,
       perms: userToPerms(u),
       stores: Array.isArray(u.stores) ? u.stores.slice() : []
     });
@@ -8986,7 +9045,8 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFres
       name: editing.name.trim(),
       role: editing.role.trim() || (editing.isOwner ? "Owner" : "Staff"),
       demo: editing.demo,
-      isOwner: editing.isOwner
+      isOwner: editing.isOwner,
+      ccOnly: !!editing.ccOnly
     }, editing.perms, editing.stores);
     const next = { ...users };
     if (!editing.isNew && editing.originalPin && editing.originalPin !== pin) {
@@ -9350,6 +9410,20 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFres
               <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#831843", fontWeight: 600, cursor: "pointer" }}>
                 <input type="checkbox" checked={editing.demo} onChange={e => setEditing({ ...editing, demo: e.target.checked })} />
                 Training / demo — changes never save to Supabase
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#831843", fontWeight: 600, cursor: "pointer" }}>
+                <input type="checkbox" checked={!!editing.ccOnly} onChange={e => {
+                  // Rebuild the visible-tab matrix under the new flag: the ccOnly
+                  // matrix is derived (CC&S tabs only), so keeping the old one
+                  // across a toggle would either show a stale locked view or —
+                  // on turning ccOnly OFF — pack the CC-only matrix into
+                  // hideTabs and freeze the account. Recompute from the STORED
+                  // record so unticking restores the pre-ccOnly tab set.
+                  const v = e.target.checked;
+                  const stored = (editing.originalPin && users[editing.originalPin]) || {};
+                  setEditing({ ...editing, ccOnly: v, perms: userToPerms({ ...stored, ccOnly: v }) });
+                }} />
+                📞 Call Centre &amp; Sales only — sees ONLY CC&amp;S Scheduling and Check-ins; every other tab hidden
               </label>
             </div>
 
@@ -11280,24 +11354,46 @@ function isManagerEc(ec) { const e = String(ec || "").trim(); if (HEAD_OFFICE_EC
 // fallback for a request whose EC hasn't loaded into the set yet).
 function isHeadOfficeEc(ec) { return HEAD_OFFICE_ECS.has(String(ec || "").trim().toUpperCase()); }
 
+// Call Centre & Sales: a sub-population of Head Office split out into its own
+// store name for schedule/attendance/request keys. Owner rule: EC ends in -CC
+// OR the person is the Call Centre Manager (role MCC; her code is B476-M).
+// Roles CC/SALES are accepted too for parity with the kiosk's department split
+// (kiosk/staff-app.js _hoIsCcSales + kiosk/shift-rules.js). CC&S people REMAIN
+// in HEAD_OFFICE_ECS — that set is what keeps their -M/-CC codes out of the
+// salon-manager test above — so every cc-vs-ho check must test CC first.
+const CALL_CENTRE = "Call Centre & Sales";
+function isCallCentreBranch(b) { return String(b == null ? "" : b).trim().toLowerCase() === "call centre & sales"; }
+function isCallCentreStaff(s) {
+  const ec = String((s && s.ec) || (s && s.employee_code) || "").trim().toUpperCase();
+  const role = String((s && s.role) || "").trim().toUpperCase();
+  return ec.endsWith("-CC") || role === "MCC" || role === "CC" || role === "SALES";
+}
+let CALL_CENTRE_ECS = new Set();
+function isCallCentreEc(ec) { return CALL_CENTRE_ECS.has(String(ec || "").trim().toUpperCase()); }
+
 // Shared request-board classification: split a filtered request list into
 // Managers / Nail Techs / Head Office — the three colour-coded columns the
 // Leave Requests and Extra-Day Requests tabs both render. HO is carved out
 // first (registered EC or HO store) so an HO person never lands in the Nail
 // Techs column. Kept in one place so the two boards can't drift apart.
 const REQUEST_GROUP_STYLES = [
-  { key: "mgr",  label: "👑 Managers",    bg: "#faf5ff", border: "#e9d5ff", headBg: "#7c3aed", headFg: "#fff" },
-  { key: "tech", label: "💅 Nail Techs",  bg: "#fdf2f8", border: "#fbcfe8", headBg: "#BE185D", headFg: "#fff" },
-  { key: "ho",   label: "🏢 Head Office", bg: "#f0fdfa", border: "#99f6e4", headBg: "#0f766e", headFg: "#fff" }
+  { key: "mgr",  label: "👑 Managers",             bg: "#faf5ff", border: "#e9d5ff", headBg: "#7c3aed", headFg: "#fff" },
+  { key: "tech", label: "💅 Nail Techs",           bg: "#fdf2f8", border: "#fbcfe8", headBg: "#BE185D", headFg: "#fff" },
+  { key: "ho",   label: "🏢 Head Office",          bg: "#f0fdfa", border: "#99f6e4", headBg: "#0f766e", headFg: "#fff" },
+  { key: "cc",   label: "📞 Call Centre & Sales",  bg: "#eff6ff", border: "#bfdbfe", headBg: "#1d4ed8", headFg: "#fff" }
 ];
 function classifyRequestGroups(filtered) {
-  const mgr = [], tech = [], ho = [];
+  const mgr = [], tech = [], ho = [], cc = [];
   (filtered || []).forEach(r => {
-    if (isHeadOfficeEc(r.ec) || isHeadOfficeBranch(r.store)) ho.push(r);
+    // CC&S is checked FIRST: its ECs are a subset of the Head Office set, and its
+    // people carry branch "Head Office" in the staff table (the split is by EC /
+    // MCC role), so an isHeadOfficeEc/branch test would otherwise swallow them.
+    if (isCallCentreEc(r.ec) || isCallCentreBranch(r.store)) cc.push(r);
+    else if (isHeadOfficeEc(r.ec) || isHeadOfficeBranch(r.store)) ho.push(r);
     else if (isManagerEc(r.ec)) mgr.push(r);
     else tech.push(r);
   });
-  const byKey = { mgr, tech, ho };
+  const byKey = { mgr, tech, ho, cc };
   return REQUEST_GROUP_STYLES.map(g => ({ ...g, items: byKey[g.key] }));
 }
 // Estimated off-days inside a stretch of `calDays` calendar days when there is
@@ -12731,10 +12827,12 @@ function CalledInSickTab({ requests, setRequests, currentUser }) {
           // Nail techs take Fresha bookings (manager ECs end in "M"); suggest
           // blocking them so no clients book a tech who's off.
           const isTech = !isManagerEc(r.ec);
-          // Head Office people route to the Head Office Check-ins tab — they're
-          // neither Fresha techs nor salon managers. Match by a registered HO code
-          // or an HO store on the request.
-          const isHo = isHeadOfficeEc(r.ec) || isHeadOfficeBranch(r.store);
+          // Call Centre & Sales and the rest of Head Office route to their own
+          // Check-ins tabs — they're neither Fresha techs nor salon managers.
+          // CC&S is tested FIRST (its ECs are a subset of the HO set), so an HO
+          // request that is really CC&S doesn't fall into the HO advice card.
+          const isCc = isCallCentreEc(r.ec) || isCallCentreBranch(r.store);
+          const isHo = !isCc && (isHeadOfficeEc(r.ec) || isHeadOfficeBranch(r.store));
           const firstName = (r.name || "").trim().split(/\s+/)[0] || "this tech";
           const awayLbl = fmtIncidentDate(r.start_date) + (r.end_date !== r.start_date ? "–" + fmtIncidentDate(r.end_date) : "");
           // Pull the proof URL out of the reason so we can show a compact "view"
@@ -12763,7 +12861,7 @@ function CalledInSickTab({ requests, setRequests, currentUser }) {
                 </a>
               )}
               <div style={{ marginTop: 6, fontSize: 11, color: "#9d6a82" }}>Ref {r.ref_code} · {fmtIncidentTime(r.created_at)}{r.contact ? " · " + r.contact : ""}</div>
-              {!isHo && isTech && (
+              {!isHo && !isCc && isTech && (
                 <div style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "flex-start", background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 10, padding: "9px 12px" }}>
                   <span style={{ fontSize: 15, lineHeight: 1.2 }}>💆‍♀️</span>
                   <div style={{ fontSize: 12.5, color: "#1e3a8a", lineHeight: 1.45 }}>
@@ -12771,7 +12869,15 @@ function CalledInSickTab({ requests, setRequests, currentUser }) {
                   </div>
                 </div>
               )}
-              {!isHo && !isTech && (
+              {isCc && (
+                <div style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "flex-start", background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 10, padding: "9px 12px" }}>
+                  <span style={{ fontSize: 15, lineHeight: 1.2 }}>📞</span>
+                  <div style={{ fontSize: 12.5, color: "#1e40af", lineHeight: 1.45 }}>
+                    <strong>What to do:</strong> {firstName} is Call Centre &amp; Sales — check the <strong>Call Centre &amp; Sales Check-ins</strong> tab to confirm they haven't clocked in, record the absence there, and attach their <strong>sick note</strong> if they have one{proofUrl ? " (tap 📎 View sick note above)" : ""}. Then tap <strong>Mark done</strong> to clear it.
+                  </div>
+                </div>
+              )}
+              {!isHo && !isCc && !isTech && (
                 <div style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "flex-start", background: "#faf5ff", border: "1px solid #e9d5ff", borderRadius: 10, padding: "9px 12px" }}>
                   <span style={{ fontSize: 15, lineHeight: 1.2 }}>👑</span>
                   <div style={{ fontSize: 12.5, color: "#6b21a8", lineHeight: 1.45 }}>
@@ -12851,6 +12957,12 @@ function ExtraDayRequestsTab({ requests, setRequests, currentUser }) {
     try {
       if (!r || !r.work_date || !r.store || !r.ec) return;
       if (!window.BOA_DB || !window.BOA_DB.loadSchedule || !window.BOA_DB.saveSchedule) return;
+      // Call Centre & Sales people submit from My BOA under store "Head Office"
+      // (their staff branch), but they schedule under the CALL_CENTRE store — so
+      // route every key this function touches (draft grid, published snapshot,
+      // extras sidecar) to CALL_CENTRE for them. All other fields on the request
+      // are preserved.
+      if (isCallCentreEc(r.ec)) r = { ...r, store: CALL_CENTRE };
       const p = String(r.work_date).split("-"); let y = +p[0], m = +p[1]; const dom = +p[2];
       if (!y || !m || !dom) return;
       const endYm = _schedYmForYmd(r.work_date);   // END-month ym (25th→24th cycle)
@@ -13930,7 +14042,7 @@ function FamilyResponsibilityTab({ enriched, managers, currentUser, logActivity 
   );
 }
 
-function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLeaveRecs, enriched: enrichedBase, managers, staff, opsCfg, payrollCfg, logActivity, schedCache, ymdToSchedYm, hoStaff }) {
+function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLeaveRecs, enriched: enrichedBase, managers, staff, opsCfg, payrollCfg, logActivity, schedCache, ymdToSchedYm, hoStaff, ccOnly }) {
   // Head Office people resolve through the same person-lookup pool as techs, so an
   // HO leave request enriches (name/branch) and writes to the planner on approval
   // instead of dropping into "Nail Techs" with a "not on planner" badge. HO carry
@@ -14131,6 +14243,8 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
   // Manager Check-ins), techs' to the Called in Sick tab — so they're excluded.
   const annualReqs = requests.filter(r => r.leave_type !== "Sick" && r.leave_type !== "Absent");
   const filtered = annualReqs.filter(r => {
+    // A CC&S-only account only ever sees Call Centre & Sales requests.
+    if (ccOnly && !isCallCentreEc(r.ec) && !isCallCentreBranch(r.store)) return false;
     if (storeFilter && r.store !== storeFilter) return false;
     if (statusFilter === "all") return true;
     return r.status === statusFilter;
@@ -14161,10 +14275,11 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
   const card = { background: "#fff", border: "1px solid #f3d4e0", borderRadius: 14, padding: "16px 18px", marginBottom: 16 };
   const chip = (c) => ({ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 700, color: c.color, background: c.bg });
 
-  // Split into Managers / Nail Techs / Head Office (see classifyRequestGroups).
-  // isMgrReq stays local — the leave-day math below also uses it.
+  // Split into Managers / Nail Techs / Head Office / Call Centre & Sales
+  // (see classifyRequestGroups). isMgrReq stays local — the leave-day math
+  // below also uses it. A CC&S-only account sees only the CC&S column.
   const isMgrReq = (r) => isManagerEc(r.ec);
-  const groups = classifyRequestGroups(filtered);
+  const groups = classifyRequestGroups(filtered).filter(g => !ccOnly || g.key === "cc");
 
   return (
     <div>
@@ -15982,6 +16097,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // surfaces; HO-specific surfaces (Attendance/Leave/check-ins, Phase 5) read
   // this. Empty until HO staff exist.
   const [hoStaff, setHoStaff] = useState([]);
+  // Call Centre & Sales vs the rest of Head Office. Derived, never stored:
+  // staff.branch stays "Head Office" for all 18; the split is the isCallCentreStaff
+  // classifier (-CC EC or role MCC/CC/SALES). CC&S surfaces read ccStaff; the
+  // Head Office surfaces read hoOnlyStaff so nobody appears twice.
+  const ccStaff = useMemo(() => hoStaff.filter(isCallCentreStaff), [hoStaff]);
+  const hoOnlyStaff = useMemo(() => hoStaff.filter(s => !isCallCentreStaff(s)), [hoStaff]);
   const [matRecs, setMatRecs] = useState([]);
   // Unpaid legal-status leave records — same shape as matRecs but stored in
   // app_state["boa_unpaid_legal_v1"] rather than the maternity table. People
@@ -16737,6 +16858,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // non-ROMs / unallocated ROMs see everything.
   const _myStores = Array.isArray(currentUser && currentUser.stores) ? currentUser.stores : [];
   const _hasStoreScope = isRomRole(currentUser && currentUser.role) && _myStores.length > 0;
+  // Call Centre & Sales-only account: every visible surface is scoped to CC&S
+  // data only (the CC&S manager, PIN 0654). Whole-account flag, toggled in
+  // Settings; tab visibility is enforced by CC_ONLY_TABS in the nav filters.
+  const ccOnly = !!(currentUser && currentUser.ccOnly);
   const [dashScope, setDashScope] = useState(_hasStoreScope ? "mine" : "all");
   const scopedSalonNames = useMemo(() => {
     if (!_hasStoreScope || dashScope === "all") return new Set(SALONS.map(s => s.name));
@@ -16840,6 +16965,43 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       alert("Could not save PIN: " + (e.message || e));
     } finally {
       setMgrPinSaving(null);
+    }
+  };
+  // Bulk-generate 6-digit clock-in PINs for every Head Office + Call Centre &
+  // Sales person who doesn't have one yet. Additive only: existing PINs (salon
+  // managers included) are never touched, and every generated PIN is unique
+  // across the whole registry — the same rule the manual reset enforces.
+  const generateHoCcPins = async () => {
+    const people = [...(hoOnlyStaff || []), ...(ccStaff || [])].filter(s => s && s.ec);
+    const missing = people.filter(s => !mgrPins[s.ec]);
+    if (missing.length === 0) { alert("Everyone at Head Office and Call Centre & Sales already has a clock-in PIN."); return; }
+    if (!window.confirm("Generate a random unique 6-digit clock-in PIN for " + missing.length + " Head Office / Call Centre & Sales " + (missing.length === 1 ? "person" : "people") + " who don't have one yet?\n\nExisting PINs are left unchanged.")) return;
+    const used = new Set(Object.values(mgrPins || {}).map(String));
+    const next = { ...mgrPins };
+    let made = 0;
+    for (const s of missing) {
+      let pin = null;
+      // 900k possible 6-digit codes vs ≤18 people — collisions are rare, but
+      // bound the loop anyway so a pathological run can't spin forever.
+      for (let tries = 0; tries < 200 && pin === null; tries++) {
+        const cand = String(Math.floor(100000 + Math.random() * 900000));
+        if (!used.has(cand)) pin = cand;
+      }
+      if (pin === null) continue;   // extremely unlikely; skip rather than dup
+      used.add(pin);
+      next[s.ec] = pin;
+      made++;
+    }
+    if (made === 0) { alert("Could not generate any PINs — please try again."); return; }
+    try {
+      await window.BOA_DB.saveManagerPins(next);
+      setMgrPins(next);
+      if (window.BOA_LOG_ACTIVITY) {
+        window.BOA_LOG_ACTIVITY("Generated Head Office / Call Centre & Sales clock-in PINs", made + " PIN" + (made === 1 ? "" : "s") + " created", "", "Admin");
+      }
+      alert("Generated " + made + " new clock-in PIN" + (made === 1 ? "" : "s") + ". Reveal them in the list to note them down.");
+    } catch (e) {
+      alert("Could not save PINs: " + (e.message || e));
     }
   };
   useEffect(() => {
@@ -17139,7 +17301,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Scheduling is a parent tab with two children (Nail Tech / Manager).
   const [schedSubTab, setSchedSubTab] = useState("techs");          // "techs" | "managers"
   // Leave Planner has a similar split.
-  const [leaveSubTab, setLeaveSubTab] = useState("techs");          // "techs" | "managers"
+  const [leaveSubTab, setLeaveSubTab] = useState("techs");          // "techs" | "managers" | "headoffice" | "callcentre"
   const [trialSubTab, setTrialSubTab] = useState("nt");             // "nt" | "am"
   const [staffModal, setStaffModal] = useState(null);
   const [matModal, setMatModal] = useState(null);
@@ -17273,7 +17435,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Map of tab → category name. Kept in sync with the groups list below.
   const NAV_TAB_TO_CATEGORY = {
     onboard: "People", offboard: "People", staff: "People", recruitment: "People", hrLibrary: "People", maternity: "People", unpaidLegal: "People", trialPeriod: "People", smTrial: "People",
-    scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", hoCheckins: "Operations", leave: "Operations", checkins: "Operations", freshaTodo: "Operations", storeOpenings: "Operations", storeHours: "Operations", movements: "Operations", cashups: "Operations", mgrCoverage: "Operations",
+    scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", hoCheckins: "Operations", ccCheckins: "Operations", leave: "Operations", checkins: "Operations", freshaTodo: "Operations", storeOpenings: "Operations", storeHours: "Operations", movements: "Operations", cashups: "Operations", mgrCoverage: "Operations",
     attendance: "Payroll", payrollProgress: "Payroll", payrollReports: "Payroll", overtime: "Payroll", payrollInbox: "Payroll", leaveBalances: "Payroll", frl: "Payroll",
     leaveRequests: "Operations", calledInSick: "Operations", extraDayRequests: "Operations",
     alerts: "Insights", activity: "Insights", storeReports: "Insights", staffingReport: "Insights",
@@ -17940,26 +18102,34 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         needed.add(branch + "|" + ymdToSchedYm(ymd));
       }
     };
+    // A person's schedule lives under their store name — but Call Centre & Sales
+    // people carry branch "Head Office" while scheduling under the CALL_CENTRE
+    // store, so their scheduled off-days must be read from the CC grid.
+    const _schedBranchOf = (s) => (s && isCallCentreStaff(s)) ? CALL_CENTRE : (s && s.branch);
     // Months covered by leave records (need schedule per branch the leaver works at)
     leaveRecs.forEach(lv => {
-      const s = staff.find(x => x.ec === lv.ec) || managers.find(x => x.ec === lv.ec);
-      if (s) addRange(s.branch, lv.startDate, lv.endDate);
+      const s = staff.find(x => x.ec === lv.ec) || managers.find(x => x.ec === lv.ec) || (hoStaff || []).find(x => x.ec === lv.ec);
+      if (s) addRange(_schedBranchOf(s), lv.startDate, lv.endDate);
     });
     // Months covered by open leave requests, so the request tabs can show
     // schedule-exact leave days.
     (leaveRequests || []).forEach(r => {
       if (!r || r.status === "declined") return;
       const s = staff.find(x => String(x.ec || "").toUpperCase() === String(r.ec || "").toUpperCase())
-        || managers.find(x => String(x.ec || "").toUpperCase() === String(r.ec || "").toUpperCase());
-      addRange(s ? s.branch : r.store, r.start_date, r.end_date);
+        || managers.find(x => String(x.ec || "").toUpperCase() === String(r.ec || "").toUpperCase())
+        || (hoStaff || []).find(x => String(x.ec || "").toUpperCase() === String(r.ec || "").toUpperCase());
+      addRange(s ? _schedBranchOf(s) : r.store, r.start_date, r.end_date);
     });
-    // Visible 6 payroll cycles for the currently-selected branch.
+    // Visible 6 payroll cycles for the currently-selected branch. On the Head
+    // Office / Call Centre & Sales leave sub-tabs the branch is the sub-tab, not
+    // the (hidden) store dropdown, so prefetch those grids instead.
     // Each cycle's ym IS the schedule key — no date-to-cycle mapping needed.
+    const _leaveSelBranch = leaveSubTab === "headoffice" ? HEAD_OFFICE : (leaveSubTab === "callcentre" ? CALL_CENTRE : leaveBranch);
     const ymP = leaveYM.split("-").map(Number);
     for (let i = 0; i < 6; i++) {
       let y = ymP[0], m = ymP[1] + i;
       while (m > 12) { m -= 12; y++; }
-      needed.add(leaveBranch + "|" + y + "-" + String(m).padStart(2, "0"));
+      needed.add(_leaveSelBranch + "|" + y + "-" + String(m).padStart(2, "0"));
     }
     const missing = [...needed].filter(k => !(k in schedCache));
     if (missing.length === 0) return;
@@ -17979,7 +18149,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       });
     });
     return () => { cancelled = true; };
-  }, [tab, leaveBranch, leaveYM, leaveRecs, leaveRequests, staff, managers]);
+  }, [tab, leaveBranch, leaveSubTab, leaveYM, leaveRecs, leaveRequests, staff, managers, hoStaff]);
 
   // ── Attendance tab state ───────────────────────────────────────────
   const [attBranch, setAttBranch] = useState(_myStores[0] || SALONS[0].name);
@@ -19389,6 +19559,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       // isManagerEc() never mis-classifies an HO person (e.g. a -M code) as a
       // salon manager. Rebuilt each load; empty when no HO staff exist.
       HEAD_OFFICE_ECS = new Set(((d && d.hoStaff) || []).map(s => String(s.ec || "").trim().toUpperCase()));
+      // Call Centre & Sales ECs are a SUBSET of HEAD_OFFICE_ECS (branch stays
+      // "Head Office" in the staff table); rebuilt here for the same reason.
+      CALL_CENTRE_ECS = new Set(((d && d.hoStaff) || []).filter(isCallCentreStaff).map(s => String(s.ec || "").trim().toUpperCase()));
       setHoStaff(Array.isArray(d && d.hoStaff) ? d.hoStaff : []);
       // Auto-finalize transfers that completed in a PRIOR pay period. A transfer
       // keeps branch=OLD + transferring=true until it's "settled"; nothing ever
@@ -19685,6 +19858,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // requests board (routed by department via boa_ho_routing_v1).
   const [hoRequests, setHoRequests] = useState([]);
   const [hoRequestsTick, setHoRequestsTick] = useState(0);
+  // Call Centre & Sales off-day requests (boa_cc_requests_v1) — same shape,
+  // separate key so the CC&S scheduler overlay only sees its own population.
+  const [ccRequests, setCcRequests] = useState([]);
+  const [ccRequestsTick, setCcRequestsTick] = useState(0);
   const [mgrReqTick, setMgrReqTick] = useState(0);
   const [mgrReqModal, setMgrReqModal] = useState(null);  // {ec, name, date, note} draft
   useEffect(() => {
@@ -19723,6 +19900,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       .catch((e) => { console.warn("loadHoRequests:", e); });
     return () => { cancelled = true; };
   }, [tab, schedSubTab, hoRequestsTick]);
+
+  // Load Call Centre & Sales off-day requests. Needed by the CC&S scheduler
+  // sub-tab and the requests board; refreshed when either opens or after a
+  // local change.
+  useEffect(() => {
+    if (!(tab === "scheduling" || tab === "leave")) return;
+    if (!window.BOA_DB || !window.BOA_DB.isReady) return;
+    if (!window.BOA_DB.loadCcRequests) return;            // pre-deploy guard
+    let cancelled = false;
+    window.BOA_DB.loadCcRequests()
+      .then((arr) => { if (!cancelled) setCcRequests(arr || []); })
+      .catch((e) => { console.warn("loadCcRequests:", e); });
+    return () => { cancelled = true; };
+  }, [tab, schedSubTab, ccRequestsTick]);
 
   // ── Manager-schedule trash (7-day soft-delete) ──────────────────
   const [mgrTrash, setMgrTrash] = useState([]);
@@ -20050,7 +20241,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Recent HO clock-in rows when the tab opens (and for the attendance grid's
   // HO overlay). Guarded on the loader existing so older deploys no-op.
   useEffect(() => {
-    if (tab !== "hoCheckins" && !(tab === "attendance" && attBranch === HEAD_OFFICE)) return;
+    if (tab !== "hoCheckins" && tab !== "ccCheckins" && !(tab === "attendance" && (attBranch === HEAD_OFFICE || attBranch === CALL_CENTRE))) return;
     if (!window.BOA_DB || !window.BOA_DB.isReady || !window.BOA_DB.listRecentHoClockins) return;
     let cancelled = false;
     window.BOA_DB.listRecentHoClockins(hoClockinDays)
@@ -20062,7 +20253,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Load selfies for just the HO clock-ins on the selected day (same sidecar
   // + loader as managers), so stepping day-by-day stays snappy.
   useEffect(() => {
-    if (tab !== "hoCheckins") return;
+    if (tab !== "hoCheckins" && tab !== "ccCheckins") return;
     if (!window.BOA_DB || !window.BOA_DB.loadClockinMeta) return;
     let cancelled = false;
     (async () => {
@@ -20165,17 +20356,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     // Layer in Head Office clock-ins so the HO attendance grid gets its green ✓
     // marks. HO rows are excluded from techClockinRows (they'd double-surface on
     // the Nail Tech tab and pollute the leave reconcile), so they arrive via
-    // their own loader here. Keyed under the canonical HEAD_OFFICE name — every
-    // row is HO by definition, so a drifted staff-row branch string can't
-    // scatter them under a key the grid never reads.
+    // their own loader here. Keyed under the canonical HEAD_OFFICE name — except
+    // Call Centre & Sales people, whose attendance grid lives under the CALL_CENTRE
+    // store, so their ✓ marks must key there instead (they clock in on the same
+    // HO kiosk feed but are split out by EC).
     for (const r of hoClockinRows || []) {
       if (!r || !r.staff || !r.staff.employee_code) continue;
       const ec = r.staff.employee_code;
       const dt = new Date(r.ts);
       const ymd = dt.getFullYear() + "-" + String(dt.getMonth() + 1).padStart(2, "0") + "-" + String(dt.getDate()).padStart(2, "0");
-      if (!out[HEAD_OFFICE]) out[HEAD_OFFICE] = {};
-      if (!out[HEAD_OFFICE][ec]) out[HEAD_OFFICE][ec] = {};
-      const cell = out[HEAD_OFFICE][ec][ymd] = out[HEAD_OFFICE][ec][ymd] || { hasIn: false, hasOut: false, autoOut: false, firstInTs: null, name: (r.staff && r.staff.name) || "" };
+      const _bk = isCallCentreEc(ec) ? CALL_CENTRE : HEAD_OFFICE;
+      if (!out[_bk]) out[_bk] = {};
+      if (!out[_bk][ec]) out[_bk][ec] = {};
+      const cell = out[_bk][ec][ymd] = out[_bk][ec][ymd] || { hasIn: false, hasOut: false, autoOut: false, firstInTs: null, name: (r.staff && r.staff.name) || "" };
       if (r.type === "in") { cell.hasIn = true; cell.firstInTs = (cell.firstInTs && cell.firstInTs < dt) ? cell.firstInTs : dt; }
       if (r.type === "out") { cell.hasOut = true; }
       if (r.type === "out_auto") { cell.hasOut = true; cell.autoOut = true; }
@@ -21276,8 +21469,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
   const accent = "#BE185D", cream = "linear-gradient(180deg,#FCE7F3 0%,#FFFFFF 220px)", bdr = "#FBCFE8";
   // Wrap setTab so leaving the manager-schedule tab with unsaved edits prompts.
+  // A Call Centre & Sales-only account (e.g. the CC&S manager) can only ever be
+  // on a CC&S tab. The default landing tab is the dashboard, which they may not
+  // see, so bounce them to Scheduling — and catch any other route onto a hidden
+  // tab (deep link, stale state) the same way.
+  useEffect(() => {
+    if (currentUser && currentUser.ccOnly && !CC_ONLY_TABS.has(tab)) setTab("scheduling");
+  }, [currentUser, tab]);
+  // Lock every CC&S-only surface to Call Centre & Sales data: the schedule and
+  // leave sub-tabs to the CC&S pill, and the attendance store to CC&S.
+  useEffect(() => {
+    if (!ccOnly) return;
+    if (schedSubTab !== "callcentre") setSchedSubTab("callcentre");
+    if (leaveSubTab !== "callcentre") setLeaveSubTab("callcentre");
+    if (attBranch !== CALL_CENTRE) setAttBranch(CALL_CENTRE);
+  }, [ccOnly, schedSubTab, leaveSubTab, attBranch]);
   const tryChangeTab = (t) => {
     if (t === tab) return;
+    if (currentUser && currentUser.ccOnly && !CC_ONLY_TABS.has(t)) return;   // CC&S-only guard
     if (tab === "scheduling" && schedSubTab === "managers" && mgrSchedDirty) {
       if (!window.confirm("Are you sure? The manager schedule has unsaved changes. They will be lost if you leave.")) return;
       setMgrSchedDirty(false);
@@ -21562,7 +21771,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t: "locations", l: "📍 Locations" },
                   { t: "checkins", l: "📲 Nail Tech Check-ins" },
                   { t: "mgrclockins", l: "🕐 Manager Check-ins" },
-                  ...(hoStaff.length ? [{ t: "hoCheckins", l: "🏢 Head Office Check-ins" }] : []),
+                  ...(hoOnlyStaff.length ? [{ t: "hoCheckins", l: "🏢 Head Office Check-ins" }] : []),
+                  ...(ccStaff.length ? [{ t: "ccCheckins", l: "📞 Call Centre & Sales Check-ins" }] : []),
                   { t: "leave", l: "🌴 Leave Planner" },
                   ...(canSeeLeaveRequests ? [(() => {
                     const pend = leaveRequests.filter(r => r.status === "pending" && r.leave_type !== "Sick" && r.leave_type !== "Absent").length;
@@ -21689,8 +21899,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             const visibleGroups = groups
               // forceShow items (access-gated tabs like the Payroll Inbox) bypass
               // the category/tab hide filter — access is governed by their own
-              // admin access list, so a locked-down account still sees them.
-              .map(g => ({ ...g, items: g.items.filter(it => it.forceShow || (!hideTabs.has(it.t) && (!hideCats.has(g.key) || showTabs.has(it.t)))) }))
+              // admin access list, so a locked-down account still sees them. A
+              // ccOnly account is authoritative and absolute: it sees EXACTLY the
+              // CC&S tabs (even a forceShow tab outside the set is hidden, and a
+              // CC&S tab in its stored hideTabs is still shown).
+              .map(g => ({ ...g, items: g.items.filter(it => currentUser.ccOnly
+                ? CC_ONLY_TABS.has(it.t)
+                : (it.forceShow || (!hideTabs.has(it.t) && (!hideCats.has(g.key) || showTabs.has(it.t))))) }))
               .filter(g => g.items.length > 0);
             const tabToCategory = {};
             for (const g of visibleGroups) for (const it of g.items) tabToCategory[it.t] = g.key;
@@ -21821,7 +22036,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         { t: "recruitment", l: "🎯 Recruitment" },
                         { t: "leave", l: "🌴 Leave Planner" }
                       ]
-                        .filter(it => !hideCats.has(NAV_TAB_TO_CATEGORY[it.t]) && !hideTabs.has(it.t))
+                        .filter(it => currentUser.ccOnly
+                          ? CC_ONLY_TABS.has(it.t)
+                          : (!hideCats.has(NAV_TAB_TO_CATEGORY[it.t]) && !hideTabs.has(it.t)))
                         .map(it => tabBtn(it.t, it.l))}
                     </div>
                   </div>
@@ -23825,13 +24042,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           <div style={{ padding: "0 24px" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 24, flexWrap: "wrap" }}>
               <div style={{ display: "flex", gap: 0, padding: 6, background: "#FCE7F3", borderRadius: 14, border: "1px solid #FBCFE8", maxWidth: 680, flex: "1 1 320px" }}>
-                {[
+                {(ccOnly
+                  ? [{ k: "callcentre", label: "📞 Call Centre & Sales" }]
+                  : [
                   { k: "techs", label: "💅 Nail Tech Schedule" },
                   { k: "managers", label: "👔 Manager Schedule" },
                   // Head Office scheduling only appears once HO staff exist — a
                   // provable no-op for salon-only deployments (hoStaff empty).
-                  ...(hoStaff.length ? [{ k: "headoffice", label: "🏢 Head Office" }] : [])
-                ].map(t => {
+                  // hoOnlyStaff excludes Call Centre & Sales, which gets its own tab.
+                  ...(hoOnlyStaff.length ? [{ k: "headoffice", label: "🏢 Head Office" }] : []),
+                  ...(ccStaff.length ? [{ k: "callcentre", label: "📞 Call Centre & Sales" }] : [])
+                ]).map(t => {
                   const active = schedSubTab === t.k;
                   return (
                     <button key={t.k} onClick={() => tryChangeSchedSub(t.k)}
@@ -23873,13 +24094,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             isOwner={!!(currentUser && currentUser.isOwner)}
           />
         )}
-        {tab === "scheduling" && schedSubTab === "headoffice" && hoStaff.length > 0 && (
+        {tab === "scheduling" && schedSubTab === "headoffice" && hoOnlyStaff.length > 0 && (
           // Head Office reuses the tech Schedule (HO gets a tech-style grid:
           // boa_sched_Head Office_* + published boa_schedapproved_Head Office_*
           // [0], which the HO kiosk roster reads). branchList locks the picker
           // to Head Office so it never touches the salon branch list.
+          // allStaff is hoOnlyStaff — Call Centre & Sales schedules on its own tab.
           <Schedule
-            allStaff={hoStaff}
+            allStaff={hoOnlyStaff}
             trialList={[]}
             techRequests={hoRequests}
             onTechRequestsChange={(next) => { setHoRequests(next); }}
@@ -23890,6 +24112,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             onTechLoansChange={() => {}}
             initialBranch={HEAD_OFFICE}
             branchList={[HEAD_OFFICE]}
+            isOwner={!!(currentUser && currentUser.isOwner)}
+          />
+        )}
+        {tab === "scheduling" && schedSubTab === "callcentre" && ccStaff.length > 0 && (
+          // Call Centre & Sales: a Head Office sub-population scheduling under its
+          // own store name so its keys are boa_sched_Call Centre & Sales_* +
+          // published boa_schedapproved_Call Centre & Sales_* [0]. Same tech-style
+          // grid as HO; branchList locks the picker to the CC&S store.
+          <Schedule
+            allStaff={ccStaff}
+            trialList={[]}
+            techRequests={ccRequests}
+            onTechRequestsChange={(next) => { setCcRequests(next); }}
+            requestStore="cc"
+            leaveRecs={leaveRecs}
+            obList={obList}
+            techLoans={[]}
+            onTechLoansChange={() => {}}
+            initialBranch={CALL_CENTRE}
+            branchList={[CALL_CENTRE]}
             isOwner={!!(currentUser && currentUser.isOwner)}
           />
         )}
@@ -26000,7 +26242,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         {/* ── LEAVE REQUESTS TAB ── */}
         {tab === "leaveRequests" && canSeeLeaveRequests && (
-          <LeaveRequestsTab requests={leaveRequests} setRequests={setLeaveRequests} currentUser={currentUser} leaveRecs={leaveRecs} setLeaveRecs={setLeaveRecs} enriched={enriched} managers={managers} staff={staff} hoStaff={hoStaff} opsCfg={leaveOpsCfg} payrollCfg={leavePayrollCfg} logActivity={logActivity} schedCache={schedCache} ymdToSchedYm={ymdToSchedYm} />
+          <LeaveRequestsTab requests={leaveRequests} setRequests={setLeaveRequests} currentUser={currentUser} leaveRecs={leaveRecs} setLeaveRecs={setLeaveRecs} enriched={enriched} managers={managers} staff={staff} hoStaff={hoStaff} ccOnly={ccOnly} opsCfg={leaveOpsCfg} payrollCfg={leavePayrollCfg} logActivity={logActivity} schedCache={schedCache} ymdToSchedYm={ymdToSchedYm} />
         )}
 
         {/* ── PAYROLL INBOX TAB ── */}
@@ -29362,13 +29604,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           ...enriched.filter(s => stillInCycle(s.ec) && _arrivingHereThisCycle(s)).map(s => ({ ec: s.ec, name: s.name, role: "NT", onMat: !!s.onMat, council: !!s.bargainingCouncil, matStart: (s.matRec && s.matRec.matStart) || s.matStart || null, movedFrom: s.branch, movedOn: s.transferDate })),
           ...managers.filter(m => m.branch === attBranch && stillInCycle(m.ec) && !_movedAwayThisCycle(m)).map(m => ({ ec: m.ec, name: m.name, role: m.role || "AM", onMat: !!m.onMat, council: !!m.bargainingCouncil, matStart: (m.matRec && m.matRec.matStart) || m.matStart || null, smTrial: _smTrialEcSet.has(String(m.ec).trim()) })),
           ...managers.filter(m => stillInCycle(m.ec) && _arrivingHereThisCycle(m)).map(m => ({ ec: m.ec, name: m.name, role: m.role || "AM", onMat: !!m.onMat, council: !!m.bargainingCouncil, matStart: (m.matRec && m.matRec.matStart) || m.matStart || null, smTrial: _smTrialEcSet.has(String(m.ec).trim()), movedFrom: m.branch, movedOn: m.transferDate })),
-          // Head Office staff are a separate population (not in enriched/managers),
-          // so they get their own attendance arm. HO people don't transfer between
-          // salons, so no moved-in/out logic applies — the role label is their
-          // department (the HO `role` value). The kiosk writes boa_att_Head Office_*
-          // + clockins for these ECs, which this grid then reads.
+          // Head Office / Call Centre & Sales staff are separate populations (not
+          // in enriched/managers), so they get their own attendance arm. Neither
+          // transfers between salons, so no moved-in/out logic applies — the role
+          // label is their department (the `role` value). The kiosk writes
+          // boa_att_<store>_* + clockins for these ECs, which this grid reads.
+          // CC&S people carry branch "Head Office" but attend under the CALL_CENTRE
+          // store (split by EC), so each store shows only its own people.
           ...(attBranch === HEAD_OFFICE
-            ? hoStaff.filter(s => s && s.ec && stillInCycle(s.ec)).map(s => ({ ec: s.ec, name: s.name, role: s.role || "HO", onMat: !!s.onMat, council: !!s.bargainingCouncil, matStart: (s.matRec && s.matRec.matStart) || s.matStart || null }))
+            ? hoOnlyStaff.filter(s => s && s.ec && stillInCycle(s.ec)).map(s => ({ ec: s.ec, name: s.name, role: s.role || "HO", onMat: !!s.onMat, council: !!s.bargainingCouncil, matStart: (s.matRec && s.matRec.matStart) || s.matStart || null }))
+            : []),
+          ...(attBranch === CALL_CENTRE
+            ? ccStaff.filter(s => s && s.ec && stillInCycle(s.ec)).map(s => ({ ec: s.ec, name: s.name, role: s.role || "CC", onMat: !!s.onMat, council: !!s.bargainingCouncil, matStart: (s.matRec && s.matRec.matStart) || s.matStart || null }))
             : [])
         ].sort((a, b) => {
           // Maternity-leave staff go to the very bottom of the grid so the
@@ -31503,11 +31750,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap", alignItems: "center" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#FFFFFF", border: "1px solid #FBCFE8", borderRadius: 8, padding: "6px 10px" }}>
                 <label style={{ fontSize: 11, fontWeight: 600, color: "#831843" }}>Store:</label>
-                <select value={attBranch} onChange={e => setAttBranch(e.target.value)} style={{ border: "none", fontSize: 13, fontWeight: 600, color: "#831843", background: "transparent", cursor: "pointer", fontFamily: "inherit", outline: "none" }}>
-                  {SALONS.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
-                  {/* Head Office opts into Attendance explicitly (never via SALONS)
-                      — only once HO staff exist, so salon-only data is unaffected. */}
-                  {hoStaff.length > 0 && <option key={HEAD_OFFICE} value={HEAD_OFFICE}>{HEAD_OFFICE}</option>}
+                <select value={attBranch} onChange={e => setAttBranch(e.target.value)} disabled={ccOnly} style={{ border: "none", fontSize: 13, fontWeight: 600, color: "#831843", background: "transparent", cursor: ccOnly ? "default" : "pointer", fontFamily: "inherit", outline: "none" }}>
+                  {/* A CC&S-only account sees only its own store. */}
+                  {!ccOnly && SALONS.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+                  {/* Head Office and Call Centre & Sales opt into Attendance
+                      explicitly (never via SALONS) — only once their staff exist,
+                      so salon-only data is unaffected. */}
+                  {!ccOnly && hoOnlyStaff.length > 0 && <option key={HEAD_OFFICE} value={HEAD_OFFICE}>{HEAD_OFFICE}</option>}
+                  {ccStaff.length > 0 && <option key={CALL_CENTRE} value={CALL_CENTRE}>{CALL_CENTRE}</option>}
                 </select>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 6, background: "#FFFFFF", border: "1px solid #FBCFE8", borderRadius: 8, padding: "4px 6px" }}>
@@ -33145,7 +33395,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
       {/* ── LEAVE PLANNER TAB ── */}
       {tab === "leave" && (() => {
-        const br = leaveBranch;
+        // Head Office and Call Centre & Sales are their own SUB-TABS now (not a
+        // store in the dropdown). On those two, the "branch" is the sub-tab
+        // itself, so the STORE picker is hidden and the population comes straight
+        // from hoOnlyStaff / ccStaff rather than a salon filter.
+        const isHoSub = leaveSubTab === "headoffice";
+        const isCcSub = leaveSubTab === "callcentre";
+        const isHoLikeSub = isHoSub || isCcSub;
+        const br = isHoSub ? HEAD_OFFICE : (isCcSub ? CALL_CENTRE : leaveBranch);
         const ym = leaveYM;
         const f = leaveForm;
         const isTechMode = leaveSubTab === "techs";
@@ -33154,8 +33411,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // can still log the leave, but it's added "balance pending" and lands in
         // the payroll officer's inbox to confirm the days.
         const canCheckBalance = accessAllows(currentUser, leavePayrollCfg);
-        const peopleType = br === HEAD_OFFICE ? "staff member" : (isTechMode ? "nail tech" : "manager");
-        const peopleTypePlural = br === HEAD_OFFICE ? "staff" : (isTechMode ? "nail techs" : "managers");
+        const peopleType = isHoLikeSub ? "staff member" : (isTechMode ? "nail tech" : "manager");
+        const peopleTypePlural = isHoLikeSub ? "staff" : (isTechMode ? "nail techs" : "managers");
         // Off-boarded people (leftDate in the past) should not appear in
         // the leave planner. Techs come from `enriched` which already
         // tracks `offDaysSinceLeft`; managers come from `managers` so
@@ -33174,19 +33431,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // `branch`: once a transfer's date has passed the person belongs to the
         // destination store, so they (and their ec-keyed leave, which carries no
         // branch of its own) move onto the new store's planner automatically.
-        // Head Office is a separate population with no tech/manager split, so it
-        // sources hoStaff on either sub-tab and bypasses the salon role guard.
-        // (Per-department clash — "max 1 CC off" — is a follow-up; for now HO uses
-        // the same branch-wide 20% cap the grid math below applies.)
-        const _isHoBranch = br === HEAD_OFFICE;
-        const sourceArr = _isHoBranch ? hoStaff : (isTechMode ? enriched : managers);
-        // HO has no tech/manager role split, but the leaver exclusion that
-        // ROLE_GUARD embeds for salons must still apply: hoStaff comes from an
+        // Head Office / Call Centre & Sales are separate populations with no
+        // tech/manager split, so each sub-tab sources its exact population and
+        // bypasses the salon role guard. Their staff rows all carry branch
+        // "Head Office" (the CC&S split is by EC, not by stored branch), so the
+        // effHomeBranch === br filter below is SKIPPED for them — the population
+        // array already is the filter. Each computes its own 20% cap.
+        const _isHoBranch = isHoLikeSub;
+        const sourceArr = isHoSub ? hoOnlyStaff : (isCcSub ? ccStaff : (isTechMode ? enriched : managers));
+        // HO/CC have no tech/manager role split, but the leaver exclusion that
+        // ROLE_GUARD embeds for salons must still apply: these come from an
         // unfiltered load (no active predicate), so without this check an
-        // off-boarded HO employee would list as active and inflate the 20% cap.
+        // off-boarded person would list as active and inflate the 20% cap.
         const passesRole = _isHoBranch ? ((p) => p && p.active !== false && !_hasLeft(p.ec)) : ROLE_GUARD;
+        const _matchesBranch = (p) => _isHoBranch ? true : (effHomeBranch(p, _todayYmd) === br);
         const peopleAtBranch = (sourceArr || [])
-          .filter(p => effHomeBranch(p, _todayYmd) === br && !p.onMat && passesRole(p))
+          .filter(p => _matchesBranch(p) && !p.onMat && passesRole(p))
           .sort((a, b) => (a.ec || "").localeCompare(b.ec || ""));
         // For dropdown — all people of this type across all branches.
         // On-maternity people are INCLUDED here and on the planner grid
@@ -33199,7 +33459,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           .filter(p => passesRole(p))
           .sort((a, b) => (a.ec || "").localeCompare(b.ec || ""));
         const matPeopleAtBranch = (sourceArr || [])
-          .filter(p => effHomeBranch(p, _todayYmd) === br && p.onMat && passesRole(p))
+          .filter(p => _matchesBranch(p) && p.onMat && passesRole(p))
           .sort((a, b) => (a.ec || "").localeCompare(b.ec || ""));
         const plannerRows = [...peopleAtBranch, ...matPeopleAtBranch];
         // 20% per-day cap, minimum 1
@@ -33315,7 +33575,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             if (!f.balanceChecked) { alert("Please confirm you've checked this person's leave balance on Sage before adding annual leave to the calendar."); return; }
             balNum = Number(f.balanceDays);
             if (f.balanceDays === "" || isNaN(balNum) || balNum < 0) { alert("Enter the leave balance (days available on Sage) so it's on record."); return; }
-            const _br = (sourceArr.find(p => p.ec === f.ec) || {}).branch;
+            const _brPerson = sourceArr.find(p => p.ec === f.ec) || {};
+            const _br = isCallCentreStaff(_brPerson) ? CALL_CENTRE : _brPerson.branch;
             const _bd = leaveDayBreakdown(f.startDate, f.endDate, !isTechMode, { schedCache, ymdToSchedYm, ec: f.ec, branch: _br });
             if (balNum < _bd.real && !confirm("Heads up: the balance you entered is " + balNum + " day(s), but this leave works out to " + (_bd.fromSchedule ? "" : "≈ ") + _bd.real + " actual leave day(s) (" + _bd.cal + " calendar) — more than they have available.\n\nAdd it anyway?")) return;
           }
@@ -33501,10 +33762,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
             {/* Sub-tab pill bar */}
             <div style={{ display: "flex", gap: 0, marginBottom: 18, padding: 6, background: "#FCE7F3", borderRadius: 14, border: "1px solid #FBCFE8", maxWidth: 680 }}>
-              {[
+              {(ccOnly
+                ? [{ k: "callcentre", label: "📞 Call Centre & Sales Leave" }]
+                : [
                 { k: "techs", label: "💅 Nail Tech Leave" },
-                { k: "managers", label: "👔 Manager Leave" }
-              ].map(t => {
+                { k: "managers", label: "👔 Manager Leave" },
+                // Head Office and Call Centre & Sales get their own sub-tabs
+                // (they are no longer a store in the dropdown). Each appears once
+                // its population exists — a no-op for salon-only deployments.
+                ...(hoOnlyStaff.length ? [{ k: "headoffice", label: "🏢 Head Office Leave" }] : []),
+                ...(ccStaff.length ? [{ k: "callcentre", label: "📞 Call Centre & Sales Leave" }] : [])
+              ]).map(t => {
                 const active = leaveSubTab === t.k;
                 return (
                   <button key={t.k} onClick={() => { setLeaveSubTab(t.k); setLeaveForm({ ec: "", startDate: "", endDate: "", emergency: false, emergencyNote: "", balanceDays: "", balanceChecked: false }); }}
@@ -33516,13 +33784,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             </div>
 
             <div style={{ background: "#FFFFFF", borderRadius: 13, padding: "14px 16px", border: "1px solid " + Y, marginBottom: 14, display: "flex", flexWrap: "wrap", gap: 14, alignItems: "flex-end" }}>
-              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                <label style={{ fontSize: 10, fontWeight: 700, color: "#F472B6", letterSpacing: "0.06em" }}>STORE</label>
-                <select value={br} onChange={e => setLeaveBranch(e.target.value)} style={{ padding: "7px 11px", borderRadius: 7, border: "1px solid " + Y, fontFamily: "inherit", fontSize: 13, background: aA, minWidth: 160 }}>
-                  {SALONS.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
-                  {hoStaff.length > 0 && <option key={HEAD_OFFICE} value={HEAD_OFFICE}>{HEAD_OFFICE}</option>}
-                </select>
-              </div>
+              {/* STORE picker only on the salon (tech/manager) sub-tabs. Head
+                  Office and Call Centre & Sales are whole populations selected by
+                  their own sub-tab, so there is no store to pick there. */}
+              {!isHoLikeSub && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                  <label style={{ fontSize: 10, fontWeight: 700, color: "#F472B6", letterSpacing: "0.06em" }}>STORE</label>
+                  <select value={br} onChange={e => setLeaveBranch(e.target.value)} style={{ padding: "7px 11px", borderRadius: 7, border: "1px solid " + Y, fontFamily: "inherit", fontSize: 13, background: aA, minWidth: 160 }}>
+                    {SALONS.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+                  </select>
+                </div>
+              )}
               <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
                 <label style={{ fontSize: 10, fontWeight: 700, color: "#F472B6", letterSpacing: "0.06em" }}>FROM CYCLE</label>
                 <select value={ym} onChange={e => setLeaveYM(e.target.value)} style={{ padding: "7px 11px", borderRadius: 7, border: "1px solid " + Y, fontFamily: "inherit", fontSize: 13, background: aA, minWidth: 210 }}>
@@ -36476,19 +36748,40 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             the per-branch Manage panel on the Locations tab. */}
       {tab === "managerPins" && (() => {
         const PINK = { ink: "#831843", accent: "#BE185D", soft: "#FBCFE8", softer: "#FCE7F3" };
-        const activeMgrs = (managers || []).filter(m => !m.transferring || m.transferring); // include everyone with a record
-        const filtered = mgrPinFilterBranch === "all"
-          ? activeMgrs
-          : activeMgrs.filter(m => (m.branch || "") === mgrPinFilterBranch);
+        // Head Office and Call Centre & Sales people also get clock-in PINs. They
+        // aren't in `managers` (they're a separate population carried in hoStaff),
+        // so surface them here as synthetic rows carrying a store name as their
+        // "branch" — HEAD_OFFICE for the rest of Head Office, CALL_CENTRE for the
+        // -CC / MCC people — so each lands in its own group below.
+        const _hoPinPeople = (hoOnlyStaff || []).filter(s => s && s.ec).map(s => ({ ec: s.ec, name: s.name, branch: HEAD_OFFICE, role: s.role || "HO" }));
+        const _ccPinPeople = (ccStaff || []).filter(s => s && s.ec).map(s => ({ ec: s.ec, name: s.name, branch: CALL_CENTRE, role: s.role || "CC" }));
+        const activeMgrs = [
+          ...(managers || []).filter(m => !m.transferring || m.transferring), // include everyone with a record
+          ..._hoPinPeople,
+          ..._ccPinPeople
+        ];
+        // A CC&S-only account only ever sees the Call Centre & Sales people here.
+        const filtered = ccOnly
+          ? activeMgrs.filter(m => m.branch === CALL_CENTRE)
+          : (mgrPinFilterBranch === "all"
+            ? activeMgrs
+            : activeMgrs.filter(m => (m.branch || "") === mgrPinFilterBranch));
         // Group by branch so the table reads naturally.
         const byBranch = SALONS.map(s => ({
           branch: s.name,
           region: s.region,
           mgrs: filtered.filter(m => m.branch === s.name)
         })).filter(g => g.mgrs.length > 0);
-        const unassigned = filtered.filter(m => !SALONS.some(s => s.name === m.branch));
+        // Head Office / Call Centre & Sales get their own groups (their synthetic
+        // branch isn't a salon, so they'd otherwise fall into "Unassigned").
+        const _hoGrp = filtered.filter(m => m.branch === HEAD_OFFICE);
+        if (_hoGrp.length > 0) byBranch.push({ branch: HEAD_OFFICE, region: null, mgrs: _hoGrp });
+        const _ccGrp = filtered.filter(m => m.branch === CALL_CENTRE);
+        if (_ccGrp.length > 0) byBranch.push({ branch: CALL_CENTRE, region: null, mgrs: _ccGrp });
+        const unassigned = filtered.filter(m => !SALONS.some(s => s.name === m.branch) && m.branch !== HEAD_OFFICE && m.branch !== CALL_CENTRE);
         if (unassigned.length > 0) byBranch.push({ branch: "Unassigned", region: null, mgrs: unassigned });
         const withPin = activeMgrs.filter(m => mgrPins[m.ec]).length;
+        const _hoCcMissing = [..._hoPinPeople, ..._ccPinPeople].filter(m => !mgrPins[m.ec]).length;
         return (
           <div style={{ padding: "0 24px" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
@@ -36496,10 +36789,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 22, fontWeight: 700, color: PINK.ink }}>🆔 Manager PINs</div>
                 <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>6-digit clock-in PINs each manager uses in the check-in app to confirm their own attendance.</div>
               </div>
-              <div style={{ fontSize: 11, color: "#9ca3af" }}>{withPin} / {activeMgrs.length} have a PIN set</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                {_hoCcMissing > 0 && (currentUser && currentUser.isOwner) && (
+                  <button onClick={generateHoCcPins}
+                    title="Create a random unique 6-digit clock-in PIN for every Head Office & Call Centre & Sales person who doesn't have one yet. Existing PINs are never changed."
+                    style={{ background: PINK.accent, color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>
+                    ⚡ Generate missing PINs (HO &amp; CC&amp;S) · {_hoCcMissing}
+                  </button>
+                )}
+                <div style={{ fontSize: 11, color: "#9ca3af" }}>{withPin} / {activeMgrs.length} have a PIN set</div>
+              </div>
             </div>
 
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+            <div style={{ display: ccOnly ? "none" : "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
               <button onClick={() => setMgrPinFilterBranch("all")}
                 style={{ background: mgrPinFilterBranch === "all" ? PINK.accent : PINK.softer, color: mgrPinFilterBranch === "all" ? "#fff" : PINK.ink, border: `1px solid ${PINK.soft}`, borderRadius: 999, padding: "6px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}
               >All branches ({activeMgrs.length})</button>
@@ -36510,6 +36812,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <button key={s.name} onClick={() => setMgrPinFilterBranch(s.name)}
                     style={{ background: active ? PINK.accent : "#fff", color: active ? "#fff" : PINK.ink, border: `1px solid ${PINK.soft}`, borderRadius: 999, padding: "6px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}
                   >{s.name} ({c})</button>
+                );
+              })}
+              {/* Head Office and Call Centre & Sales filter pills (their people
+                  aren't salon managers, so they aren't in the SALONS loop). */}
+              {[HEAD_OFFICE, CALL_CENTRE].filter(bn => activeMgrs.some(m => m.branch === bn)).map(bn => {
+                const c = activeMgrs.filter(m => m.branch === bn).length;
+                const active = mgrPinFilterBranch === bn;
+                return (
+                  <button key={bn} onClick={() => setMgrPinFilterBranch(bn)}
+                    style={{ background: active ? PINK.accent : "#fff", color: active ? "#fff" : PINK.ink, border: `1px solid ${PINK.soft}`, borderRadius: 999, padding: "6px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}
+                  >{(bn === HEAD_OFFICE ? "🏢 " : "📞 ") + bn} ({c})</button>
                 );
               })}
             </div>
@@ -37009,10 +37322,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         }
       })()}
 
-      {tab === "hoCheckins" && (() => {
-        // Head Office check-ins — a leaner sibling of Manager Check-ins. HO has
-        // no per-store GPS / no-show-at-11:00 machinery; this shows photo-verified
-        // clock-ins for the selected day + who at HO hasn't clocked in yet.
+      {(tab === "hoCheckins" || tab === "ccCheckins") && (() => {
+        // Head Office / Call Centre & Sales check-ins — a leaner sibling of
+        // Manager Check-ins. Neither has per-store GPS / no-show-at-11:00
+        // machinery; this shows photo-verified clock-ins for the selected day +
+        // who hasn't clocked in yet. Both tabs read the SAME feed (hoClockinRows,
+        // all "Head Office" branch clock-ins) and split it by EC: CC&S people are
+        // a sub-population of HO carrying -CC / role-MCC codes.
+        const isCc = tab === "ccCheckins";
+        const roster = isCc ? ccStaff : hoOnlyStaff;
+        const rowIsCc = (r) => isCallCentreEc(r && r.staff && r.staff.employee_code);
+        const rowMatch = (r) => isCc ? rowIsCc(r) : !rowIsCc(r);
+        const heading = isCc ? "📞 Call Centre & Sales Check-ins" : "🏢 Head Office Check-ins";
+        const groupWord = isCc ? "Call Centre & Sales" : "Head Office";
         const _p2 = n => String(n).padStart(2, "0");
         const localYmd = (ts) => ymdStr(new Date(ts));
         const todayYmd = localYmd(Date.now());
@@ -37026,16 +37348,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           return { lbl: t, bg: "#f3f4f6", fg: "#374151" };
         };
         const dayRows = (hoClockinRows || [])
-          .filter(r => localYmd(r.ts) === hoClockinDay)
+          .filter(r => rowMatch(r) && localYmd(r.ts) === hoClockinDay)
           .sort((x, y) => String(y.ts || "").localeCompare(String(x.ts || "")));
         const seenEcs = new Set(dayRows.map(r => r.staff && r.staff.employee_code).filter(Boolean).map(e => String(e).trim().toUpperCase()));
         const isFuture = hoClockinDay > todayYmd;
-        const absent = isFuture ? [] : (hoStaff || []).filter(s => s && s.ec && !seenEcs.has(String(s.ec).trim().toUpperCase()));
+        const absent = isFuture ? [] : (roster || []).filter(s => s && s.ec && !seenEcs.has(String(s.ec).trim().toUpperCase()));
         return (
           <div style={{ padding: "0 24px" }}>
             <div style={{ marginBottom: 14 }}>
-              <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, color: "#831843", fontWeight: 700, marginBottom: 4 }}>🏢 Head Office Check-ins</div>
-              <div style={{ fontSize: 12, color: "#F472B6" }}>Photo-verified clock-ins for Head Office staff. Each card shows the selfie and timestamp; the roster below flags anyone not yet clocked in.</div>
+              <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, color: "#831843", fontWeight: 700, marginBottom: 4 }}>{heading}</div>
+              <div style={{ fontSize: 12, color: "#F472B6" }}>Photo-verified clock-ins for {groupWord} staff. Each card shows the selfie and timestamp; the roster below flags anyone not yet clocked in.</div>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 6, background: "#fff", border: "1px solid #FBCFE8", borderRadius: 9, padding: "4px 6px" }}>
@@ -37043,20 +37365,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <span style={{ fontSize: 13, fontWeight: 600, color: "#831843", minWidth: 210, textAlign: "center" }}>{dayLabel(hoClockinDay)}{hoClockinDay === todayYmd ? " · Today" : ""}</span>
                 <button onClick={() => { if (hoClockinDay < todayYmd) setHoClockinDay(shiftDay(hoClockinDay, +1)); }} disabled={hoClockinDay >= todayYmd} style={{ background: "none", border: "none", fontSize: 18, cursor: hoClockinDay >= todayYmd ? "not-allowed" : "pointer", color: hoClockinDay >= todayYmd ? "#d1d5db" : "#BE185D", padding: "0 8px" }}>›</button>
               </div>
-              <button onClick={() => setManualHoClockinModal({ staffId: "", ec: "", name: "", ymd: hoClockinDay, time: "09:00", note: "" })}
-                title="Manually log a Head Office clock-in for someone who missed the kiosk — for backfilling mid-month."
+              <button onClick={() => setManualHoClockinModal({ staffId: "", ec: "", name: "", ymd: hoClockinDay, time: "09:00", note: "", roster: isCc ? "cc" : "ho" })}
+                title={"Manually log a " + groupWord + " clock-in for someone who missed the kiosk — for backfilling mid-month."}
                 style={{ background: "#15803D", color: "#fff", border: "none", borderRadius: 8, padding: "9px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700, letterSpacing: "0.03em" }}>
                 ✓ Manual clock-in
               </button>
               <div style={{ flex: 1 }} />
               <div style={{ fontSize: 12, color: "#831843", textAlign: "right", fontWeight: 700 }}>{dayRows.length} clock-in record{dayRows.length !== 1 ? "s" : ""}</div>
             </div>
-            {hoStaff.length === 0 ? (
-              <div style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 11, padding: "20px", color: "#831843", fontSize: 13 }}>No Head Office staff yet. Once HO people are onboarded and clocking in on the kiosk, their photo-verified check-ins appear here.</div>
+            {roster.length === 0 ? (
+              <div style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 11, padding: "20px", color: "#831843", fontSize: 13 }}>No {groupWord} staff yet. Once {groupWord} people are onboarded and clocking in on the kiosk, their photo-verified check-ins appear here.</div>
             ) : (
               <>
                 {dayRows.length === 0 ? (
-                  <div style={{ background: "#fff7fb", border: "1px solid #FBCFE8", borderRadius: 11, padding: "16px 18px", color: "#9d174d", fontSize: 13, marginBottom: 16 }}>No Head Office clock-ins on this day.</div>
+                  <div style={{ background: "#fff7fb", border: "1px solid #FBCFE8", borderRadius: 11, padding: "16px 18px", color: "#9d174d", fontSize: 13, marginBottom: 16 }}>No {groupWord} clock-ins on this day.</div>
                 ) : (
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12, marginBottom: 20 }}>
                     {dayRows.map(r => {
@@ -37075,7 +37397,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               <span style={{ fontWeight: 700, color: "#831843", fontSize: 13 }}>{(r.staff && r.staff.name) || "—"}</span>
                               <span style={{ background: b.bg, color: b.fg, fontWeight: 700, fontSize: 10, padding: "2px 7px", borderRadius: 5 }}>{b.lbl}</span>
                             </div>
-                            <div style={{ fontSize: 11, color: "#6b7280", marginTop: 3 }}>{(r.staff && r.staff.role) || "Head Office"}{(r.staff && r.staff.employee_code) ? " · " + r.staff.employee_code : ""}</div>
+                            <div style={{ fontSize: 11, color: "#6b7280", marginTop: 3 }}>{(r.staff && r.staff.role) || groupWord}{(r.staff && r.staff.employee_code) ? " · " + r.staff.employee_code : ""}</div>
                             <div style={{ fontSize: 12, color: "#831843", marginTop: 4, fontWeight: 600 }}>🕐 {fmtT(r.ts)}</div>
                           </div>
                         </div>
@@ -37087,7 +37409,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <div style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 11, padding: "14px 16px" }}>
                     <div style={{ fontWeight: 700, color: "#831843", fontSize: 13, marginBottom: 8 }}>Not clocked in ({absent.length})</div>
                     {absent.length === 0
-                      ? <div style={{ fontSize: 12, color: "#16a34a" }}>Everyone at Head Office has clocked in.</div>
+                      ? <div style={{ fontSize: 12, color: "#16a34a" }}>Everyone at {groupWord} has clocked in.</div>
                       : <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                           {absent.map(s => (
                             <span key={s.ec} style={{ background: "#fef2f2", color: "#b91c1c", border: "1px solid #fecaca", borderRadius: 7, padding: "4px 10px", fontSize: 12 }}>{s.name || s.ec}</span>
@@ -40656,7 +40978,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const _close = () => setManualHoClockinModal(null);
         const _set = (patch) => setManualHoClockinModal({ ...m, ...patch });
         const _todayY = (() => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); })();
-        const hoPeople = (hoStaff || []).filter(s => s && !s.leftDate).sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+        // Roster hint carried from whichever check-ins tab opened the modal, so
+        // the picker lists only that population (CC&S vs the rest of Head Office).
+        const _mIsCc = m.roster === "cc";
+        const _mGroupWord = _mIsCc ? "Call Centre & Sales" : "Head Office";
+        const _mSource = _mIsCc ? ccStaff : (m.roster === "ho" ? hoOnlyStaff : hoStaff);
+        const hoPeople = (_mSource || []).filter(s => s && !s.leftDate).sort((a, b) => (a.name || "").localeCompare(b.name || ""));
         const _save = async () => {
           if (!m.staffId) { _set({ _err: "Pick a person." }); return; }
           if (!m.ymd) { _set({ _err: "Pick a date." }); return; }
@@ -40692,14 +41019,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             <div onClick={ev => ev.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "20px 22px", width: "100%", maxWidth: 480 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
                 <div>
-                  <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 19, color: "#831843", fontWeight: 700 }}>✓ Manual Head Office clock-in</div>
-                  <div style={{ fontSize: 12, color: "#9ca3af" }}>Backfill a clock-in for an HO person who missed the kiosk. Writes into the same log the check-in cards read — no selfie, tagged as a manual entry.</div>
+                  <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 19, color: "#831843", fontWeight: 700 }}>✓ Manual {_mGroupWord} clock-in</div>
+                  <div style={{ fontSize: 12, color: "#9ca3af" }}>Backfill a clock-in for a {_mGroupWord} person who missed the kiosk. Writes into the same log the check-in cards read — no selfie, tagged as a manual entry.</div>
                 </div>
                 <button onClick={_close} style={{ background: "transparent", border: "none", fontSize: 22, cursor: "pointer", color: "#831843", lineHeight: 1 }}>×</button>
               </div>
 
               <div style={{ marginTop: 14 }}>
-                <label style={lbl}>HEAD OFFICE STAFF</label>
+                <label style={lbl}>{_mGroupWord.toUpperCase()} STAFF</label>
                 <select value={m.staffId || ""} onChange={ev => {
                   const s = hoPeople.find(x => (x._id || x.id) === ev.target.value);
                   _set({ staffId: ev.target.value, ec: (s && s.ec) || "", name: (s && s.name) || "" });

@@ -49,6 +49,38 @@
     return !!code && (/\dM$/.test(code) || /^M\d/.test(code));
   }
 
+  // ---------- Call Centre & Sales split (Head Office device only) ----------
+  // The single Head Office kiosk serves both the office and the Call Centre &
+  // Sales floor. CC&S people carry branch "Head Office" in the staff table but
+  // schedule / attend / request under the "Call Centre & Sales" store, so every
+  // per-person key routes there for them. Matched by a -CC code suffix or a
+  // Call-Centre role (MCC / CC / SALES) — same rule as the HR portal. The role
+  // set is rebuilt from the roster on load; the -CC suffix works even before
+  // that (only the CC Manager, whose code is -M, needs the role lookup).
+  var CALL_CENTRE = "Call Centre & Sales";
+  var _ccEcSet = Object.create(null);
+  function _staffIsCcSales(s) {
+    if (!s) return false;
+    var ec = String(s.employee_code || "").trim().toUpperCase();
+    var role = String(s.role || "").trim().toUpperCase();
+    return /-CC$/.test(ec) || role === "MCC" || role === "CC" || role === "SALES";
+  }
+  function _registerCcRoster(rows) {
+    (rows || []).forEach(function (s) {
+      if (s && _staffIsCcSales(s)) _ccEcSet[String(s.employee_code || "").trim().toUpperCase()] = 1;
+    });
+  }
+  function _isCcEc(ec) {
+    var e = String(ec || "").trim().toUpperCase();
+    return /-CC$/.test(e) || !!_ccEcSet[e];
+  }
+  // The store a person's per-person keys live under: CC&S people on the Head
+  // Office device route to the CALL_CENTRE store; everyone else stays on the
+  // device's own branch.
+  function personBranch(ec) {
+    return (cfg.headOffice && _isCcEc(ec)) ? CALL_CENTRE : branch();
+  }
+
   function todayStr() {
     var d = new Date(), p = function (n) { return String(n).padStart(2, "0"); };
     return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
@@ -113,6 +145,7 @@
     q = q.order("name", { ascending: true });
     var res = await q;
     if (res.error) { console.error("listStaff:", res.error); return []; }
+    _registerCcRoster(res.data);   // learn which HO ECs are Call Centre & Sales
     return res.data || [];
   }
 
@@ -721,18 +754,21 @@
     return y + "-" + String(m).padStart(2, "0");
   }
 
-  function attKey(ym) {
+  // attKey takes an optional ec so a Call Centre & Sales person's attendance
+  // routes to boa_att_Call Centre & Sales_* on the shared Head Office device;
+  // omitting ec keeps the device's own branch (salon kiosks pass no ec).
+  function attKey(ym, ec) {
     var p = ym.split("-");
     var y = +p[0], m = +p[1] - 1;
     if (m < 1) { m = 12; y -= 1; }
-    return "boa_att_" + branch() + "_" + y + "-" + String(m).padStart(2, "0");
+    return "boa_att_" + personBranch(ec) + "_" + y + "-" + String(m).padStart(2, "0");
   }
   function swapsKey(ym)     { return "boa_swaps_"     + branch() + "_" + ym; }
   function extrasKey(ym)    { return "boa_extras_"    + branch() + "_" + ym; }
   function absencesKey(ym)  { return "boa_absences_"  + branch() + "_" + ym; }
   function dailyKey(ymd)    { return "boa_dly_"       + branch() + "_" + ymd; }
   function proofKey(ym, ec, day) {
-    return "boa_proof_" + branch() + "_" + ym + "_" + ec + "_" + day;
+    return "boa_proof_" + personBranch(ec) + "_" + ym + "_" + ec + "_" + day;
   }
 
   function endOfSchedulePeriod(date) {
@@ -783,7 +819,7 @@
     try {
       var yms = _listAttYms(since, today);
       for (var i = 0; i < yms.length; i++) {
-        var a = await getAttendance(yms[i]); var grid = (a && a.grid) || {};
+        var a = await getAttendance(yms[i], ec); var grid = (a && a.grid) || {};
         var rowg = grid[ec] || grid[String(ec).toUpperCase()] || {};
         for (var dk in rowg) { if (String(rowg[dk] == null ? "" : rowg[dk]).replace(/^~/, "") === "frl") days[_attCellYmd(yms[i], dk)] = 1; }
       }
@@ -811,16 +847,20 @@
     return entries.length;
   }
 
-  async function getAttendance(ym) {
-    var c = client(); if (!c) return { grid: {}, branch: branch(), ym: ym };
-    var res = await c.from("app_state").select("value").eq("key", attKey(ym)).maybeSingle();
-    if (res.error) { console.error("getAttendance:", res.error); return { grid: {}, branch: branch(), ym: ym }; }
-    return (res.data && res.data.value) || { grid: {}, branch: branch(), ym: ym };
+  // ec (optional) routes a Call Centre & Sales person to their own attendance
+  // grid on the shared Head Office device; omit it for the whole-branch grid.
+  async function getAttendance(ym, ec) {
+    var _br = personBranch(ec);
+    var c = client(); if (!c) return { grid: {}, branch: _br, ym: ym };
+    var res = await c.from("app_state").select("value").eq("key", attKey(ym, ec)).maybeSingle();
+    if (res.error) { console.error("getAttendance:", res.error); return { grid: {}, branch: _br, ym: ym }; }
+    return (res.data && res.data.value) || { grid: {}, branch: _br, ym: ym };
   }
 
   async function setAttendanceStatus(ym, dayKey, ec, status, note) {
     var c = client(); if (!c) throw new Error("Supabase not configured");
-    var existing = await getAttendance(ym);
+    var _br = personBranch(ec);   // CC&S people write to their own store's grid
+    var existing = await getAttendance(ym, ec);
     var newGrid = JSON.parse(JSON.stringify(existing.grid || {}));
     if (status == null) {
       if (newGrid[ec]) {
@@ -836,14 +876,14 @@
     // the value as only { grid, … } here wiped them on every kiosk write — e.g.
     // it erased the Fresha appointments import the day after it was done.
     // Mirrors data.js saveAttendance, which already merges.
-    var newValue = Object.assign({}, existing, { grid: newGrid, branch: branch(), ym: ym, savedAt: new Date().toISOString() });
-    var res = await c.from("app_state").upsert({ key: attKey(ym), value: newValue });
+    var newValue = Object.assign({}, existing, { grid: newGrid, branch: _br, ym: ym, savedAt: new Date().toISOString() });
+    var res = await c.from("app_state").upsert({ key: attKey(ym, ec), value: newValue });
     if (res.error) throw res.error;
 
     // ---- Kiosk audit log (NEW) ----
     // The HR portal's Daily Check-ins tab reads ONLY from this log.
     try {
-      var logKey = "boa_kiosk_log_" + branch() + "_" + attKey(ym).split("_").pop();
+      var logKey = "boa_kiosk_log_" + _br + "_" + attKey(ym, ec).split("_").pop();
       var ymd = scheduleDayToYmd(ym, parseInt(dayKey, 10));
       var sideCalls = await Promise.all([
         c.from("app_state").select("value").eq("key", logKey).maybeSingle(),
@@ -1362,9 +1402,11 @@
     });
     return conv;
   }
-  async function getSchedule(ym, kind) {
+  // brOverride (optional) reads another store's grid on the same device — the
+  // HO device uses it to read the "Call Centre & Sales" grid for CC&S people.
+  async function getSchedule(ym, kind, brOverride) {
     var c = client(); if (!c) return { grid: {}, ym: ym, kind: kind || "combined" };
-    var br = branch();
+    var br = brOverride || branch();
     // Tech keeps end-month; manager re-maps to start-month (schedKey handles
     // the mapping). mgrKey is also compared against below to tag manager rows.
     var mgrKey  = schedKey(br, ym, true);
@@ -1392,9 +1434,9 @@
   // the same way as getSchedule. The HR portal's Manager Coverage view falls
   // back to this per cell when the live grid has no value for a manager+day —
   // the kiosk mirrors that so both always show the same shift.
-  async function getApprovedSchedule(ym, kind) {
+  async function getApprovedSchedule(ym, kind, brOverride) {
     var c = client(); if (!c) return { grid: {}, names: {}, ym: ym };
-    var br = branch();
+    var br = brOverride || branch();
     var isMgr = kind === "mgr";
     var key = schedApprovedKey(br, ym, isMgr);
     var res = await c.from("app_state").select("value").eq("key", key).maybeSingle();
@@ -1595,6 +1637,12 @@
   var HO_REQUESTS_KEY = "boa_ho_requests_v1";
   function _loadAllHoRequests()   { return _loadRequestsAt(HO_REQUESTS_KEY); }
   function _saveAllHoRequests(arr)   { return _saveRequestsAt(HO_REQUESTS_KEY, arr); }
+  // Call Centre & Sales off-day requests get their own key, same as the portal
+  // (boa_cc_requests_v1). CC&S people on the HO device route here instead of the
+  // HO key so each scheduler overlay only sees its own population.
+  var CC_REQUESTS_KEY = "boa_cc_requests_v1";
+  function _loadAllCcRequests()   { return _loadRequestsAt(CC_REQUESTS_KEY); }
+  function _saveAllCcRequests(arr)   { return _saveRequestsAt(CC_REQUESTS_KEY, arr); }
 
   // ---------- Extra-Day (ED) offers + requests ----------
   // Offers are PUBLISHED by Ops in the portal (boa_mgr_ed_offers_v1); the kiosk
@@ -1647,17 +1695,22 @@
     var startIso  = isoDate(new Date(prevYear, prevMonth - 1, 25));
     var endIso    = isoDate(new Date(y, m - 1, 24));
     var br = branch();
+    var isHo = isHeadOfficeBranch(br);
     var allRequests;
-    if (isHeadOfficeBranch(br)) {
-      allRequests = await _loadAllHoRequests();
+    if (isHo) {
+      // HO device serves both office (HO key) and Call Centre & Sales (CC key).
+      var hoPair = await Promise.all([_loadAllHoRequests(), _loadAllCcRequests()]);
+      allRequests = hoPair[0].concat(hoPair[1]);
     } else {
-      var techRequests = await _loadAllTechRequests();
-      var mgrRequests  = await _loadAllMgrRequests();
-      allRequests  = techRequests.concat(mgrRequests);
+      var salonPair = await Promise.all([_loadAllTechRequests(), _loadAllMgrRequests()]);
+      allRequests = salonPair[0].concat(salonPair[1]);
     }
+    // On the HO device a record's branch may be "Head Office" OR
+    // "Call Centre & Sales"; both belong to this device's roster.
+    var _branchMatches = function (rb) { return rb === br || (isHo && rb === CALL_CENTRE); };
     var byEc = {};
     allRequests.forEach(function (r) {
-      if (!r || r.branch !== br) return;
+      if (!r || !_branchMatches(r.branch)) return;
       if (!r.date || r.date < startIso || r.date > endIso) return;
       if (!byEc[r.ec]) byEc[r.ec] = {
         id: "tx_" + r.ec, ec: r.ec, name: r.name || "",
@@ -1678,8 +1731,21 @@
       return g;
     });
 
-    var sched = await getSchedule(targetYm);
-    var grid = (sched && sched.grid) || {};
+    // On the HO device, Call Centre & Sales schedules live under their own store,
+    // so load that grid too — otherwise CC people's approved R days wouldn't
+    // surface as derived off-requests. Independent reads, so run in parallel.
+    var schedLoads = await Promise.all([
+      getSchedule(targetYm),
+      isHo ? getSchedule(targetYm, "tech", CALL_CENTRE) : Promise.resolve(null)
+    ]);
+    var grid = (schedLoads[0] && schedLoads[0].grid) || {};
+    if (isHo) {
+      var ccGrid = (schedLoads[1] && schedLoads[1].grid) || {};
+      // CC grid wins any EC collision: pre-split CC rows still linger in the
+      // Head Office grid (never deleted), so a colliding EC is always a stale
+      // HO copy that must yield to the authoritative CC&S schedule.
+      Object.keys(ccGrid).forEach(function (ec) { grid[ec] = ccGrid[ec]; });
+    }
     var staffList = await listStaff({ activeOnly: false });
     var staffByEc = {};
     staffList.forEach(function (s) { if (s.employee_code) staffByEc[s.employee_code] = s; });
@@ -1717,12 +1783,15 @@
     var c = client(); if (!c) throw new Error("Supabase not configured");
     // Head Office writes to its own key regardless of the record's roleType —
     // HO is one bucket and must never touch the salon tech/mgr request arrays.
+    // Call Centre & Sales people (on the HO device) route to their own key so
+    // their requests land on the portal's CC&S scheduler, not the HO one.
     var isHo = isHeadOfficeBranch(branch());
+    var isCc = isHo && payload && _isCcEc(payload.ec);
     var isManager = !isHo && payload && payload.roleType === "manager";
-    var loadFn = isHo ? _loadAllHoRequests : (isManager ? _loadAllMgrRequests : _loadAllTechRequests);
-    var saveFn = isHo ? _saveAllHoRequests : (isManager ? _saveAllMgrRequests : _saveAllTechRequests);
+    var loadFn = isCc ? _loadAllCcRequests : (isHo ? _loadAllHoRequests : (isManager ? _loadAllMgrRequests : _loadAllTechRequests));
+    var saveFn = isCc ? _saveAllCcRequests : (isHo ? _saveAllHoRequests : (isManager ? _saveAllMgrRequests : _saveAllTechRequests));
     var existing = await loadFn();
-    var br = branch();
+    var br = personBranch(payload && payload.ec);
     var dates = (payload.dates || []).slice();
     if (dates.length === 0 && Array.isArray(payload.days)) {
       var p = targetYm.split("-"); var year = +p[0], month = +p[1];
@@ -1759,13 +1828,16 @@
     var prevYear  = m === 1 ? y - 1 : y;
     var startIso  = isoDate(new Date(prevYear, prevMonth - 1, 25));
     var endIso    = isoDate(new Date(y, m - 1, 24));
+    var isHo = isHeadOfficeBranch(br);
     var isSynthetic = id && id.indexOf("tx_") === 0;
     var ec = isSynthetic ? id.slice(3) : null;
+    // On the HO device a record's branch may be HO or Call Centre & Sales.
+    var _branchMatches = function (rb) { return rb === br || (isHo && rb === CALL_CENTRE); };
 
     function applyFilter(list) {
       if (isSynthetic) {
         return list.filter(function (r) {
-          if (!r || r.branch !== br) return true;
+          if (!r || !_branchMatches(r.branch)) return true;
           if (r.ec !== ec) return true;
           if (!r.date || r.date < startIso || r.date > endIso) return true;
           return false;
@@ -1774,11 +1846,15 @@
       return list.filter(function (r) { return r && r.id !== id; });
     }
 
-    // Head Office deletes only touch the HO key (its requests live nowhere else).
-    if (isHeadOfficeBranch(br)) {
+    // Head Office deletes touch the HO key AND the Call Centre & Sales key (the
+    // HO device serves both); its requests live nowhere else.
+    if (isHo) {
       var hoExisting = await _loadAllHoRequests();
       var hoNext = applyFilter(hoExisting);
       if (hoNext.length !== hoExisting.length) await _saveAllHoRequests(hoNext);
+      var ccExisting = await _loadAllCcRequests();
+      var ccNext = applyFilter(ccExisting);
+      if (ccNext.length !== ccExisting.length) await _saveAllCcRequests(ccNext);
       return;
     }
 

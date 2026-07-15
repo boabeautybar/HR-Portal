@@ -604,6 +604,7 @@
     await rewriteEcList("boa_mgr_requests_v1", "requests");
     await rewriteEcList("boa_tech_requests_v1", "requests");
     await rewriteEcList("boa_ho_requests_v1", "requests");
+    await rewriteEcList("boa_cc_requests_v1", "requests");
 
     // Maps keyed by ec: custom manager hours.
     try {
@@ -772,6 +773,23 @@
   }
   async function saveHoRequests(records) {
     var res = await sb.from("app_state").upsert({ key: "boa_ho_requests_v1", value: records || [] });
+    if (res.error) throw res.error;
+    return records;
+  }
+
+  // ---------- Call Centre & Sales off-day requests (boa_cc_requests_v1) ----------
+  // Same record shape as the HO key. CC&S people (EC -CC / role MCC) are Head
+  // Office rows in the staff table but schedule under the "Call Centre & Sales"
+  // store, so their requests get their own key — kept out of boa_ho_requests_v1
+  // so each scheduler overlay only sees its own population.
+  async function loadCcRequests() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_cc_requests_v1").maybeSingle();
+    if (res.error) { console.error("loadCcRequests:", res.error); return []; }
+    var v = res.data && res.data.value;
+    return Array.isArray(v) ? v : [];
+  }
+  async function saveCcRequests(records) {
+    var res = await sb.from("app_state").upsert({ key: "boa_cc_requests_v1", value: records || [] });
     if (res.error) throw res.error;
     return records;
   }
@@ -2515,6 +2533,8 @@
     saveTechRequests: saveTechRequests,
     loadHoRequests: loadHoRequests,
     saveHoRequests: saveHoRequests,
+    loadCcRequests: loadCcRequests,
+    saveCcRequests: saveCcRequests,
     listRequestKeys: listRequestKeys,
     probeRequestTables: probeRequestTables,
     loadByKey: loadByKey,
