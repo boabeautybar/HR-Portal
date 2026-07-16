@@ -48,6 +48,17 @@
     var code = (s.employee_code || "").toUpperCase().trim();
     return !!code && (/\dM$/.test(code) || /^M\d/.test(code));
   }
+  // A trainer rotates between stores instead of working one site: role "T" on a
+  // Head Office staff row (role_type is "head_office", NOT "manager", so
+  // isManagerRow above deliberately never matches them). They clock in on
+  // whichever STORE kiosk they're visiting — that clock-in's branch is what the
+  // HR portal derives their "→ store" schedule cell from. Data-driven on
+  // purpose: a new trainer appears everywhere the moment their row lands with
+  // role "T", with no hardcoded employee codes.
+  function isTrainerRow(s) {
+    if (!s) return false;
+    return isHeadOfficeBranch(s.branch) && String(s.role || "").trim().toUpperCase() === "T";
+  }
 
   // ---------- Call Centre & Sales split (Head Office device only) ----------
   // The single Head Office kiosk serves both the office and the Call Centre &
@@ -1960,7 +1971,8 @@
     loadManagerPins: loadManagerPins, saveManagerPins: saveManagerPins,
     lookupFreshaVoucher: lookupFreshaVoucher, logVoucherLookup: logVoucherLookup,
     activeSmTrialEcs: activeSmTrialEcs,
-    listAllManagers: listAllManagers, listTodayManagerClockins: listTodayManagerClockins,
+    listAllManagers: listAllManagers, listTrainers: listTrainers,
+    listTodayManagerClockins: listTodayManagerClockins,
     addManagerClockinWithMeta: addManagerClockinWithMeta,
     loadClockinMeta: loadClockinMeta, listRecentManagerClockins: listRecentManagerClockins,
 
@@ -2064,7 +2076,15 @@
     }
     var res = await q;
     if (res.error) { console.error("listRecentManagerClockins:", res.error); return []; }
-    return (res.data || []).filter(function (r) { return r.staff && r.staff.role_type === "manager"; });
+    // Trainers share this screen but are role_type "head_office", not "manager",
+    // so they'd be dropped here — which would blank their "already clocked in"
+    // state and let them clock in twice. The select above already projects role
+    // + branch, so isTrainerRow works straight off the join.
+    // NOTE: listTodayManagerClockins is deliberately NOT relaxed the same way —
+    // its only consumer is the voucher gate, which trainers have no part in.
+    return (res.data || []).filter(function (r) {
+      return r.staff && (r.staff.role_type === "manager" || isTrainerRow(r.staff));
+    });
   }
 
   async function addManagerClockinWithMeta(staffId, type, meta) {
@@ -2245,28 +2265,8 @@
       .eq("active", true)
       .order("name", { ascending: true });
     if (res.error) { console.error("listAllManagers:", res.error); return []; }
-    // Off-boarding via the HR portal writes leftDate into boa_offboard_v1 and
-    // does NOT flip the staff row's `active` column (see loadOffboarding), so
-    // an off-boarded manager still comes back as active here — which left them
-    // showing on the Manager Check-in list and the "not clocked in yet" nag.
-    // Merge the off-board list and drop anyone whose effective last day is in
-    // the past; keep last-day-today and future leavers so they can still clock
-    // in until they actually leave.
-    var offByEc = {};
-    try {
-      var offList = await loadOffboarding();
-      (offList || []).forEach(function (o) { if (o && o.ec) offByEc[String(o.ec).trim()] = o; });
-    } catch (_) {}
-    var _p = function (n) { return String(n).padStart(2, "0"); };
-    var _now = new Date();
-    var todayIso = _now.getFullYear() + "-" + _p(_now.getMonth() + 1) + "-" + _p(_now.getDate());
-    return (res.data || []).filter(isManagerRow).filter(function (m) {
-      var ec = m && m.employee_code && String(m.employee_code).trim();
-      var off = ec ? offByEc[ec] : null;
-      var eff = (off && off.leftDate) || m.left_date || null;
-      if (!eff) return true;            // not leaving
-      return eff >= todayIso;           // keep last-day + future, drop past leavers
-    }).map(function (m) {
+    var todayIso = todayStr();
+    return (await _dropPastLeavers((res.data || []).filter(isManagerRow))).map(function (m) {
       // Settle completed branch transfers: from the transfer date onward the
       // manager belongs to the NEW branch, so she shows in that store's
       // clock-in list (and stops showing at the old one). Pending (future)
@@ -2276,6 +2276,57 @@
       }
       return m;
     });
+  }
+  // Shared by listAllManagers / listTrainers. Off-boarding via the HR portal
+  // writes leftDate into boa_offboard_v1 and does NOT flip the staff row's
+  // `active` column (see loadOffboarding), so an off-boarded person still comes
+  // back as active — which left them showing on the clock-in list and the "not
+  // clocked in yet" nag. Drop anyone whose effective last day is in the past;
+  // keep last-day-today and future leavers so they can still clock in until
+  // they actually leave.
+  async function _dropPastLeavers(rows) {
+    var offByEc = {};
+    try {
+      var offList = await loadOffboarding();
+      (offList || []).forEach(function (o) { if (o && o.ec) offByEc[String(o.ec).trim()] = o; });
+    } catch (_) {}
+    var todayIso = todayStr();
+    return (rows || []).filter(function (m) {
+      var ec = m && m.employee_code && String(m.employee_code).trim();
+      var off = ec ? offByEc[ec] : null;
+      var eff = (off && off.leftDate) || m.left_date || null;
+      if (!eff) return true;            // not leaving
+      return eff >= todayIso;           // keep last-day + future, drop past leavers
+    });
+  }
+  // Trainers for the Manager Clock-in screen's trainer card. Kept OUT of
+  // listAllManagers deliberately: isManagerRow drops every Head Office row, and
+  // merging trainers into the manager list would push them into the "other
+  // stores" bucket (their branch is Head Office, never this kiosk's) and
+  // double-render them. Filtered server-side on role — a 2-row result, so
+  // unlike listAllManagers there's no reason to pull the whole active roster.
+  // ilike (not eq) so a lower-case "t" in the data still matches.
+  async function listTrainers() {
+    var c = client(); if (!c) return [];
+    // Deploy-order interlock: the trainer card must NOT appear until
+    // sql/trainer_store_checkin.sql has been run in prod — that file replaces
+    // the clockin→attendance trigger so a Head Office trainer's attendance
+    // files under Head Office, not the store they're visiting. The SQL stamps
+    // this marker as its last statement; until it exists, a trainer clock-in
+    // at a store would write the visited store's attendance grid (a payroll
+    // discrepancy per visit). No marker → no trainers → no card.
+    var flag = await c.from("app_state").select("value").eq("key", "boa_trainer_trigger_v1").maybeSingle();
+    if (flag.error || !flag.data || !flag.data.value || flag.data.value.applied !== true) {
+      if (flag.error) console.error("listTrainers (trigger flag):", flag.error);
+      return [];
+    }
+    var res = await c.from("staff")
+      .select("id,name,employee_code,role,role_type,branch,active,left_date")
+      .eq("active", true)
+      .ilike("role", "T")
+      .order("name", { ascending: true });
+    if (res.error) { console.error("listTrainers:", res.error); return []; }
+    return await _dropPastLeavers((res.data || []).filter(isTrainerRow));
   }
   async function listTodayManagerClockins() {
     var c = client(); if (!c) return [];

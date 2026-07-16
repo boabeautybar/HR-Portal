@@ -1863,7 +1863,7 @@
     document.getElementById("back-home").onclick = renderManagerLanding;
     document.getElementById("mc-refresh").onclick = renderMgrClockin;
 
-    var pins, mgrs, recent, smTrialEcs, trialCand, mgrTaggedStaffIds = {}, mgrOnLeaveToday = {};
+    var pins, mgrs, recent, smTrialEcs, trialCand, trainers, mgrTaggedStaffIds = {}, mgrOnLeaveToday = {};
     // Per-day custom shift hours set on the HR portal's Manager Coverage tab
     // (boa_mgr_times_v1): { ec: { "YYYY-MM-DD": "HH:MM - HH:MM" } }. These are
     // the EXACT times coverage shows and they override the computed defaults.
@@ -1936,13 +1936,21 @@
         window.APP_DATA.loadManagerPins(),
         window.APP_DATA.listAllManagers(),
         window.APP_DATA.activeSmTrialEcs ? window.APP_DATA.activeSmTrialEcs() : Promise.resolve({}),
-        window.APP_DATA.listTrialCandidates ? window.APP_DATA.listTrialCandidates() : Promise.resolve([])
+        window.APP_DATA.listTrialCandidates ? window.APP_DATA.listTrialCandidates() : Promise.resolve([]),
+        window.APP_DATA.listTrainers ? window.APP_DATA.listTrainers() : Promise.resolve([])
       ]);
       pins       = _stage1[0];
       mgrs       = _stage1[1];
       smTrialEcs = _stage1[2];
       trialCand  = _stage1[3];
+      trainers   = _stage1[4] || [];
+      // Trainers rotate through every store, so they clock in HERE but their
+      // rows live under Head Office. Kept a separate array from `mgrs`: the
+      // here/other split below is on branch, so a merged trainer would fall into
+      // "Clock in other manager" and render twice. Their ids still join the
+      // clockins id-filter, otherwise their "already clocked in" state is blank.
       var _mgrIds = (mgrs || []).map(function (m) { return m.id; }).filter(Boolean);
+      var _clockIds = _mgrIds.concat((trainers || []).map(function (t) { return t.id; }).filter(Boolean));
       // Consumer surfaces render the PUBLISHED schedule verbatim. The draft
       // (boa_mgrsched_*) holds a stale raw rotation WITHOUT the manual shift pins,
       // so a pinned manager (or any re-drafted cell) shows the wrong hours here —
@@ -1960,7 +1968,7 @@
         try { return await window.APP_DATA.getSchedule(endYm, "mgr"); } catch (_e2) { return null; }
       };
       var _stage2 = await Promise.all([
-        window.APP_DATA.listRecentManagerClockins(2, _mgrIds),
+        window.APP_DATA.listRecentManagerClockins(2, _clockIds),
         _loadMgrSched(_curEndYm),
         _loadMgrSched(_prevEndYm),
         window.APP_DATA.listManagerDayStatusesToday ? window.APP_DATA.listManagerDayStatusesToday().catch(function () { return []; }) : Promise.resolve([]),
@@ -2038,8 +2046,29 @@
       m._effRole = (m.role === "AM" && smTrialEcs && smTrialEcs[_ecK]) ? "SM" : m.role;
       mgrByEc[_ecK] = m;
     });
+    // Trainers join mgrByEc so ensureAutoOuts can resolve their shift end. Their
+    // branch stays "Head Office" ON PURPOSE — that's what makes shiftTimes
+    // return the flat HO 08:00–17:00 (shift-rules.js) instead of this store's
+    // much later tech close.
+    var _trainerEcs = {};
+    (trainers || []).forEach(function (t) {
+      if (!t.employee_code) return;
+      var _tK = String(t.employee_code).trim();
+      t._effRole = "T";
+      t._isTrainer = true;
+      _trainerEcs[_tK] = 1;
+      mgrByEc[_tK] = t;
+    });
     var _schedLookup = function (ec, ymd) {
-      var row = schedByEcYmd[String(ec).trim()];
+      var _k = String(ec).trim();
+      // A trainer's cells live in boa_sched_Head Office_* (a tech-style key) which
+      // a store kiosk never loads, so schedByEcYmd can't answer for them and the
+      // auto-out would fall through to the legacy 18:30 cutoff — over-paying by
+      // 1.5h. Head Office hours are flat 08:00–17:00 for any non-CC role
+      // regardless of code or weekday (shift-rules.js), so a synthetic work code
+      // resolves the correct end without fetching the HO grid.
+      if (_trainerEcs[_k]) return "W";
+      var row = schedByEcYmd[_k];
       return row ? row[ymd] : null;
     };
     var _schedHoursLookup = function (ec, ymd) {
@@ -2209,6 +2238,60 @@
         '</div>';
     }
 
+    // A trainer (role "T") rotates between stores instead of working one site,
+    // so they're shown on EVERY store kiosk rather than filtered to this branch
+    // — the whole point is that they clock in wherever they happen to be today.
+    // Their clock-in stamps THIS store as clockins.branch, which is what the HR
+    // portal turns into the "→ store" cell on their Head Office schedule row.
+    // Shares class="staff-row" (and the same data-* contract) with mgrRowHtml so
+    // the existing .staff-row handler loop below picks these rows up unchanged;
+    // data-trainer="1" is the only addition, and it suppresses the two
+    // manager-only prompts on clock-out.
+    function trainerRowHtml(t) {
+      var ecRaw = t.employee_code || "";
+      var ec = String(ecRaw).trim();
+      var has = !!(pins[ec] || pins[ecRaw]);
+      var last = byEc[ec];
+      var inRec = inTodayByEc[ec];
+      var inDone = !!inRec;
+      // Only one clock-in per day, enforced server-side and branch-blind. If
+      // they're already in at ANOTHER store, say so — otherwise the disabled
+      // button looks broken rather than deliberate.
+      var whereLabel = (inRec && inRec.branch && inRec.branch !== thisBranch)
+        ? ' <span class="pill pill-warn">at ' + esc(inRec.branch) + '</span>'
+        : "";
+      var lastLabel;
+      if (!last) lastLabel = '<span class="pill pill-mute">not clocked in</span>';
+      else if (last.type === "in") lastLabel = '<span class="pill pill-ok">IN ' + fmtTime(last.ts) + '</span>';
+      else if (last.type === "out_auto") lastLabel = '<span class="pill pill-warn">AUTO-OUT ' + fmtTime(last.ts) + '</span>';
+      else lastLabel = '<span class="pill pill-warn">OUT ' + fmtTime(last.ts) + '</span>';
+      if (inDone && last && last.type !== "in") {
+        lastLabel += ' <span class="pill pill-mute">clocked in ' + fmtTime(inRec.ts) + '</span>';
+      }
+      var autoBadge = autoYesterday[ec] ? ' <span class="pill" style="background:#fee2e2;color:#7f1d1d">⚠ auto-out yesterday</span>' : "";
+      var inTitle = inDone
+        ? ("Already clocked in today" + (inRec && inRec.branch ? " at " + inRec.branch : ""))
+        : "";
+      // Resolve hours against the trainer's OWN branch (Head Office), never this
+      // kiosk's — shift-rules.js gives Head Office a flat 08:00-17:00 for any
+      // non-CC role, whereas thisBranch would return the local tech close.
+      var _hrs = shiftTimes("T", "W", t.branch || "Head Office", _todayDow);
+      return '<div class="staff-row" data-id="' + t.id + '" data-ec="' + esc(ec) + '" data-name="' + esc(t.name) + '" data-trainer="1">' +
+        '<div class="staff-row-main">' +
+        '<div class="staff-name">' + esc(t.name) +
+          ' <span class="pill" style="background:#e0e7ff;color:#3730a3;border:1px solid #c7d2fe">🎓 Trainer</span>' +
+          (has ? "" : ' <span class="pill pill-warn">NO PIN</span>') + whereLabel + autoBadge +
+        '</div>' +
+        '<div class="staff-shift-hours" style="font-size:11px;color:#3730a3;font-weight:700;letter-spacing:0.02em;margin-top:2px">🕐 Today · ' + esc(_hrs) + ' · Head Office hours</div>' +
+        '<div class="staff-code" style="margin-top:3px">' + lastLabel + '</div>' +
+        '</div>' +
+        '<div class="staff-row-actions">' +
+        '<button class="btn btn-primary" data-act="clockin"  ' + (has && !inDone ? "" : 'disabled') + (inDone ? ' title="' + esc(inTitle) + '"' : '') + '>Clock In</button>' +
+        '<button class="btn btn-out"     data-act="clockout" ' + (has ? "" : 'disabled') + '>Clock Out</button>' +
+        '</div>' +
+        '</div>';
+    }
+
     // Only THIS store's managers are shown by default. Managers based at other
     // stores live behind a "Clock in other manager" button so the list isn't
     // cluttered with every manager in the company.
@@ -2259,6 +2342,19 @@
         '</div>';
     }
 
+    // Trainer check-in. Sits below the trial AMs and above "Clock in other
+    // manager". Unlike the manager list this is NOT filtered to this store —
+    // trainers rotate, so every trainer shows on every store kiosk (a 2-4 row
+    // list, so there's nothing to collapse behind a toggle).
+    var trainerHtml = "";
+    if ((trainers || []).length > 0) {
+      trainerHtml =
+        '<div style="margin-top:20px">' +
+          '<div style="font-size:12px;font-weight:800;color:#3730a3;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">🎓 Trainer check-in · visiting this store</div>' +
+          '<div class="staff-list">' + trainers.map(trainerRowHtml).join("") + '</div>' +
+        '</div>';
+    }
+
     document.getElementById("mc-body").innerHTML =
       '<div class="staff-list">' +
       (hereMgrs.length
@@ -2266,6 +2362,7 @@
         : '<div class="empty">No managers are based at ' + esc(thisBranch || "this store") + ' yet.</div>') +
       '</div>' +
       trialAmHtml +
+      trainerHtml +
       (otherMgrs.length
         ? '<button id="mc-show-others" type="button" ' +
             'style="margin-top:14px;width:100%;background:#fff;color:var(--pink-700);border:2px solid var(--pink-200);border-radius:10px;padding:11px 14px;font-weight:700;font-size:14px;cursor:pointer">' +
@@ -2317,6 +2414,12 @@
       var id = row.dataset.id;
       var ec = row.dataset.ec;
       var name = row.dataset.name;
+      // A visiting trainer uses the identical clock path (time gate, store-open
+      // gate, PIN, one-per-day, selfie, and the same clockins write stamped with
+      // THIS store) — only the two manager-only prompts on clock-out are skipped:
+      // the early-leave witness checklist and the cash-up nudge are this store's
+      // concerns, not a visitor's.
+      var isTrainer = row.dataset.trainer === "1";
 
       var doClock = async function (type) {
         // 1. Time gate (clock-IN only)
@@ -2392,8 +2495,12 @@
         // clocking-out manager ticks them from a manager-only checklist —
         // nail techs are deliberately not selectable here (those go through
         // Nail Tech Check-ins → Mark left early). The report goes to
-        // boa_mgr_early_reports_v1 for ROM review. Skipped on clock-in.
-        if (type === "out") {
+        // boa_mgr_early_reports_v1 for ROM review. Skipped on clock-in, and
+        // skipped for a visiting trainer: the witness checklist below is drawn
+        // from hereMgrs (this store's managers, who a visitor has no standing to
+        // report on) and the cash-up is this store's job, not theirs. Their
+        // clock-out itself has already been recorded above.
+        if (type === "out" && !isTrainer) {
           try {
             var report = await openMgrEarlyLeaveReportModal({ name: name, selfEc: ec, managers: hereMgrs });
             if (report && report.names) {
