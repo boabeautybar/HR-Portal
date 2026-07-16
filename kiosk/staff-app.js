@@ -1319,7 +1319,13 @@
       trialCands.forEach(function (c) {
         if (!c || c.branch !== thisBranch) return;
         if (String(c.role || "nt").toLowerCase() !== "nt") return;   // nail techs only (excludes AM/SM/managers, any case)
-        if (c.status === "passed" || c.status === "failed" || c.status === "hired") return;
+        // Terminal statuses — nobody who will never work another trial day.
+        // "not_onboarding" = passed the trial then didn't join; it is NOT a
+        // fail, but for this roster it means exactly the same thing: off the
+        // floor. Mirrors trialIsGone() in the portal's app.jsx — this bundle
+        // deploys separately and can't import it, so ADD NEW TERMINAL
+        // STATUSES IN BOTH or a departed candidate haunts the store kiosk.
+        if (c.status === "passed" || c.status === "failed" || c.status === "not_onboarding" || c.status === "hired") return;
         if (c.status === "induction") return;  // not on the floor until HR starts the in-store trial
         if (!c.startDate) return;
         var daySet = _trialDaySet(c.startDate);

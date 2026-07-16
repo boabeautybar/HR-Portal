@@ -898,6 +898,46 @@ function trialDocsDone(r) { const d = (r && r.docs) || {}; return trialDocList(r
 function trialDocsTotal(r) { return trialDocList(r).length; }
 function trialDocsComplete(r) { return trialDocsTotal(r) > 0 && trialDocsDone(r) === trialDocsTotal(r); }
 
+// ─── TRIAL OUTCOME: "not_onboarding" ──────────────────────────────────────────
+// A candidate who PASSED the trial and then never joined (took another job,
+// withdrew, unreachable…). Deliberately NOT modelled as "failed": she met the
+// bar, so conflating the two would corrupt the pass/fail reporting the trial
+// board exists to produce, and would tell the next HR reader she wasn't good
+// enough. The record keeps its evaluations and its pass — only the hire fell
+// through — and carries WHY on r.notOnboarding = {reason, note, at, by}.
+const NOT_ONBOARDING_REASONS = [
+  { key: "other_job", label: "Took another job" },
+  { key: "declined", label: "Declined the offer" },
+  { key: "no_show", label: "Never started / no-show" },
+  { key: "uncontactable", label: "Uncontactable" },
+  { key: "relocated", label: "Relocated / too far to travel" },
+  { key: "personal", label: "Personal / family reasons" },
+  { key: "no_vacancy", label: "No vacancy at the store" },
+  { key: "other", label: "Other (add a note)" }
+];
+const NOT_ONBOARDING_LABEL = {};
+NOT_ONBOARDING_REASONS.forEach(r => { NOT_ONBOARDING_LABEL[r.key] = r.label; });
+function notOnboardingReasonLabel(r) {
+  const key = r && r.notOnboarding && r.notOnboarding.reason;
+  return NOT_ONBOARDING_LABEL[key] || (key ? String(key) : "");
+}
+// Is this trial candidate GONE — a terminal negative outcome, never coming back
+// to the floor? "not_onboarding" behaves exactly like "failed" for every
+// "is this person still an active trialist" question: schedule ghost rows, the
+// Fresha to-do lists, the per-branch active counts.
+//
+// This exists as ONE predicate on purpose. Those questions are asked in ~12
+// places that each hand-list statuses as a DENYLIST (`!== "failed" && !== "hired"`),
+// so a new terminal status defaults to *active* and silently leaks a departed
+// candidate onto store schedules. Route new terminal statuses through here.
+//
+// NOT for payroll: the trial-day reports pay every worked day regardless of
+// outcome, so they filter on check-ins and must keep including gone candidates.
+function trialIsGone(c) {
+  const s = String((c && c.status) || "");
+  return s === "failed" || s === "not_onboarding";
+}
+
 
 // Maternity used to blank a person's ENTIRE row the instant their status
 // flipped to "on maternity". Instead we honour the Maternity tab's start
@@ -5799,7 +5839,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
     const active = (trialList || []).filter(c =>
       c && c.branch === branch &&
       String(c.role || "nt").toLowerCase() === "nt" &&   // nail techs only (excludes AM/SM/managers, any case)
-      c.status !== "passed" && c.status !== "failed" && c.status !== "hired" &&
+      c.status !== "passed" && !trialIsGone(c) && c.status !== "hired" &&
       c.startDate
     );
     const _pad = (n) => String(n).padStart(2, "0");
@@ -13221,8 +13261,8 @@ function FreshaTodoTab({ extraDayRequests, freshaExtraOpen, markFreshaExtraOpen,
   // Induction (status "induction") and onto trial_w1+. While still in
   // Induction the start date is only a planned placeholder ("· since …" on
   // the Trial tab), so opening them on Fresha would use an unconfirmed date.
-  const trialOpen = (trialList || []).filter(c => _nt(c) && c.startDate && c.status !== "induction" && c.status !== "passed" && c.status !== "failed" && c.status !== "hired" && !c.freshaTrialOpened);
-  const monthOpen = (trialList || []).filter(c => _nt(c) && (c.status === "passed" || c.promotedToOnboarding) && c.status !== "failed" && !c.freshaMonthOpened && _recent(c));
+  const trialOpen = (trialList || []).filter(c => _nt(c) && c.startDate && c.status !== "induction" && c.status !== "passed" && !trialIsGone(c) && c.status !== "hired" && !c.freshaTrialOpened);
+  const monthOpen = (trialList || []).filter(c => _nt(c) && (c.status === "passed" || c.promotedToOnboarding) && !trialIsGone(c) && !c.freshaMonthOpened && _recent(c));
   // Trial window — the 10 Mon–Fri (non-public-holiday) working days counted
   // forward from the tech's in-store start date (same rule the Schedule grid
   // paints). Surfaced on each trial card so whoever opens the profile on Fresha
@@ -17994,6 +18034,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [evalFullView, setEvalFullView] = useState(null);                 // { ev, label, name, role } — full evaluation breakdown modal
   const [evalForm, setEvalForm] = useState(null);                         // { rec, which } — fillable AM evaluation modal (portal)
   const [trialStartDraft, setTrialStartDraft] = useState(null); // { id, date } while HR is setting an in-store trial start date
+  const [notOnbDraft, setNotOnbDraft] = useState(null);         // { id, reason, note } while HR is recording why a passed trial isn't joining
   const [hrTasks, setHrTasks] = useState([]);         // HR Tasks (mocked for now)
   const [offList, setOffList] = useState([]);         // leaver records
   const [smTrialList, setSmTrialList] = useState([]); // AMs on 3-month Store Manager trial
@@ -20858,7 +20899,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const nt = {}, am = {};
     for (const c of (trialList || [])) {
       if (!c || !c.branch) continue;
-      if (c.status === "passed" || c.status === "failed" || c.status === "hired") continue;
+      if (c.status === "passed" || trialIsGone(c) || c.status === "hired") continue;
       if ((c.role || "nt") === "am") am[c.branch] = (am[c.branch] || 0) + 1;
       else nt[c.branch] = (nt[c.branch] || 0) + 1;
     }
@@ -20941,12 +20982,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       // "arriving" row on the destination card. The driving use case: a new hire
       // / trial candidate works at an existing store while their new store is
       // still being built, then moves across on the opening date.
-      const trialAll = effTrials.filter(c => c.branch === salon.name && c.status !== "failed" && c.status !== "hired" && !c.promotedToOnboarding);
+      const trialAll = effTrials.filter(c => c.branch === salon.name && !trialIsGone(c) && c.status !== "hired" && !c.promotedToOnboarding);
       const trial = trialAll.filter(c => (c.role || "nt") !== "am");
       const trialMgrs = trialAll.filter(c => (c.role || "nt") === "am");
       // Pending incoming trial transfers pointing at this branch.
       const arrivingTrialAll = (trialList || [])
-        .filter(c => c.transferring && c.transferTo === salon.name && c.transferDate && c.transferDate >= _ymd && c.status !== "failed" && c.status !== "hired" && !c.promotedToOnboarding)
+        .filter(c => c.transferring && c.transferTo === salon.name && c.transferDate && c.transferDate >= _ymd && !trialIsGone(c) && c.status !== "hired" && !c.promotedToOnboarding)
         .map(c => ({ ...c, branch: salon.name, transferFrom: c.branch, _shadow: true }));
       const trialArriving = arrivingTrialAll.filter(c => (c.role || "nt") !== "am");
       const trialMgrsArriving = arrivingTrialAll.filter(c => (c.role || "nt") === "am");
@@ -21733,7 +21774,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const ds = Math.floor((t0 - sd) / 86400000);
               return ds <= 31;
             }).length;
-            const activeTrialCount = trialList.filter(r => r.status !== "passed" && r.status !== "failed" && r.status !== "hired").length;
+            const activeTrialCount = trialList.filter(r => r.status !== "passed" && !trialIsGone(r) && r.status !== "hired").length;
             const activeSmTrialCount = (smTrialList || []).filter(r => r.status === "active").length;
             const trialLbl = "🧪 Trial Period" + (activeTrialCount > 0 ? " (" + activeTrialCount + ")" : "");
             const smTrialLbl = "⭐ SM Trials" + (activeSmTrialCount > 0 ? " (" + activeSmTrialCount + ")" : "");
@@ -21796,8 +21837,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     const extraToOpen = (extraDayRequests || []).filter(r => r.status === "approved" && isTech(r.ec) && !isOpen(r.id)).length;
                     const _nt = (c) => c && String(c.role || "nt").toLowerCase() === "nt";
                     const _recent = (c) => { const t = Date.parse(c.promotedAt || c.updatedAt || c.addedAt || ""); return !!t && (Date.now() - t) < 45 * 86400000; };
-                    const trialToOpen = (trialList || []).filter(c => _nt(c) && c.startDate && c.status !== "induction" && c.status !== "passed" && c.status !== "failed" && c.status !== "hired" && !c.freshaTrialOpened).length;
-                    const monthToOpen = (trialList || []).filter(c => _nt(c) && (c.status === "passed" || c.promotedToOnboarding) && c.status !== "failed" && !c.freshaMonthOpened && _recent(c)).length;
+                    const trialToOpen = (trialList || []).filter(c => _nt(c) && c.startDate && c.status !== "induction" && c.status !== "passed" && !trialIsGone(c) && c.status !== "hired" && !c.freshaTrialOpened).length;
+                    const monthToOpen = (trialList || []).filter(c => _nt(c) && (c.status === "passed" || c.promotedToOnboarding) && !trialIsGone(c) && !c.freshaMonthOpened && _recent(c)).length;
                     const isBlocked = (id) => !!(freshaBlocks && freshaBlocks[id] && freshaBlocks[id].blocked);
                     const sickBlk = (calledInSickWindow(leaveRequests).list || []).filter(r => isTech(r.ec)).map(r => ({ key: r.id, ec: r.ec, name: r.name, start_date: r.start_date, end_date: r.end_date, leave_type: r.leave_type }));
                     const toBlock = dedupeBlockTodos([...sickBlk, ...freshaLeaveBlocks(leaveRecs, enriched)], isBlocked).filter(r => !isBlocked(r.key)).length;
@@ -22665,7 +22706,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 // OPEN — trial techs whose trial start is imminent and not opened
                 const _nt = (c) => c && String(c.role || "nt").toLowerCase() === "nt";
                 const urgentTrial = (trialList || []).filter(c => _nt(c) && c.startDate && c.status !== "induction"
-                  && c.status !== "passed" && c.status !== "failed" && c.status !== "hired" && !c.freshaTrialOpened)
+                  && c.status !== "passed" && !trialIsGone(c) && c.status !== "hired" && !c.freshaTrialOpened)
                   .map(c => ({ ...c, _d: daysUntil(c.startDate) }))
                   .filter(c => c._d !== null && c._d >= 0 && c._d < URGENT)
                   .sort((a, b) => a._d - b._d);
@@ -24177,7 +24218,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const filteredBoaGrads =
             (staff || []).filter(s => s.boaPathways && !s.leftDate && s.active !== false && _visBranches.has(s.branch)).length
             + (managers || []).filter(m => m.boaPathways && !m.leftDate && m.active !== false && _visBranches.has(m.branch)).length
-            + (trialList || []).filter(t => t.boaPathways && t.status !== "failed" && t.status !== "hired" && !t.promotedToOnboarding && _visBranches.has(t.branch)).length;
+            + (trialList || []).filter(t => t.boaPathways && !trialIsGone(t) && t.status !== "hired" && !t.promotedToOnboarding && _visBranches.has(t.branch)).length;
           return (
             <div style={{ padding: "0 24px" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
@@ -27344,6 +27385,40 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             ? { ...r, status: "failed", updatedAt: new Date().toISOString() }
             : r));
         };
+        // Passed the trial, then never joined. NOT a fail — the pass, both
+        // evaluations and the worked-day count all stay on the record (payroll
+        // still pays those days; the pathway still shows the trophy). All this
+        // adds is the terminal status + why, so reporting can tell "wasn't good
+        // enough" apart from "we lost her to another offer".
+        const markNotOnboarding = (id, reason, note) => {
+          if (!reason) return;
+          const rec = (trialList || []).find(x => x._id === id);
+          persistTrial(trialList.map(r => r._id === id
+            ? {
+              ...r, status: "not_onboarding", updatedAt: new Date().toISOString(),
+              notOnboarding: {
+                reason,
+                note: String(note || "").trim(),
+                at: new Date().toISOString(),
+                by: (currentUser && currentUser.name) || ""
+              }
+            }
+            : r));
+          setNotOnbDraft(null);
+          if (typeof logActivity === "function") {
+            try {
+              logActivity("Trial not onboarding", (rec && rec.name ? rec.name : "") + (rec && rec.branch ? " · " + rec.branch : ""),
+                (NOT_ONBOARDING_LABEL[reason] || reason) + (String(note || "").trim() ? " — " + String(note).trim() : ""), "People");
+            } catch (_e) { }
+          }
+        };
+        // Undo a mis-click: back to PASSED, promotable again, reason cleared.
+        const undoNotOnboarding = (r) => {
+          if (!confirm("Put " + (r.name || "this candidate") + " back to PASSED?\n\nThe “not onboarding” reason will be cleared and they can be promoted to onboarding again.")) return;
+          persistTrial(trialList.map(x => x._id === r._id
+            ? { ...x, status: "passed", notOnboarding: null, updatedAt: new Date().toISOString() }
+            : x));
+        };
         // Permanently remove a trial candidate (e.g. a duplicate or mistaken
         // entry). Cannot be undone — only filters the record out of the board.
         const deleteCandidate = (r) => {
@@ -27470,7 +27545,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         };
 
         const currentList = trialList.filter(r => (r.role || "nt") === trialSubTab);
-        const activeTrials = currentList.filter(r => r.status !== "passed" && r.status !== "failed" && r.status !== "hired");
+        const activeTrials = currentList.filter(r => r.status !== "passed" && !trialIsGone(r) && r.status !== "hired");
         // Passed = cleared the trial but not yet onboarded (status flips to
         // "hired" only when the onboarding form is submitted). We intentionally
         // DON'T exclude promotedToOnboarding here: a candidate whose onboarding
@@ -27478,6 +27553,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // than vanish from both the trial pipeline and the onboarded list.
         const passedTrials = currentList.filter(r => r.status === "passed");
         const failedTrials = currentList.filter(r => r.status === "failed");
+        // Counted separately from failedTrials on purpose — these people PASSED.
+        const notOnbTrials = currentList.filter(r => r.status === "not_onboarding");
         // Recently-hired techs (onboarded in the last 30 days). Surfaced so they
         // can be reviewed and removed here — otherwise a "hired" record is
         // invisible in the kanban yet still lingers in the data.
@@ -27723,7 +27800,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 day stretches fill from real kiosk check-ins, and each card has an
                 inline day-count correction for fixing what the kiosk missed. */}
             {currentList.some(r => r.status !== "hired") && (() => {
-              const grp = (s) => s === "passed" ? 1 : s === "failed" ? 2 : 0;
+              // Sort buckets: in-progress → passed → not onboarding → failed.
+              const grp = (s) => s === "passed" ? 1 : s === "not_onboarding" ? 2 : s === "failed" ? 3 : 0;
               const prog = { trial_w2: 3, pending_final_review: 3, trial_w1: 2, pending_mid_review: 2, induction: 1 };
               const rows = currentList.filter(r => r.status !== "hired").slice().sort((a, b) =>
                 grp(a.status) - grp(b.status)
@@ -27758,7 +27836,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
               return (
                 <div style={{ background: "#fff", borderRadius: 16, border: "1px solid #ede9fe", padding: "16px 18px", marginBottom: 24, boxShadow: "0 2px 10px rgba(124,58,237,0.05)" }}>
-                  <div style={{ fontSize: 13, fontWeight: 800, color: "#6b21a8", letterSpacing: "0.04em", textTransform: "uppercase", marginBottom: 4 }}>🛣️ Trial journeys · {activeTrials.length} in progress{passedTrials.length ? " · " + passedTrials.length + " passed" : ""}{failedTrials.length ? " · " + failedTrials.length + " failed" : ""}</div>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: "#6b21a8", letterSpacing: "0.04em", textTransform: "uppercase", marginBottom: 4 }}>🛣️ Trial journeys · {activeTrials.length} in progress{passedTrials.length ? " · " + passedTrials.length + " passed" : ""}{notOnbTrials.length ? " · " + notOnbTrials.length + " not onboarding" : ""}{failedTrials.length ? " · " + failedTrials.length + " failed" : ""}</div>
                   <div style={{ fontSize: 11, color: "#9d6a82", marginBottom: 14 }}>Each tech's full journey — set the start date, edit days, collect documents, view evaluations, and pass / fail / promote, all from here.</div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                     {rows.map(r => {
@@ -27772,12 +27850,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       const midDue = st === "trial_w1" && worked >= 5 && !(r.midEval && r.midEval.submittedAt);
                       const finalDue = st === "trial_w2" && worked >= 10 && !(r.finalEval && r.finalEval.submittedAt);
                       const failed = st === "failed";
+                      // Passed the trial, then didn't join. They still PASSED, so the
+                      // pathway keeps its green trophy — only the promote action and
+                      // the header badge change.
+                      const notOnb = st === "not_onboarding";
+                      const didPass = st === "passed" || notOnb;
                       // Where the tech currently sits on the path.
                       let cur = "";
                       if (st === "induction") cur = "induction";
                       else if (st === "trial_w1") cur = worked >= 5 ? "wk1eval" : "w1";
                       else if (st === "trial_w2") cur = worked >= 10 ? "finaleval" : "w2";
-                      else if (st === "passed") cur = "passed";
+                      else if (didPass) cur = "passed";
                       const inductionDone = st !== "induction";
                       const evNode = (ev, due, pendingSub) => {
                         if (ev && ev.submittedAt) {
@@ -27803,9 +27886,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               <span style={{ fontSize: 14, fontWeight: 800, color: "#111827" }}>{r.name}</span>
                               <span style={{ fontSize: 11, color: "#9ca3af" }}>📍 {r.branch}{r.startDate ? " · since " + fmtDate(r.startDate) : ""}</span>
                               <span style={{ fontSize: 11, fontWeight: 800, color: "#6b21a8" }}>· {Math.min(worked, 10)}/10 days{absent > 0 ? " · " + absent + " abs" : ""}</span>
-                              {st === "passed" && <span style={{ fontSize: 9, fontWeight: 800, color: "#166534", background: "#dcfce7", padding: "1px 6px", borderRadius: 4 }}>✅ PASSED</span>}
+                              {didPass && <span style={{ fontSize: 9, fontWeight: 800, color: "#166534", background: "#dcfce7", padding: "1px 6px", borderRadius: 4 }}>✅ PASSED</span>}
+                              {/* Sits NEXT TO the pass, never instead of it — she cleared
+                                  the trial; only the hire fell through. */}
+                              {notOnb && (
+                                <span title={"Not onboarding" + (r.notOnboarding && r.notOnboarding.at ? " · recorded " + fmtDate(String(r.notOnboarding.at).slice(0, 10)) : "") + (r.notOnboarding && r.notOnboarding.by ? " by " + r.notOnboarding.by : "") + (r.notOnboarding && r.notOnboarding.note ? "\n\n" + r.notOnboarding.note : "")}
+                                  style={{ fontSize: 9, fontWeight: 800, color: "#92400e", background: "#fef3c7", border: "1px solid #fcd34d", padding: "1px 6px", borderRadius: 4, cursor: "help" }}>
+                                  🚫 NOT ONBOARDING{notOnboardingReasonLabel(r) ? " · " + notOnboardingReasonLabel(r) : ""}{r.notOnboarding && r.notOnboarding.note ? " 📝" : ""}
+                                </span>
+                              )}
                               {failed && <span style={{ fontSize: 9, fontWeight: 800, color: "#991b1b", background: "#fee2e2", padding: "1px 6px", borderRadius: 4 }}>❌ FAILED</span>}
-                              {stale && !failed && st !== "passed" && <span style={{ fontSize: 9, fontWeight: 800, color: "#991b1b", background: "#fee2e2", padding: "1px 6px", borderRadius: 4 }}>⚠ {ds}d in stage</span>}
+                              {stale && !failed && !didPass && <span style={{ fontSize: 9, fontWeight: 800, color: "#991b1b", background: "#fee2e2", padding: "1px 6px", borderRadius: 4 }}>⚠ {ds}d in stage</span>}
                             </div>
                             <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
                               {(() => {
@@ -27827,7 +27918,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             <Node icon={mid.icon} iconColor={mid.iconColor} bg={mid.bg} label="Week 1 eval" sub={mid.sub} subColor={mid.subColor} current={cur === "wk1eval"} onClick={(r.midEval && r.midEval.submittedAt) ? () => setEvalFullView({ ev: r.midEval, label: "Week 1 evaluation", name: r.name, role: r.role }) : undefined} />
                             <Conn label="Next 5 days" fillPct={(w2 / 5) * 100} count={w2 + "/5"} active={w2 > 0} current={cur === "w2"} />
                             <Node icon={fin.icon} iconColor={fin.iconColor} bg={fin.bg} label="Final eval" sub={fin.sub} subColor={fin.subColor} current={cur === "finaleval"} onClick={(r.finalEval && r.finalEval.submittedAt) ? () => setEvalFullView({ ev: r.finalEval, label: "Final evaluation", name: r.name, role: r.role }) : undefined} />
-                            <Node icon="🏆" iconColor={st === "passed" ? "#fff" : "#c4b5fd"} bg={st === "passed" ? "#16a34a" : "#f3f4f6"} label="Passed" sub={st === "passed" ? "passed" : "goal"} subColor={st === "passed" ? "#16a34a" : "#9ca3af"} current={cur === "passed"} />
+                            <Node icon="🏆" iconColor={didPass ? "#fff" : "#c4b5fd"} bg={didPass ? "#16a34a" : "#f3f4f6"} label="Passed" sub={notOnb ? "not joining" : didPass ? "passed" : "goal"} subColor={notOnb ? "#92400e" : didPass ? "#16a34a" : "#9ca3af"} current={cur === "passed"} />
                           </div>
                           {/* Documents checklist — opened by the 📄 chip above. */}
                           {trialDocsOpen.has(r._id) && docsChecklistPanel(r)}
@@ -27876,17 +27967,46 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 {trialSubTab === "am" && finalDue && !heldFinal && (
                                   <button onClick={() => setEvalForm({ rec: r, which: "final" })} style={btn("#7c3aed", "#fff")}>📋 Complete final evaluation</button>
                                 )}
-                                {/* Passed → onboarding. */}
-                                {st === "passed" && (
+                                {/* Passed → onboarding, or record that they aren't joining. */}
+                                {st === "passed" && (<>
                                   <button onClick={() => promoteToOnboarding(r)} style={btn("#BE185D", "#fff")}>🌱 Promote to Onboarding</button>
+                                  <button onClick={() => setNotOnbDraft({ id: r._id, reason: "", note: "" })} title="They passed but aren't joining — record why" style={btn("#fff", "#92400e", "1px solid #fcd34d")}>🚫 Not onboarding</button>
+                                </>)}
+                                {/* Reason picker — inline, mirroring the induction start-date
+                                    banner. A reason is required; the note is optional unless
+                                    "Other" is chosen, where the label alone says nothing. */}
+                                {notOnbDraft && notOnbDraft.id === r._id && (() => {
+                                  const needNote = notOnbDraft.reason === "other" && !notOnbDraft.note.trim();
+                                  return (
+                                    <div style={{ width: "100%", background: "#fffbeb", border: "1px solid #fcd34d", borderRadius: 10, padding: "10px 12px", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                                      <span style={{ fontSize: 12, fontWeight: 800, color: "#92400e" }}>🚫 Why isn't {(r.name || "").split(" ")[0] || "this candidate"} joining?</span>
+                                      <select value={notOnbDraft.reason} onChange={e => setNotOnbDraft(d => ({ ...d, reason: e.target.value }))}
+                                        style={{ padding: "6px 8px", borderRadius: 8, border: "1px solid #fcd34d", fontSize: 12, fontFamily: "inherit", background: "#fff", color: "#92400e", fontWeight: 700 }}>
+                                        <option value="">Choose a reason…</option>
+                                        {NOT_ONBOARDING_REASONS.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
+                                      </select>
+                                      <input type="text" value={notOnbDraft.note} placeholder={needNote ? "Note required for “Other”" : "Add a note (optional)"} maxLength={200}
+                                        onChange={e => setNotOnbDraft(d => ({ ...d, note: e.target.value }))}
+                                        style={{ flex: "1 1 200px", minWidth: 160, padding: "6px 8px", borderRadius: 8, border: "1px solid " + (needNote ? "#f87171" : "#fcd34d"), fontSize: 12, fontFamily: "inherit" }} />
+                                      <button disabled={!notOnbDraft.reason || needNote}
+                                        onClick={() => markNotOnboarding(r._id, notOnbDraft.reason, notOnbDraft.note)}
+                                        title={!notOnbDraft.reason ? "Choose a reason first" : needNote ? "Add a note to explain “Other”" : "Record this"}
+                                        style={{ ...btn(!notOnbDraft.reason || needNote ? "#e5e7eb" : "#92400e", !notOnbDraft.reason || needNote ? "#9ca3af" : "#fff"), cursor: !notOnbDraft.reason || needNote ? "not-allowed" : "pointer" }}>Save</button>
+                                      <button onClick={() => setNotOnbDraft(null)} style={btn("#fff", "#6b7280", "1px solid #e5e7eb")}>✕</button>
+                                    </div>
+                                  );
+                                })()}
+                                {/* Recorded as not joining — reversible if HR mis-clicked. */}
+                                {notOnb && (
+                                  <button onClick={() => undoNotOnboarding(r)} title="Put them back to PASSED so they can be promoted again" style={btn("#fff", "#6b21a8", "1px solid #ddd6fe")}>↩ Undo · back to passed</button>
                                 )}
                                 {/* Manual fail override (active, not induction, not already held). */}
-                                {!failed && st !== "induction" && st !== "passed" && !heldMid && !heldFinal && (
+                                {!failed && st !== "induction" && !didPass && !heldMid && !heldFinal && (
                                   <button onClick={() => markFailed(r._id)} style={btn("#fff", "#991b1b", "1px solid #fca5a5")}>❌ Fail</button>
                                 )}
                                 {/* Owner-only test override — force a candidate to "passed"
                                     (skipping evaluations) so onboarding can be tested. */}
-                                {currentUser?.isOwner && st !== "passed" && !failed && (
+                                {currentUser?.isOwner && !didPass && !failed && (
                                   <button onClick={() => { if (window.confirm("⚡ TEST OVERRIDE\n\nForce-pass " + (r.name || "this candidate") + " without evaluations? This skips the trial checks and lets you test onboarding. Owner-only.")) persistTrial(trialList.map(x => x._id === r._id ? { ...x, status: "passed", forcedPassAt: new Date().toISOString(), updatedAt: new Date().toISOString() } : x)); }} title="Owner only — force pass for testing onboarding" style={btn("#fff", "#6b21a8", "1px dashed #c4b5fd")}>⚡ Force pass (test)</button>
                                 )}
                               </div>
@@ -31451,7 +31571,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // unpaid. Same filter/maths as the rendered rows so the totals match.
         const downloadTrialCsv = () => {
           const cycleYmd = new Set(days.map(d => d.ymd));
-          const STG = { trial_w1: "Week 1", trial_w2: "Week 2", pending_mid_review: "Week 1", pending_final_review: "Week 2", passed: "Passed", failed: "Failed" };
+          const STG = { trial_w1: "Week 1", trial_w2: "Week 2", pending_mid_review: "Week 1", pending_final_review: "Week 2", passed: "Passed", failed: "Failed", not_onboarding: "Passed · not onboarding" };
           const trialRows = (trialList || []).filter(c =>
             c && c.branch === attBranch
             && c.status !== "hired" && c.status !== "induction"
@@ -31498,7 +31618,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const downloadAllTrialCsv = () => {
           if (allExport) return;
           const cycleYmd = new Set(days.map(d => d.ymd));
-          const STG = { trial_w1: "Week 1", trial_w2: "Week 2", pending_mid_review: "Week 1", pending_final_review: "Week 2", passed: "Passed", failed: "Failed" };
+          const STG = { trial_w1: "Week 1", trial_w2: "Week 2", pending_mid_review: "Week 1", pending_final_review: "Week 2", passed: "Passed", failed: "Failed", not_onboarding: "Passed · not onboarding" };
           const trialRows = (trialList || []).filter(c =>
             c && c.branch
             && c.status !== "hired" && c.status !== "induction"
@@ -32464,7 +32584,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       && Object.keys(c.checkins).some(y => cycleYmd.has(y) && (c.checkins[y] === "on" || c.checkins[y] === "late" || c.checkins[y] === "absent"))
                     ).sort((a, b) => String(a.role || "nt").localeCompare(String(b.role || "nt")) || (a.name || "").localeCompare(b.name || ""));
                     if (!trialRows.length) return null;
-                    const STG = { trial_w1: "Week 1", trial_w2: "Week 2", pending_mid_review: "Week 1", pending_final_review: "Week 2", passed: "Passed", failed: "Failed" };
+                    const STG = { trial_w1: "Week 1", trial_w2: "Week 2", pending_mid_review: "Week 1", pending_final_review: "Week 2", passed: "Passed", failed: "Failed", not_onboarding: "Passed · not onboarding" };
                     return (
                       <React.Fragment key="trial-att-section">
                         <tr>
@@ -35607,7 +35727,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const mgrTrialGhosts = (trialList || [])
           .filter(c => c && c.branch === branch
             && String(c.role || "nt").toLowerCase() === "am"
-            && c.status !== "passed" && c.status !== "failed" && c.status !== "hired"
+            && c.status !== "passed" && !trialIsGone(c) && c.status !== "hired"
             && c.startDate)
           .map(c => {
             const daySet = new Set();
