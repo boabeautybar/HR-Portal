@@ -10975,8 +10975,94 @@ function IncidentPopup({ reports, onView, onDismiss }) {
 // incidents (sql/leave_requests.sql). Visible to Owner / HR / senior ops.
 const LEAVE_TYPE = {
   Annual: "Annual leave", Sick: "Sick", Family: "Family responsibility",
-  Unpaid: "Unpaid leave", Absent: "Absent (other reason)", Other: "Other"
+  Unpaid: "Unpaid leave", Absent: "Absent (other reason)", Other: "Other",
+  Maternity: "Maternity leave"
 };
+// ─── Canonical leave codes ──────────────────────────────────────────────────
+// Leave is spelled four different ways across this app: the request's
+// leave_type, the Leave Planner record's `type` string, the schedule grid's
+// single letter, and the attendance sheet's payroll code. Nothing tied them
+// together, so "is this sick or annual?" had a different answer per surface —
+// and Sage, which wants ONE letter per transaction, had no answer at all.
+//
+// This table is the join. Keys match LEAVE_TYPE above (the request vocabulary).
+//   sage  — Sage's leave-type letter. "?" = not yet confirmed by the payroll
+//           consultant (docs/leave-sage-plan.md, Phase 0.3). The Sage batch
+//           export refuses to emit a row whose letter is still "?" rather than
+//           guess a letter and post leave against the wrong bucket.
+//   grid  — how the schedule grid paints the day. Display-only; several types
+//           share "L" on purpose (the planner record carries the real type, and
+//           per-type letters would ripple through all four schedule surfaces).
+//   att   — the attendance-sheet payroll code, where one exists.
+//   paid  — whether the day is paid by us. Council members' sick is paid by the
+//           HCSBC Sick Pay Fund, not us: see sickModelFor() / staff.bargaining_council.
+const LEAVE_CODES = {
+  Annual: { label: "Annual leave", sage: "A", grid: "L", att: null, paid: true },
+  Sick: { label: "Sick", sage: "S", grid: "L", att: "sick_n", paid: true },
+  Family: { label: "Family responsibility", sage: "F", grid: "L", att: "frl", paid: true },
+  Maternity: { label: "Maternity leave", sage: "M", grid: "ML", att: null, paid: false },
+  Unpaid: { label: "Unpaid leave", sage: "?", grid: "X", att: "absent", paid: false },
+  Absent: { label: "Absent (other reason)", sage: "?", grid: "X", att: "absent", paid: false },
+  Other: { label: "Other", sage: "?", grid: "L", att: null, paid: true }
+};
+// The legacy `type` string on a Leave Planner record. Twelve-plus consumers
+// across all THREE deployed sites key on the exact literal "Annual leave" to
+// mean "this person is away" — kiosk/data.js:541 and :607, the My BOA schedule
+// overlay, the attendance sheet, the Fresha block list, the planner UI. Vary it
+// and those surfaces silently stop seeing the leave, so it stays frozen: every
+// planner record we write carries "Annual leave" regardless of its real type,
+// and `leaveType` below carries the truth. To let `type` vary, migrate those
+// consumers to canonicalLeaveType() first (docs/leave-sage-plan.md §1.5).
+function plannerTypeCompat(_canonical) { return "Annual leave"; }
+// Read a Leave Planner record's canonical type. Records written before the
+// canonical field existed carry only `type: "Annual leave"` + an `emergency`
+// flag (the old shorthand for unpaid), so old and new records both resolve.
+function canonicalLeaveType(rec) {
+  if (!rec) return "Annual";
+  if (rec.leaveType && LEAVE_CODES[rec.leaveType]) return rec.leaveType;
+  if (rec.emergency) return "Unpaid";
+  const t = String(rec.type || "").toLowerCase();
+  if (/maternity/.test(t)) return "Maternity";
+  if (/family|responsibility/.test(t)) return "Family";
+  if (/sick/.test(t)) return "Sick";
+  if (/unpaid|emergency/.test(t)) return "Unpaid";
+  if (/absent/.test(t)) return "Absent";
+  return "Annual";
+}
+// A leave_request's leave_type → canonical key. The request vocabulary already
+// matches, but the value is free text from three different forms, so normalise.
+function canonicalFromRequest(leaveType) {
+  const raw = String(leaveType == null ? "" : leaveType).trim();
+  if (LEAVE_CODES[raw]) return raw;
+  const t = raw.toLowerCase();
+  if (/maternity/.test(t)) return "Maternity";
+  if (/family/.test(t)) return "Family";
+  if (/sick/.test(t)) return "Sick";
+  if (/unpaid/.test(t)) return "Unpaid";
+  if (/absent/.test(t)) return "Absent";
+  if (/annual/.test(t)) return "Annual";
+  return "Other";
+}
+// Does this planner record consume PAID ANNUAL days? The one question the
+// balance math asks. It used to be asked as `type === "Annual leave" &&
+// !emergency` — but `type` is frozen (see plannerTypeCompat), so every record
+// answers "yes" to that, and family-responsibility or unpaid leave would eat
+// annual days that were never taken. Canonical type is the honest answer.
+// Equivalent to the old predicate on every record written to date — proven over
+// all 244 live records by scripts/check-leave-codes.js.
+function isPaidAnnualRec(lv) {
+  return !!lv && canonicalLeaveType(lv) === "Annual" && !lv.emergency;
+}
+// Which sick-leave rulebook applies. Bargaining-council members are covered by
+// the HCSBC Sick Pay Fund (66 days per 3-year cycle, split 33 short-absence +
+// 33 continued-illness) and their sick days are paid by the fund, not by us;
+// everyone else falls under the BCEA default (30 days per 36 months).
+// See docs/leave-sage-plan.md §2.2 — council rules override BCEA where they differ.
+function sickModelFor(person) {
+  return (person && person.bargainingCouncil)
+    ? { model: "HCSBC", days: 66, months: 36, splitShort: 33, splitLong: 33, paidByUs: false }
+    : { model: "BCEA", days: 30, months: 36, paidByUs: true };
+}
 // Render free-text (e.g. a request reason) with any http(s) links — sick notes
 // / absence proof uploaded from My BOA — turned into clickable anchors.
 function linkifyText(text) {
@@ -11642,7 +11728,21 @@ async function addApprovedLeaveToCalendar(r, deps) {
     try { await publishLeaveToSchedule(person.ec, _schedBranch, r.start_date, r.end_date); } catch (e) { console.error("publishLeaveToSchedule:", e); }
     return true;
   }
-  const recs = segments.map((sg, i) => ({ _id: Date.now() + i, ec: person.ec, startDate: sg.start, endDate: sg.end, type: "Annual leave", notes: "[Leave request " + (r.ref_code || "") + "]", emergency: false, balanceDays: (r.balance_days != null ? Number(r.balance_days) : null), balanceCheckedBy: r.balance_checked_by || "", balanceCheckedAt: r.balance_checked_at || null }));
+  // The request's own leave type, not a hardcoded "Annual" — this record is what
+  // the annual-balance math and (later) the Sage export read, so family
+  // responsibility or unpaid leave must not land here looking like annual days.
+  // No `days` count is stored: without a schedule cache leaveDayBreakdown only
+  // ESTIMATES off-days (fromSchedule:false), and the schedule can still change
+  // after approval. Chargeable days are computed against the published grid at
+  // export time instead — never guessed here and then trusted as fact by Sage.
+  const _canon = canonicalFromRequest(r.leave_type);
+  const recs = segments.map((sg, i) => ({
+    _id: Date.now() + i, ec: person.ec, startDate: sg.start, endDate: sg.end,
+    type: plannerTypeCompat(_canon), leaveType: _canon,
+    notes: "[Leave request " + (r.ref_code || "") + "]", emergency: false,
+    balanceDays: (r.balance_days != null ? Number(r.balance_days) : null),
+    balanceCheckedBy: r.balance_checked_by || "", balanceCheckedAt: r.balance_checked_at || null
+  }));
   const next = [...(leaveRecs || []), ...recs];
   setLeaveRecs(next);
   await window.BOA_DB.saveLeaveRecords(next);
@@ -11673,11 +11773,14 @@ async function approveSplitLeave(r, paidEndYmd, availDays, actor, deps) {
   const nowIso = new Date().toISOString();
   for (const sg of segments) {
     if (paidEndYmd && sg.start <= paidEndYmd) {
-      recs.push({ _id: idSeq++, ec: person.ec, startDate: sg.start, endDate: (sg.end <= paidEndYmd ? sg.end : paidEndYmd), type: "Annual leave", notes: "[Leave request " + (r.ref_code || "") + " · paid portion of split approval]", emergency: false, balanceDays: (availDays != null ? Number(availDays) : null), balanceCheckedBy: actor || "", balanceCheckedAt: nowIso, balancePending: false });
+      recs.push({ _id: idSeq++, ec: person.ec, startDate: sg.start, endDate: (sg.end <= paidEndYmd ? sg.end : paidEndYmd), type: plannerTypeCompat("Annual"), leaveType: "Annual", notes: "[Leave request " + (r.ref_code || "") + " · paid portion of split approval]", emergency: false, balanceDays: (availDays != null ? Number(availDays) : null), balanceCheckedBy: actor || "", balanceCheckedAt: nowIso, balancePending: false });
     }
     if (!paidEndYmd || sg.end > paidEndYmd) {
       const us = (!paidEndYmd || sg.start > paidEndYmd) ? sg.start : nextYmd(paidEndYmd);
-      recs.push({ _id: idSeq++, ec: person.ec, startDate: us, endDate: sg.end, type: "Annual leave", notes: "[EMERGENCY] Unpaid portion of leave request " + (r.ref_code || "") + " — annual leave balance exhausted", emergency: true, balanceDays: null, balanceCheckedBy: null, balanceCheckedAt: null, balancePending: false, balanceRequestedBy: actor || "", balanceRequestedAt: nowIso });
+      // Unpaid portion: `emergency: true` stays the flag every existing overlay
+      // keys on (schedule EL paint, attendance 'el', kiosk); leaveType records
+      // the same fact in the canonical vocabulary Sage will read.
+      recs.push({ _id: idSeq++, ec: person.ec, startDate: us, endDate: sg.end, type: plannerTypeCompat("Unpaid"), leaveType: "Unpaid", notes: "[EMERGENCY] Unpaid portion of leave request " + (r.ref_code || "") + " — annual leave balance exhausted", emergency: true, balanceDays: null, balanceCheckedBy: null, balanceCheckedAt: null, balancePending: false, balanceRequestedBy: actor || "", balanceRequestedAt: nowIso });
     }
   }
   if (recs.length > 0) {
@@ -12531,6 +12634,25 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
       const prev = entries[k] || {};
       entries[k] = { ec: k, rawEc: x.portalEc, name: x.name || prev.name || "", opening: x.days, adjustments: prev.adjustments || [] };
     });
+    // Archive this anchor before it becomes the live one. Every computed balance
+    // hangs off these openings, so the history is what makes the starting point
+    // survivable — the next import overwrites the working copy, not this.
+    // Best-effort: a failed snapshot must never block payroll's import.
+    try {
+      if (window.BOA_DB.appendLeaveOpening) {
+        const frozen = {};
+        matched.forEach(x => {
+          const k = lbNormEc(x.portalEc);
+          frozen[k] = { ec: k, rawEc: x.portalEc, name: x.name || (entries[k] && entries[k].name) || "", opening: x.days };
+        });
+        await window.BOA_DB.appendLeaveOpening({
+          asOf: data.asOf || "", savedAt: new Date().toISOString(),
+          source: fileName ? ("upload: " + fileName) : "pasted rows",
+          uploadedBy: (currentUser && (currentUser.name || currentUser.email)) || "",
+          entries: frozen
+        });
+      }
+    } catch (e) { console.error("appendLeaveOpening:", e); }
     await persist({ ...data, entries: entries });
     setImportBusy(false); setPreview(null); setPasteText(""); setFileName(""); setShowImport(false);
     if (logActivity) logActivity("Imported leave balances", matched.length + " employees" + (ignored ? " (" + ignored + " ignored — not on system)" : "") + " · as of " + (data.asOf || ""), "", "Payroll");
@@ -12614,7 +12736,7 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
       const isMgr = isManagerEc(p.ec);
       const opts = { schedCache, ymdToSchedYm, ec: p.ec, branch: p.branch };
       let taken = 0, booked = 0;
-      (leaveRecs || []).filter(lv => lv && lv.type === "Annual leave" && !lv.emergency && lv.startDate && lv.endDate && lbNormEc(lv.ec) === norm).forEach(lv => {
+      (leaveRecs || []).filter(lv => lv && isPaidAnnualRec(lv) && lv.startDate && lv.endDate && lbNormEc(lv.ec) === norm).forEach(lv => {
         const wb = leaveDayBreakdown(lv.startDate, lv.endDate, isMgr, opts); const weight = wb.cal > 0 ? wb.real / wb.cal : 0;
         const ps = maxYmd(lv.startDate, start), pe = minYmd(lv.endDate, todayYmd);
         if (ps <= pe) taken += leaveDays(ps, pe) * weight;
@@ -12741,7 +12863,7 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
     const opts = { schedCache, ymdToSchedYm, ec, branch };
     // Only PAID annual leave reduces the balance. Emergency leave (lv.emergency)
     // is unpaid, so it's excluded from taken/booked/recon entirely.
-    const annual = (leaveRecs || []).filter(lv => lv && lv.type === "Annual leave" && !lv.emergency && lv.startDate && lv.endDate && lbNormEc(lv.ec) === norm);
+    const annual = (leaveRecs || []).filter(lv => lv && isPaidAnnualRec(lv) && lv.startDate && lv.endDate && lbNormEc(lv.ec) === norm);
     let taken = 0, bookedCycle = 0, bookedBeyond = 0;
     let takenCal = 0, bookedCal = 0;   // raw calendar days (before off-day deduction)
     const future = [];
@@ -14499,7 +14621,7 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
     const opts = { schedCache, ymdToSchedYm, ec: (p && p.ec) || ec, branch: p && p.branch };
     let used = 0;
     (leaveRecs || []).forEach(lv => {
-      if (!lv || lv.type !== "Annual leave" || lv.emergency || !lv.startDate || !lv.endDate) return;
+      if (!lv || !isPaidAnnualRec(lv) || !lv.startDate || !lv.endDate) return;
       if (lbNormEc(lv.ec) !== norm) return;
       const from = lv.startDate > _addDays(asOf, 1) ? lv.startDate : _addDays(asOf, 1);
       if (from > lv.endDate) return;

@@ -2114,6 +2114,61 @@
     if (res.error) { console.error("saveLeaveBalances:", res.error); throw res.error; }
     return data || {};
   }
+
+  // ---------- Leave-balance openings history (boa_leave_openings_v1) ----------
+  // boa_leave_balances_v1 above is the LIVE working copy — every import
+  // overwrites its openings. That makes the balance anchor destructible: lose it
+  // and every computed balance (opening + accrual − taken) loses its starting
+  // point, and Sage is the only way back.
+  //
+  // This key is the append-only history of those anchors — one snapshot per
+  // import, each a frozen copy of the openings as uploaded:
+  //   [ { asOf, savedAt, source, uploadedBy, entries: { <ec>: { ec, rawEc,
+  //       name, opening } } }, ... ]
+  // NEWEST FIRST (value[0] = the anchor in force), matching the boa_schedapproved_*
+  // convention. Nothing here is ever edited or deleted — adjustments and edits
+  // live on the working copy, not on the record of what payroll actually sent.
+  async function loadLeaveOpenings() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_leave_openings_v1").maybeSingle();
+    if (res.error) { console.error("loadLeaveOpenings:", res.error); return []; }
+    var v = res.data && res.data.value;
+    return Array.isArray(v) ? v : [];
+  }
+  // Prepend one snapshot. Returns the new history. A snapshot identical to the
+  // current head (same asOf + same openings) is skipped, so re-importing the
+  // same file twice doesn't pad the history with duplicates.
+  async function appendLeaveOpening(snapshot) {
+    if (!snapshot || !snapshot.entries) throw new Error("appendLeaveOpening: snapshot needs entries");
+    var hist = await loadLeaveOpenings();
+    var head = hist[0];
+    var sameAnchor = head && head.asOf === snapshot.asOf &&
+      JSON.stringify(head.entries) === JSON.stringify(snapshot.entries);
+    if (sameAnchor) return hist;
+    var next = [snapshot].concat(hist);
+    var res = await sb.from("app_state").upsert({ key: "boa_leave_openings_v1", value: next });
+    if (res.error) { console.error("appendLeaveOpening:", res.error); throw res.error; }
+    return next;
+  }
+
+  // ---------- Sage payroll config (boa_sage_config_v1) ----------
+  // Everything the hub needs to speak Sage's language, filled in as the payroll
+  // consultant answers (see docs/leave-sage-plan.md, Phase 0). Shape:
+  //   { companies: { "001": { name } },            // 3-digit Sage company numbers
+  //     ecMap: { <portalEc>: { company, sageCode } },  // empty = portal EC is the Sage code
+  //     leaveLines: { <canonicalLeaveType>: { sage, line, method, reason } },
+  //     updatedBy, updatedAt }
+  // Missing/empty is the expected state today: the hub runs hub-anchored and
+  // only the Sage batch export needs these answers.
+  async function loadSageConfig() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_sage_config_v1").maybeSingle();
+    if (res.error) { console.error("loadSageConfig:", res.error); return {}; }
+    return (res.data && res.data.value) || {};
+  }
+  async function saveSageConfig(config) {
+    var res = await sb.from("app_state").upsert({ key: "boa_sage_config_v1", value: config || {} });
+    if (res.error) { console.error("saveSageConfig:", res.error); throw res.error; }
+    return config || {};
+  }
   // Who may see / edit the Leave Balances tab. Defaults to empty → owners only.
   async function loadLeaveBalancesAccess() {
     var res = await sb.from("app_state").select("value").eq("key", "boa_leave_balances_access_v1").maybeSingle();
@@ -2747,6 +2802,10 @@
     saveLeavePayrollAccess: saveLeavePayrollAccess,
     loadLeaveBalances: loadLeaveBalances,
     saveLeaveBalances: saveLeaveBalances,
+    loadLeaveOpenings: loadLeaveOpenings,
+    appendLeaveOpening: appendLeaveOpening,
+    loadSageConfig: loadSageConfig,
+    saveSageConfig: saveSageConfig,
     loadLeaveBalancesAccess: loadLeaveBalancesAccess,
     saveLeaveBalancesAccess: saveLeaveBalancesAccess,
     loadFRL: loadFRL,
