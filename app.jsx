@@ -35588,6 +35588,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // just don't surface duplicate guest rows in the editor.
         const sortedMgrsRender = sortedMgrs;
 
+        // Is this manager loaned INTO this branch on this day? The loan record
+        // (boa_mgr_loans_v1) is durable truth and outranks the transfer edge: it
+        // says they're on THIS store's floor that day, whichever side of their
+        // transfer date it falls on. Without this a '→Dst' chip paints over the
+        // work cell the loan wrote — the old store's row reads as a blank transfer
+        // week, and the coverage total under-counts a manager who is actually in.
+        const _loanedIntoBranchOn = (ec, ymd) => (mgrLoanRows || []).some(l =>
+          l && String(l.ec).trim() === String(ec).trim() && l.date === ymd && l.toBranch === branch);
+
         // AM trials at this branch that haven't been onboarded yet appear as
         // read-only "🧪 TRIAL" ghost rows — mirroring the nail-tech trial ghosts
         // on the tech schedule. The 2-week trial runs 10 WORKING days (Mon–Fri,
@@ -36057,10 +36066,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         // greyed with a '→ X' / '← Y' badge and are not
                         // draggable. Manager fills the active range manually.
                         const _xferDate = mg.transferDate || null;
-                        const xferEdge = !_xferDate ? null
+                        const _xferRaw = !_xferDate ? null
                           : (mg.isShadow && dy.d < _xferDate) ? "in"
                             : (!mg.isShadow && mg.transferring && dy.d >= _xferDate) ? "out"
                               : null;
+                        // A loan back into this branch outranks the chip — see
+                        // _loanedIntoBranchOn.
+                        const xferEdge = (_xferRaw && _loanedIntoBranchOn(mg.ec, dy.d)) ? null : _xferRaw;
                         const xferOther = xferEdge === "in" ? (mg.transferFrom || "")
                           : xferEdge === "out" ? (mg.transferTo || "")
                             : null;
@@ -36180,12 +36192,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         // day. Maternity (ML), leave (L) and loaned-out ('loan_out')
                         // cells aren't work shifts so they're already out; on top of
                         // that, drop anyone permanently transferred out (day on/after
-                        // their transfer date) even though their cell still reads W.
+                        // their transfer date) even though their cell still reads W —
+                        // unless a loan brings them back onto this floor that day.
                         const w = (result.managers || []).filter(mg => {
                           if (mg._onMat) return false;
                           const cell = (result.grid[mg.ec] && result.grid[mg.ec][dy.d]) || "";
                           if (!(cell === "W" || cell === "WE" || cell === "WB" || cell === "WM" || cell === "WL" || cell === "E")) return false;
-                          if (!mg.isShadow && mg.transferring && mg.transferDate && dy.d >= mg.transferDate) return false;   // permanently transferred out
+                          if (!mg.isShadow && mg.transferring && mg.transferDate && dy.d >= mg.transferDate && !_loanedIntoBranchOn(mg.ec, dy.d)) return false;   // permanently transferred out
                           return true;
                         }).length;
                         const activeToday = _activeMgrs - (dt.leave || 0);
@@ -39108,7 +39121,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // skip the cell editor — the active range is filled on the
           // OTHER side of the transfer.
           const _xferDate = (manager && manager.transferDate) || null;
-          const xferEdge = !_xferDate ? null
+          // …but a loan INTO this branch on this exact day outranks the chip. The
+          // loan record is durable truth (same rule as _activeLoan above) and it
+          // says the manager is on THIS store's floor today, whichever side of the
+          // transfer date the day falls on. Without this the '→Dst' chip paints
+          // over the very work cell the loan wrote, so the old store's row reads as
+          // a blank transfer week while the kiosk and My BOA show them working here.
+          const _loanedInHere = !!(_activeLoan && _activeLoan.toBranch === branchName);
+          // A guest row exists ONLY because of a loan into this branch, so the
+          // transfer edge describes two stores this row has nothing to do with —
+          // and the row header already carries the '🔄 → Dst' badge. Never chip it.
+          const _xferChipApplies = !!_xferDate && !_loanedInHere && !(manager && manager._guestFromBranch);
+          const xferEdge = !_xferChipApplies ? null
             : (manager && manager.isShadow && ymd && ymd < _xferDate) ? "in"
               : (manager && !manager.isShadow && manager.transferring && manager.transferTo && manager.transferTo !== branchName && ymd && ymd >= _xferDate) ? "out"
                 : null;
