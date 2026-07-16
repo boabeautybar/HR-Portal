@@ -150,6 +150,33 @@ legacyCases.forEach(([rec, want]) => {
 });
 if (!failures) console.log("  ✓ " + (reqCases.length + legacyCases.length) + " vocabulary cases map correctly");
 
+// ── 4. Balance staleness clock ────────────────────────────────────────────────
+// balanceStaleness rides the accrual clock: 1 credited cycle since the anchor =
+// 1 payroll run has closed since payroll exported, so a fresher report exists.
+// Getting this wrong either nags every day or never nags at all.
+console.log("4. Balance staleness");
+const staleCode = [extract("accrualCyclesEarned", "function"), extract("balanceStaleness", "function")].join("\n");
+const sbox = {};
+new Function("exports", staleCode + "\nexports.balanceStaleness = balanceStaleness;")(sbox);
+const { balanceStaleness } = sbox;
+const staleCases = [
+  // anchor,        today,        cyclesBehind, why
+  ["2026-06-25", "2026-07-16", 0, "current anchor, before this month's 25th → fresh"],
+  ["2026-06-25", "2026-07-24", 0, "day before the run closes → still fresh"],
+  ["2026-06-25", "2026-07-25", 1, "the 25th run closes → one behind, nag"],
+  ["2026-06-25", "2026-08-25", 2, "two runs closed → two behind"],
+  ["2026-06-25", "2026-06-25", 0, "same day → fresh"],
+  ["2026-06-25", "2026-05-01", 0, "anchor in the future → never negative"]
+];
+staleCases.forEach(([asOf, today, want, why]) => {
+  const got = balanceStaleness(asOf, today);
+  if (got.cyclesBehind !== want) fail("staleness(" + asOf + " → " + today + ") = " + got.cyclesBehind + ", expected " + want + " (" + why + ")");
+  if (got.stale !== (want > 0)) fail("staleness(" + asOf + " → " + today + ").stale = " + got.stale + ", expected " + (want > 0));
+});
+const noAnchor = balanceStaleness(null, "2026-07-16");
+if (noAnchor.stale) fail("staleness(null) must not nag when there's no anchor at all");
+if (!failures) console.log("  ✓ " + (staleCases.length + 1) + " staleness cases correct (nags the day a run closes, never before)");
+
 // ── Report ────────────────────────────────────────────────────────────────────
 const unconfirmed = Object.keys(LEAVE_CODES).filter(k => LEAVE_CODES[k].sage === "?");
 if (unconfirmed.length) {

@@ -11053,6 +11053,59 @@ function canonicalFromRequest(leaveType) {
 function isPaidAnnualRec(lv) {
   return !!lv && canonicalLeaveType(lv) === "Annual" && !lv.emergency;
 }
+// ─── Projected annual-leave balance ─────────────────────────────────────────
+// The hub's answer to "how many annual days does this person actually have?",
+// shared by every surface that asks (the Leave Requests board, the Payroll
+// Inbox). One implementation on purpose: two boards computing balances
+// differently would hand two different answers to the same question.
+//
+//   available = opening (payroll's anchor) + manual adjustments
+//             + accrued since the anchor (1.25/completed cycle)
+//             − paid annual leave already booked on the calendar after it
+//
+// This is the PROJECTED figure: it subtracts approved leave Sage may not know
+// about yet, which is the whole point — Sage's own number goes stale the moment
+// we approve something. Returns null when the person isn't on the sheet.
+// deps: { leaveBalances, leaveRecs, enriched, managers, schedCache, ymdToSchedYm, today }
+function annualBalanceFor(ec, deps) {
+  const lb = deps && deps.leaveBalances;
+  if (!lb || !lb.entries) return null;
+  const norm = lbNormEc(ec);
+  const entry = lb.entries[norm];
+  if (!entry) return null;
+  const today = deps.today || new Date().toISOString().slice(0, 10);
+  const addDays = (ymd, n) => { const d = new Date(ymd + "T00:00:00"); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
+  const asOf = lb.asOf || "2026-05-24";
+  const opening = Number(entry.opening) || 0;
+  const adj = (entry.adjustments || []).reduce((s, a) => s + (Number(a.days) || 0), 0);
+  const accrued = accruedLeave(asOf, today);
+  const p = findLeavePerson(ec, deps.enriched, deps.managers);
+  const opts = { schedCache: deps.schedCache, ymdToSchedYm: deps.ymdToSchedYm, ec: (p && p.ec) || ec, branch: p && p.branch };
+  let used = 0;
+  (deps.leaveRecs || []).forEach(lv => {
+    if (!lv || !isPaidAnnualRec(lv) || !lv.startDate || !lv.endDate) return;
+    if (lbNormEc(lv.ec) !== norm) return;
+    // Only what falls AFTER the anchor date — anything earlier is already
+    // baked into the opening figure and would be double-counted.
+    const from = lv.startDate > addDays(asOf, 1) ? lv.startDate : addDays(asOf, 1);
+    if (from > lv.endDate) return;
+    // isManagerEc on the code as PASSED IN, not the resolved person's — the
+    // two can differ ("B013-M" vs "B013M") and this is balance math.
+    used += leaveDayBreakdown(from, lv.endDate, isManagerEc(ec), opts).real;
+  });
+  return { available: opening + adj + accrued - used, opening, adj, accrued, used, asOf };
+}
+// How far behind Sage the balance anchor is, measured in payroll cycles. Reuses
+// the accrual clock: one credited cycle since the anchor = one payroll run has
+// closed since payroll last exported, so a fresher report exists in Sage.
+// The figures aren't wrong when stale — accrual keeps them honest — but any
+// leave captured directly in Sage (not through the hub) is missing from them.
+function balanceStaleness(asOf, todayYmd) {
+  const today = todayYmd || new Date().toISOString().slice(0, 10);
+  if (!asOf) return { asOf: null, cyclesBehind: 0, stale: false };
+  const cyclesBehind = accrualCyclesEarned(asOf, today);
+  return { asOf, cyclesBehind, stale: cyclesBehind > 0 };
+}
 // Which sick-leave rulebook applies. Bargaining-council members are covered by
 // the HCSBC Sick Pay Fund (66 days per 3-year cycle, split 33 short-absence +
 // 33 continued-illness) and their sick days are paid by the fund, not by us;
@@ -12997,6 +13050,19 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
         </div>
       </div>
 
+      {/* How far behind Sage these figures are. They aren't wrong when stale —
+          accrual keeps counting — but leave captured straight into Sage since
+          the upload is missing, so a fresh export is the only way to be sure. */}
+      {(() => {
+        const st = balanceStaleness(data && data.asOf);
+        if (!st.stale) return null;
+        return (
+          <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 11, padding: "11px 14px", marginBottom: 12, fontSize: 12.5, color: "#92400e", lineHeight: 1.5 }}>
+            ⚠ <strong>These figures are {st.cyclesBehind} payroll run{st.cyclesBehind === 1 ? "" : "s"} behind Sage.</strong> They're anchored to the upload as of {fmtIncidentDate(st.asOf)}, and {st.cyclesBehind === 1 ? "a run has" : st.cyclesBehind + " runs have"} closed since. Accrual keeps counting, so nothing here is wrong — but any leave captured directly in Sage isn't reflected. Upload a fresh balance report to re-anchor.
+          </div>
+        );
+      })()}
+
       {/* Stats + as-of date */}
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
         <div style={{ ...card, flex: "1 1 160px", minWidth: 150 }}>
@@ -14076,6 +14142,32 @@ function PayrollInboxTab({ requests, setRequests, currentUser, leaveRecs, setLea
   const schedOpts = (ec) => { const p = findLeavePerson(ec, enriched, managers); return { schedCache, ymdToSchedYm, ec: (p && p.ec) || ec, branch: p && p.branch }; };
   const patchLocal = (id, patch) => setRequests(requests.map(r => r.id === id ? { ...r, ...patch } : r));
   const gateDeps = { enriched, managers, leaveRecs, setLeaveRecs, patch: patchLocal, actor, logActivity };
+  // The uploaded balance sheet, so this board can show what the hub computes
+  // instead of only asking Justin to read it off Sage on another screen.
+  const [leaveBalances, setLeaveBalances] = useState(null);
+  useEffect(() => { let go = true; (async () => { try { const d = window.BOA_DB.loadLeaveBalances ? await window.BOA_DB.loadLeaveBalances() : null; if (go) setLeaveBalances(d || null); } catch (_e) { } })(); return () => { go = false; }; }, []);
+  const _today = new Date().toISOString().slice(0, 10);
+  const fmtDays = (x) => { const v = Math.round((Number(x) || 0) * 100) / 100; return v === Math.floor(v) ? String(v) : v.toFixed(2).replace(/0$/, ""); };
+  // Same projection the Leave Requests board shows — one shared implementation.
+  const availableForEc = (ec) => annualBalanceFor(ec, { leaveBalances, leaveRecs, enriched, managers, schedCache, ymdToSchedYm, today: _today });
+  const staleness = balanceStaleness(leaveBalances && leaveBalances.asOf, _today);
+  // The hub's projected figure vs what this leave needs — rendered above every
+  // balance box on this board. Payroll still confirms; this just means the
+  // number is proposed rather than hunted for.
+  const balanceHint = (ec, needDays) => {
+    const bal = availableForEc(ec);
+    if (!bal) return <div style={{ fontSize: 11.5, color: "#92400e", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8, padding: "6px 9px", marginBottom: 7 }}>No balance on the uploaded sheet for {ec || "this person"} yet — read it off Sage.</div>;
+    const enough = bal.available + 1e-9 >= needDays;
+    return (
+      <div style={{ fontSize: 11.5, color: enough ? "#15803d" : "#b91c1c", background: enough ? "#f0fdf4" : "#fef2f2", border: "1px solid " + (enough ? "#bbf7d0" : "#fecaca"), borderRadius: 8, padding: "6px 9px", marginBottom: 7 }}>
+        {enough ? "✓" : "⚠"} <strong>{fmtDays(bal.available)} day{bal.available === 1 ? "" : "s"} available</strong> · needs <strong>{fmtDays(needDays)}</strong> → {enough ? "enough" : "SHORT by " + fmtDays(needDays - bal.available)}
+        <div style={{ fontSize: 10.5, fontWeight: 400, marginTop: 2, opacity: 0.85 }}>
+          opening {fmtDays(bal.opening)}{bal.adj ? " · adj " + (bal.adj > 0 ? "+" : "") + fmtDays(bal.adj) : ""}{bal.accrued ? " · +" + fmtDays(bal.accrued) + " earned" : ""}{bal.used ? " · −" + fmtDays(bal.used) + " already on calendar" : ""} · Sage figures as of {fmtIncidentDate(bal.asOf)}
+        </div>
+        {staleness.stale && <div style={{ fontSize: 10.5, fontWeight: 600, marginTop: 3, color: "#92400e" }}>⚠ {staleness.cyclesBehind} payroll run{staleness.cyclesBehind === 1 ? " has" : "s have"} closed since that upload — confirm on Sage.</div>}
+      </div>
+    );
+  };
 
   const needBalance = (requests || [])
     .filter(r => r.status !== "declined" && r.leave_type !== "Sick" && r.leave_type !== "Absent" && !r.balance_checked_at)
@@ -14095,9 +14187,9 @@ function PayrollInboxTab({ requests, setRequests, currentUser, leaveRecs, setLea
     .filter(lv => lv && lv.balancePending && !lv.emergency)
     .sort((a, b) => (a.startDate || "").localeCompare(b.startDate || ""));
 
-  const confirmCalBalance = async (lv) => {
+  const confirmCalBalance = async (lv, explicitDays) => {
     const key = "cal:" + lv._id;
-    const days = balDraft[key];
+    const days = (explicitDays != null && !isNaN(Number(explicitDays))) ? explicitDays : balDraft[key];
     if (days === "" || days == null || isNaN(Number(days)) || Number(days) < 0) { alert("Enter the days available on Sage."); return; }
     const person = findLeavePerson(lv.ec, enriched, managers);
     const bd = leaveDayBreakdown(lv.startDate, lv.endDate, isManagerEc(lv.ec), schedOpts(lv.ec));
@@ -14114,8 +14206,10 @@ function PayrollInboxTab({ requests, setRequests, currentUser, leaveRecs, setLea
     setBusy(false);
   };
 
-  const setBalance = async (r) => {
-    const days = balDraft[r.id];
+  // explicitDays = the hub's projected figure, passed by the one-click "Enough —
+  // confirm" button; otherwise whatever payroll typed.
+  const setBalance = async (r, explicitDays) => {
+    const days = (explicitDays != null && !isNaN(Number(explicitDays))) ? explicitDays : balDraft[r.id];
     if (days === "" || days == null || isNaN(Number(days)) || Number(days) < 0) { alert("Enter the days available on Sage."); return; }
     const bd = leaveDayBreakdown(r.start_date, r.end_date, isManagerEc(r.ec), schedOpts(r.ec));
     if (Number(days) < bd.real && !window.confirm("Balance is " + days + " day(s) but this leave is ≈ " + bd.real + " actual leave day(s) (" + bd.cal + " calendar) — more than available.\n\nTick it off anyway?")) return;
@@ -14171,12 +14265,19 @@ function PayrollInboxTab({ requests, setRequests, currentUser, leaveRecs, setLea
                 {oa.clashDays.length ? "⚠ Operational clash on " + oa.clashDays.length + " day(s)" : "✓ Operationally within limit (" + oa.maxOff + " of " + oa.headcount + " " + (oa.isMgr ? "managers" : "techs") + ")"}
               </div>
             )}
+            {balanceHint(r.ec, bd.real)}
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
               <span style={{ fontSize: 11, fontWeight: 700, color: "#0f766e" }}>Balance on Sage:</span>
-              <input type="number" min="0" step="0.5" placeholder="days available"
+              {(() => {
+                const bal = availableForEc(r.ec);
+                const avail = bal ? Math.round(bal.available * 100) / 100 : null;
+                if (avail == null || bal.available + 1e-9 < bd.real) return null;
+                return <button disabled={busy} onClick={() => setBalance(r, avail)} title={"Records " + fmtDays(avail) + " days available (the hub's figure) and clears this gate — no typing needed."} style={{ background: "#15803d", color: "#fff", border: "none", borderRadius: 9, padding: "7px 15px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: "pointer" }}>✓ Enough — confirm ({fmtDays(avail)})</button>;
+              })()}
+              <input type="number" min="0" step="0.5" placeholder={(() => { const b = availableForEc(r.ec); return b ? "or type (hub: " + fmtDays(b.available) + ")" : "days available"; })()}
                 value={balDraft[r.id] != null ? balDraft[r.id] : ""}
                 onChange={e => setBalDraft({ ...balDraft, [r.id]: e.target.value })}
-                style={{ width: 130, fontFamily: "inherit", fontSize: 13, padding: "7px 10px", borderRadius: 9, border: "1.5px solid #99f6e4" }} />
+                style={{ width: 150, fontFamily: "inherit", fontSize: 13, padding: "7px 10px", borderRadius: 9, border: "1.5px solid #99f6e4" }} />
               <button disabled={busy} onClick={() => setBalance(r)} style={{ background: "#0f766e", color: "#fff", border: "none", borderRadius: 9, padding: "7px 15px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: "pointer" }}>✓ Balance OK</button>
               {goTo && <button onClick={() => goTo("leaveRequests")} style={{ background: "#fff", color: "#0f766e", border: "1.5px solid #99f6e4", borderRadius: 9, padding: "7px 13px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: "pointer" }}>Open in Leave Requests →</button>}
             </div>
@@ -14201,12 +14302,19 @@ function PayrollInboxTab({ requests, setRequests, currentUser, leaveRecs, setLea
                   <span style={{ color: "#9ca3af", fontSize: 12 }}>· {bd.cal} cal · <strong style={{ color: "#0f766e" }}>{bd.fromSchedule ? "" : "≈ "}{bd.real} leave day{bd.real === 1 ? "" : "s"}</strong></span>
                   {lv.balanceRequestedBy && <span style={{ marginLeft: "auto", fontSize: 11, color: "#9d6a82" }}>added by {lv.balanceRequestedBy}</span>}
                 </div>
+                {balanceHint(lv.ec, bd.real)}
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
                   <span style={{ fontSize: 11, fontWeight: 700, color: "#0f766e" }}>Balance on Sage:</span>
-                  <input type="number" min="0" step="0.5" placeholder="days available"
+                  {(() => {
+                    const bal = availableForEc(lv.ec);
+                    const avail = bal ? Math.round(bal.available * 100) / 100 : null;
+                    if (avail == null || bal.available + 1e-9 < bd.real) return null;
+                    return <button disabled={busy} onClick={() => confirmCalBalance(lv, avail)} title={"Records " + fmtDays(avail) + " days available (the hub's figure) and clears this check."} style={{ background: "#15803d", color: "#fff", border: "none", borderRadius: 9, padding: "7px 15px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: "pointer" }}>✓ Enough — confirm ({fmtDays(avail)})</button>;
+                  })()}
+                  <input type="number" min="0" step="0.5" placeholder={(() => { const b = availableForEc(lv.ec); return b ? "or type (hub: " + fmtDays(b.available) + ")" : "days available"; })()}
                     value={balDraft[key] != null ? balDraft[key] : ""}
                     onChange={e => setBalDraft({ ...balDraft, [key]: e.target.value })}
-                    style={{ width: 130, fontFamily: "inherit", fontSize: 13, padding: "7px 10px", borderRadius: 9, border: "1.5px solid #99f6e4" }} />
+                    style={{ width: 150, fontFamily: "inherit", fontSize: 13, padding: "7px 10px", borderRadius: 9, border: "1.5px solid #99f6e4" }} />
                   <button disabled={busy} onClick={() => confirmCalBalance(lv)} style={{ background: "#0f766e", color: "#fff", border: "none", borderRadius: 9, padding: "7px 15px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: "pointer" }}>✓ Confirm balance</button>
                   {goTo && <button onClick={() => goTo("leave")} style={{ background: "#fff", color: "#0f766e", border: "1.5px solid #99f6e4", borderRadius: 9, padding: "7px 13px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: "pointer" }}>Open Leave Planner →</button>}
                 </div>
@@ -14603,32 +14711,11 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
   const fmtDays = (x) => { const v = Math.round((Number(x) || 0) * 100) / 100; return v === Math.floor(v) ? String(v) : v.toFixed(2).replace(/0$/, ""); };
   const _today = new Date().toISOString().slice(0, 10);
   const _addDays = (ymd, n) => { const d = new Date(ymd + "T00:00:00"); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
-  // Available annual-leave days from the uploaded sheet for an employee code:
-  // opening + manual adjustments + accrued (1.25 per completed cycle since the
-  // as-of date) − all paid annual leave already taken/booked on the calendar.
-  // Returns null when the person isn't on the sheet.
-  const availableForEc = (ec) => {
-    const lb = leaveBalances;
-    if (!lb || !lb.entries) return null;
-    const norm = lbNormEc(ec);
-    const entry = lb.entries[norm];
-    if (!entry) return null;
-    const asOf = lb.asOf || "2026-05-24";
-    const opening = Number(entry.opening) || 0;
-    const adj = (entry.adjustments || []).reduce((s, a) => s + (Number(a.days) || 0), 0);
-    const accrued = accruedLeave(asOf, _today);
-    const p = findLeavePerson(ec, enriched, managers);
-    const opts = { schedCache, ymdToSchedYm, ec: (p && p.ec) || ec, branch: p && p.branch };
-    let used = 0;
-    (leaveRecs || []).forEach(lv => {
-      if (!lv || !isPaidAnnualRec(lv) || !lv.startDate || !lv.endDate) return;
-      if (lbNormEc(lv.ec) !== norm) return;
-      const from = lv.startDate > _addDays(asOf, 1) ? lv.startDate : _addDays(asOf, 1);
-      if (from > lv.endDate) return;
-      used += leaveDayBreakdown(from, lv.endDate, isMgrReq({ ec }), opts).real;
-    });
-    return { available: opening + adj + accrued - used, opening, adj, accrued, used, asOf };
-  };
+  // Projected available annual-leave days — see annualBalanceFor(), shared with
+  // the Payroll Inbox so both boards answer the balance question identically.
+  const availableForEc = (ec) => annualBalanceFor(ec, { leaveBalances, leaveRecs, enriched, managers, schedCache, ymdToSchedYm, today: _today });
+  // How far behind Sage the uploaded sheet is (0 cycles = current).
+  const staleness = balanceStaleness(leaveBalances && leaveBalances.asOf, _today);
 
   const actor = (currentUser && (currentUser.name || currentUser.pin)) || "";
   const canOps = accessAllows(currentUser, opsCfg);
@@ -15084,7 +15171,8 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
                                   return (
                                     <div style={verdict(enough ? "#f0fdf4" : "#fef2f2", enough ? "#bbf7d0" : "#fecaca", enough ? "#15803d" : "#b91c1c")}>
                                       {enough ? "✓" : "⚠"} <strong>{fmtDays(bal.available)} day{bal.available === 1 ? "" : "s"} available</strong> on the sheet · needs <strong>{fmtDays(need)}</strong> → {enough ? "enough" : "SHORT by " + fmtDays(need - bal.available)}
-                                      <div style={{ fontSize: 10.5, fontWeight: 400, marginTop: 2, opacity: 0.85 }}>opening {fmtDays(bal.opening)}{bal.adj ? " · adj " + (bal.adj > 0 ? "+" : "") + fmtDays(bal.adj) : ""}{bal.accrued ? " · +" + fmtDays(bal.accrued) + " earned" : ""}{bal.used ? " · −" + fmtDays(bal.used) + " already on calendar" : ""} <span style={{ fontStyle: "italic" }}>· still confirm on Sage</span></div>
+                                      <div style={{ fontSize: 10.5, fontWeight: 400, marginTop: 2, opacity: 0.85 }}>opening {fmtDays(bal.opening)}{bal.adj ? " · adj " + (bal.adj > 0 ? "+" : "") + fmtDays(bal.adj) : ""}{bal.accrued ? " · +" + fmtDays(bal.accrued) + " earned" : ""}{bal.used ? " · −" + fmtDays(bal.used) + " already on calendar" : ""} <span style={{ fontStyle: "italic" }}>· Sage figures as of {fmtIncidentDate(bal.asOf)}</span></div>
+                                      {staleness.stale && <div style={{ fontSize: 10.5, fontWeight: 600, marginTop: 3, color: "#92400e" }}>⚠ {staleness.cyclesBehind} payroll run{staleness.cyclesBehind === 1 ? " has" : "s have"} closed since that upload — any leave captured straight into Sage isn't counted here. Confirm on Sage.</div>}
                                     </div>
                                   );
                                 })()}
@@ -18130,6 +18218,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // unnoticed until someone happens to open the publisher.
   // null = not scanned yet; {count, branches, kinds, scannedAt} after a scan.
   const [pubCycleAlert, setPubCycleAlert] = useState(null);
+  // Leave-balance anchor freshness. The hub computes balances from payroll's
+  // last uploaded figures (opening + accrual − taken), so they only stay
+  // trustworthy while the upload keeps pace with Sage's payroll runs. The habit
+  // is meant to be monthly; the dashboard card nags when a run has closed
+  // without one. null = not checked yet; {stale, cyclesBehind, asOf} after.
+  // (The scan effect lives further down — it needs leaveBalancesCfg, which is
+  // declared below this point.)
+  const [balAnchorAlert, setBalAnchorAlert] = useState(null);
   const _summarizePendingRows = (rows) => {
     // Placeholder rows (codes with no employee record) are excluded — the
     // modal pre-unchecks them, and they shouldn't nag anyone to publish.
@@ -18562,6 +18658,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const c = leaveBalancesAccess || {};
     return { roles: Array.isArray(c.roles) ? c.roles : [], pins: Array.isArray(c.pins) ? c.pins : [] };
   }, [leaveBalancesAccess]);
+  // Is the balance anchor behind Sage? (state declared up with the other
+  // dashboard alerts; the effect must sit below leaveBalancesCfg's declaration.)
+  useEffect(() => {
+    if (tab !== "dashboard") return;
+    if (!(currentUser?.isOwner || accessAllows(currentUser, leaveBalancesCfg))) return;
+    if (balAnchorAlert) return;   // once per session — asOf only moves on an upload
+    if (!window.BOA_DB || !window.BOA_DB.loadLeaveBalances) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const d = await window.BOA_DB.loadLeaveBalances();
+        if (cancelled) return;
+        setBalAnchorAlert(balanceStaleness(d && d.asOf));
+      } catch (e) {
+        console.warn("[balance anchor alert] check failed (non-fatal):", e);
+        if (!cancelled) setBalAnchorAlert({ asOf: null, cyclesBehind: 0, stale: false });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [tab, currentUser, leaveBalancesCfg, balAnchorAlert]);
   const saveLeaveBalancesCfg = async (next) => {
     setLeaveBalancesAccess(next);
     try { if (window.BOA_DB.saveLeaveBalancesAccess) await window.BOA_DB.saveLeaveBalancesAccess(next); }
@@ -23386,6 +23502,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   day, loan, day-off swap…) that hasn't been published yet.
                   Staff / kiosk / My BOA keep showing the OLD version until
                   someone reviews + publishes — this is the nudge to do it. */}
+              {(currentUser?.isOwner || accessAllows(currentUser, leaveBalancesCfg)) && balAnchorAlert && balAnchorAlert.stale && (
+                <div style={{ background: "#f5f3ff", border: "1px solid #c4b5fd", borderRadius: 16, padding: "16px 20px", marginBottom: 20, boxShadow: "0 4px 14px rgba(109,40,217,0.10)", display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+                  <div style={{ flex: 1, minWidth: 280 }}>
+                    <div style={{ fontSize: 15, fontWeight: 800, color: "#5b21b6", letterSpacing: "0.04em", textTransform: "uppercase" }}>🧾 Sage leave balances need re-anchoring</div>
+                    <div style={{ fontSize: 12.5, color: "#6d28d9", fontWeight: 700, marginTop: 4 }}>
+                      {balAnchorAlert.cyclesBehind} payroll run{balAnchorAlert.cyclesBehind === 1 ? "" : "s"} {balAnchorAlert.cyclesBehind === 1 ? "has" : "have"} closed since the last upload ({fmtIncidentDate(balAnchorAlert.asOf)})
+                    </div>
+                    <div style={{ fontSize: 11.5, color: "#7c3aed", marginTop: 3 }}>
+                      Balances still count up correctly from that upload — but any leave captured straight into Sage since then is missing. Export a fresh balance report from Sage and upload it to re-anchor.
+                    </div>
+                  </div>
+                  <button onClick={() => tryChangeTab("leaveBalances")}
+                    title="Open the Leave Balances tab to upload a fresh Sage balance report."
+                    style={{ background: "#6d28d9", color: "#fff", border: "none", borderRadius: 10, padding: "10px 18px", fontWeight: 800, fontSize: 13, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap", boxShadow: "0 4px 12px rgba(109,40,217,0.3)" }}>
+                    Upload balances →
+                  </button>
+                </div>
+              )}
               {(currentUser?.isOwner || (currentUser?.role || "").toLowerCase().includes("national")) && pubCycleAlert && pubCycleAlert.count > 0 && (() => {
                 const a = pubCycleAlert;
                 const kindsTxt = Object.keys(a.kinds)
