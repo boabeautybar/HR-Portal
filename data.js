@@ -108,6 +108,14 @@
     return {
       employee_code: s.ec,
       name: s.name || "",
+      // Keep the split-name columns in step with `name`. rowToStaff PREFERS
+      // first_name/surname over splitting `name` (the seed backfilled them),
+      // so a save that writes only `name` leaves the OLD split columns in
+      // place and the edit silently doesn't take on any list that renders
+      // p.firstName. Empty values prune away, so rows/deployments without
+      // these columns (or a cleared surname) are unaffected.
+      first_name: s.firstName || null,
+      surname: s.surname || null,
       branch: s.branch || "",
       contract: s.contract || null,
       permit: s.permit || null,
@@ -121,6 +129,13 @@
       left_date: s.leftDate || null,
       start_date: s.startDate || null,
       level: s.level || null,
+      // Office staff (Head Office / Call Centre & Sales) carry a job role that
+      // is load-bearing: it drives shift hours (shift-rules.js), selects
+      // trainers (role "T") and decides Call Centre & Sales membership. Techs
+      // have no role, so this prunes to nothing for them (_prune strips "" and
+      // null) and the column is left untouched by the partial-PATCH write —
+      // i.e. a provable no-op for every salon save.
+      role: s.role || null,
       role_type: getRoleType(s.ec, s.roleType, s.branch),
       active: s.active !== undefined ? s.active : !s.leftDate,
       cell_number: s.cellNumber || null,
@@ -1264,6 +1279,64 @@
     var rows = await _allClockinsSince(since.toISOString());
     return rows.filter(_isHoClockin);
   }
+  // Trainer store visits — DERIVED from clockins, never stored.
+  //
+  // A trainer (role 'T', branch Head Office) rotates between stores instead of
+  // working one site. When they clock in on a STORE kiosk, that kiosk stamps its
+  // own store onto clockins.branch (addManagerClockinWithMeta hardcodes
+  // `branch: branch()`), so the clock-in row IS the record of where they worked.
+  // We reshape it here into the same { ec, name, date, fromBranch, toBranch }
+  // shape a day-loan uses, so the Schedule grid's existing cross-store overlay
+  // renders it ("→ Plum") with no changes to the component.
+  //
+  // Deriving beats storing a boa_trainer_visits_v1 record: there's no second
+  // write to drift, a re-publish of the Head Office grid can't clobber it (there
+  // is nothing in the grid to clobber), two trainers checking in at two stores
+  // at once can't lose an update the way a read-modify-write JSON array would,
+  // and deleting a mistaken clock-in correctly makes the cell revert to "W".
+  //
+  // staffIds is REQUIRED and filtered server-side — clockins is dominated by
+  // nail-tech rows and an unfiltered scan over this window is ruinous (same
+  // .in("staff_id", …) reason as the kiosk's listRecentManagerClockins).
+  async function listTrainerVisits(staffIds, sinceIso) {
+    if (!Array.isArray(staffIds) || staffIds.length === 0) return [];
+    var res = await sb.from("clockins")
+      .select("id, ts, branch, type, staff:staff_id ( employee_code, name, branch, role )")
+      .in("staff_id", staffIds)
+      .eq("type", "in")
+      .gte("ts", sinceIso)
+      .order("ts", { ascending: true });
+    if (res.error) { console.error("listTrainerVisits:", res.error); return []; }
+    var seen = {}, out = [];
+    (res.data || []).forEach(function (r) {
+      var s = r && r.staff;
+      if (!s || !s.employee_code) return;
+      if (!isHeadOfficeBranch(s.branch)) return;                        // trainers are Head Office staff
+      if (String(s.role || "").trim().toUpperCase() !== "T") return;    // ...with role T
+      // A day at the office is not a visit — leave those cells reading "W".
+      if (!r.branch || isHeadOfficeBranch(r.branch)) return;
+      var ec = String(s.employee_code).trim();
+      // LOCAL date, not toISOString(): SA is UTC+2, so an evening clock-in would
+      // otherwise shift back a day and land the marker on the wrong cell.
+      var ts = new Date(r.ts);
+      var date = ts.getFullYear() + "-" + String(ts.getMonth() + 1).padStart(2, "0") + "-" + String(ts.getDate()).padStart(2, "0");
+      var k = ec + "|" + date;
+      if (seen[k]) return;   // one visit per person per day (ordered asc → earliest wins)
+      seen[k] = 1;
+      out.push({
+        _id: "tv_" + r.id,
+        ec: ec,
+        name: s.name || "",
+        date: date,
+        fromBranch: "Head Office",
+        toBranch: r.branch,
+        note: "Trainer store visit",
+        createdBy: "kiosk",
+        createdAt: r.ts
+      });
+    });
+    return out;
+  }
   // Lazily fetch a single proof image from app_state. The kiosk app stores
   // proof-of-sickness/FRL pictures as data URLs at boa_proof_<branch>_<ym>_<ec>_<day>
   // wrapped in {__raw: <dataUrl>}. Used by the Daily Check-ins tab when the user
@@ -1969,6 +2042,22 @@
     return config || {};
   }
 
+  // ---------- Office staff access (boa_office_staff_access_v1) ----------
+  // Who may ADD Head Office / Call Centre & Sales people from the Office Staff
+  // List. Shape: { roles: ["hr"], pins: ["1234"] }. Owners always have access.
+  // Starts private to owners only (empty roles+pins) — this creates people
+  // records, and their role field provisions shift hours + trainer/CC status.
+  async function loadOfficeStaffAccess() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_office_staff_access_v1").maybeSingle();
+    if (res.error) { console.error("loadOfficeStaffAccess:", res.error); return {}; }
+    return (res.data && res.data.value) || {};
+  }
+  async function saveOfficeStaffAccess(config) {
+    var res = await sb.from("app_state").upsert({ key: "boa_office_staff_access_v1", value: config || {} });
+    if (res.error) { console.error("saveOfficeStaffAccess:", res.error); throw res.error; }
+    return config || {};
+  }
+
   // ---------- Cash-up review access (boa_cashup_review_access_v1) ----------
   // Who is allowed to review ("tick off") a store's daily cash-up. Shape:
   //   { roles: ["regional"], pins: ["1234"] }
@@ -2595,6 +2684,7 @@
     // Manager clock-ins viewer
     listRecentManagerClockins: listRecentManagerClockins,
     listRecentHoClockins: listRecentHoClockins,
+    listTrainerVisits: listTrainerVisits,
     recordManualManagerClockin: recordManualManagerClockin,
     listRecentTechClockins: listRecentTechClockins,
     listRecentAttendanceCheckins: listRecentAttendanceCheckins,
@@ -2647,6 +2737,8 @@
     saveFreshaAccess: saveFreshaAccess,
     loadOvertimeAccess: loadOvertimeAccess,
     saveOvertimeAccess: saveOvertimeAccess,
+    loadOfficeStaffAccess: loadOfficeStaffAccess,
+    saveOfficeStaffAccess: saveOfficeStaffAccess,
     loadCashupReviewAccess: loadCashupReviewAccess,
     saveCashupReviewAccess: saveCashupReviewAccess,
     loadLeaveOpsAccess: loadLeaveOpsAccess,

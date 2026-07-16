@@ -515,6 +515,23 @@ function _staffRowsToCsv(mgrs, techs) {
   (techs || []).forEach(t => lines.push(row(t, "Nail Tech")));
   return lines.join("\r\n");
 }
+// Office Staff List CSV. A sibling of _staffRowsToCsv rather than a mode of it:
+// that one hardcodes a Branch column and a "Nail Tech" role label, neither of
+// which applies here — every office person shares one branch, and Department is
+// derived, not stored.
+function _officeRowsToCsv(hoRows, ccRows, roleLabels) {
+  const head = ["EC", "First Name", "Surname", "Full Name", "Department", "Role", "Start Date", "Bargaining Council", "Status"];
+  const lines = [head.map(_csvEscape).join(",")];
+  const split = (full) => { const t = (full || "").trim(); const i = t.indexOf(" "); return i < 0 ? { f: t, s: "" } : { f: t.slice(0, i), s: t.slice(i + 1).trim() }; };
+  const row = (p, dept) => {
+    const sn = split(p.name);
+    const roleLabel = (roleLabels && roleLabels[p.role]) || p.role || "";
+    return [p.ec || "", p.firstName || sn.f || "", p.surname || sn.s || "", p.name || "", dept, roleLabel, p.startDate || "", p.bargainingCouncil ? "Yes" : "No", _staffStatusLabel(p)].map(_csvEscape).join(",");
+  };
+  (hoRows || []).forEach(p => lines.push(row(p, "Head Office")));
+  (ccRows || []).forEach(p => lines.push(row(p, "Call Centre & Sales")));
+  return lines.join("\r\n");
+}
 // Fillable trial-evaluation modal — used in the HR portal for the AM Week-1
 // review that the trainers (HQ) complete. Mirrors the kiosk evaluation form:
 // score each criterion 1–5, with per-point guidance and a live tally. A pass
@@ -3487,6 +3504,292 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete, smTrialActive, onStar
               disabled={!((f.firstName || "").trim() || (f.surname || "").trim())}
               style={{ padding: "9px 22px", borderRadius: 9, border: "none", background: !((f.firstName || "").trim() || (f.surname || "").trim()) ? "#d1d5db" : "#1e293b", color: "#fff", cursor: !((f.firstName || "").trim() || (f.surname || "").trim()) ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 }}>
               {isNew ? "Add Manager" : "Save Changes"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── OFFICE STAFF MODAL (Head Office / Call Centre & Sales) ────────────────────
+// A sibling of ManagerModal rather than a mode of it: both of ManagerModal's
+// discriminating fields have to be REPLACED, not extended (its branch select is
+// SALONS-only, its role select is SSM/SM/AM), and its SM-trial tagger is
+// meaningless here — so parameterising would fork it internally more than a
+// sibling costs. StaffModal/ManagerModal already overlap ~70%; this follows
+// that precedent.
+//
+// The single most important rule: office people are stored with
+// branch = "Head Office" ALWAYS. "Call Centre & Sales" is NOT a real branch —
+// it's derived from role/EC by isCallCentreStaff. Storing it would break the
+// Head Office kiosk (its roster query is .eq("branch","Head Office")) and drop
+// the person from ccStaff. So `dept` here is a VIEW concept: it picks the role
+// list and the label, never the stored branch.
+function OfficeStaffModal({ s, pin, dept, onClose, onSave, onDelete }) {
+  const parseName = (t) => {
+    if (!t) return { firstName: "", surname: "" };
+    const i = t.indexOf(" ");
+    if (i < 0) return { firstName: t, surname: "" };
+    return { firstName: t.slice(0, i), surname: t.slice(i + 1).trim() };
+  };
+  const initial = parseName(s.name);
+  const [f, setF] = useState({ ...s, firstName: s.firstName || initial.firstName, surname: s.surname || initial.surname });
+  // Department is editable on an EXISTING record: it's the only way to move
+  // someone who was mis-filed (e.g. an office role carrying a -CC code, which
+  // the classifier reads as Call Centre & Sales).
+  const [d, setD] = useState(dept === "CC" ? "CC" : "HO");
+  const _randomPin = () => String(Math.floor(100000 + Math.random() * 900000));
+  const _initPin = (s && s._id !== undefined) ? (pin || "") : (pin || _randomPin());
+  const [pinInput, setPinInput] = useState(_initPin);
+  const set = (k, v) => setF(p => ({ ...p, [k]: v }));
+  const inp = { width: "100%", padding: "8px 11px", borderRadius: 8, border: "1px solid #FBCFE8", background: "#FCE7F3", fontFamily: "inherit", fontSize: 13, color: "#111827", boxSizing: "border-box" };
+  const lbl = { display: "block", fontSize: 10, fontWeight: 700, color: "#BE185D", letterSpacing: "0.08em", marginBottom: 4, textTransform: "uppercase" };
+  const isNew = f._id === undefined;
+  const roleOpts = d === "CC" ? CC_ROLES : HO_ROLES;
+  const deptLabel = d === "CC" ? CALL_CENTRE : HEAD_OFFICE;
+  const _ecU = String(f.ec || "").trim().toUpperCase();
+  const _ecIsCc = /-CC$/.test(_ecU);
+  // A role the record already carries that isn't in the current department's
+  // list (e.g. Jae Lee: -CC code → reads as CC&S, but role EPA is an office
+  // role). Surface it as an explicit option instead of letting the select
+  // silently show blank and re-pick on save.
+  const _roleMismatch = !!(f.role && !roleOpts.some(r => r.key === f.role));
+  // Hard block: an office role on a -CC code lands on the CC&S roster/schedule
+  // while shift-rules (which reads role only) still pays office hours — the two
+  // classifiers disagree and nothing surfaces it.
+  const _ecBlocked = d === "HO" && _ecIsCc;
+  const _hasName = !!((f.firstName || "").trim() || (f.surname || "").trim());
+  // EC is REQUIRED: every downstream system keys on it (schedules, attendance,
+  // PINs, HEAD_OFFICE_ECS), and an EC-less row crashes the roster enrichment.
+  const _canSave = _hasName && !!f.role && !_ecBlocked && !!_ecU;
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}
+      onClick={e => e.target === e.currentTarget && onClose()}>
+      <div style={{ background: "#FFFFFF", borderRadius: 22, width: "min(460px,96vw)", maxHeight: "90vh", overflowY: "auto", padding: "28px 26px", boxShadow: "0 30px 90px rgba(0,0,0,.25)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+          <h2 style={{ fontFamily: "'Playfair Display',serif", fontSize: 22, color: "#8E5570", margin: 0 }}>
+            {isNew ? (d === "CC" ? "Add Call Centre & Sales Staff" : "Add Head Office Staff") : "Edit Office Staff"}
+          </h2>
+          <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 24, cursor: "pointer", color: "#9ca3af" }}>×</button>
+        </div>
+        <div style={{ display: "grid", gap: 13 }}>
+          <div><label style={lbl}>EC Code</label>
+            <input style={inp} value={f.ec || ""} onChange={e => set("ec", e.target.value)} placeholder={d === "CC" ? "e.g. B891-CC" : "e.g. B206-M"} />
+            {_ecBlocked && (
+              <div style={{ fontSize: 11, color: "#dc2626", marginTop: 4, lineHeight: 1.45 }}>
+                A <strong>-CC</strong> code marks someone as Call Centre &amp; Sales, so this person would show on the CC&amp;S roster and schedule — but still be paid Head Office hours (08:00–17:00), because hours read the <em>role</em>. Use a non-<strong>-CC</strong> code (e.g. <code>{_ecU.replace(/-CC$/, "-M")}</code>), or switch Department to Call Centre &amp; Sales.
+              </div>
+            )}
+            {d === "CC" && f.ec && !_ecIsCc && (
+              <div style={{ fontSize: 11, color: "#92400e", marginTop: 4, lineHeight: 1.45 }}>
+                Heads-up: Call Centre &amp; Sales codes normally end in <strong>-CC</strong>. This still works — the role below is what files them on the CC&amp;S floor (the Call Centre Manager's own code is B476-M) — but the code won't match the convention.
+              </div>
+            )}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div><label style={lbl}>First Name</label>
+              <input style={inp} value={f.firstName || ""} onChange={e => set("firstName", e.target.value)} placeholder="e.g. Thandi" /></div>
+            <div><label style={lbl}>Surname</label>
+              <input style={inp} value={f.surname || ""} onChange={e => set("surname", e.target.value)} placeholder="e.g. Smith" /></div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div><label style={lbl}>Department</label>
+              <select style={inp} value={d} onChange={e => {
+                const nd = e.target.value;
+                setD(nd);
+                // The role sets are disjoint, so a role from the old department
+                // is never valid in the new one. Clear it rather than carry a
+                // stale value that would re-file them on save.
+                const keep = (nd === "CC" ? CC_ROLES : HO_ROLES).some(r => r.key === f.role);
+                if (!keep) set("role", "");
+              }}>
+                <option value="HO">🏢 {HEAD_OFFICE}</option>
+                <option value="CC">📞 {CALL_CENTRE}</option>
+              </select>
+            </div>
+            <div><label style={lbl}>Role</label>
+              {/* Explicit empty option — a bare <select> with an empty value
+                  silently shows its first option without it being chosen, which
+                  is how a role-less manager used to read as an SSM. Role is
+                  REQUIRED here: it sets shift hours, trainer status and CC&S
+                  membership, and a blank one can't even be cleared later
+                  (the write prunes empty values). */}
+              <select style={inp} value={f.role || ""} onChange={e => set("role", e.target.value)}>
+                <option value="" disabled>— Select role —</option>
+                {_roleMismatch && <option value={f.role}>⚠ {OFFICE_ROLE_LABEL[f.role] || f.role} (current — wrong department)</option>}
+                {roleOpts.map(r => <option key={r.key} value={r.key}>{r.icon} {r.label} ({r.key})</option>)}
+              </select>
+            </div>
+          </div>
+          {_roleMismatch && (
+            <div style={{ fontSize: 11, color: "#92400e", background: "#fef3c7", border: "1px solid #fde68a", borderRadius: 6, padding: "8px 10px", lineHeight: 1.45 }}>
+              ⚠ <strong>{OFFICE_ROLE_LABEL[f.role] || f.role}</strong> isn't a {deptLabel} role. This person is filed under {deptLabel} but carries a role from the other side — so their roster and their shift hours currently disagree. Pick a {deptLabel} role, or switch Department.
+            </div>
+          )}
+          <div style={{ fontSize: 11, color: "#3730a3", background: "#eef2ff", border: "1px solid #c7d2fe", borderRadius: 6, padding: "8px 10px", lineHeight: 1.45 }}>
+            💡 {d === "CC"
+              ? <>Call Centre &amp; Sales works a two-shift split — <strong>07:00–16:00</strong>, or <strong>09:00–18:30</strong> on a late (WL) day.</>
+              : <>Head Office works a flat <strong>08:00–17:00</strong> day, Monday to Friday.</>} Their department is derived from the role, not stored as a branch — both are saved under <strong>{HEAD_OFFICE}</strong>.
+          </div>
+          <div><label style={lbl}>Notes</label>
+            <input style={inp} value={f.notes || ""} onChange={e => set("notes", e.target.value)} placeholder="e.g. started on the Cape Town desk" /></div>
+
+          {/* Compliance / work-permit status — same options + column as the
+              staff and manager modals. */}
+          <div>
+            <label style={lbl}>Compliance / Work Permit</label>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 8 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, border: `1.5px solid ${!f.permit ? "#F472B6" : "#e5e7eb"}`, background: !f.permit ? "#fdf2f8" : "#f9fafb", cursor: "pointer" }}>
+                <input type="radio" checked={!f.permit} onChange={() => set("permit", null)} style={{ display: "none" }} />
+                <span style={{ fontSize: 16 }}>❔</span>
+                <span style={{ fontSize: 11, fontWeight: 700, color: !f.permit ? "#831843" : "#6b7280" }}>Not set</span>
+              </label>
+              {Object.entries(COMPLIANCE).map(([k, c]) => (
+                <label key={k} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, border: `1.5px solid ${f.permit === k ? c.border : "#e5e7eb"}`, background: f.permit === k ? c.bg : "#f9fafb", cursor: "pointer" }}>
+                  <input type="radio" checked={f.permit === k} onChange={() => set("permit", k)} style={{ display: "none" }} />
+                  <span style={{ fontSize: 16 }}>{c.icon}</span>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: f.permit === k ? c.color : "#831843" }}>{c.label}</span>
+                </label>
+              ))}
+            </div>
+            {(f.permit === "asylum" || f.permit === "work_permit") && (
+              <div style={{ marginTop: 10 }}>
+                <label style={lbl}>{f.permit === "asylum" ? "Asylum document expiry" : "Work permit expiry"}</label>
+                <input type="date" value={f.permitExpiry || ""} onChange={e => set("permitExpiry", e.target.value || null)} style={inp} />
+              </div>
+            )}
+          </div>
+
+          <label style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 14px", borderRadius: 10, border: `2px solid ${f.boaPathways ? "#6EE7B7" : "#e5e7eb"}`, background: f.boaPathways ? "#ECFDF5" : "#fff", cursor: "pointer" }}>
+            <input type="checkbox" checked={!!f.boaPathways} onChange={e => set("boaPathways", e.target.checked)} style={{ width: 17, height: 17, accentColor: "#059669", cursor: "pointer" }} />
+            <span style={{ fontSize: 18 }}>🎓</span>
+            <span style={{ fontSize: 12, fontWeight: 700, color: f.boaPathways ? "#065F46" : "#374151" }}>BOA Pathways graduate</span>
+          </label>
+
+          <label style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 14px", borderRadius: 10, border: `2px solid ${f.bargainingCouncil ? "#93C5FD" : "#e5e7eb"}`, background: f.bargainingCouncil ? "#EFF6FF" : "#fff", cursor: "pointer" }}>
+            <input type="checkbox" checked={!!f.bargainingCouncil} onChange={e => set("bargainingCouncil", e.target.checked)} style={{ width: 17, height: 17, accentColor: "#2563EB", cursor: "pointer" }} />
+            <span style={{ fontSize: 18 }}>🤝</span>
+            <span style={{ fontSize: 12, fontWeight: 700, color: f.bargainingCouncil ? "#1E40AF" : "#374151" }}>Bargaining council — sick days not paid (council fund)</span>
+          </label>
+
+          <div>
+            <label style={lbl}>Personal Clock-in PIN <span style={{ fontWeight: 500, color: "#9CA3AF", letterSpacing: 0, textTransform: "none", marginLeft: 4 }}>(6 digits — used in the check-in app{isNew && pinInput ? " · auto-generated" : ""})</span></label>
+            <div style={{ display: "flex", gap: 6 }}>
+              <input
+                style={{ ...inp, fontFamily: "monospace", letterSpacing: "0.2em", fontSize: 14, flex: 1 }}
+                value={pinInput}
+                maxLength={6}
+                inputMode="numeric"
+                placeholder="6-digit PIN"
+                onChange={e => setPinInput(e.target.value.replace(/\D/g, "").slice(0, 6))}
+              />
+              <button type="button" onClick={() => setPinInput(_randomPin())}
+                title="Generate a fresh random 6-digit PIN"
+                style={{ padding: "0 12px", borderRadius: 8, border: "1px solid #FBCFE8", background: "#FFFFFF", color: "#831843", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}
+              >🎲 Random</button>
+            </div>
+            {pinInput && pinInput.length !== 6 && (
+              <div style={{ fontSize: 11, color: "#dc2626", marginTop: 4 }}>PIN must be exactly 6 digits (or empty to clear).</div>
+            )}
+            {isNew && pinInput.length === 6 && (
+              <div style={{ fontSize: 11, color: "#92400e", marginTop: 6, background: "#fef3c7", border: "1px solid #fde68a", borderRadius: 6, padding: "6px 10px" }}>
+                💡 Share this PIN with them — they'll type it into the check-in kiosk to confirm their attendance. Resettable later from Admin → Manager PINs.
+              </div>
+            )}
+          </div>
+          <div><label style={lbl}>Start Date {f.startDate && (() => {
+            const dd = new Date(f.startDate + "T00:00:00");
+            const days = Math.floor((Date.now() - dd) / 86400000);
+            const yrs = (days / 365).toFixed(1);
+            return <span style={{ fontWeight: 600, color: "#9ca3af", letterSpacing: 0, textTransform: "none", marginLeft: 8 }}>· {days < 365 ? days + " days" : yrs + " yrs"} tenure</span>;
+          })()}</label>
+            <input type="date" style={inp} value={f.startDate || ""} onChange={e => set("startDate", e.target.value || null)} />
+          </div>
+          <div><label style={lbl}>Contract</label>
+            <select style={inp} value={f.contract || ""} onChange={e => set("contract", e.target.value)}>
+              <option value="">— Not set —</option>
+              <option>Permanent</option>
+              <option>Fixed Term</option>
+              <option>3 Month</option>
+              <option value="NO CONTRACT">NO CONTRACT</option>
+            </select>
+          </div>
+          <div style={{ gridColumn: "1/-1" }}>
+            <label style={{ ...lbl, marginBottom: 8 }}>Maternity Status</label>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 8, marginBottom: 10 }}>
+              {[
+                { val: "active", icon: "✅", label: "Active", desc: "Working normally", border: "#86efac", bg: "#f0fdf4", col: "#15803d" },
+                { val: "pregnant", icon: "🤰", label: "Pregnant", desc: "Still at work, leave upcoming", border: "#fde68a", bg: "#fffbeb", col: "#92400e" },
+                { val: "on_mat", icon: "🤱", label: "On Maternity", desc: "Currently on leave", border: "#fbcfe8", bg: "#fdf4ff", col: "#7A4258" },
+                { val: "dates_tbc", icon: "⏳", label: "Dates TBC", desc: "Away, no dates yet", border: "#fde68a", bg: "#fef3c7", col: "#7c2d12" },
+              ].map(opt => {
+                const selected = (f.matStatus || "active") === opt.val;
+                return (
+                  <label key={opt.val} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4, padding: "10px 8px", borderRadius: 10, border: `2px solid ${selected ? opt.border : "#e5e7eb"}`, background: selected ? opt.bg : "#f9fafb", cursor: "pointer", textAlign: "center" }}>
+                    <input type="radio" checked={selected} onChange={() => { set("matStatus", opt.val); if (opt.val === "active") { set("onMat", false); set("pregnant", false); } else if (opt.val === "pregnant") { set("onMat", false); set("pregnant", true); } else { set("onMat", true); set("pregnant", false); } }}
+                      style={{ display: "none" }} />
+                    <span style={{ fontSize: 20 }}>{opt.icon}</span>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: selected ? opt.col : "#374151" }}>{opt.label}</span>
+                    <span style={{ fontSize: 9, color: selected ? opt.col : "#9ca3af" }}>{opt.desc}</span>
+                  </label>
+                );
+              })}
+            </div>
+            {(f.matStatus || "active") === "pregnant" && (
+              <div style={{ background: "#FFFFFF", border: "1px solid #fde68a", borderRadius: 9, padding: "12px 14px", marginTop: 4 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#8E5570", marginBottom: 8 }}>🤰 Upcoming Maternity Details</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                  <div><label style={lbl}>Expected Leave Start Date</label>
+                    <input type="date" style={inp} value={f.matStart || ""} onChange={e => set("matStart", e.target.value)} /></div>
+                  <div><label style={lbl}>Expected Return Date</label>
+                    <input type="date" style={inp} value={f.matReturn || ""} onChange={e => set("matReturn", e.target.value)} /></div>
+                  <div style={{ gridColumn: "1/-1" }}><label style={lbl}>Notes</label>
+                    <input style={inp} value={f.matNotes || ""} onChange={e => set("matNotes", e.target.value)} placeholder="e.g. due mid-July, cover needed from June" /></div>
+                </div>
+              </div>
+            )}
+            {(f.matStatus || "active") === "on_mat" && (
+              <div style={{ background: "#F5E1E7", border: "1px solid #FBCFE8", borderRadius: 9, padding: "12px 14px", marginTop: 4 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#8E5570", marginBottom: 8 }}>🤱 Maternity Leave Details</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                  <div><label style={lbl}>Leave Start Date</label>
+                    <input type="date" style={inp} value={f.matStart || ""} onChange={e => set("matStart", e.target.value)} /></div>
+                  <div><label style={lbl}>Return Date</label>
+                    <input type="date" style={inp} value={f.matReturn || ""} onChange={e => set("matReturn", e.target.value)} /></div>
+                  <div style={{ gridColumn: "1/-1" }}><label style={lbl}>Notes</label>
+                    <input style={inp} value={f.matNotes || ""} onChange={e => set("matNotes", e.target.value)} placeholder="e.g. expected return June 2026" /></div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 10, marginTop: 22, justifyContent: "space-between", alignItems: "center" }}>
+          {!isNew && onDelete && (
+            <button onClick={() => onDelete(f._id)}
+              style={{ padding: "9px 14px", borderRadius: 9, border: "none", background: "#FBCFE8", color: "#831843", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700 }}>
+              🗑 Remove
+            </button>
+          )}
+          <div style={{ display: "flex", gap: 10, marginLeft: "auto" }}>
+            <button onClick={onClose} style={{ padding: "9px 18px", borderRadius: 9, border: "1px solid #FBCFE8", background: "#FFFFFF", cursor: "pointer", fontFamily: "inherit", fontSize: 13 }}>Cancel</button>
+            <button onClick={() => {
+              if (!_hasName) return;
+              if (!_ecU) { alert("An EC Code is required — schedules, attendance, PINs and leave are all keyed on it. Every employee code must be unique and is never reused."); return; }
+              if (!f.role) { alert("Pick a role — it sets their shift hours, whether they're a trainer, and whether they sit on the Call Centre & Sales floor."); return; }
+              if (_ecBlocked) { alert("A -CC employee code files this person under Call Centre & Sales. Use a non--CC code, or switch Department to Call Centre & Sales."); return; }
+              if (pinInput && pinInput.length !== 6) { alert("Personal PIN must be exactly 6 digits, or left empty."); return; }
+              const _yw = startDateYearWarning(f.startDate);
+              if (_yw && !window.confirm("⚠ The start date (" + f.startDate + ") " + _yw + ".\n\nThat usually means the year was mistyped (e.g. 2006 instead of 2026). Save it anyway?")) return;
+              const fullName = ((f.firstName || "").trim() + " " + (f.surname || "").trim()).trim();
+              // branch is ALWAYS Head Office — see the header note. The dept is
+              // re-derived from role/EC by isCallCentreStaff on read.
+              const out = { ...f, name: fullName, branch: HEAD_OFFICE, role: f.role };
+              onSave(out, pinInput);
+            }}
+              disabled={!_canSave}
+              style={{ padding: "9px 22px", borderRadius: 9, border: "none", background: !_canSave ? "#d1d5db" : "#1e293b", color: "#fff", cursor: !_canSave ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 }}>
+              {isNew ? "Add" : "Save Changes"}
             </button>
           </div>
         </div>
@@ -7018,7 +7321,10 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                         // this branch, the cell is tinted teal and shows the
                         // destination store (e.g. Betty's first-Sunday Bree/GP
                         // split, or any manually-logged movement).
-                        const _outgoingLoan = (techLoans || []).find(l => l && l.ec === s.ec && l.date === dYmd && l.fromBranch === branch);
+                        // EC compared TRIMMED: staff rows can carry padded codes
+                        // (e.g. "B620-M ") while loan/visit records emit trimmed
+                        // ones — strict === silently drops the marker.
+                        const _outgoingLoan = (techLoans || []).find(l => l && String(l.ec || "").trim() === String(s.ec || "").trim() && l.date === dYmd && l.fromBranch === branch);
                         const _loanCell = _outgoingLoan && !cellMat && !cellLegal && !isPastLeft
                           ? (_outgoingLoan.toBranch === "Bree" ? { background: "#cffafe", color: "#155e75" }
                             : _outgoingLoan.toBranch === "Green Point" ? { background: "#fce7f3", color: "#9d174d" }
@@ -7165,7 +7471,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
                         if (!(v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E")) return false;
                         const _xd = s.transferDate || null;
                         if (_xd && !s.isShadow && s.transferring && _dYmd >= _xd) return false;   // permanently transferred out
-                        if ((techLoans || []).some(l => l && l.ec === s.ec && l.date === _dYmd && l.fromBranch === branch)) return false;   // loaned out to another store today
+                        if ((techLoans || []).some(l => l && String(l.ec || "").trim() === String(s.ec || "").trim() && l.date === _dYmd && l.fromBranch === branch)) return false;   // loaned out to another store today (EC trimmed — padded codes exist)
                         return true;
                       }).length;
                       const needed = minWorkingFor(d, activeTechs.length);
@@ -8665,6 +8971,25 @@ function AppGate() {
             if (!st.includes("trialPeriod")) u.showTabs = [...st, "trialPeriod"];
           }
         });
+        // V4 migration: introduces the Office Staff List tab. It exposes the
+        // Head Office / CC&S directory (permits, maternity dates, tenure) —
+        // the same sensitivity class as the salon Staff List, which owners
+        // curate per user. Tab visibility is deny-list based, so without this
+        // the new key is visible to EVERYONE with the People category,
+        // including users whose owner explicitly hid "staff". Hidden by
+        // default for non-owners; owners grant specific people in
+        // Settings → Users → Edit (People › Office Staff List).
+        Object.keys(dynamic).forEach(pin => {
+          const u = dynamic[pin];
+          if (u._officeStaffMigrated) return;
+          u._officeStaffMigrated = true;
+          dashMigrated = true;
+          if (u.isOwner) return;
+          const ht = Array.isArray(u.hideTabs) ? u.hideTabs : [];
+          if (!ht.includes("officeStaff")) {
+            u.hideTabs = [...ht, "officeStaff"];
+          }
+        });
         if (dashMigrated) { try { await saveAppUsersToDb(dynamic); } catch (_) { } }
       }
       if (cancelled) return;
@@ -8786,7 +9111,11 @@ const SETTINGS_TABS = [
   { t: "dashCalledInSick", l: "Called in Sick / Absent (today & tomorrow)", cat: "Home/Dashboard", icon: "🤒" },
   { t: "dashAbscond", l: "Abscond / Absence Warnings", cat: "Home/Dashboard", icon: "🚨" },
   { t: "trialAmCheckinAlert", l: "AM Trial · missing check-in (trainers)", cat: "Home/Dashboard", icon: "⚠️" },
-  { t: "staff", l: "Staff List", cat: "People", icon: "👥" },
+  // Tab KEY stays "staff" — it's persisted in every user's hideTabs /
+  // showTabs / readOnlyTabs and in NAV_TAB_TO_CATEGORY, so renaming the key
+  // would silently orphan those. Label only.
+  { t: "staff", l: "Salon Staff", cat: "People", icon: "💅" },
+  { t: "officeStaff", l: "Office Staff List", cat: "People", icon: "🏢" },
   { t: "onboard", l: "Onboarding", cat: "People", icon: "🌱" },
   { t: "offboard", l: "Off-boarding", cat: "People", icon: "👋" },
   { t: "recruitment", l: "Recruitment", cat: "People", icon: "🎯" },
@@ -9015,7 +9344,7 @@ function AccessPanel({ title, blurb, cfg, onSave, users, roleOpts, accent, accen
   );
 }
 
-function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFreshaCfgSave, overtimeCfg, onOvertimeCfgSave, cashupReviewCfg, onCashupReviewCfgSave, leaveOpsCfg, onLeaveOpsCfgSave, leavePayrollCfg, onLeavePayrollCfgSave, leaveBalancesCfg, onLeaveBalancesCfgSave }) {
+function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFreshaCfgSave, overtimeCfg, onOvertimeCfgSave, cashupReviewCfg, onCashupReviewCfgSave, leaveOpsCfg, onLeaveOpsCfgSave, leavePayrollCfg, onLeavePayrollCfgSave, leaveBalancesCfg, onLeaveBalancesCfgSave, officeStaffCfg, onOfficeStaffCfgSave }) {
   const users = appUsers || {};
   const [editing, setEditing] = useState(null);   // {pin, isNew, name, role, demo, isOwner, perms, originalPin}
   const [busy, setBusy] = useState(false);
@@ -9399,6 +9728,15 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFres
           cfg={leaveBalancesCfg} onSave={onLeaveBalancesCfgSave} users={users}
           roleOpts={[{ key: "payroll", label: "Payroll / wages / finance roles" }, { key: "hr", label: "HR roles" }]}
           accent="#9333ea" accentBg="#faf5ff" border="#e9d5ff"
+        />
+      )}
+      {onOfficeStaffCfgSave && (
+        <AccessPanel
+          title="🏢 Add office staff (Head Office & Call Centre / Sales)"
+          blurb="Who can add people on the Office Staff List — the ➕ Add Head Office Staff and ➕ Add Call Centre & Sales Staff buttons. The role picked there sets their shift hours, whether they're a trainer, and whether they sit on the Call Centre & Sales floor, so it starts private to owners only — tick people below to give them access. Viewing the list is controlled separately, in the tab grid above."
+          cfg={officeStaffCfg} onSave={onOfficeStaffCfgSave} users={users}
+          roleOpts={[{ key: "hr", label: "HR roles" }, { key: "payroll", label: "Payroll / wages / finance roles" }]}
+          accent="#3730a3" accentBg="#eef2ff" border="#c7d2fe"
         />
       )}
 
@@ -11410,6 +11748,43 @@ function isCallCentreStaff(s) {
 }
 let CALL_CENTRE_ECS = new Set();
 function isCallCentreEc(ec) { return CALL_CENTRE_ECS.has(String(ec || "").trim().toUpperCase()); }
+
+// Office role vocabulary — the Office Staff List's two role dropdowns.
+//
+// `role` on an office row is NOT cosmetic; it is a provisioning control read by
+// three systems, so these keys are a contract, not labels:
+//   • shift-rules.js:54 — a Head Office row whose role is CC/MCC/SALES gets the
+//     Call Centre two-shift split (WL 09:00-18:30, else 07:00-16:00); every
+//     other role gets the flat office day 08:00-17:00.
+//   • isCallCentreStaff (above) — CC_ROLES keys ARE the role half of that test,
+//     and decide which schedule / attendance / request store a person lives in.
+//   • role "T" selects trainers — kiosk/data.js isTrainerRow + the portal's
+//     trainer-visit fetch. A trainer appears on every store kiosk the moment
+//     their row lands with role "T".
+// So: adding a key to CC_ROLES without adding it to isCallCentreStaff AND
+// shift-rules.js (all 3 mirrors) silently files someone on the CC&S roster
+// while paying them office hours — the two classifiers would disagree.
+const HO_ROLES = [
+  { key: "T",   label: "Trainer",         icon: "🎓" },
+  { key: "HR",  label: "HR",              icon: "🧑‍💼" },
+  { key: "PM",  label: "Payroll Manager", icon: "💰" },
+  { key: "REC", label: "Recruiter",       icon: "🎯" },
+  { key: "OA",  label: "Office Admin",    icon: "🗂️" },
+  { key: "MC",  label: "Marketing",       icon: "📣" },
+  { key: "EPA", label: "Executive PA",    icon: "📋" },
+  { key: "HOH", label: "Hygienist",       icon: "🧼" }
+];
+const CC_ROLES = [
+  { key: "MCC",   label: "Call Centre Manager", icon: "📞" },
+  { key: "CC",    label: "Call Centre",         icon: "☎️" },
+  { key: "SALES", label: "Sales",               icon: "🛍️" }
+];
+const OFFICE_ROLE_LABEL = {};
+HO_ROLES.concat(CC_ROLES).forEach(r => { OFFICE_ROLE_LABEL[r.key] = r.label; });
+// True when a role code belongs to the Call Centre & Sales floor. Derived from
+// CC_ROLES so it can never drift from the dropdown.
+const CC_ROLE_KEYS = new Set(CC_ROLES.map(r => r.key));
+function isCcRole(role) { return CC_ROLE_KEYS.has(String(role || "").trim().toUpperCase()); }
 
 // Shared request-board classification: split a filtered request list into
 // Managers / Nail Techs / Head Office — the three colour-coded columns the
@@ -16411,6 +16786,33 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     return () => { cancelled = true; };
   }, [tab, loansTick]);
 
+  // Trainer store visits, shaped like day-loan records so the Head Office
+  // schedule grid's existing cross-store overlay renders them as "→ Plum".
+  // DERIVED from clock-ins (see BOA_DB.listTrainerVisits) — nothing is stored,
+  // so a re-publish can't clobber the marker and deleting a mistaken clock-in
+  // makes the cell revert to W on its own.
+  // Deliberately kept OUT of techLoans: Today's Movements reads that state, and
+  // a trainer's visit belongs on their own cell only — the store they visited
+  // isn't hosting a loan and shouldn't show them as a guest.
+  const [trainerVisits, setTrainerVisits] = useState([]);
+  useEffect(() => {
+    if (!window.BOA_DB || !window.BOA_DB.listTrainerVisits) return;
+    const ids = (hoOnlyStaff || [])
+      .filter(s => s && String(s.role || "").trim().toUpperCase() === "T")
+      .map(s => s.id).filter(Boolean);
+    if (!ids.length) { setTrainerVisits([]); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const since = new Date();
+        since.setDate(since.getDate() - 180);
+        const recs = await window.BOA_DB.listTrainerVisits(ids, since.toISOString());
+        if (!cancelled) setTrainerVisits(Array.isArray(recs) ? recs : []);
+      } catch (e) { console.error("listTrainerVisits:", e); }
+    })();
+    return () => { cancelled = true; };
+  }, [tab, loansTick, hoOnlyStaff]);
+
   const [securityLogs, setSecurityLogs] = useState([]);
   const [openDismissMenu, setOpenDismissMenu] = useState(null);
   const [selectedAlerts, setSelectedAlerts] = useState(new Set());
@@ -17349,6 +17751,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [managePanel, setManagePanel] = useState(null);
   const [managers, setManagers] = useState([]);
   const [mgrModal, setMgrModal] = useState(null);
+  // Office Staff List (Head Office + Call Centre & Sales). `_dept` on the modal
+  // record is a VIEW concept — it picks the role list and label; the stored
+  // branch is always Head Office.
+  const [officeModal, setOfficeModal] = useState(null);
+  // Its own filter state, deliberately NOT shared with the Salon Staff list:
+  // a leftover fBranch="Sea Point" or fRole="Tech" would render the office list
+  // empty with nothing on screen to explain why (the office filters can't even
+  // display a salon branch to show what's excluding everyone).
+  const [oSearch, setOSearch] = useState("");
+  const [oShow, setOShow] = useState("active_only");
+  const [oDept, setODept] = useState("All");
+  const [oRole, setORole] = useState("All");
+  const [oPermit, setOPermit] = useState("All");
+  const [oContract, setOContract] = useState("All");
   const [plannerMgrs, setPlannerMgrs] = useState(null); // null = not yet opened; initialised on first open
   const [dragMgr, setDragMgr] = useState(null); // {_id, name, role} being dragged
   const [search, setSearch] = useState("");
@@ -17474,7 +17890,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [navShowCategory, setNavShowCategory] = useState(false);
   // Map of tab → category name. Kept in sync with the groups list below.
   const NAV_TAB_TO_CATEGORY = {
-    onboard: "People", offboard: "People", staff: "People", recruitment: "People", hrLibrary: "People", maternity: "People", unpaidLegal: "People", trialPeriod: "People", smTrial: "People",
+    onboard: "People", offboard: "People", staff: "People", officeStaff: "People", recruitment: "People", hrLibrary: "People", maternity: "People", unpaidLegal: "People", trialPeriod: "People", smTrial: "People",
     scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", hoCheckins: "Operations", ccCheckins: "Operations", leave: "Operations", checkins: "Operations", freshaTodo: "Operations", storeOpenings: "Operations", storeHours: "Operations", movements: "Operations", cashups: "Operations", mgrCoverage: "Operations",
     attendance: "Payroll", payrollProgress: "Payroll", payrollReports: "Payroll", overtime: "Payroll", payrollInbox: "Payroll", leaveBalances: "Payroll", frl: "Payroll",
     leaveRequests: "Operations", calledInSick: "Operations", extraDayRequests: "Operations",
@@ -17950,6 +18366,29 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     try { if (window.BOA_DB.saveOvertimeAccess) await window.BOA_DB.saveOvertimeAccess(next); }
     catch (e) { window.alert("Could not save overtime access: " + (e.message || e)); }
   };
+  // Who may ADD Head Office / Call Centre & Sales people from the Office Staff
+  // List (boa_office_staff_access_v1). Defaults to OWNERS ONLY (empty roles +
+  // pins) — this creates people records, and the role picked there provisions
+  // shift hours, trainer status and Call Centre & Sales membership. Editable in
+  // Settings.
+  const [officeStaffAccess, setOfficeStaffAccess] = useState({});
+  const officeStaffCfg = useMemo(() => {
+    const c = officeStaffAccess || {};
+    return {
+      roles: Array.isArray(c.roles) ? c.roles : [],
+      pins: Array.isArray(c.pins) ? c.pins : []
+    };
+  }, [officeStaffAccess]);
+  const saveOfficeStaffCfg = async (next) => {
+    setOfficeStaffAccess(next);
+    try { if (window.BOA_DB.saveOfficeStaffAccess) await window.BOA_DB.saveOfficeStaffAccess(next); }
+    catch (e) { window.alert("Could not save office staff access: " + (e.message || e)); }
+  };
+  // Who may ADD office people (Settings → "Add office staff"). Owners always
+  // pass. Used as BOTH a render gate on the two Add buttons AND a click-time
+  // assertion — a render gate alone is cosmetic. Declared here, after
+  // officeStaffCfg: referencing it any earlier is a TDZ crash on load.
+  const canAddOfficeStaff = accessAllows(currentUser, officeStaffCfg);
   // Who may REVIEW ("tick off") a store's daily cash-up (boa_cashup_review_access_v1).
   // Default: Regional Ops managers (owners always allowed). Editable in Settings.
   const [cashupReviewAccess, setCashupReviewAccess] = useState({});
@@ -19585,6 +20024,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       window.BOA_DB.loadOvertimeRequests ? window.BOA_DB.loadOvertimeRequests() : Promise.resolve([]),
       window.BOA_DB.loadFreshaAccess ? window.BOA_DB.loadFreshaAccess() : Promise.resolve({}),
       window.BOA_DB.loadOvertimeAccess ? window.BOA_DB.loadOvertimeAccess() : Promise.resolve({}),
+      window.BOA_DB.loadOfficeStaffAccess ? window.BOA_DB.loadOfficeStaffAccess() : Promise.resolve({}),
       window.BOA_DB.loadCashupReviewAccess ? window.BOA_DB.loadCashupReviewAccess() : Promise.resolve({}),
       window.BOA_DB.loadLeaveOpsAccess ? window.BOA_DB.loadLeaveOpsAccess() : Promise.resolve({}),
       window.BOA_DB.loadLeavePayrollAccess ? window.BOA_DB.loadLeavePayrollAccess() : Promise.resolve({}),
@@ -19595,7 +20035,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       window.BOA_DB.loadFreshaExtraOpenings ? window.BOA_DB.loadFreshaExtraOpenings() : Promise.resolve({}),
       window.BOA_DB.loadFreshaBlocks ? window.BOA_DB.loadFreshaBlocks() : Promise.resolve({}),
       window.BOA_DB.loadInterviews ? window.BOA_DB.loadInterviews() : Promise.resolve([])
-    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess, cuReviewAccess, lvOpsAccess, lvPayrollAccess, lvBalancesAccess, incidents, leaveReqs, extraReqs, freshaExtraOpenMap, freshaBlocksMap, interviews]) => {
+    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess, offStaffAccess, cuReviewAccess, lvOpsAccess, lvPayrollAccess, lvBalancesAccess, incidents, leaveReqs, extraReqs, freshaExtraOpenMap, freshaBlocksMap, interviews]) => {
       // Register Head Office employee codes BEFORE any state update so
       // isManagerEc() never mis-classifies an HO person (e.g. a -M code) as a
       // salon manager. Rebuilt each load; empty when no HO staff exist.
@@ -19686,6 +20126,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setOvertimeReqs(Array.isArray(ot) ? ot : []);
       setFreshaAccess(freshaAcc && typeof freshaAcc === "object" ? freshaAcc : {});
       setOvertimeAccess(otAccess && typeof otAccess === "object" ? otAccess : {});
+      setOfficeStaffAccess(offStaffAccess && typeof offStaffAccess === "object" ? offStaffAccess : {});
       setCashupReviewAccess(cuReviewAccess && typeof cuReviewAccess === "object" ? cuReviewAccess : {});
       setLeaveOpsAccess(lvOpsAccess && typeof lvOpsAccess === "object" ? lvOpsAccess : {});
       setLeavePayrollAccess(lvPayrollAccess && typeof lvPayrollAccess === "object" ? lvPayrollAccess : {});
@@ -20557,12 +20998,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     return null;
   }, [matRecByEc, orphanMatByName]);
 
-  // Enrich staff
-  const enriched = useMemo(() => {
+  // Enrich a roster with maternity / off-boarding / unpaid-legal status.
+  // Extracted so the Office Staff List can reuse it verbatim: every dependency
+  // below is EC-keyed and population-agnostic, so it works unchanged on
+  // hoStaff. Kept as ONE function rather than copied per population so the
+  // 31-day leaver window and the orphan-mat-by-name fallback can't drift.
+  const _enrichRoster = useMemo(() => (list) => {
     const today = new Date();
     const t0 = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-    return staff.map(s => {
-      const off = offboardedMap[s.ec.trim()];
+    return (list || []).map(s => {
+      // Normalize once, tolerating an EC-less row: a bad import or a record
+      // saved before EC became required must degrade to "no matches", never
+      // crash the whole portal (this runs inside a useMemo on every render).
+      const _ec = String(s.ec || "").trim();
+      const off = offboardedMap[_ec];
       // Days since leftDate: negative = future leftDate, 0 = today, positive = past
       let offDaysSinceLeft = null;
       let offHidden = false;
@@ -20584,8 +21033,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         ...s,
         onMat: _matStatus === "on_mat" || _matStatus === "dates_tbc",
         pregnant: _matStatus === "pregnant",
-        onUnpaidLegal: onUnpaidLegalEcs.has(s.ec.trim()),  // excluded from count (legal-status leave)
-        unpaidLegalRec: (unpaidLegalRecs || []).find(r => r && r.ec && r.ec.trim() === s.ec.trim() && r.status === "on_leave") || null,
+        onUnpaidLegal: onUnpaidLegalEcs.has(_ec),  // excluded from count (legal-status leave)
+        unpaidLegalRec: (unpaidLegalRecs || []).find(r => r && r.ec && r.ec.trim() === _ec && r.status === "on_leave") || null,
         offboarded: !!off,                         // on the off-boarding list — vacancy now open
         offRec: off || null,
         // Off-boarding records live in `offList`, not on the staff
@@ -20600,7 +21049,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         matRec: _matRec,
       };
     });
-  }, [staff, findMatRec, onUnpaidLegalEcs, unpaidLegalRecs, offboardedMap]);
+  }, [findMatRec, onUnpaidLegalEcs, unpaidLegalRecs, offboardedMap]);
+
+  // Enrich staff (salon nail techs).
+  const enriched = useMemo(() => _enrichRoster(staff), [staff, _enrichRoster]);
+  // Same enrichment for the office population (Head Office + Call Centre &
+  // Sales). hoStaff is a THIRD population that never flows through `enriched`,
+  // so without this the Office Staff List would have no Status / Return Date
+  // and its "on maternity / left" filter would be inert.
+  const enrichedOffice = useMemo(() => _enrichRoster(hoStaff), [hoStaff, _enrichRoster]);
 
   // Authoritative "nail techs working today" tally, derived from the dashboard
   // loader's per-branch techByEc map (which already applies kiosk daily sign-off
@@ -20817,6 +21274,40 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     });
   }, [enriched, fShow, fBranch, fPermit, fContract, fRole, search]);
 
+  // Office Staff List roster — the same status/compliance/contract semantics as
+  // the salon list above, but filtered on department + office role instead of
+  // salon branch + salon tier. Split into the two sections at the render site.
+  const officeFiltered = useMemo(() => {
+    const q = (oSearch || "").trim().toLowerCase();
+    const list = (enrichedOffice || []).filter(s => {
+      if (s.offHidden) return false;          // past the 31-day leaver window
+      const isTerm = s.status === "terminated" || s.active === "false" || s.active === false;
+      if (oShow === "terminated" && !isTerm) return false;
+      if (oShow !== "terminated" && isTerm) return false;
+      if (oShow === "on_mat" && !s.onMat) return false;
+      if (oShow === "active_only" && s.onMat) return false;
+      // Department is DERIVED (isCallCentreStaff), never a stored branch.
+      if (oDept === "CC" && !isCallCentreStaff(s)) return false;
+      if (oDept === "HO" && isCallCentreStaff(s)) return false;
+      if (oRole !== "All" && String(s.role || "").trim().toUpperCase() !== oRole) return false;
+      if (oPermit !== "All" && s.permit !== oPermit) return false;
+      if (oContract !== "All" && s.contract !== oContract) return false;
+      if (q && !String(s.name || "").toLowerCase().includes(q) && !String(s.ec || "").toLowerCase().includes(q)) return false;
+      return true;
+    });
+    const isDeparted = (s) => s.offboarded && s.offDaysSinceLeft != null && s.offDaysSinceLeft >= 0;
+    return list.slice().sort((a, b) => {
+      const ad = isDeparted(a) ? 1 : 0;
+      const bd = isDeparted(b) ? 1 : 0;
+      if (ad !== bd) return ad - bd;          // active first, departed last
+      return ecSort(a, b);
+    });
+  }, [enrichedOffice, oShow, oDept, oRole, oPermit, oContract, oSearch]);
+  // CC tested FIRST — CC&S people remain in the Head Office population, so an
+  // ho-first split would swallow them.
+  const officeCc = useMemo(() => officeFiltered.filter(isCallCentreStaff), [officeFiltered]);
+  const officeHo = useMemo(() => officeFiltered.filter(s => !isCallCentreStaff(s)), [officeFiltered]);
+
   // Managers shown on the Staff List with the same filter set as techs.
   // Sorted SSM → SM → AM, then by name. Off-mat managers always at the top
   // so they're easy to find; on-mat below. We don't have a level/compliance
@@ -20886,10 +21377,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const mgrs = (managers || [])
       .filter(m => m && m.ec)
       .map(m => ({ ec: m.ec, name: m.name, branch: m.branch, role: m.role || "AM" }));
-    const pool = [...mgrs, ...techs].sort((a, b) => (a.name || "").localeCompare(b.name || ""));
-    try { console.log("[mat] picker pool size:", pool.length, "mgrs:", mgrs.length, "techs:", techs.length); } catch (_) { }
+    // Office staff (Head Office + Call Centre & Sales) are a THIRD population
+    // that flows through neither `enriched` nor `managers`, so without this a
+    // maternity record filed from the Office Staff List couldn't be found or
+    // edited from the Maternity tab. Branch shown as the derived department.
+    const office = (hoStaff || [])
+      .filter(s => s && s.ec)
+      .map(s => ({ ec: s.ec, name: s.name, branch: isCallCentreStaff(s) ? CALL_CENTRE : HEAD_OFFICE, role: s.role || "" }));
+    const pool = [...mgrs, ...office, ...techs].sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+    try { console.log("[mat] picker pool size:", pool.length, "mgrs:", mgrs.length, "office:", office.length, "techs:", techs.length); } catch (_) { }
     return pool;
-  }, [enriched, managers, matRecs]);
+  }, [enriched, managers, hoStaff, matRecs]);
 
   // Active trial candidates per branch, split by role. On the Locations cards a
   // trial person occupies a seat (they count toward the staffing meter), so the
@@ -21476,6 +21974,105 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       );
     } catch (e) { alert("Could not save: " + (e.message || e)); }
   }
+  // Register an office person in the module-level EC sets. These are what keep
+  // an office -M code from reading as a salon manager (isManagerEc short-circuits
+  // on HEAD_OFFICE_ECS) and what every cc-vs-ho check reads. loadAll rebuilds
+  // both from scratch; a person added or edited between loads has to be folded
+  // in here or they'd be mis-classified until the next refresh.
+  // The DELETE half is load-bearing: changing someone's role from EPA to CC (or
+  // back) must MOVE them, not just add them.
+  function registerOfficeEc(saved, oldEc) {
+    const u = String((saved && saved.ec) || "").trim().toUpperCase();
+    const o = String(oldEc || "").trim().toUpperCase();
+    if (o && o !== u) { HEAD_OFFICE_ECS.delete(o); CALL_CENTRE_ECS.delete(o); }
+    if (!u) return;
+    HEAD_OFFICE_ECS.add(u);
+    if (isCallCentreStaff(saved)) CALL_CENTRE_ECS.add(u); else CALL_CENTRE_ECS.delete(u);
+  }
+  // Save a Head Office / Call Centre & Sales person. Deliberately NOT saveStaff
+  // or saveMgr: both write the DB row correctly but push the result into the
+  // WRONG local population (setStaff / setManagers), so an office edit wouldn't
+  // show until a reload. Office people live in hoStaff.
+  //
+  // branch is forced to Head Office by the modal, which makes data.js's
+  // getRoleType return role_type "head_office" on its own — no caller action.
+  async function saveOfficeStaff(f, newPin) {
+    if (!canAddOfficeStaff) { alert("You don't have permission to add or edit office staff. An owner can grant it under Settings → Add office staff."); return; }
+    // EC is required and must be unique across EVERY population. The modal
+    // gates this too, but this function is the single write door, so the
+    // real defence lives here (mirrors StaffModal's guard — "There is NO DB
+    // unique constraint on employee_code, so this client guard is the only
+    // defence"; the sql/staff_employee_code_unique.sql index only holds if it
+    // was hand-run in prod). Without it, typing a salon manager's EC here
+    // adds the code to HEAD_OFFICE_ECS and isManagerEc silently demotes that
+    // manager portal-wide.
+    const _newEcU = String(f.ec || "").trim().toUpperCase();
+    if (!_newEcU) { alert("An EC Code is required — schedules, attendance, PINs and leave are all keyed on it."); return; }
+    const _ecOwner = (() => {
+      const mine = f._id;
+      const holder = (list) => (list || []).find(x =>
+        x && x._id !== mine && String(x.ec || "").trim().toUpperCase() === _newEcU);
+      const s0 = holder(staff); if (s0) return { name: s0.name, where: s0.branch || "a salon" };
+      const m0 = holder(managers); if (m0) return { name: m0.name, where: (m0.branch || "a salon") + " (manager)" };
+      const h0 = holder(hoStaff); if (h0) return { name: h0.name, where: "office staff" };
+      return null;
+    })();
+    if (_ecOwner) {
+      alert("EC code " + _newEcU + " already belongs to " + (_ecOwner.name || "someone") + " (" + _ecOwner.where + ").\n\nEvery employee code is unique and never reused — pick a different code.");
+      return;
+    }
+    try {
+      const isEdit = f._id !== undefined;
+      const _prior = isEdit ? (hoStaff || []).find(x => x._id === f._id) : null;
+      const _oldEc = _prior && _prior.ec ? String(_prior.ec).trim() : "";
+      const saved = await window.BOA_DB.saveStaff({ ...f, branch: HEAD_OFFICE });
+      setHoStaff(p => isEdit ? p.map(x => x._id === f._id ? saved : x) : [...p, saved]);
+      registerOfficeEc(saved, _oldEc);
+      // Office people have EC-keyed schedules, attendance, leave and custom
+      // hours, so an EC change has to cascade exactly like a salon one.
+      await migrateCodeIfChanged(_oldEc, (saved.ec || f.ec));
+      if (newPin !== undefined) {
+        const ec = saved.ec || f.ec;
+        const next = { ...mgrPins };
+        if (newPin === "") delete next[ec];
+        else next[ec] = newPin;
+        setMgrPins(next);
+        try { await window.BOA_DB.saveManagerPins(next); }
+        catch (pe) { alert("Saved, but the PIN could not be saved: " + (pe.message || pe)); }
+      }
+      setOfficeModal(null);
+      // EC-keyed and population-agnostic — works unchanged for office staff.
+      await syncMatFromStaffEdit({
+        ec: saved.ec || f.ec,
+        name: saved.name || f.name,
+        branch: saved.branch || f.branch,
+        matStatus: f.matStatus,
+        matStart: f.matStart,
+        matEnd: f.matEnd,
+        matReturn: f.matReturn,
+        matNotes: f.matNotes
+      });
+      logActivity(
+        isEdit ? "Edited office staff" : "Added office staff",
+        (saved.name || "") + (saved.ec ? " (" + saved.ec + ")" : ""),
+        (OFFICE_ROLE_LABEL[saved.role] || saved.role || "") + " · " + (isCallCentreStaff(saved) ? CALL_CENTRE : HEAD_OFFICE)
+      );
+    } catch (e) { alert("Could not save: " + (e.message || e)); }
+  }
+  async function delOfficeStaff(id) {
+    if (!canAddOfficeStaff) { alert("You don't have permission to remove office staff."); return; }
+    const target = (hoStaff || []).find(x => x._id === id);
+    if (!target) return;
+    if (!window.confirm("Remove " + (target.name || "this person") + " from the office staff list?\n\nThis deletes their staff record.")) return;
+    try {
+      await window.BOA_DB.deleteStaff(id);
+      setHoStaff(p => p.filter(x => x._id !== id));
+      const u = String(target.ec || "").trim().toUpperCase();
+      if (u) { HEAD_OFFICE_ECS.delete(u); CALL_CENTRE_ECS.delete(u); }
+      setOfficeModal(null);
+      logActivity("Removed office staff", (target.name || "") + (target.ec ? " (" + target.ec + ")" : ""), "");
+    } catch (e) { alert("Could not remove: " + (e.message || e)); }
+  }
   async function delMgr(id) {
     const target = managers.find(x => x._id === id);
     // Shadow records are derived UI rows, not real DB entries — clearing
@@ -21790,7 +22387,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t: "trialPeriod", l: trialLbl },
                   { t: "smTrial", l: smTrialLbl },
                   { t: "offboard", l: offboardLbl },
-                  { t: "staff", l: "👥 Staff List" },
+                  { t: "staff", l: "💅 Salon Staff" },
+                  // Office Staff List appears once there are office people —
+                  // OR for anyone allowed to add them: this tab holds the only
+                  // "+ Add" buttons, so gating purely on data would make the
+                  // FIRST office person impossible to add through the UI
+                  // (fresh-install chicken-and-egg). Still a no-op for
+                  // salon-only users: the V4 migration hides the key for
+                  // non-owners, and accessAllows gates canAddOfficeStaff.
+                  ...(hoStaff.length || canAddOfficeStaff ? [{ t: "officeStaff", l: "🏢 Office Staff List" }] : []),
                   { t: "recruitment", l: "🎯 Recruitment" },
                   ...(currentUser?.role === "Master Admin" || currentUser?.isOwner ? [
                     { t: "hrLibrary", l: "📁 Employee Files" }
@@ -22071,7 +22676,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     </div>
                     <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                       {[
-                        { t: "staff", l: "👥 Staff List" },
+                        { t: "staff", l: "💅 Salon Staff" },
                         { t: "scheduling", l: "📅 Scheduling" },
                         { t: "attendance", l: "📕 Attendance" },
                         { t: "recruitment", l: "🎯 Recruitment" },
@@ -23890,6 +24495,144 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         })()}
 
         {/* ── STAFF TAB ── */}
+        {/* ── OFFICE STAFF LIST (Head Office + Call Centre & Sales) ──
+            The office population never flows through the Salon Staff list:
+            loadAll carves it out by branch, and its Branch / Role filters are
+            salon-only. Department here is DERIVED (isCallCentreStaff), never a
+            stored branch — every row below is saved under "Head Office". */}
+        {tab === "officeStaff" && (
+          <div style={{ padding: "0 24px" }}>
+            <div style={{ background: "#FFFFFF", borderRadius: 13, padding: "12px 15px", border: `1px solid ${bdr}`, marginBottom: 14, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+              <input placeholder="🔍  Name or EC code…" value={oSearch} onChange={e => setOSearch(e.target.value)}
+                style={{ flex: "1 1 150px", padding: "7px 12px", borderRadius: 7, border: `1px solid ${bdr}`, fontFamily: "inherit", fontSize: 13, background: cream }} />
+              <select value={oShow} onChange={e => setOShow(e.target.value)} style={{ padding: "7px 11px", borderRadius: 7, border: `1px solid ${bdr}`, fontFamily: "inherit", fontSize: 13, background: cream }}>
+                <option value="all">All Staff</option>
+                <option value="active_only">Active Only (excl. maternity)</option>
+                <option value="on_mat">On Maternity Leave Only</option>
+                <option value="terminated">Terminated (Archive)</option>
+              </select>
+              <select value={oDept} onChange={e => { setODept(e.target.value); setORole("All"); }} style={{ padding: "7px 11px", borderRadius: 7, border: `1px solid ${bdr}`, fontFamily: "inherit", fontSize: 13, background: cream }} title="Filter by department">
+                <option value="All">All Departments</option>
+                <option value="HO">🏢 {HEAD_OFFICE}</option>
+                <option value="CC">📞 {CALL_CENTRE}</option>
+              </select>
+              <select value={oRole} onChange={e => setORole(e.target.value)} style={{ padding: "7px 11px", borderRadius: 7, border: `1px solid ${bdr}`, fontFamily: "inherit", fontSize: 13, background: cream }} title="Filter by role">
+                <option value="All">All Roles</option>
+                <optgroup label="Head Office">
+                  {HO_ROLES.map(r => <option key={r.key} value={r.key}>{r.icon} {r.label}</option>)}
+                </optgroup>
+                <optgroup label="Call Centre &amp; Sales">
+                  {CC_ROLES.map(r => <option key={r.key} value={r.key}>{r.icon} {r.label}</option>)}
+                </optgroup>
+              </select>
+              <select value={oPermit} onChange={e => setOPermit(e.target.value)} style={{ padding: "7px 11px", borderRadius: 7, border: `1px solid ${bdr}`, fontFamily: "inherit", fontSize: 13, background: cream }}>
+                <option value="All">All Compliance</option>{Object.entries(COMPLIANCE).map(([k, c]) => <option key={k} value={k}>{c.icon} {c.label}</option>)}
+              </select>
+              <select value={oContract} onChange={e => setOContract(e.target.value)} style={{ padding: "7px 11px", borderRadius: 7, border: `1px solid ${bdr}`, fontFamily: "inherit", fontSize: 13, background: cream }}>
+                <option value="All">All Contracts</option>{["Permanent", "Fixed Term", "3 Month", "NO CONTRACT"].map(c => <option key={c}>{c}</option>)}
+              </select>
+              <span style={{ marginLeft: "auto", fontSize: 11, color: "#BE185D", fontWeight: 700 }}>
+                {officeFiltered.length} shown ({officeHo.length} head office · {officeCc.length} call centre &amp; sales)
+              </span>
+              <button onClick={() => {
+                if (officeFiltered.length === 0) { alert("Nothing to export — no office staff match the current filters."); return; }
+                _triggerDownload("BOA_office_staff_" + new Date().toISOString().slice(0, 10) + ".csv", _officeRowsToCsv(officeHo, officeCc, OFFICE_ROLE_LABEL), "text/csv");
+              }}
+                title="Download the office staff currently shown (respects the filters above) as a CSV. Opens in Excel / Google Sheets."
+                style={{ background: "#FFFFFF", color: "#831843", border: `1px solid ${bdr}`, borderRadius: 8, padding: "7px 14px", cursor: "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: 12 }}>⬇ Export CSV</button>
+              {/* Gated on Settings → "Add office staff" (owners always pass).
+                  saveOfficeStaff re-asserts the same check on submit — a render
+                  gate on its own is cosmetic. */}
+              {canAddOfficeStaff && (
+                <>
+                  <button onClick={() => setOfficeModal({ _dept: "HO", ec: "", name: "", branch: HEAD_OFFICE, role: "", contract: "Permanent", permit: "sa_citizen" })}
+                    style={{ background: "#3730a3", color: "#fff", border: "none", borderRadius: 8, padding: "7px 14px", cursor: "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: 12 }}>+ Add Head Office Staff</button>
+                  <button onClick={() => setOfficeModal({ _dept: "CC", ec: "", name: "", branch: HEAD_OFFICE, role: "", contract: "Permanent", permit: "sa_citizen" })}
+                    style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 8, padding: "7px 14px", cursor: "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: 12 }}>+ Add Call Centre &amp; Sales Staff</button>
+                </>
+              )}
+            </div>
+
+            <div style={{ background: "#FFFFFF", borderRadius: 15, border: `1px solid ${bdr}`, overflow: "hidden", boxShadow: "0 2px 12px rgba(0,0,0,.05)" }}>
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+                  <thead>
+                    <tr style={{ background: "#831843", color: "#FFFFFF" }}>
+                      {["EC ↑", "First Name", "Surname", "Role", "Compliance", "Start Date", "Status", "Return Date", ""].map(h => (
+                        <th key={h} style={{ padding: "11px 12px", textAlign: "left", fontWeight: 600, fontSize: 9.5, letterSpacing: "0.07em", whiteSpace: "nowrap" }}>{h.toUpperCase()}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {officeFiltered.length === 0 && <tr><td colSpan={9} style={{ textAlign: "center", padding: 40, color: "#9ca3af" }}>No results.</td></tr>}
+                    {[
+                      { key: "ho", rows: officeHo, label: "🏢 " + HEAD_OFFICE, bg: "#EEF2FF", ink: "#3730a3", bd: "#C7D2FE" },
+                      { key: "cc", rows: officeCc, label: "📞 " + CALL_CENTRE, bg: "#FDEEF5", ink: "#831843", bd: "#FBCFE8" }
+                    ].map(sec => sec.rows.length === 0 ? null : (
+                      <React.Fragment key={sec.key}>
+                        <tr><td colSpan={9} style={{ background: sec.bg, padding: "8px 14px", fontSize: 11, fontWeight: 800, letterSpacing: "0.12em", color: sec.ink, textTransform: "uppercase", borderTop: `2px solid ${sec.bd}`, borderBottom: `1px solid ${sec.bd}` }}>
+                          {sec.label} · {sec.rows.length}
+                        </td></tr>
+                        {sec.rows.map(p => {
+                          const departed = p.offboarded && p.offDaysSinceLeft != null && p.offDaysSinceLeft >= 0;
+                          const onNotice = p.offboarded && p.offDaysSinceLeft != null && p.offDaysSinceLeft < 0;
+                          const _fmt = (ymd) => { try { return new Date(String(ymd).replace(/\//g, "-") + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }); } catch (_) { return ymd; } };
+                          const rowBg = departed ? "#f3f4f6" : p.onMat ? "#fdf4ff" : p.pregnant ? "#fffbeb" : "#fff";
+                          const rowOpacity = departed ? 0.5 : p.onMat ? 0.6 : 1;
+                          // A role from the OTHER department (e.g. an office role
+                          // on a -CC code) means the roster and the shift-hours
+                          // rule disagree about this person — surface it.
+                          const _cc = isCallCentreStaff(p);
+                          const _roleIsCc = isCcRole(p.role);
+                          const _mismatch = !!p.role && (_cc !== _roleIsCc);
+                          return (
+                            <tr key={"off-" + (p._id || p.ec)} style={{ background: rowBg, borderTop: `1px solid ${bdr}`, opacity: rowOpacity }}>
+                              <td style={{ padding: "10px 12px", fontFamily: "monospace", fontSize: 11, color: "#8E5570", fontWeight: 700 }}>{p.ec}</td>
+                              <td style={{ padding: "10px 12px", fontWeight: 700, color: p.onMat ? "#7A4258" : "#111827", whiteSpace: "nowrap", fontStyle: p.onMat ? "italic" : "normal" }}>
+                                {p.onMat ? "🤱 " : p.pregnant ? "🤰 " : ""}{p.firstName || (p.name || "").split(" ")[0] || ""}
+                                {p.boaPathways && <> <BoaPathwaysBadge size={12} /></>}{p.bargainingCouncil && <> <BargainingCouncilBadge size={12} /></>}
+                              </td>
+                              <td style={{ padding: "10px 12px", fontWeight: 700, color: p.onMat ? "#7A4258" : "#111827", whiteSpace: "nowrap", fontStyle: p.onMat ? "italic" : "normal" }}>
+                                {p.surname || (p.name || "").split(" ").slice(1).join(" ") || ""}
+                              </td>
+                              <td style={{ padding: "10px 12px", whiteSpace: "nowrap" }}>
+                                {p.role
+                                  ? <span style={{ fontSize: 10, fontWeight: 800, background: _roleIsCc ? "#BE185D" : "#3730a3", color: "#fff", padding: "3px 8px", borderRadius: 6, letterSpacing: "0.04em" }}>{OFFICE_ROLE_LABEL[p.role] || p.role}</span>
+                                  : <span style={{ fontSize: 10, fontWeight: 800, background: "#b45309", color: "#fff", padding: "3px 8px", borderRadius: 6 }}>NO ROLE</span>}
+                                {_mismatch && (
+                                  <span title={"Filed under " + (_cc ? CALL_CENTRE : HEAD_OFFICE) + " (by employee code) but carries a " + (_roleIsCc ? CALL_CENTRE : HEAD_OFFICE) + " role — their roster and their shift hours disagree. Edit to fix."}
+                                    style={{ marginLeft: 6, fontSize: 9, background: "#FED7AA", color: "#9A3412", border: "1px solid #FDBA74", borderRadius: 4, padding: "1px 6px", fontWeight: 800, letterSpacing: "0.04em" }}>⚠ DEPT MISMATCH</span>
+                                )}
+                              </td>
+                              <td style={{ padding: "10px 12px" }}>{p.permit ? <Chip {...(COMPLIANCE[p.permit] || { icon: "❔", color: "#6b7280", bg: "#f3f4f6", border: "#d1d5db", label: p.permit })}>{(COMPLIANCE[p.permit] || {}).label || p.permit}</Chip> : <span style={{ color: "#9ca3af" }}>—</span>}</td>
+                              <td style={{ padding: "10px 12px", fontSize: 11, color: "#831843", fontWeight: 600, whiteSpace: "nowrap" }}>{p.startDate ? _fmt(p.startDate) : <span style={{ color: "#d1d5db" }}>—</span>}</td>
+                              <td style={{ padding: "10px 12px" }}>
+                                {departed
+                                  ? <span style={{ fontSize: 10, fontWeight: 800, background: "#6b7280", color: "#fff", padding: "3px 8px", borderRadius: 6, letterSpacing: "0.04em" }}>👋 {p.leftDate ? "Left " + _fmt(p.leftDate) : "Off-boarded"}</span>
+                                  : onNotice
+                                    ? <span style={{ fontSize: 10, fontWeight: 800, background: "#b45309", color: "#fff", padding: "3px 8px", borderRadius: 6, letterSpacing: "0.04em" }}>⏳ Notice{p.leftDate ? " · leaves " + _fmt(p.leftDate) : ""}</span>
+                                    : <span style={{ fontSize: 10, fontWeight: 800, background: sec.ink, color: "#fff", padding: "3px 8px", borderRadius: 6, letterSpacing: "0.04em" }}>{p.active === false || p.active === "false" ? "Archived" : "Active"}</span>}
+                                {p.onMat && <span style={{ marginLeft: 6, fontSize: 10, background: "#FBCFE8", color: "#8E5570", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>🤱 mat.</span>}
+                              </td>
+                              <td style={{ padding: "10px 12px", fontSize: 11, color: "#831843" }}>{p.matRec && p.matRec.returnDate ? new Date(p.matRec.returnDate.replace(/\//g, "-") + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : <span style={{ color: "#d1d5db" }}>—</span>}</td>
+                              <td style={{ padding: "10px 12px", textAlign: "right" }}>
+                                {canAddOfficeStaff && (
+                                  <button onClick={() => setOfficeModal({ ...p, _dept: isCallCentreStaff(p) ? "CC" : "HO" })}
+                                    style={{ background: "#e2e8f0", border: "none", borderRadius: 6, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700, color: "#831843" }}>✏️ Edit</button>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </React.Fragment>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
         {tab === "staff" && (
           <div style={{ padding: "0 24px" }}>
             <div style={{ background: "#FFFFFF", borderRadius: 13, padding: "12px 15px", border: `1px solid ${bdr}`, marginBottom: 14, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
@@ -24149,7 +24892,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             requestStore="ho"
             leaveRecs={leaveRecs}
             obList={obList}
-            techLoans={[]}
+            // Trainers rotate between stores; a visit renders on their own row as
+            // "→ Plum" via the grid's existing cross-store overlay (_outgoingLoan),
+            // which matches on fromBranch === this mount's branch (Head Office).
+            // Derived from clock-ins, so it survives a re-publish. Saving stays a
+            // no-op — the only writer is the Betty first-Sunday auto-loan, which
+            // is unreachable here (autoFill is hidden on the HO schedule).
+            techLoans={trainerVisits}
             onTechLoansChange={() => {}}
             initialBranch={HEAD_OFFICE}
             branchList={[HEAD_OFFICE]}
@@ -28653,7 +29402,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             // Head Office hires are a separate population — keep them out of the
             // salon staff/managers state (above) and register the EC so
             // isManagerEc + the EC-collision guards see them this session.
-            if (_hoHire) HEAD_OFFICE_ECS.add(String(newStaff.ec || "").trim().toUpperCase());
+            // Both sets: registering HEAD_OFFICE_ECS alone left a Call Centre &
+            // Sales hire missing from CALL_CENTRE_ECS until the next reload, so
+            // every isCallCentreEc check read them as plain Head Office.
+            if (_hoHire) registerOfficeEc(savedStaff || newStaff, "");
           } catch (e) {
             alert("Failed to save staff record: " + (e.message || e));
             setObSubmitting(false);
@@ -40346,6 +41098,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           onFreshaCfgSave={saveFreshaCfg}
           overtimeCfg={overtimeCfg}
           onOvertimeCfgSave={saveOvertimeCfg}
+          officeStaffCfg={officeStaffCfg}
+          onOfficeStaffCfgSave={saveOfficeStaffCfg}
           cashupReviewCfg={cashupReviewCfg}
           onCashupReviewCfgSave={saveCashupReviewCfg}
           leaveOpsCfg={leaveOpsCfg}
@@ -41409,6 +42163,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
       {staffModal && <StaffModal s={(() => { const mr = (matRecs || []).find(r => r && r.ec && staffModal.ec && r.ec.trim() === staffModal.ec.trim()); return mr ? { ...staffModal, matStatus: staffModal.matStatus || mr.matStatus, matStart: staffModal.matStart || mr.matStart, matEnd: staffModal.matEnd || mr.matEnd, matReturn: staffModal.matReturn || mr.returnDate, matNotes: staffModal.matNotes || mr.notes } : staffModal; })()} onClose={() => setStaffModal(null)} onSave={saveStaff} onTransfer={(s) => setTransferModal(s)} allStaff={staff} isOwner={!!currentUser?.isOwner} onHardDelete={hardDeleteStaff} />}
       {mgrModal && <ManagerModal m={(() => { const mr = (matRecs || []).find(r => r && r.ec && mgrModal.ec && r.ec.trim() === mgrModal.ec.trim()); return mr ? { ...mgrModal, matStatus: mgrModal.matStatus || mr.matStatus, matStart: mgrModal.matStart || mr.matStart, matEnd: mgrModal.matEnd || mr.matEnd, matReturn: mgrModal.matReturn || mr.returnDate, matNotes: mgrModal.matNotes || mr.notes } : mgrModal; })()} pin={mgrPins[mgrModal.ec] || ""} onClose={() => setMgrModal(null)} onSave={saveMgr} onDelete={delMgr} smTrialActive={!!(smTrialList || []).find(r => r.ec === mgrModal.ec && r.status === "active")} onStartSmTrial={startSmTrialFor} />}
+      {officeModal && <OfficeStaffModal s={(() => { const mr = (matRecs || []).find(r => r && r.ec && officeModal.ec && r.ec.trim() === officeModal.ec.trim()); return mr ? { ...officeModal, matStatus: officeModal.matStatus || mr.matStatus, matStart: officeModal.matStart || mr.matStart, matEnd: officeModal.matEnd || mr.matEnd, matReturn: officeModal.matReturn || mr.returnDate, matNotes: officeModal.matNotes || mr.notes } : officeModal; })()} pin={mgrPins[officeModal.ec] || ""} dept={officeModal._dept} onClose={() => setOfficeModal(null)} onSave={saveOfficeStaff} onDelete={delOfficeStaff} />}
       {transferModal && <TransferModal s={transferModal} onClose={() => setTransferModal(null)} onConfirm={handleTransfer} onCancelTransfer={cancelTransfer} />}
       {matModal && <MatModal rec={matModal} onClose={() => setMatModal(null)} onSave={saveMat} onDelete={delMat} people={matPickerPool} />}
       <AlertModal data={uiDialog} onResolve={resolveUiDialog} />
