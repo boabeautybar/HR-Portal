@@ -177,6 +177,101 @@ const noAnchor = balanceStaleness(null, "2026-07-16");
 if (noAnchor.stale) fail("staleness(null) must not nag when there's no anchor at all");
 if (!failures) console.log("  ✓ " + (staleCases.length + 1) + " staleness cases correct (nags the day a run closes, never before)");
 
+// ── 5. Anniversary accrual clock ──────────────────────────────────────────────
+// Accrual now rides each person's start-date anniversary (1.25 on the monthly
+// anniversary of their start), not the 25th payroll cycle. Month-end starts must
+// clamp; credits on/before the start date or the anchor must not count.
+console.log("5. Anniversary accrual");
+function extractScalar(name) {
+  const m = src.match(new RegExp("(?:^|\\n)const " + name + " = ([^;]+);"));
+  if (!m) { console.error("FAIL: could not find scalar const " + name + " in app.jsx"); process.exit(1); }
+  return "const " + name + " = " + m[1].trim() + ";";
+}
+// Brace-balancing extractor — handles single-line functions (normYmd, ymdStr…)
+// that the newline-anchored `extract` above swallows past.
+function grabFn(name) {
+  const start = src.search(new RegExp("(?:^|\\n)function " + name + "\\("));
+  if (start === -1) { console.error("FAIL: could not find function " + name + " in app.jsx"); process.exit(1); }
+  let i = src.indexOf("{", start), depth = 0;
+  for (; i < src.length; i++) {
+    if (src[i] === "{") depth++;
+    else if (src[i] === "}") { depth--; if (depth === 0) { i++; break; } }
+  }
+  return src.slice(start, i).replace(/^\n/, "");
+}
+const accrualCode = [
+  grabFn("normYmd"),
+  grabFn("ymdStr"),
+  grabFn("anniversaryCreditDates"),
+  grabFn("anniversariesBetween"),
+  extractScalar("LEAVE_ACCRUAL_PER_CYCLE"),
+  grabFn("accruedLeaveFor")
+].join("\n");
+const abox = {};
+new Function("exports", accrualCode +
+  "\nexports.anniversariesBetween = anniversariesBetween;" +
+  "\nexports.anniversaryCreditDates = anniversaryCreditDates;" +
+  "\nexports.accruedLeaveFor = accruedLeaveFor;")(abox);
+const { anniversariesBetween, anniversaryCreditDates, accruedLeaveFor } = abox;
+const accCases = [
+  // start,        from(anchor),  to,            credits, why
+  ["2026-01-10", "2026-06-25", "2026-07-31", 1, "one clean anniversary (Jul 10); Jun 10 predates the anchor"],
+  ["2026-01-10", "2026-06-25", "2026-07-09", 0, "day before the Jul 10 credit → nothing yet"],
+  ["2026-01-10", "2026-06-25", "2026-07-10", 1, "credit lands exactly on the anniversary"],
+  ["2026-01-31", "2026-06-25", "2026-08-15", 2, "month-end start clamps: Jun 30 + Jul 31 (Aug 31 > Aug 15)"],
+  ["2026-07-01", "2026-06-25", "2026-08-15", 1, "first credit is one month AFTER start (Aug 1), not on the start day (Jul 1)"],
+  ["2024-02-29", "2026-01-01", "2026-03-01", 2, "leap-day start: Jan 29 + Feb 28 (clamped)"],
+  ["2026-01-10", "2026-07-25", "2026-06-25", 0, "to before from → never negative"],
+  ["", "2026-06-25", "2026-07-31", 0, "no start date → 0 (caller falls back to the cycle model)"]
+];
+accCases.forEach(([start, from, to, want, why]) => {
+  const got = anniversariesBetween(start, from, to);
+  if (got !== want) fail("anniversariesBetween(" + start + ", " + from + " → " + to + ") = " + got + ", expected " + want + " (" + why + ")");
+  const days = accruedLeaveFor(start, from, to);
+  if (Math.abs(days - want * 1.25) > 1e-9) fail("accruedLeaveFor(" + start + ") = " + days + ", expected " + (want * 1.25));
+});
+// The credit-date list must agree with the count and be the dates we display.
+const dates = anniversaryCreditDates("2026-01-31", "2026-06-25", "2026-08-15");
+if (JSON.stringify(dates) !== JSON.stringify(["2026-06-30", "2026-07-31"])) fail("anniversaryCreditDates clamp wrong: " + JSON.stringify(dates));
+if (!failures) console.log("  ✓ " + accCases.length + " accrual cases correct (month-end clamps, first credit after start, anchor excluded)");
+
+// ── 6. Leave-expiry cycles ────────────────────────────────────────────────────
+// Every completed employment year forfeits its leave 6 months after it ends.
+// Only completed cycles whose deadline is still ahead are surfaced; RED ≤3 months.
+console.log("6. Leave-expiry cycles");
+const expiryCode = [
+  grabFn("normYmd"),
+  grabFn("ymdStr"),
+  grabFn("monthsBetween"),
+  grabFn("addMonthsYmd"),
+  extractScalar("LEAVE_EXPIRY_MONTHS"),
+  grabFn("annualLeaveCycles")
+].join("\n");
+const ebox = {};
+new Function("exports", expiryCode +
+  "\nexports.annualLeaveCycles = annualLeaveCycles;" +
+  "\nexports.addMonthsYmd = addMonthsYmd;")(ebox);
+const { annualLeaveCycles, addMonthsYmd } = ebox;
+// start 2024-03-10, today 2026-07-17: year-1 (ends 2025-03-09) already forfeited
+// (deadline 2025-09-09 < today); year-2 ends 2026-03-09, deadline 2026-09-09.
+const cyc = annualLeaveCycles("2024-03-10", "2026-07-17");
+if (cyc.length !== 1) fail("annualLeaveCycles: expected 1 live cycle, got " + cyc.length + " → " + JSON.stringify(cyc));
+else {
+  const c = cyc[0];
+  if (c.cycleStart !== "2025-03-10" || c.cycleEnd !== "2026-03-09" || c.deadline !== "2026-09-09")
+    fail("annualLeaveCycles cycle wrong: " + JSON.stringify(c) + " (expected 2025-03-10 → 2026-03-09, deadline 2026-09-09)");
+}
+// RED boundary: red = deadline <= today + 3 months. deadline 2026-09-09 → red from 2026-06-09.
+const RED = 3;
+const redAt = (today) => "2026-09-09" <= addMonthsYmd(today, RED);
+if (redAt("2026-06-08")) fail("expiry RED fired one day early (2026-06-08 should still be amber)");
+if (!redAt("2026-06-09")) fail("expiry RED should fire on 2026-06-09 (exactly 3 months before the deadline)");
+// A brand-new employee has no completed cycle yet → nothing to expire.
+if (annualLeaveCycles("2026-05-01", "2026-07-17").length !== 0) fail("annualLeaveCycles: a <1-year employee should have no expiring cycle");
+// No start date → no cycles.
+if (annualLeaveCycles("", "2026-07-17").length !== 0) fail("annualLeaveCycles(\"\") should be empty");
+if (!failures) console.log("  ✓ cycle window, 6-month deadline, and ≤3-month RED boundary all correct");
+
 // ── Report ────────────────────────────────────────────────────────────────────
 const unconfirmed = Object.keys(LEAVE_CODES).filter(k => LEAVE_CODES[k].sage === "?");
 if (unconfirmed.length) {

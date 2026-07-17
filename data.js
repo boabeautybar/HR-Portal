@@ -2169,6 +2169,45 @@
     if (res.error) { console.error("saveSageConfig:", res.error); throw res.error; }
     return config || {};
   }
+  // Auto-file an incident report (used by the leave-expiry radar). Same PUBLIC
+  // insert-only RPC the staff /report.html form uses; returns the ref code.
+  // p_* fields mirror submit_incident_report(...) in sql/incident_reports.sql.
+  async function submitIncidentReport(payload) {
+    var p = payload || {};
+    var res = await sb.rpc("submit_incident_report", {
+      p_store: p.store || null,
+      p_category: p.category || "Other",
+      p_incident_date: p.incident_date || null,
+      p_time_frame: p.time_frame || null,
+      p_people_involved: p.people_involved || null,
+      p_description: p.description || "",
+      p_witnesses: p.witnesses || null,
+      p_urgent: !!p.urgent,
+      p_about_management: !!p.about_management,
+      p_reporter_name: p.reporter_name || null,
+      p_reporter_contact: p.reporter_contact || null,
+      p_photo_b64: p.photo_b64 || null
+    });
+    if (res.error) { console.error("submitIncidentReport:", res.error); throw res.error; }
+    return res.data;   // ref code, e.g. INC-260717-A1B2
+  }
+  // Dedup ledger for the leave-expiry radar: keys "<EC>|<deadline>" → { createdAt,
+  // refCode, days }. One incident per employee per deadline — presence of a key
+  // means we've already filed it, so we never re-file the same expiry.
+  // Returns NULL on a read error — never {} — because an empty ledger means
+  // "nothing filed yet" and would make the scanner re-file every incident (the
+  // RPC is insert-only) and then overwrite the real ledger with the re-filed
+  // subset. Callers must skip the filing pass entirely when this is null.
+  async function loadLeaveExpiryAlerts() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_leave_expiry_alerts_v1").maybeSingle();
+    if (res.error) { console.error("loadLeaveExpiryAlerts:", res.error); return null; }
+    return (res.data && res.data.value) || {};
+  }
+  async function saveLeaveExpiryAlerts(ledger) {
+    var res = await sb.from("app_state").upsert({ key: "boa_leave_expiry_alerts_v1", value: ledger || {} });
+    if (res.error) { console.error("saveLeaveExpiryAlerts:", res.error); throw res.error; }
+    return ledger || {};
+  }
   // Who may see / edit the Leave Balances tab. Defaults to empty → owners only.
   async function loadLeaveBalancesAccess() {
     var res = await sb.from("app_state").select("value").eq("key", "boa_leave_balances_access_v1").maybeSingle();
@@ -2806,6 +2845,9 @@
     appendLeaveOpening: appendLeaveOpening,
     loadSageConfig: loadSageConfig,
     saveSageConfig: saveSageConfig,
+    submitIncidentReport: submitIncidentReport,
+    loadLeaveExpiryAlerts: loadLeaveExpiryAlerts,
+    saveLeaveExpiryAlerts: saveLeaveExpiryAlerts,
     loadLeaveBalancesAccess: loadLeaveBalancesAccess,
     saveLeaveBalancesAccess: saveLeaveBalancesAccess,
     loadFRL: loadFRL,
