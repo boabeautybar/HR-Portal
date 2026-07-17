@@ -10650,6 +10650,10 @@ function fmtIncidentDate(d) {
   try { return new Date(d + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }); }
   catch (_e) { return String(d); }
 }
+// Compact leave-day count: whole numbers plain, halves to 1–2 decimals, no
+// trailing zeroes ("5", "12.5", "1.25"). Module-level so the dashboard/App
+// scope shares the same rendering the leave tabs use locally.
+function fmtLeaveDays(x) { const v = Math.round((Number(x) || 0) * 100) / 100; return v === Math.floor(v) ? String(v) : String(v).replace(/0$/, ""); }
 // Day-of-week for a YYYY-MM-DD date, plus whether it's a high-demand day
 // (Thu/Fri/Sat/Sun) when extra cover is almost always needed.
 function dowInfo(d) {
@@ -10975,8 +10979,211 @@ function IncidentPopup({ reports, onView, onDismiss }) {
 // incidents (sql/leave_requests.sql). Visible to Owner / HR / senior ops.
 const LEAVE_TYPE = {
   Annual: "Annual leave", Sick: "Sick", Family: "Family responsibility",
-  Unpaid: "Unpaid leave", Absent: "Absent (other reason)", Other: "Other"
+  Unpaid: "Unpaid leave", Absent: "Absent (other reason)", Other: "Other",
+  Maternity: "Maternity leave"
 };
+// ─── Canonical leave codes ──────────────────────────────────────────────────
+// Leave is spelled four different ways across this app: the request's
+// leave_type, the Leave Planner record's `type` string, the schedule grid's
+// single letter, and the attendance sheet's payroll code. Nothing tied them
+// together, so "is this sick or annual?" had a different answer per surface —
+// and Sage, which wants ONE letter per transaction, had no answer at all.
+//
+// This table is the join. Keys match LEAVE_TYPE above (the request vocabulary).
+//   sage  — Sage's leave-type letter. "?" = not yet confirmed by the payroll
+//           consultant (docs/leave-sage-plan.md, Phase 0.3). The Sage batch
+//           export refuses to emit a row whose letter is still "?" rather than
+//           guess a letter and post leave against the wrong bucket.
+//   grid  — how the schedule grid paints the day. Display-only; several types
+//           share "L" on purpose (the planner record carries the real type, and
+//           per-type letters would ripple through all four schedule surfaces).
+//   att   — the attendance-sheet payroll code, where one exists.
+//   paid  — whether the day is paid by us. Council members' sick is paid by the
+//           HCSBC Sick Pay Fund, not us: see sickModelFor() / staff.bargaining_council.
+const LEAVE_CODES = {
+  Annual: { label: "Annual leave", sage: "A", grid: "L", att: null, paid: true },
+  Sick: { label: "Sick", sage: "S", grid: "L", att: "sick_n", paid: true },
+  Family: { label: "Family responsibility", sage: "F", grid: "L", att: "frl", paid: true },
+  Maternity: { label: "Maternity leave", sage: "M", grid: "ML", att: null, paid: false },
+  Unpaid: { label: "Unpaid leave", sage: "?", grid: "X", att: "absent", paid: false },
+  Absent: { label: "Absent (other reason)", sage: "?", grid: "X", att: "absent", paid: false },
+  Other: { label: "Other", sage: "?", grid: "L", att: null, paid: true }
+};
+// The legacy `type` string on a Leave Planner record. Twelve-plus consumers
+// across all THREE deployed sites key on the exact literal "Annual leave" to
+// mean "this person is away" — kiosk/data.js:541 and :607, the My BOA schedule
+// overlay, the attendance sheet, the Fresha block list, the planner UI. Vary it
+// and those surfaces silently stop seeing the leave, so it stays frozen: every
+// planner record we write carries "Annual leave" regardless of its real type,
+// and `leaveType` below carries the truth. To let `type` vary, migrate those
+// consumers to canonicalLeaveType() first (docs/leave-sage-plan.md §1.5).
+function plannerTypeCompat(_canonical) { return "Annual leave"; }
+// Read a Leave Planner record's canonical type. Records written before the
+// canonical field existed carry only `type: "Annual leave"` + an `emergency`
+// flag (the old shorthand for unpaid), so old and new records both resolve.
+function canonicalLeaveType(rec) {
+  if (!rec) return "Annual";
+  if (rec.leaveType && LEAVE_CODES[rec.leaveType]) return rec.leaveType;
+  if (rec.emergency) return "Unpaid";
+  const t = String(rec.type || "").toLowerCase();
+  if (/maternity/.test(t)) return "Maternity";
+  if (/family|responsibility/.test(t)) return "Family";
+  if (/sick/.test(t)) return "Sick";
+  if (/unpaid|emergency/.test(t)) return "Unpaid";
+  if (/absent/.test(t)) return "Absent";
+  return "Annual";
+}
+// A leave_request's leave_type → canonical key. The request vocabulary already
+// matches, but the value is free text from three different forms, so normalise.
+function canonicalFromRequest(leaveType) {
+  const raw = String(leaveType == null ? "" : leaveType).trim();
+  if (LEAVE_CODES[raw]) return raw;
+  const t = raw.toLowerCase();
+  if (/maternity/.test(t)) return "Maternity";
+  if (/family/.test(t)) return "Family";
+  if (/sick/.test(t)) return "Sick";
+  if (/unpaid/.test(t)) return "Unpaid";
+  if (/absent/.test(t)) return "Absent";
+  if (/annual/.test(t)) return "Annual";
+  return "Other";
+}
+// Does this planner record consume PAID ANNUAL days? The one question the
+// balance math asks. It used to be asked as `type === "Annual leave" &&
+// !emergency` — but `type` is frozen (see plannerTypeCompat), so every record
+// answers "yes" to that, and family-responsibility or unpaid leave would eat
+// annual days that were never taken. Canonical type is the honest answer.
+// Equivalent to the old predicate on every record written to date — proven over
+// all 244 live records by scripts/check-leave-codes.js.
+function isPaidAnnualRec(lv) {
+  return !!lv && canonicalLeaveType(lv) === "Annual" && !lv.emergency;
+}
+// ─── Projected annual-leave balance ─────────────────────────────────────────
+// The hub's answer to "how many annual days does this person actually have?",
+// shared by every surface that asks (the Leave Requests board, the Payroll
+// Inbox). One implementation on purpose: two boards computing balances
+// differently would hand two different answers to the same question.
+//
+//   available = opening (payroll's anchor) + manual adjustments
+//             + accrued since the anchor (1.25/completed cycle)
+//             − paid annual leave already booked on the calendar after it
+//
+// This is the PROJECTED figure: it subtracts approved leave Sage may not know
+// about yet, which is the whole point — Sage's own number goes stale the moment
+// we approve something. Returns null when the person isn't on the sheet.
+// deps: { leaveBalances, leaveRecs, enriched, managers, schedCache, ymdToSchedYm, today }
+// `asAt` (optional) projects the balance to a FUTURE date — the engine behind
+// "by the day this leave starts they'll have accrued enough". Accrual is counted
+// to asAt and only leave consumed BY asAt draws the balance down; leave booked
+// after asAt is that later date's problem. Omit asAt for the live figure.
+function annualBalanceFor(ec, deps, asAt) {
+  const lb = deps && deps.leaveBalances;
+  if (!lb || !lb.entries) return null;
+  const norm = lbNormEc(ec);
+  const entry = lb.entries[norm];
+  if (!entry) return null;
+  const today = deps.today || new Date().toISOString().slice(0, 10);
+  const target = asAt || today;   // the date we're projecting the balance to
+  const asOf = lb.asOf || "2026-05-24";
+  const opening = Number(entry.opening) || 0;
+  const adj = (entry.adjustments || []).reduce((s, a) => s + (Number(a.days) || 0), 0);
+  const p = findLeavePerson(ec, deps.enriched, deps.managers);
+  // Accrual rides each person's start-date anniversary (1.25 on the monthly
+  // anniversary of their contract/onboarding start), NOT the 25th payroll cycle.
+  // The opening already bakes accrual up to asOf, so only anniversaries AFTER it
+  // count. When there's no start date on file (seed-only managers, MANAGERS_INIT),
+  // fall back to the old 25th-of-month cycle and flag the figure as rough.
+  // NOTE: this is the accrual clock; balanceStaleness deliberately stays on the
+  // 25th payroll clock — it measures Sage-upload freshness, not accrual.
+  const startDate = p && p.startDate ? normYmd(p.startDate) : "";
+  const startDateMissing = !startDate;
+  const accrued = startDate ? accruedLeaveFor(startDate, asOf, target) : accruedLeave(asOf, target);
+  const opts = { schedCache: deps.schedCache, ymdToSchedYm: deps.ymdToSchedYm, ec: (p && p.ec) || ec, branch: p && p.branch };
+  let used = 0;
+  (deps.leaveRecs || []).forEach(lv => {
+    if (!lv || !isPaidAnnualRec(lv) || !lv.startDate || !lv.endDate) return;
+    if (lbNormEc(lv.ec) !== norm) return;
+    // Only what falls AFTER the anchor date — anything earlier is already
+    // baked into the opening figure and would be double-counted. (ymdAddDays,
+    // not toISOString: UTC formatting is a day behind in UTC+ zones like SA.)
+    const from = lv.startDate > ymdAddDays(asOf, 1) ? lv.startDate : ymdAddDays(asOf, 1);
+    // Projecting to asAt: only count leave consumed by then (clamp the end).
+    const to = (asAt && lv.endDate > asAt) ? asAt : lv.endDate;
+    if (from > to) return;
+    // isManagerEc on the code as PASSED IN, not the resolved person's — the
+    // two can differ ("B013-M" vs "B013M") and this is balance math.
+    used += leaveDayBreakdown(from, to, isManagerEc(ec), opts).real;
+  });
+  return { available: opening + adj + accrued - used, opening, adj, accrued, used, asOf, asAt: target, startDate, startDateMissing };
+}
+// Use-it-or-lose-it radar for ONE person. For each completed employment-year
+// cycle still inside its redemption window, days-at-risk = the balance that had
+// vested by the cycle's end, minus paid annual leave booked in the redemption
+// window (future bookings rescue at-risk days). The person's CURRENT projected
+// balance is the hard cap, consumed oldest-cycle-first (FIFO) so nothing is
+// double-counted and the total never exceeds what they actually still hold.
+// Returns null when nothing is at risk. deps: same as annualBalanceFor + today.
+function leaveExpiryForPerson(ec, deps) {
+  const today = deps.today || new Date().toISOString().slice(0, 10);
+  const p = findLeavePerson(ec, deps.enriched, deps.managers);
+  const startDate = p && p.startDate ? normYmd(p.startDate) : "";
+  if (!startDate) return null;
+  const cycles = annualLeaveCycles(startDate, today);
+  if (!cycles.length) return null;
+  const cur = annualBalanceFor(ec, deps);
+  let remaining = cur ? Math.max(0, cur.available) : 0;
+  if (remaining <= 1e-9) return null;
+  const norm = lbNormEc(ec);
+  const opts = { schedCache: deps.schedCache, ymdToSchedYm: deps.ymdToSchedYm, ec: (p && p.ec) || ec, branch: p && p.branch };
+  const redBy = addMonthsYmd(today, LEAVE_EXPIRY_RED_MONTHS);
+  const out = [];
+  cycles.forEach(cy => {                                  // annualLeaveCycles is oldest-first
+    if (remaining <= 1e-9) return;
+    // "Vested by cycle end" can't rewind past the sheet anchor: for a cycleEnd
+    // before asOf, annualBalanceFor returns the ASOF balance (opening+adj),
+    // which already has leave taken in (cycleEnd, asOf] baked in. The booked
+    // sweep must therefore start AFTER whichever is later — cycleEnd or the
+    // anchor — or that same leave would be subtracted twice.
+    const be = annualBalanceFor(ec, deps, cy.cycleEnd);
+    const vested = be ? Math.max(0, be.available) : 0;
+    const bookFrom = (be && be.asOf && be.asOf > cy.cycleEnd) ? be.asOf : cy.cycleEnd;
+    let booked = 0;
+    (deps.leaveRecs || []).forEach(lv => {
+      if (!lv || !isPaidAnnualRec(lv) || !lv.startDate || !lv.endDate) return;
+      if (lbNormEc(lv.ec) !== norm) return;
+      const from = lv.startDate > ymdAddDays(bookFrom, 1) ? lv.startDate : ymdAddDays(bookFrom, 1);
+      const to = lv.endDate < cy.deadline ? lv.endDate : cy.deadline;
+      if (from > to) return;
+      booked += leaveDayBreakdown(from, to, isManagerEc(ec), opts).real;
+    });
+    const raw = Math.max(0, vested - booked);
+    const atRisk = Math.min(raw, remaining);
+    remaining -= atRisk;
+    if (atRisk > 1e-9) out.push({ cycleStart: cy.cycleStart, cycleEnd: cy.cycleEnd, deadline: cy.deadline, atRisk: Math.round(atRisk * 100) / 100, monthsLeft: monthsBetween(today, cy.deadline), red: cy.deadline <= redBy });
+  });
+  if (!out.length) return null;
+  return { ec: (p && p.ec) || ec, name: p && p.name, branch: p && p.branch, cycles: out, totalAtRisk: Math.round(out.reduce((s, c) => s + c.atRisk, 0) * 100) / 100, nextDeadline: out[0].deadline, anyRed: out.some(c => c.red) };
+}
+// How far behind Sage the balance anchor is, measured in payroll cycles. Reuses
+// the accrual clock: one credited cycle since the anchor = one payroll run has
+// closed since payroll last exported, so a fresher report exists in Sage.
+// The figures aren't wrong when stale — accrual keeps them honest — but any
+// leave captured directly in Sage (not through the hub) is missing from them.
+function balanceStaleness(asOf, todayYmd) {
+  const today = todayYmd || new Date().toISOString().slice(0, 10);
+  if (!asOf) return { asOf: null, cyclesBehind: 0, stale: false };
+  const cyclesBehind = accrualCyclesEarned(asOf, today);
+  return { asOf, cyclesBehind, stale: cyclesBehind > 0 };
+}
+// Which sick-leave rulebook applies. Bargaining-council members are covered by
+// the HCSBC Sick Pay Fund (66 days per 3-year cycle, split 33 short-absence +
+// 33 continued-illness) and their sick days are paid by the fund, not by us;
+// everyone else falls under the BCEA default (30 days per 36 months).
+// See docs/leave-sage-plan.md §2.2 — council rules override BCEA where they differ.
+function sickModelFor(person) {
+  return (person && person.bargainingCouncil)
+    ? { model: "HCSBC", days: 66, months: 36, splitShort: 33, splitLong: 33, paidByUs: false }
+    : { model: "BCEA", days: 30, months: 36, paidByUs: true };
+}
 // Render free-text (e.g. a request reason) with any http(s) links — sick notes
 // / absence proof uploaded from My BOA — turned into clickable anchors.
 function linkifyText(text) {
@@ -11012,6 +11219,39 @@ function accrualCyclesEarned(asOfYmd, toYmd) {
   return Math.max(0, months);
 }
 function accruedLeave(asOfYmd, toYmd) { return accrualCyclesEarned(asOfYmd, toYmd) * LEAVE_ACCRUAL_PER_CYCLE; }
+// Anniversary accrual — the model we actually run on. Each person earns
+// LEAVE_ACCRUAL_PER_CYCLE leave days on the MONTHLY anniversary of their start
+// date (started the 10th → a credit every 10th; a 31st start clamps to each
+// month's last day, so it credits Feb 28/29, Apr 30, …). Because different
+// people started on different days, balances tick up on different days — exactly
+// what "the balance updates daily" means across the roster.
+//
+// Returns the credit dates landing in (fromYmd, toYmd], excluding any on/before
+// the start date itself (the first credit is one month AFTER start — you accrue
+// after working a month, not on day one) and any on/before fromYmd (the opening
+// balance is measured AS OF fromYmd and already contains those). The date list
+// lets the approval wizard spell the accrual out ("Aug 10, Sep 10 × 1.25").
+// (normYmd/ymdStr are declared just below and hoisted.)
+function anniversaryCreditDates(startDate, fromYmd, toYmd) {
+  const out = [];
+  const s = normYmd(startDate), f = normYmd(fromYmd), t = normYmd(toYmd);
+  if (!s || !f || !t) return out;
+  const sd = new Date(s + "T00:00:00"), fd = new Date(f + "T00:00:00"), td = new Date(t + "T00:00:00");
+  if (isNaN(sd.getTime()) || isNaN(fd.getTime()) || isNaN(td.getTime()) || td <= fd) return out;
+  const day = sd.getDate();
+  // Credit date in a given month = start day-of-month clamped to that month's length.
+  const creditYmd = (Y, M) => { const last = new Date(Y, M + 1, 0).getDate(); return ymdStr(new Date(Y, M, Math.min(day, last))); };
+  let Y = fd.getFullYear(), M = fd.getMonth(), guard = 0;
+  while (guard++ < 1200) {                        // 100-year backstop
+    const c = creditYmd(Y, M);
+    if (c > s && c > f && c <= t) out.push(c);     // strictly after start AND after the anchor
+    if (Y > td.getFullYear() || (Y === td.getFullYear() && M >= td.getMonth())) break;
+    M++; if (M > 11) { M = 0; Y++; }
+  }
+  return out;
+}
+function anniversariesBetween(startDate, fromYmd, toYmd) { return anniversaryCreditDates(startDate, fromYmd, toYmd).length; }
+function accruedLeaveFor(startDate, fromYmd, toYmd) { return anniversariesBetween(startDate, fromYmd, toYmd) * LEAVE_ACCRUAL_PER_CYCLE; }
 
 // ─── Employment-tenure + Family Responsibility Leave (FRL) helpers ──────────
 // FRL: 3 paid days per employment year, available only after 4 months' service,
@@ -11042,6 +11282,30 @@ function frlCycle(startYmd, toYmd) {
   return { start: ymdStr(start), end: ymdStr(end), index: Math.max(0, years) };
 }
 function ymdAddDays(ymd, n) { const d = new Date(normYmd(ymd) + "T00:00:00"); if (isNaN(d.getTime())) return ""; d.setDate(d.getDate() + n); return ymdStr(d); }
+// Use-it-or-lose-it: annual leave earned in an employment-year cycle must be
+// taken within LEAVE_EXPIRY_MONTHS after that cycle ends (BCEA-standard), or it
+// forfeits — no payout. Returns the COMPLETED employment-year cycles whose
+// redemption deadline is still ahead (leave from them can still be taken), each
+// { cycleStart, cycleEnd, deadline, index }. Cycle k runs [start+k yr, start+
+// (k+1) yr − 1 day]; a cycle counts only once it has fully ended (cycleEnd <
+// today) and only while its deadline hasn't passed (cycleEnd + 6 months ≥ today).
+const LEAVE_EXPIRY_MONTHS = 6;
+const LEAVE_EXPIRY_RED_MONTHS = 3;   // ≤ this many months to the deadline = urgent (alert + incident)
+function annualLeaveCycles(startYmd, todayYmd) {
+  const s = normYmd(startYmd); if (!s) return [];
+  const a = new Date(s + "T00:00:00"); if (isNaN(a.getTime())) return [];
+  const t = new Date(normYmd(todayYmd) + "T00:00:00"); if (isNaN(t.getTime())) return [];
+  const out = [];
+  for (let k = 0; k < 100; k++) {
+    const cs = new Date(a.getFullYear() + k, a.getMonth(), a.getDate());
+    if (cs > t) break;
+    const ce = new Date(a.getFullYear() + k + 1, a.getMonth(), a.getDate()); ce.setDate(ce.getDate() - 1);
+    if (ce >= t) break;                                   // cycle not yet completed
+    const deadline = addMonthsYmd(ymdStr(ce), LEAVE_EXPIRY_MONTHS);
+    if (deadline >= ymdStr(t)) out.push({ cycleStart: ymdStr(cs), cycleEnd: ymdStr(ce), deadline, index: k });
+  }
+  return out;
+}
 // Attendance grids are keyed by the START-month of the 25th→24th cycle, with
 // day-of-month cell keys (days 25–31 = start month, 1–24 = next month).
 function ymdToAttYm(ymd) { const p = normYmd(ymd).split("-").map(Number); let yy = p[0], mm = p[1]; if (p[2] < 25) { mm -= 1; if (mm < 1) { mm = 12; yy -= 1; } } return yy + "-" + String(mm).padStart(2, "0"); }
@@ -11642,7 +11906,21 @@ async function addApprovedLeaveToCalendar(r, deps) {
     try { await publishLeaveToSchedule(person.ec, _schedBranch, r.start_date, r.end_date); } catch (e) { console.error("publishLeaveToSchedule:", e); }
     return true;
   }
-  const recs = segments.map((sg, i) => ({ _id: Date.now() + i, ec: person.ec, startDate: sg.start, endDate: sg.end, type: "Annual leave", notes: "[Leave request " + (r.ref_code || "") + "]", emergency: false, balanceDays: (r.balance_days != null ? Number(r.balance_days) : null), balanceCheckedBy: r.balance_checked_by || "", balanceCheckedAt: r.balance_checked_at || null }));
+  // The request's own leave type, not a hardcoded "Annual" — this record is what
+  // the annual-balance math and (later) the Sage export read, so family
+  // responsibility or unpaid leave must not land here looking like annual days.
+  // No `days` count is stored: without a schedule cache leaveDayBreakdown only
+  // ESTIMATES off-days (fromSchedule:false), and the schedule can still change
+  // after approval. Chargeable days are computed against the published grid at
+  // export time instead — never guessed here and then trusted as fact by Sage.
+  const _canon = canonicalFromRequest(r.leave_type);
+  const recs = segments.map((sg, i) => ({
+    _id: Date.now() + i, ec: person.ec, startDate: sg.start, endDate: sg.end,
+    type: plannerTypeCompat(_canon), leaveType: _canon,
+    notes: "[Leave request " + (r.ref_code || "") + "]", emergency: false,
+    balanceDays: (r.balance_days != null ? Number(r.balance_days) : null),
+    balanceCheckedBy: r.balance_checked_by || "", balanceCheckedAt: r.balance_checked_at || null
+  }));
   const next = [...(leaveRecs || []), ...recs];
   setLeaveRecs(next);
   await window.BOA_DB.saveLeaveRecords(next);
@@ -11673,11 +11951,14 @@ async function approveSplitLeave(r, paidEndYmd, availDays, actor, deps) {
   const nowIso = new Date().toISOString();
   for (const sg of segments) {
     if (paidEndYmd && sg.start <= paidEndYmd) {
-      recs.push({ _id: idSeq++, ec: person.ec, startDate: sg.start, endDate: (sg.end <= paidEndYmd ? sg.end : paidEndYmd), type: "Annual leave", notes: "[Leave request " + (r.ref_code || "") + " · paid portion of split approval]", emergency: false, balanceDays: (availDays != null ? Number(availDays) : null), balanceCheckedBy: actor || "", balanceCheckedAt: nowIso, balancePending: false });
+      recs.push({ _id: idSeq++, ec: person.ec, startDate: sg.start, endDate: (sg.end <= paidEndYmd ? sg.end : paidEndYmd), type: plannerTypeCompat("Annual"), leaveType: "Annual", notes: "[Leave request " + (r.ref_code || "") + " · paid portion of split approval]", emergency: false, balanceDays: (availDays != null ? Number(availDays) : null), balanceCheckedBy: actor || "", balanceCheckedAt: nowIso, balancePending: false });
     }
     if (!paidEndYmd || sg.end > paidEndYmd) {
       const us = (!paidEndYmd || sg.start > paidEndYmd) ? sg.start : nextYmd(paidEndYmd);
-      recs.push({ _id: idSeq++, ec: person.ec, startDate: us, endDate: sg.end, type: "Annual leave", notes: "[EMERGENCY] Unpaid portion of leave request " + (r.ref_code || "") + " — annual leave balance exhausted", emergency: true, balanceDays: null, balanceCheckedBy: null, balanceCheckedAt: null, balancePending: false, balanceRequestedBy: actor || "", balanceRequestedAt: nowIso });
+      // Unpaid portion: `emergency: true` stays the flag every existing overlay
+      // keys on (schedule EL paint, attendance 'el', kiosk); leaveType records
+      // the same fact in the canonical vocabulary Sage will read.
+      recs.push({ _id: idSeq++, ec: person.ec, startDate: us, endDate: sg.end, type: plannerTypeCompat("Unpaid"), leaveType: "Unpaid", notes: "[EMERGENCY] Unpaid portion of leave request " + (r.ref_code || "") + " — annual leave balance exhausted", emergency: true, balanceDays: null, balanceCheckedBy: null, balanceCheckedAt: null, balancePending: false, balanceRequestedBy: actor || "", balanceRequestedAt: nowIso });
     }
   }
   if (recs.length > 0) {
@@ -12416,7 +12697,7 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
     const add = (p, role) => {
       if (!p || !p.ec) return;
       const n = lbNormEc(p.ec); if (!n) return;
-      const rec = { ec: p.ec, name: p.name || "", branch: p.branch || "", role: role };
+      const rec = { ec: p.ec, name: p.name || "", branch: p.branch || "", role: role, startDate: p.startDate || "" };
       if (!byNorm[n]) byNorm[n] = rec;
       const c = lbCoreEc(n); if (c && !byCore[c]) byCore[c] = rec;
       const nm = lbNormName(p.name); if (nm && !byName[nm]) byName[nm] = rec;
@@ -12531,6 +12812,25 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
       const prev = entries[k] || {};
       entries[k] = { ec: k, rawEc: x.portalEc, name: x.name || prev.name || "", opening: x.days, adjustments: prev.adjustments || [] };
     });
+    // Archive this anchor before it becomes the live one. Every computed balance
+    // hangs off these openings, so the history is what makes the starting point
+    // survivable — the next import overwrites the working copy, not this.
+    // Best-effort: a failed snapshot must never block payroll's import.
+    try {
+      if (window.BOA_DB.appendLeaveOpening) {
+        const frozen = {};
+        matched.forEach(x => {
+          const k = lbNormEc(x.portalEc);
+          frozen[k] = { ec: k, rawEc: x.portalEc, name: x.name || (entries[k] && entries[k].name) || "", opening: x.days };
+        });
+        await window.BOA_DB.appendLeaveOpening({
+          asOf: data.asOf || "", savedAt: new Date().toISOString(),
+          source: fileName ? ("upload: " + fileName) : "pasted rows",
+          uploadedBy: (currentUser && (currentUser.name || currentUser.email)) || "",
+          entries: frozen
+        });
+      }
+    } catch (e) { console.error("appendLeaveOpening:", e); }
     await persist({ ...data, entries: entries });
     setImportBusy(false); setPreview(null); setPasteText(""); setFileName(""); setShowImport(false);
     if (logActivity) logActivity("Imported leave balances", matched.length + " employees" + (ignored ? " (" + ignored + " ignored — not on system)" : "") + " · as of " + (data.asOf || ""), "", "Payroll");
@@ -12614,7 +12914,7 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
       const isMgr = isManagerEc(p.ec);
       const opts = { schedCache, ymdToSchedYm, ec: p.ec, branch: p.branch };
       let taken = 0, booked = 0;
-      (leaveRecs || []).filter(lv => lv && lv.type === "Annual leave" && !lv.emergency && lv.startDate && lv.endDate && lbNormEc(lv.ec) === norm).forEach(lv => {
+      (leaveRecs || []).filter(lv => lv && isPaidAnnualRec(lv) && lv.startDate && lv.endDate && lbNormEc(lv.ec) === norm).forEach(lv => {
         const wb = leaveDayBreakdown(lv.startDate, lv.endDate, isMgr, opts); const weight = wb.cal > 0 ? wb.real / wb.cal : 0;
         const ps = maxYmd(lv.startDate, start), pe = minYmd(lv.endDate, todayYmd);
         if (ps <= pe) taken += leaveDays(ps, pe) * weight;
@@ -12734,14 +13034,22 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
     const branch = r ? r.branch : "";
     const isMgr = isManagerEc(ec);
     const asOf = (data && data.asOf) || "2026-05-24";
-    // Accrual: +1.25 leave days for each completed cycle since the as-of date,
-    // credited on the 25th. This is why the balance climbs every month.
-    const accCyclesToday = accrualCyclesEarned(asOf, todayYmd);
-    const accrued = accCyclesToday * LEAVE_ACCRUAL_PER_CYCLE;
+    // Accrual: +1.25 leave days on each person's monthly START-DATE anniversary
+    // (so balances tick up on different days across the roster — "updates daily").
+    // No start date on file (seed-only managers) falls back to the 25th cycle.
+    // accBetween(a,b) = leave earned strictly after `a`, up to & incl. `b`.
+    const startDate = r && r.startDate ? normYmd(r.startDate) : "";
+    // Fallback (no start date) reproduces the OLD 25th-cycle figure exactly by
+    // measuring both ends from the anchor, so seed-only managers don't shift.
+    const accBetween = (a, b) => startDate
+      ? accruedLeaveFor(startDate, a, b)
+      : Math.max(0, accrualCyclesEarned(asOf, b) - accrualCyclesEarned(asOf, a)) * LEAVE_ACCRUAL_PER_CYCLE;
+    const accCyclesToday = startDate ? anniversariesBetween(startDate, asOf, todayYmd) : accrualCyclesEarned(asOf, todayYmd);
+    const accrued = accBetween(asOf, todayYmd);
     const opts = { schedCache, ymdToSchedYm, ec, branch };
     // Only PAID annual leave reduces the balance. Emergency leave (lv.emergency)
     // is unpaid, so it's excluded from taken/booked/recon entirely.
-    const annual = (leaveRecs || []).filter(lv => lv && lv.type === "Annual leave" && !lv.emergency && lv.startDate && lv.endDate && lbNormEc(lv.ec) === norm);
+    const annual = (leaveRecs || []).filter(lv => lv && isPaidAnnualRec(lv) && lv.startDate && lv.endDate && lbNormEc(lv.ec) === norm);
     let taken = 0, bookedCycle = 0, bookedBeyond = 0;
     let takenCal = 0, bookedCal = 0;   // raw calendar days (before off-day deduction)
     const future = [];
@@ -12765,12 +13073,12 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
       const tcEnd = minYmd(lv.endDate, cEnd);
       if (cycle && fs <= tcEnd) {
         const c = leaveDays(fs, tcEnd), d = c * weight;
-        if (d > 0) { bookedCycle += d; bookedCal += c; future.push({ start: fs, end: tcEnd, days: d, cal: c, emergency: !!lv.emergency, bucket: "cycle", earnedBy: Math.max(0, accrualCyclesEarned(asOf, fs) - accCyclesToday) * LEAVE_ACCRUAL_PER_CYCLE }); }
+        if (d > 0) { bookedCycle += d; bookedCal += c; future.push({ start: fs, end: tcEnd, days: d, cal: c, emergency: !!lv.emergency, bucket: "cycle", earnedBy: accBetween(todayYmd, fs) }); }
       }
       const bStart = cycle ? maxYmd(fs, addDaysYmd(cEnd, 1)) : fs;
       if (bStart <= lv.endDate) {
         const c = leaveDays(bStart, lv.endDate), d = c * weight;
-        if (d > 0) { bookedBeyond += d; bookedCal += c; future.push({ start: bStart, end: lv.endDate, days: d, cal: c, emergency: !!lv.emergency, bucket: "later", earnedBy: Math.max(0, accrualCyclesEarned(asOf, bStart) - accCyclesToday) * LEAVE_ACCRUAL_PER_CYCLE }); }
+        if (d > 0) { bookedBeyond += d; bookedCal += c; future.push({ start: bStart, end: lv.endDate, days: d, cal: c, emergency: !!lv.emergency, bucket: "later", earnedBy: accBetween(todayYmd, bStart) }); }
       }
     });
     const booked = bookedCycle + bookedBeyond;
@@ -12793,7 +13101,7 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
     // separate "by then you'll have earned more" overview, never folded into the
     // headline projected figure.
     const lastFutureStart = future.reduce((mx, f) => (f.start > mx ? f.start : mx), "");
-    const futureEarned = lastFutureStart ? Math.max(0, accrualCyclesEarned(asOf, lastFutureStart) - accCyclesToday) * LEAVE_ACCRUAL_PER_CYCLE : 0;
+    const futureEarned = lastFutureStart ? accBetween(todayYmd, lastFutureStart) : 0;
     const projectedWithEarnings = projected + futureEarned;
     return {
       norm, rawEc: e.rawEc || norm, name: e.name || (r ? r.name : ""), branch, role: r ? r.role : "", isMgr,
@@ -12858,6 +13166,25 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
   );
   const td = { padding: "8px 10px", fontSize: 13, color: "#831843", borderBottom: "1px solid #FCE7F3", verticalAlign: "top" };
 
+  // Use-it-or-lose-it radar — everyone with annual leave heading for its
+  // forfeit deadline, oldest cycle first. Same engine (leaveExpiryForPerson)
+  // the dashboard card + auto-incident scan use, so the numbers agree.
+  const expiryList = useMemo(() => {
+    if (!data || !data.entries) return [];
+    const today = new Date().toISOString().slice(0, 10);
+    const deps = { leaveBalances: data, leaveRecs, enriched, managers, schedCache, ymdToSchedYm, today };
+    const out = [], seen = new Set();
+    [...(enriched || []), ...(managers || [])].forEach(p => {
+      if (!p || !p.ec) return;
+      const k = String(p.ec).toUpperCase();
+      if (seen.has(k)) return; seen.add(k);
+      if (p.offboarded || p.leftDate) return;
+      const r = leaveExpiryForPerson(p.ec, deps);
+      if (r) out.push(r);
+    });
+    return out.sort((a, b) => String(a.nextDeadline).localeCompare(String(b.nextDeadline)));
+  }, [data, leaveRecs, enriched, managers, schedCache, ymdToSchedYm]);
+
   if (loading) return <div style={{ padding: 24, color: "#9ca3af", fontStyle: "italic" }}>Loading leave balances…</div>;
   if (loadErr) return <div style={{ padding: 24, color: "#b91c1c" }}>Could not load: {loadErr}</div>;
 
@@ -12874,6 +13201,48 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
           <button onClick={() => { setShowImport(v => !v); setPreview(null); }} style={{ background: "#9333ea", color: "#fff", border: "none", borderRadius: 9, padding: "9px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>{showImport ? "Close importer" : "⬆ Upload / import"}</button>
         </div>
       </div>
+
+      {/* How far behind Sage these figures are. They aren't wrong when stale —
+          accrual keeps counting — but leave captured straight into Sage since
+          the upload is missing, so a fresh export is the only way to be sure. */}
+      {(() => {
+        const st = balanceStaleness(data && data.asOf);
+        if (!st.stale) return null;
+        return (
+          <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 11, padding: "11px 14px", marginBottom: 12, fontSize: 12.5, color: "#92400e", lineHeight: 1.5 }}>
+            ⚠ <strong>These figures are {st.cyclesBehind} payroll run{st.cyclesBehind === 1 ? "" : "s"} behind Sage.</strong> They're anchored to the upload as of {fmtIncidentDate(st.asOf)}, and {st.cyclesBehind === 1 ? "a run has" : st.cyclesBehind + " runs have"} closed since. Accrual keeps counting, so nothing here is wrong — but any leave captured directly in Sage isn't reflected. Upload a fresh balance report to re-anchor.
+          </div>
+        );
+      })()}
+
+      {/* Use-it-or-lose-it radar */}
+      {expiryList.length > 0 && (
+        <div style={{ background: "#fff", border: "1px solid #fecaca", borderRadius: 12, padding: "14px 16px", marginBottom: 14 }}>
+          <div style={{ fontWeight: 800, fontSize: 14, color: "#b91c1c", marginBottom: 4 }}>⏳ Leave expiring — use it or lose it</div>
+          <div style={{ fontSize: 12, color: "#9d6a82", marginBottom: 10, lineHeight: 1.5 }}>Annual leave forfeits {LEAVE_EXPIRY_MONTHS} months after each employment year ends (no payout). Book these before the deadline. <strong style={{ color: "#b91c1c" }}>RED</strong> = ≤{LEAVE_EXPIRY_RED_MONTHS} months left — HR &amp; National Ops are alerted and an incident is filed automatically.</div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 620 }}>
+              <thead><tr>
+                {["Employee", "Store", "Days at risk", "Expires", "Months left", ""].map((h, i) => (
+                  <th key={i} style={{ textAlign: (i >= 2 && i <= 4) ? "center" : "left", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em", color: "#9d174d", padding: "6px 10px", borderBottom: "2px solid #FCE7F3", whiteSpace: "nowrap" }}>{h}</th>
+                ))}
+              </tr></thead>
+              <tbody>
+                {expiryList.map(p => p.cycles.map((cy, ci) => (
+                  <tr key={p.ec + "|" + cy.deadline} style={{ background: cy.red ? "#fef2f2" : "#fffbeb" }}>
+                    <td style={{ padding: "8px 10px", fontSize: 13, borderBottom: "1px solid #FCE7F3" }}>{ci === 0 ? <><strong>{p.name || p.ec}</strong> <span style={{ color: "#9ca3af", fontSize: 11 }}>{p.ec}</span></> : <span style={{ color: "#9ca3af", fontSize: 11 }}>↳ earlier cycle</span>}</td>
+                    <td style={{ padding: "8px 10px", fontSize: 12.5, borderBottom: "1px solid #FCE7F3" }}>{p.branch || "—"}</td>
+                    <td style={{ padding: "8px 10px", textAlign: "center", fontWeight: 800, color: cy.red ? "#b91c1c" : "#92400e", borderBottom: "1px solid #FCE7F3" }}>{fmtDays(cy.atRisk)}</td>
+                    <td style={{ padding: "8px 10px", textAlign: "center", fontSize: 12.5, borderBottom: "1px solid #FCE7F3", whiteSpace: "nowrap" }}>{fmtIncidentDate(cy.deadline)}</td>
+                    <td style={{ padding: "8px 10px", textAlign: "center", fontSize: 12.5, borderBottom: "1px solid #FCE7F3" }}>{cy.monthsLeft}</td>
+                    <td style={{ padding: "8px 10px", borderBottom: "1px solid #FCE7F3" }}>{cy.red ? <span style={{ fontSize: 10, fontWeight: 800, color: "#fff", background: "#b91c1c", borderRadius: 5, padding: "2px 7px" }}>RED</span> : <span style={{ fontSize: 10, fontWeight: 800, color: "#92400e", background: "#fde68a", borderRadius: 5, padding: "2px 7px" }}>SOON</span>}</td>
+                  </tr>
+                )))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Stats + as-of date */}
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
@@ -13954,6 +14323,35 @@ function PayrollInboxTab({ requests, setRequests, currentUser, leaveRecs, setLea
   const schedOpts = (ec) => { const p = findLeavePerson(ec, enriched, managers); return { schedCache, ymdToSchedYm, ec: (p && p.ec) || ec, branch: p && p.branch }; };
   const patchLocal = (id, patch) => setRequests(requests.map(r => r.id === id ? { ...r, ...patch } : r));
   const gateDeps = { enriched, managers, leaveRecs, setLeaveRecs, patch: patchLocal, actor, logActivity };
+  // The uploaded balance sheet, so this board can show what the hub computes
+  // instead of only asking Justin to read it off Sage on another screen.
+  const [leaveBalances, setLeaveBalances] = useState(null);
+  useEffect(() => { let go = true; (async () => { try { const d = window.BOA_DB.loadLeaveBalances ? await window.BOA_DB.loadLeaveBalances() : null; if (go) setLeaveBalances(d || null); } catch (_e) { } })(); return () => { go = false; }; }, []);
+  const _today = new Date().toISOString().slice(0, 10);
+  const fmtDays = (x) => { const v = Math.round((Number(x) || 0) * 100) / 100; return v === Math.floor(v) ? String(v) : v.toFixed(2).replace(/0$/, ""); };
+  // Same projection the Leave Requests board shows — one shared implementation.
+  const availableForEc = (ec, asAt) => annualBalanceFor(ec, { leaveBalances, leaveRecs, enriched, managers, schedCache, ymdToSchedYm, today: _today }, asAt);
+  const staleness = balanceStaleness(leaveBalances && leaveBalances.asOf, _today);
+  // The hub's projected figure vs what this leave needs — rendered above every
+  // balance box on this board. Payroll still confirms; this just means the
+  // number is proposed rather than hunted for. `asAt` = the leave's start date,
+  // so the verdict here matches the Leave Requests board's projection exactly —
+  // two boards disagreeing on the same request is the bug this prevents.
+  const balanceHint = (ec, needDays, asAt) => {
+    const bal = availableForEc(ec, asAt);
+    if (!bal) return <div style={{ fontSize: 11.5, color: "#92400e", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8, padding: "6px 9px", marginBottom: 7 }}>No balance on the uploaded sheet for {ec || "this person"} yet — read it off Sage.</div>;
+    const enough = bal.available + 1e-9 >= needDays;
+    const projected = asAt && asAt > _today;
+    return (
+      <div style={{ fontSize: 11.5, color: enough ? "#15803d" : "#b91c1c", background: enough ? "#f0fdf4" : "#fef2f2", border: "1px solid " + (enough ? "#bbf7d0" : "#fecaca"), borderRadius: 8, padding: "6px 9px", marginBottom: 7 }}>
+        {enough ? "✓" : "⚠"} <strong>{fmtDays(bal.available)} day{bal.available === 1 ? "" : "s"} {projected ? "projected by " + fmtIncidentDate(asAt) : "available"}</strong> · needs <strong>{fmtDays(needDays)}</strong> → {enough ? "enough" : "SHORT by " + fmtDays(needDays - bal.available)}
+        <div style={{ fontSize: 10.5, fontWeight: 400, marginTop: 2, opacity: 0.85 }}>
+          opening {fmtDays(bal.opening)}{bal.adj ? " · adj " + (bal.adj > 0 ? "+" : "") + fmtDays(bal.adj) : ""}{bal.accrued ? " · +" + fmtDays(bal.accrued) + " earned" : ""}{bal.used ? " · −" + fmtDays(bal.used) + " already on calendar" : ""} · Sage figures as of {fmtIncidentDate(bal.asOf)}
+        </div>
+        {staleness.stale && <div style={{ fontSize: 10.5, fontWeight: 600, marginTop: 3, color: "#92400e" }}>⚠ {staleness.cyclesBehind} payroll run{staleness.cyclesBehind === 1 ? " has" : "s have"} closed since that upload — confirm on Sage.</div>}
+      </div>
+    );
+  };
 
   const needBalance = (requests || [])
     .filter(r => r.status !== "declined" && r.leave_type !== "Sick" && r.leave_type !== "Absent" && !r.balance_checked_at)
@@ -13973,9 +14371,9 @@ function PayrollInboxTab({ requests, setRequests, currentUser, leaveRecs, setLea
     .filter(lv => lv && lv.balancePending && !lv.emergency)
     .sort((a, b) => (a.startDate || "").localeCompare(b.startDate || ""));
 
-  const confirmCalBalance = async (lv) => {
+  const confirmCalBalance = async (lv, explicitDays) => {
     const key = "cal:" + lv._id;
-    const days = balDraft[key];
+    const days = (explicitDays != null && !isNaN(Number(explicitDays))) ? explicitDays : balDraft[key];
     if (days === "" || days == null || isNaN(Number(days)) || Number(days) < 0) { alert("Enter the days available on Sage."); return; }
     const person = findLeavePerson(lv.ec, enriched, managers);
     const bd = leaveDayBreakdown(lv.startDate, lv.endDate, isManagerEc(lv.ec), schedOpts(lv.ec));
@@ -13992,8 +14390,10 @@ function PayrollInboxTab({ requests, setRequests, currentUser, leaveRecs, setLea
     setBusy(false);
   };
 
-  const setBalance = async (r) => {
-    const days = balDraft[r.id];
+  // explicitDays = the hub's projected figure, passed by the one-click "Enough —
+  // confirm" button; otherwise whatever payroll typed.
+  const setBalance = async (r, explicitDays) => {
+    const days = (explicitDays != null && !isNaN(Number(explicitDays))) ? explicitDays : balDraft[r.id];
     if (days === "" || days == null || isNaN(Number(days)) || Number(days) < 0) { alert("Enter the days available on Sage."); return; }
     const bd = leaveDayBreakdown(r.start_date, r.end_date, isManagerEc(r.ec), schedOpts(r.ec));
     if (Number(days) < bd.real && !window.confirm("Balance is " + days + " day(s) but this leave is ≈ " + bd.real + " actual leave day(s) (" + bd.cal + " calendar) — more than available.\n\nTick it off anyway?")) return;
@@ -14049,12 +14449,19 @@ function PayrollInboxTab({ requests, setRequests, currentUser, leaveRecs, setLea
                 {oa.clashDays.length ? "⚠ Operational clash on " + oa.clashDays.length + " day(s)" : "✓ Operationally within limit (" + oa.maxOff + " of " + oa.headcount + " " + (oa.isMgr ? "managers" : "techs") + ")"}
               </div>
             )}
+            {balanceHint(r.ec, bd.real, r.start_date)}
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
               <span style={{ fontSize: 11, fontWeight: 700, color: "#0f766e" }}>Balance on Sage:</span>
-              <input type="number" min="0" step="0.5" placeholder="days available"
+              {(() => {
+                const bal = availableForEc(r.ec, r.start_date);
+                const avail = bal ? Math.round(bal.available * 100) / 100 : null;
+                if (avail == null || bal.available + 1e-9 < bd.real) return null;
+                return <button disabled={busy} onClick={() => setBalance(r, avail)} title={"Records " + fmtDays(avail) + " days available (the hub's figure, projected to the leave date) and clears this gate — no typing needed."} style={{ background: "#15803d", color: "#fff", border: "none", borderRadius: 9, padding: "7px 15px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: "pointer" }}>✓ Enough — confirm ({fmtDays(avail)})</button>;
+              })()}
+              <input type="number" min="0" step="0.5" placeholder={(() => { const b = availableForEc(r.ec, r.start_date); return b ? "or type (hub: " + fmtDays(b.available) + ")" : "days available"; })()}
                 value={balDraft[r.id] != null ? balDraft[r.id] : ""}
                 onChange={e => setBalDraft({ ...balDraft, [r.id]: e.target.value })}
-                style={{ width: 130, fontFamily: "inherit", fontSize: 13, padding: "7px 10px", borderRadius: 9, border: "1.5px solid #99f6e4" }} />
+                style={{ width: 150, fontFamily: "inherit", fontSize: 13, padding: "7px 10px", borderRadius: 9, border: "1.5px solid #99f6e4" }} />
               <button disabled={busy} onClick={() => setBalance(r)} style={{ background: "#0f766e", color: "#fff", border: "none", borderRadius: 9, padding: "7px 15px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: "pointer" }}>✓ Balance OK</button>
               {goTo && <button onClick={() => goTo("leaveRequests")} style={{ background: "#fff", color: "#0f766e", border: "1.5px solid #99f6e4", borderRadius: 9, padding: "7px 13px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: "pointer" }}>Open in Leave Requests →</button>}
             </div>
@@ -14079,12 +14486,19 @@ function PayrollInboxTab({ requests, setRequests, currentUser, leaveRecs, setLea
                   <span style={{ color: "#9ca3af", fontSize: 12 }}>· {bd.cal} cal · <strong style={{ color: "#0f766e" }}>{bd.fromSchedule ? "" : "≈ "}{bd.real} leave day{bd.real === 1 ? "" : "s"}</strong></span>
                   {lv.balanceRequestedBy && <span style={{ marginLeft: "auto", fontSize: 11, color: "#9d6a82" }}>added by {lv.balanceRequestedBy}</span>}
                 </div>
+                {balanceHint(lv.ec, bd.real, lv.startDate)}
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
                   <span style={{ fontSize: 11, fontWeight: 700, color: "#0f766e" }}>Balance on Sage:</span>
-                  <input type="number" min="0" step="0.5" placeholder="days available"
+                  {(() => {
+                    const bal = availableForEc(lv.ec, lv.startDate);
+                    const avail = bal ? Math.round(bal.available * 100) / 100 : null;
+                    if (avail == null || bal.available + 1e-9 < bd.real) return null;
+                    return <button disabled={busy} onClick={() => confirmCalBalance(lv, avail)} title={"Records " + fmtDays(avail) + " days available (the hub's figure, projected to the leave date) and clears this check."} style={{ background: "#15803d", color: "#fff", border: "none", borderRadius: 9, padding: "7px 15px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: "pointer" }}>✓ Enough — confirm ({fmtDays(avail)})</button>;
+                  })()}
+                  <input type="number" min="0" step="0.5" placeholder={(() => { const b = availableForEc(lv.ec, lv.startDate); return b ? "or type (hub: " + fmtDays(b.available) + ")" : "days available"; })()}
                     value={balDraft[key] != null ? balDraft[key] : ""}
                     onChange={e => setBalDraft({ ...balDraft, [key]: e.target.value })}
-                    style={{ width: 130, fontFamily: "inherit", fontSize: 13, padding: "7px 10px", borderRadius: 9, border: "1.5px solid #99f6e4" }} />
+                    style={{ width: 150, fontFamily: "inherit", fontSize: 13, padding: "7px 10px", borderRadius: 9, border: "1.5px solid #99f6e4" }} />
                   <button disabled={busy} onClick={() => confirmCalBalance(lv)} style={{ background: "#0f766e", color: "#fff", border: "none", borderRadius: 9, padding: "7px 15px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: "pointer" }}>✓ Confirm balance</button>
                   {goTo && <button onClick={() => goTo("leave")} style={{ background: "#fff", color: "#0f766e", border: "1.5px solid #99f6e4", borderRadius: 9, padding: "7px 13px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: "pointer" }}>Open Leave Planner →</button>}
                 </div>
@@ -14457,7 +14871,311 @@ function FamilyResponsibilityTab({ enriched, managers, currentUser, logActivity 
   );
 }
 
-function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLeaveRecs, enriched: enrichedBase, managers, staff, opsCfg, payrollCfg, logActivity, schedCache, ymdToSchedYm, hoStaff, ccOnly }) {
+// Longest paid prefix of a leave range that `avail` annual-leave days can cover.
+// The paid portion is the longest run of days whose ACTUAL leave days (off-days
+// don't consume balance) fit within `avail`; the rest is unpaid. Shared by the
+// approval wizard and the legacy split button so both split the same way.
+function computeSplitPlan(r, avail, isMgr, opts) {
+  const addDays = (ymd, n) => { const d = new Date(ymd + "T00:00:00"); d.setDate(d.getDate() + n); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
+  const total = leaveDayBreakdown(r.start_date, r.end_date, isMgr, opts).real;
+  const a = (avail == null || isNaN(avail)) ? 0 : Math.max(0, Number(avail));
+  let paidEnd = null, paidDays = 0;
+  for (let d = new Date(r.start_date + "T00:00:00"), e = new Date(r.end_date + "T00:00:00"); d <= e; d.setDate(d.getDate() + 1)) {
+    const ymd = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+    const real = leaveDayBreakdown(r.start_date, ymd, isMgr, opts).real;
+    if (real <= a + 1e-9) { paidEnd = ymd; paidDays = real; } else break;
+  }
+  const unpaidStart = paidEnd ? addDays(paidEnd, 1) : r.start_date;
+  const unpaidDays = Math.max(0, Math.round((total - paidDays) * 100) / 100);
+  return { total, avail: a, paidEnd, paidDays, unpaidStart, unpaidDays };
+}
+
+// Clear the auto-stamped "L" cells for a removed leave, both on the draft grid
+// and the published snapshot (so kiosk / My BOA stop showing "On leave"). Only
+// touches cells still reading "L", and skips days another remaining record still
+// covers. Module-level so the App-level reverseLeave and the planner's
+// removeLeave share ONE implementation. ctx: { staff, enriched, managers,
+// ymdToSchedYm, setSchedCache }.
+async function clearTechScheduleLeaveGrid(lv, remaining, ctx) {
+  const { staff, enriched, managers, ymdToSchedYm, setSchedCache } = ctx || {};
+  try {
+    if (!lv || !lv.ec || !lv.startDate || !lv.endDate) return;
+    if (!window.BOA_DB || !window.BOA_DB.loadSchedule || !window.BOA_DB.saveSchedule) return;
+    // Managers (M-suffixed codes / in the managers list) self-heal — skip.
+    if (/M$/i.test(String(lv.ec).trim()) || (managers || []).some(m => m.ec === lv.ec)) return;
+    const person = (staff || []).find(x => x.ec === lv.ec) || (enriched || []).find(x => x.ec === lv.ec);
+    const branch = person && person.branch;
+    if (!branch) return;
+    const want = String(lv.ec).trim().toUpperCase();
+    const _p2 = n => String(n).padStart(2, "0");
+    const stillCovered = (ymd) => (remaining || []).some(r => r && r.ec === lv.ec && r.startDate && r.endDate && ymd >= r.startDate && ymd <= r.endDate);
+    const sd = new Date(lv.startDate + "T00:00:00"), ed = new Date(lv.endDate + "T00:00:00");
+    if (isNaN(sd) || isNaN(ed)) return;
+    const byYm = {};
+    for (let d = new Date(sd); d <= ed; d.setDate(d.getDate() + 1)) {
+      const ymd = d.getFullYear() + "-" + _p2(d.getMonth() + 1) + "-" + _p2(d.getDate());
+      if (stillCovered(ymd)) continue;             // another leave still owns this day
+      (byYm[ymdToSchedYm(ymd)] = byYm[ymdToSchedYm(ymd)] || new Set()).add(d.getDate());
+    }
+    for (const ym of Object.keys(byYm)) {
+      const sched = await window.BOA_DB.loadSchedule(branch, ym, false);
+      const grid = (sched && sched.grid) || {};
+      const ecKey = Object.keys(grid).find(k => String(k).trim().toUpperCase() === want);
+      if (!ecKey) continue;
+      const row = grid[ecKey];
+      let touched = false;
+      for (const dom of byYm[ym]) {
+        if (row[dom] === "L") { delete row[dom]; touched = true; }
+        if (row[String(dom)] === "L") { delete row[String(dom)]; touched = true; }
+      }
+      if (touched) {
+        grid[ecKey] = row;
+        await window.BOA_DB.saveSchedule(branch, ym, grid, false);
+        if (setSchedCache) setSchedCache(prev => ({ ...prev, [branch + "|" + ym]: grid }));
+      }
+      await patchApprovedSnapshotRow(branch, ym, false, want, (srow) => {
+        let t = false;
+        for (const dom of byYm[ym]) {
+          if (srow[dom] === "L") { delete srow[dom]; t = true; }
+          if (srow[String(dom)] === "L") { delete srow[String(dom)]; t = true; }
+        }
+        return t;
+      });
+    }
+  } catch (e) { console.error("clearTechScheduleLeaveGrid:", e); }
+}
+
+// 3-step approval wizard. Makes the operational + balance cautions unmissable
+// before a leave is approved — the whole point is that National Ops can't skim
+// past a clash or a short balance. Used two ways:
+//   mode "request" — the real approval path on the Leave Requests board. onComplete
+//     writes the gates + finalises (or splits). onReverse removes an overlapping
+//     approved leave so this request can take its place.
+//   mode "manual"  — a review-and-confirm wrapper on the Leave Planner. The record
+//     is already validated + built; onComplete just persists it.
+// deps: { enriched, managers, leaveRecs, leaveBalances, schedCache, ymdToSchedYm, today, requests }
+// r is request-shaped: { id?, ec, name, start_date, end_date, store, ref_code?, emergency?, reason? }
+function LeaveApprovalWizard({ r, mode, deps, actor, onReverse, onComplete, onCancel }) {
+  const [step, setStep] = useState(1);
+  const [busy, setBusy] = useState(false);
+  const [balInput, setBalInput] = useState("");   // "" = use the recommended figure
+  const [chooseSplit, setChooseSplit] = useState(false);
+  const [reversedNote, setReversedNote] = useState(null);
+
+  const { enriched, managers, leaveRecs } = deps;
+  const isMgr = isManagerEc(r.ec);
+  const person = findLeavePerson(r.ec, enriched, managers);
+  const branch = (person && person.branch) || r.store;
+  const opts = { schedCache: deps.schedCache, ymdToSchedYm: deps.ymdToSchedYm, ec: (person && person.ec) || r.ec, branch };
+  const fmtDays = (x) => { const v = Math.round((Number(x) || 0) * 100) / 100; return v === Math.floor(v) ? String(v) : v.toFixed(2).replace(/0$/, ""); };
+  const today = deps.today || new Date().toISOString().slice(0, 10);
+  const isEmergency = !!r.emergency;
+  const future = r.start_date > today;
+
+  const bd = leaveDayBreakdown(r.start_date, r.end_date, isMgr, opts);
+  const need = bd.real;
+  const oa = assessLeaveOps(r, enriched, managers, leaveRecs);
+  const ov = findLeaveOverlaps(r, leaveRecs, deps.requests || []);
+  const peopleLabel = oa.isMgr ? "managers" : "techs";
+
+  const balToday = annualBalanceFor(r.ec, deps);              // live figure
+  const balAt = annualBalanceFor(r.ec, deps, r.start_date);   // projected to the leave's start
+  const creditDates = (balAt && balAt.startDate) ? anniversaryCreditDates(balAt.startDate, balAt.asOf, r.start_date) : [];
+  const projAvail = balAt ? Math.round(balAt.available * 100) / 100 : null;
+  const todayAvail = balToday ? Math.round(balToday.available * 100) / 100 : null;
+  const recommended = projAvail != null ? projAvail : todayAvail;   // may be null (no sheet)
+  const enoughAt = balAt ? balAt.available + 1e-9 >= need : false;   // does the PROJECTION cover it (verdict box)
+  // Typed figure wins over the projection; clamped at 0 — a pasted/typed
+  // negative must never become the recorded balance_days (the old splitApprove
+  // had this guard and the split math already clamps, so keep them agreeing).
+  const balForRecord = (balInput !== "" && !isNaN(Number(balInput))) ? Math.max(0, Number(balInput)) : recommended;
+  // Does the figure we'll actually RECORD cover it — a typed override counts, so
+  // typing enough hides the split option even when the projection was short.
+  const enoughForRecord = balForRecord != null && balForRecord + 1e-9 >= need;
+  const split = computeSplitPlan(r, balForRecord, isMgr, opts);
+
+  const overlay = { position: "fixed", inset: 0, background: "rgba(76,5,25,0.5)", backdropFilter: "blur(3px)", zIndex: 100002, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 };
+  const card = { background: "#fff", borderRadius: 20, width: "min(620px, 96vw)", maxHeight: "92vh", overflow: "auto", boxShadow: "0 24px 70px rgba(76,5,25,0.32)" };
+  const verdict = (bg, bd2, col) => ({ background: bg, border: "1.5px solid " + bd2, color: col, borderRadius: 11, padding: "11px 14px", fontSize: 13, marginBottom: 12, lineHeight: 1.5 });
+  const btn = (bg, fg, bd2) => ({ border: "1.5px solid " + bd2, background: bg, color: fg, borderRadius: 10, padding: "9px 18px", fontWeight: 800, fontSize: 13.5, fontFamily: "inherit", cursor: busy ? "wait" : "pointer", opacity: busy ? 0.6 : 1 });
+  const stepDot = (n, label) => (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 11px", borderRadius: 999, fontSize: 11.5, fontWeight: 800, color: step === n ? "#fff" : step > n ? "#15803d" : "#9d6a82", background: step === n ? "#be185d" : step > n ? "#dcfce7" : "#f6e8ef" }}>
+      <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 17, height: 17, borderRadius: "50%", background: step > n ? "#15803d" : step === n ? "rgba(255,255,255,0.3)" : "#cbb1bd", color: "#fff", fontSize: 10 }}>{step > n ? "✓" : n}</span>
+      {label}
+    </span>
+  );
+
+  const doReverse = async (lv) => {
+    if (!onReverse) return;
+    setBusy(true);
+    try {
+      const ok = await onReverse(lv);
+      if (ok) setReversedNote(fmtIncidentDate(lv.startDate) + " → " + fmtIncidentDate(lv.endDate) + (lv.type && lv.type !== "Annual leave" ? " (" + lv.type + ")" : "") + (lv.emergency ? " · emergency" : ""));
+    } catch (e) { alert("Could not reverse that leave: " + (e.message || e)); }
+    setBusy(false);
+  };
+
+  const complete = async () => {
+    setBusy(true);
+    try {
+      // The split plan carries its own (clamped) avail — computeSplitPlan built
+      // paidEnd/paidDays FROM that figure, so it's the one that must be recorded.
+      // balForRecord != null mirrors the checkbox's render guard: a split ticked
+      // and then orphaned by clearing the input must not fire with a 0 balance.
+      const decision = chooseSplit && !isEmergency && balForRecord != null && !enoughForRecord
+        ? { split }
+        : { balanceDays: isEmergency ? null : (balForRecord == null ? null : Math.round(balForRecord * 100) / 100) };
+      await onComplete(decision);
+      // parent closes the wizard on success
+    } catch (e) { alert("Could not complete the approval: " + (e.message || e)); }
+    setBusy(false);
+  };
+
+  const headerBar = (
+    <div style={{ background: "linear-gradient(90deg,#be185d,#831843)", color: "#fff", padding: "16px 22px", position: "sticky", top: 0 }}>
+      <div style={{ fontSize: 16.5, fontWeight: 900 }}>{mode === "manual" ? "Add leave — review & confirm" : "Approve leave"}</div>
+      <div style={{ fontSize: 12.5, opacity: 0.92, marginTop: 2 }}>{r.name || "—"} {r.ec ? "· " + r.ec : ""} · {fmtIncidentDate(r.start_date)} → {fmtIncidentDate(r.end_date)} · {bd.cal} calendar / {bd.fromSchedule ? "" : "≈"}{need} leave day{need === 1 ? "" : "s"}</div>
+      <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginTop: 11 }}>{stepDot(1, "Operations")}{stepDot(2, "Balance")}{stepDot(3, "Review")}</div>
+    </div>
+  );
+
+  return (
+    <div style={overlay} onClick={() => { if (!busy) onCancel(); }}>
+      <div style={card} onClick={e => e.stopPropagation()}>
+        {headerBar}
+        <div style={{ padding: "18px 22px" }}>
+
+          {step === 1 && (
+            <div>
+              <div style={{ fontSize: 13.5, fontWeight: 800, color: "#831843", marginBottom: 10 }}>1 · Operational check</div>
+              {(ov.calOverlaps.length > 0) && (
+                <div style={verdict("#fffbeb", "#fde68a", "#92400e")}>
+                  <div style={{ fontWeight: 800, marginBottom: 5 }}>⚠ Already has leave overlapping these dates — {ov.coveredDays} of {bd.cal} requested day{bd.cal === 1 ? "" : "s"} already covered</div>
+                  {ov.calOverlaps.map((lv, i) => (
+                    <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginTop: 5, flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 12.5 }}>• {fmtIncidentDate(lv.startDate)} → {fmtIncidentDate(lv.endDate)}{lv.type && lv.type !== "Annual leave" ? " (" + lv.type + ")" : ""}{lv.emergency ? " · emergency" : ""}</span>
+                      {onReverse && <button disabled={busy} onClick={() => doReverse(lv)} style={btn("#b45309", "#fff", "#b45309")}>↩ Reverse this & continue</button>}
+                    </div>
+                  ))}
+                  <div style={{ fontSize: 11.5, marginTop: 6 }}>Reversing removes the old approved leave from the planner and schedule so this request can take its place.</div>
+                </div>
+              )}
+              {reversedNote && <div style={verdict("#f0fdf4", "#bbf7d0", "#15803d")}>↩ Reversed the overlapping leave ({reversedNote}). It's off the planner and schedule now.</div>}
+              {ov.reqOverlaps.length > 0 && (
+                <div style={verdict("#fffbeb", "#fde68a", "#92400e")}>
+                  ⚠ Another open request overlaps these dates: {ov.reqOverlaps.map((o, i) => (o.ref_code || (fmtIncidentDate(o.start_date) + "→" + fmtIncidentDate(o.end_date)))).join(", ")}. Check this isn't a duplicate.
+                </div>
+              )}
+              {oa.matched ? (
+                oa.clashDays.length > 0 ? (
+                  <div style={verdict("#fef2f2", "#fecaca", "#b91c1c")}>
+                    ⚠ <strong>Over the staffing limit</strong> on {oa.clashDays.length} day{oa.clashDays.length === 1 ? "" : "s"} (e.g. {oa.clashDays.slice(0, 4).map(fmtIncidentDate).join(", ")}{oa.clashDays.length > 4 ? "…" : ""}).<br />Max <strong>{oa.maxOff}</strong> of {oa.headcount} {peopleLabel} may be off at {oa.branch}{oa.isMgr ? " (1 at a time)" : " (20%)"}. Approving anyway leaves {oa.branch} short on those days.
+                  </div>
+                ) : (
+                  <div style={verdict("#f0fdf4", "#bbf7d0", "#15803d")}>
+                    ✓ <strong>No operational blocks</strong> — within the limit ({oa.maxOff} of {oa.headcount} {peopleLabel} may be off at {oa.branch}{oa.isMgr ? ", 1 at a time" : ", 20%"}).{oa.peakDays > 0 ? " ⚠ " + oa.peakDays + " day(s) fall in peak season (Oct–Mar)." : ""}
+                  </div>
+                )
+              ) : (
+                <div style={verdict("#fffbeb", "#fde68a", "#92400e")}>Can't auto-check operations — no matching employee code{r.ec ? " (" + r.ec + ")" : ""}. Confirm by hand that {branch || "the store"} can spare this person.</div>
+              )}
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginTop: 16 }}>
+                <button disabled={busy} onClick={() => onCancel()} style={btn("#fff", "#9d6a82", "#e7c6d4")}>Cancel</button>
+                <button disabled={busy} onClick={() => setStep(2)} style={btn("#be185d", "#fff", "#be185d")}>Next: balance →</button>
+              </div>
+            </div>
+          )}
+
+          {step === 2 && (
+            <div>
+              <div style={{ fontSize: 13.5, fontWeight: 800, color: "#831843", marginBottom: 10 }}>2 · Leave balance</div>
+              {isEmergency ? (
+                <div style={verdict("#eff6ff", "#bfdbfe", "#1e40af")}>This is <strong>unpaid emergency leave</strong> — it isn't deducted from the annual-leave balance, so there's no balance to check.</div>
+              ) : (
+                <div>
+                  {recommended == null ? (
+                    <div style={verdict("#fffbeb", "#fde68a", "#92400e")}>No balance on the uploaded sheet for {r.ec || "this person"} yet (e.g. a new hire). Check Sage and enter the days available below.</div>
+                  ) : (
+                    <div style={verdict("#fafafa", "#e5e7eb", "#374151")}>
+                      <div>Balance <strong>today</strong>: <strong>{fmtDays(todayAvail)}</strong> day{todayAvail === 1 ? "" : "s"} · this leave needs <strong>{fmtDays(need)}</strong>.</div>
+                      {balAt && balAt.startDateMissing && <div style={{ fontSize: 11.5, color: "#92400e", marginTop: 4 }}>⚠ No start date on file — accrual falls back to the payroll-cycle estimate.</div>}
+                    </div>
+                  )}
+                  {recommended != null && future && balAt && !balAt.startDateMissing && (
+                    <div style={verdict(enoughAt ? "#f0fdf4" : "#fef2f2", enoughAt ? "#bbf7d0" : "#fecaca", enoughAt ? "#15803d" : "#b91c1c")}>
+                      <div style={{ fontWeight: 800, marginBottom: 5 }}>{enoughAt ? "✓ Safe to approve" : "⚠ Short even at the leave date"} — projected balance by {fmtIncidentDate(r.start_date)}: <strong>{fmtDays(projAvail)}</strong></div>
+                      <div style={{ fontSize: 12, lineHeight: 1.6 }}>
+                        opening {fmtDays(balAt.opening)}{balAt.adj ? " · adj " + (balAt.adj > 0 ? "+" : "") + fmtDays(balAt.adj) : ""}
+                        {creditDates.length > 0
+                          ? " + " + creditDates.length + " accrual" + (creditDates.length === 1 ? "" : "s") + " (" + creditDates.slice(0, 4).map(fmtIncidentDate).join(", ") + (creditDates.length > 4 ? "…" : "") + ") × 1.25 = +" + fmtDays(balAt.accrued)
+                          : " + 0 accrued before then"}
+                        {balAt.used ? " − " + fmtDays(balAt.used) + " already booked" : ""} = <strong>{fmtDays(projAvail)}</strong> → needs {fmtDays(need)} {enoughAt ? "✓" : "✗"}
+                      </div>
+                    </div>
+                  )}
+                  {recommended != null && !future && (
+                    <div style={verdict(todayAvail + 1e-9 >= need ? "#f0fdf4" : "#fef2f2", todayAvail + 1e-9 >= need ? "#bbf7d0" : "#fecaca", todayAvail + 1e-9 >= need ? "#15803d" : "#b91c1c")}>
+                      {todayAvail + 1e-9 >= need ? "✓ Enough" : "⚠ SHORT by " + fmtDays(need - todayAvail)} — {fmtDays(todayAvail)} available now, needs {fmtDays(need)}.
+                    </div>
+                  )}
+                  {/* The input (and split) must render even with NO sheet entry —
+                      that's exactly when the approver has to type the Sage figure. */}
+                  {mode !== "manual" && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap", marginBottom: 6 }}>
+                      <span style={{ fontSize: 12.5, color: "#831843", fontWeight: 700 }}>Days available on Sage:</span>
+                      <input type="number" min="0" step="0.5" placeholder={recommended != null ? "recommended " + fmtDays(recommended) : "days available"} value={balInput}
+                        onChange={e => setBalInput(e.target.value)}
+                        style={{ width: 170, fontFamily: "inherit", fontSize: 13.5, padding: "8px 11px", borderRadius: 9, border: "1.5px solid #e7c6d4" }} />
+                      <span style={{ fontSize: 11.5, color: "#9d6a82" }}>{recommended != null ? "defaults to the projection above" : "required — no sheet figure to fall back on"}</span>
+                    </div>
+                  )}
+                  {mode !== "manual" && !isEmergency && balForRecord != null && !enoughForRecord && (
+                    <div style={{ background: "#fffbeb", border: "1px dashed #f59e0b", borderRadius: 10, padding: "10px 12px", marginTop: 8 }}>
+                      <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "#92400e", cursor: "pointer" }}>
+                        <input type="checkbox" checked={chooseSplit} onChange={e => setChooseSplit(e.target.checked)} />
+                        <span>Approve as a <strong>paid + unpaid split</strong> — pay {fmtDays(split.paidDays)} day{split.paidDays === 1 ? "" : "s"} of annual leave{split.paidEnd ? " (to " + fmtIncidentDate(split.paidEnd) + ")" : ""}, log the remaining {fmtDays(split.unpaidDays)} as unpaid emergency leave.</span>
+                      </label>
+                    </div>
+                  )}
+                </div>
+              )}
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginTop: 16 }}>
+                <button disabled={busy} onClick={() => setStep(1)} style={btn("#fff", "#9d6a82", "#e7c6d4")}>← Back</button>
+                <button disabled={busy} onClick={() => setStep(3)} style={btn("#be185d", "#fff", "#be185d")}>Next: review →</button>
+              </div>
+            </div>
+          )}
+
+          {step === 3 && (
+            <div>
+              <div style={{ fontSize: 13.5, fontWeight: 800, color: "#831843", marginBottom: 10 }}>3 · Review &amp; complete</div>
+              <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "7px 14px", fontSize: 13, color: "#374151", marginBottom: 14 }}>
+                <span style={{ color: "#9d6a82", fontWeight: 700 }}>Person</span><span>{r.name || "—"} {r.ec ? "(" + r.ec + ")" : ""}</span>
+                <span style={{ color: "#9d6a82", fontWeight: 700 }}>Dates</span><span>{fmtIncidentDate(r.start_date)} → {fmtIncidentDate(r.end_date)} · {fmtDays(need)} leave day{need === 1 ? "" : "s"}</span>
+                <span style={{ color: "#9d6a82", fontWeight: 700 }}>Operations</span><span>{oa.matched ? (oa.clashDays.length > 0 ? "⚠ Over the limit on " + oa.clashDays.length + " day(s) — approving anyway" : "✓ Within limit") : "Confirmed by hand (no auto-check)"}</span>
+                {reversedNote && (<><span style={{ color: "#9d6a82", fontWeight: 700 }}>Reversed</span><span>↩ {reversedNote}</span></>)}
+                <span style={{ color: "#9d6a82", fontWeight: 700 }}>Balance</span>
+                <span>{isEmergency ? "Unpaid emergency — no balance deducted" : (chooseSplit && balForRecord != null && !enoughForRecord ? "Split: " + fmtDays(split.paidDays) + "d paid + " + fmtDays(split.unpaidDays) + "d unpaid" : (balForRecord == null ? "To confirm on Sage" : fmtDays(balForRecord) + " day(s) available" + (future ? " (projected to the leave date)" : "")))}</span>
+              </div>
+              {chooseSplit && !isEmergency && balForRecord != null && !enoughForRecord && (
+                <div style={verdict("#fff7ed", "#fed7aa", "#9a3412")}>
+                  <strong>Split approval</strong> — {split.paidEnd ? "paid annual leave " + fmtIncidentDate(r.start_date) + " → " + fmtIncidentDate(split.paidEnd) + " (" + fmtDays(split.paidDays) + "d), then unpaid emergency leave " + fmtIncidentDate(split.unpaidStart) + " → " + fmtIncidentDate(r.end_date) + " (" + fmtDays(split.unpaidDays) + "d)." : "no paid balance — the ENTIRE leave is logged as unpaid emergency leave."} Unpaid emergency leave should stay the exception; satisfy yourself {branch || "the store"} can absorb it.
+                </div>
+              )}
+              <div style={verdict("#f0fdf4", "#bbf7d0", "#15803d")}>On complete: the leave is <strong>approved</strong>, added to the planner &amp; schedule, and the balance is recorded. {mode === "request" ? "The employee sees it on My BOA." : ""}</div>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginTop: 8 }}>
+                <button disabled={busy} onClick={() => setStep(2)} style={btn("#fff", "#9d6a82", "#e7c6d4")}>← Back</button>
+                <button disabled={busy} onClick={complete} style={btn("#15803d", "#fff", "#15803d")}>{busy ? "Working…" : "✓ Complete approval"}</button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLeaveRecs, enriched: enrichedBase, managers, staff, opsCfg, logActivity, schedCache, ymdToSchedYm, hoStaff, ccOnly, reverseLeave }) {
   // Head Office people resolve through the same person-lookup pool as techs, so an
   // HO leave request enriches (name/branch) and writes to the planner on approval
   // instead of dropping into "Nail Techs" with a "not on planner" badge. HO carry
@@ -14471,8 +15189,8 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
   const [noteDraft, setNoteDraft] = useState({});
   const [declineId, setDeclineId] = useState(null);
   const [declineText, setDeclineText] = useState("");
-  const [balDraft, setBalDraft] = useState({}); // per-request "days available" input
   const [busy, setBusy] = useState(false);
+  const [wizard, setWizard] = useState(null);   // request being walked through the 3-step approval wizard
   // Uploaded leave-balance sheet — so the form can show how many days the person
   // actually has (opening + accrual − leave already on the calendar) and flag at
   // a glance whether this request fits.
@@ -14480,47 +15198,24 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
   useEffect(() => { let go = true; (async () => { try { const d = window.BOA_DB.loadLeaveBalances ? await window.BOA_DB.loadLeaveBalances() : null; if (go) setLeaveBalances(d || null); } catch (_e) { } })(); return () => { go = false; }; }, []);
   const fmtDays = (x) => { const v = Math.round((Number(x) || 0) * 100) / 100; return v === Math.floor(v) ? String(v) : v.toFixed(2).replace(/0$/, ""); };
   const _today = new Date().toISOString().slice(0, 10);
-  const _addDays = (ymd, n) => { const d = new Date(ymd + "T00:00:00"); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
-  // Available annual-leave days from the uploaded sheet for an employee code:
-  // opening + manual adjustments + accrued (1.25 per completed cycle since the
-  // as-of date) − all paid annual leave already taken/booked on the calendar.
-  // Returns null when the person isn't on the sheet.
-  const availableForEc = (ec) => {
-    const lb = leaveBalances;
-    if (!lb || !lb.entries) return null;
-    const norm = lbNormEc(ec);
-    const entry = lb.entries[norm];
-    if (!entry) return null;
-    const asOf = lb.asOf || "2026-05-24";
-    const opening = Number(entry.opening) || 0;
-    const adj = (entry.adjustments || []).reduce((s, a) => s + (Number(a.days) || 0), 0);
-    const accrued = accruedLeave(asOf, _today);
-    const p = findLeavePerson(ec, enriched, managers);
-    const opts = { schedCache, ymdToSchedYm, ec: (p && p.ec) || ec, branch: p && p.branch };
-    let used = 0;
-    (leaveRecs || []).forEach(lv => {
-      if (!lv || lv.type !== "Annual leave" || lv.emergency || !lv.startDate || !lv.endDate) return;
-      if (lbNormEc(lv.ec) !== norm) return;
-      const from = lv.startDate > _addDays(asOf, 1) ? lv.startDate : _addDays(asOf, 1);
-      if (from > lv.endDate) return;
-      used += leaveDayBreakdown(from, lv.endDate, isMgrReq({ ec }), opts).real;
-    });
-    return { available: opening + adj + accrued - used, opening, adj, accrued, used, asOf };
-  };
+  // Projected available annual-leave days — see annualBalanceFor(), shared with
+  // the Payroll Inbox so both boards answer the balance question identically.
+  // Pass asAt (e.g. a leave's start date) to project the balance to that day.
+  const availableForEc = (ec, asAt) => annualBalanceFor(ec, { leaveBalances, leaveRecs, enriched, managers, schedCache, ymdToSchedYm, today: _today }, asAt);
+  // How far behind Sage the uploaded sheet is (0 cycles = current).
+  const staleness = balanceStaleness(leaveBalances && leaveBalances.asOf, _today);
 
   const actor = (currentUser && (currentUser.name || currentUser.pin)) || "";
   const canOps = accessAllows(currentUser, opsCfg);
-  const canPayroll = accessAllows(currentUser, payrollCfg);
 
   const stores = Array.from(new Set(requests.map(r => r.store).filter(Boolean))).sort();
   const patchLocal = (id, patch) => setRequests(requests.map(r => r.id === id ? { ...r, ...patch } : r));
 
-  // Operational clash assessment + auto-approve use shared module helpers so
-  // the Payroll Inbox actions the gates identically. (Counts approved leave on
-  // the calendar; returns matched:false when no employee can be tied to it.)
+  // Operational clash assessment + finalize use shared module helpers so the
+  // Payroll Inbox behaves identically. (Counts approved leave on the calendar;
+  // returns matched:false when no employee can be tied to it.)
   const gateDeps = { enriched, managers, leaveRecs, setLeaveRecs, patch: patchLocal, actor, logActivity };
   const assessOps = (r) => assessLeaveOps(r, enriched, managers, leaveRecs);
-  const maybeFinalize = (r) => finalizeLeaveIfReady(r, gateDeps);
 
   // An APPROVED request whose days aren't (all) on the Leave Planner — e.g.
   // approved while an older overlapping record existed (the planner write used
@@ -14543,83 +15238,46 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
     } catch (e) { alert("Could not add to the Leave Planner: " + (e.message || e)); }
     setBusy(false);
   };
-  // Split approval — for requests the annual balance can't fully cover. Pays
-  // annual leave up to the day the balance runs out; the remaining days are
-  // logged as UNPAID emergency leave. Requires the operational check first
-  // (unpaid leave still takes the person off the floor) and confirms the
-  // operational impact before committing.
-  const splitApprove = async (r) => {
-    if (r.status === "approved" || r.status === "declined") return;
-    if (!r.ops_cleared_at) { alert("Please complete the operational check (step 1) first — a split approval still needs confirmation that the store can spare this person."); return; }
-    // Balance to use for the paid portion: a typed figure wins, then the
-    // recorded balance check, then the uploaded balance sheet.
-    const typed = balDraft[r.id];
-    let avail = (typed !== "" && typed != null && !isNaN(Number(typed))) ? Number(typed)
-      : (r.balance_days != null && !isNaN(Number(r.balance_days))) ? Number(r.balance_days)
-        : (() => { const b = availableForEc(r.ec); return b ? Math.round(b.available * 100) / 100 : null; })();
-    if (avail == null || isNaN(avail)) { alert("Enter this person's leave balance (days available on Sage) in the balance box first — the split needs to know how many paid days they have."); return; }
-    if (avail < 0) avail = 0;
-    const isM = isMgrReq(r);
-    const opts = schedOpts(r);
-    const total = leaveDayBreakdown(r.start_date, r.end_date, isM, opts).real;
-    if (avail + 1e-9 >= total) { alert("Their balance (" + fmtDays(avail) + " day(s)) covers this whole request (" + fmtDays(total) + " leave day(s)) — no split is needed. Use the normal ✓ balance check to approve it as fully paid annual leave."); return; }
-    // Walk the range to find the last day the balance still covers: the paid
-    // portion is the longest prefix whose ACTUAL leave days (off days don't
-    // consume balance) fit within the available days.
-    let paidEnd = null, paidDays = 0;
-    for (let d = new Date(r.start_date + "T00:00:00"), e = new Date(r.end_date + "T00:00:00"); d <= e; d.setDate(d.getDate() + 1)) {
-      const ymd = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
-      const real = leaveDayBreakdown(r.start_date, ymd, isM, opts).real;
-      if (real <= avail + 1e-9) { paidEnd = ymd; paidDays = real; } else break;
-    }
-    const unpaidStart = paidEnd ? _addDays(paidEnd, 1) : r.start_date;
-    const unpaidDays = Math.max(0, Math.round((total - paidDays) * 100) / 100);
-    const plan = paidEnd
-      ? "PAID annual leave: " + fmtIncidentDate(r.start_date) + " → " + fmtIncidentDate(paidEnd) + " (" + fmtDays(paidDays) + " leave day(s) — uses their remaining balance of " + fmtDays(avail) + ")\nUNPAID emergency leave: " + fmtIncidentDate(unpaidStart) + " → " + fmtIncidentDate(r.end_date) + " (" + fmtDays(unpaidDays) + " day(s), unpaid)"
-      : "This person has no paid leave days available (balance " + fmtDays(avail) + "), so the ENTIRE request — " + fmtIncidentDate(r.start_date) + " → " + fmtIncidentDate(r.end_date) + " — would be logged as UNPAID emergency leave.";
-    const ok = window.confirm(
-      "Split approval for " + (r.name || r.ec || "this person") + ":\n\n" + plan + "\n\n"
-      + "Please note before confirming: unpaid emergency leave should remain the exception rather than the rule. The business must continue to operate, and it cannot afford to have too many people away on unpaid leave at the same time. Kindly satisfy yourself that staffing levels at " + (r.store || "the store") + " can absorb this absence.\n\n"
-      + "Are you sure that approving the unpaid emergency portion is acceptable in this case?");
-    if (!ok) return;
+  // Open the 3-step approval wizard for a request. It replaces the old two
+  // separate gate buttons with one guided flow so the operational clash and the
+  // leave-balance projection are impossible to skip past.
+  const wizardDeps = { enriched, managers, leaveRecs, leaveBalances, schedCache, ymdToSchedYm, today: _today, requests };
+  const openWizard = (r) => { if (r.status === "approved" || r.status === "declined") return; setWizard({ ...r }); };
+  // Remove an overlapping approved leave so this request can take its place —
+  // reverseLeave (App scope) filters it out of the planner and clears its
+  // schedule/snapshot "L" cells. leaveRecs updates, so the wizard re-assesses.
+  const wizardReverse = async (lv) => { if (!reverseLeave) return false; return await reverseLeave(lv); };
+  // Complete an approval from the wizard. Normal path sets both gates then
+  // finalises (planner write + set_leave_status + activity log); split path
+  // routes through approveSplitLeave. Mirrors the old gate flow, atomically.
+  const wizardComplete = async (decision) => {
+    const r = wizard; if (!r) return;
+    const nowIso = new Date().toISOString();
     setBusy(true);
     try {
-      const added = await approveSplitLeave(r, paidEnd, avail, actor, gateDeps);
-      if (!added) { alert("No staff member or manager matches employee code \"" + (r.ec || "—") + "\" — the planner records can't be created, so nothing was approved."); setBusy(false); return; }
-      const note = paidEnd
-        ? "SPLIT APPROVAL — paid annual leave " + r.start_date + " → " + paidEnd + " (" + fmtDays(paidDays) + "d, balance " + fmtDays(avail) + "d) · unpaid EMERGENCY leave " + unpaidStart + " → " + r.end_date + " (" + fmtDays(unpaidDays) + "d, unpaid — balance exhausted)"
-        : "SPLIT APPROVAL — no annual balance available (" + fmtDays(avail) + "d): entire leave " + r.start_date + " → " + r.end_date + " logged as unpaid EMERGENCY leave";
-      try { await window.BOA_DB.setLeaveBalance(r.id, true, avail, actor); } catch (_e) { }
-      await window.BOA_DB.setLeaveStatus(r.id, "approved", note, actor);
-      patchLocal(r.id, { status: "approved", reviewed: true, decided_by: actor, decided_at: new Date().toISOString(), decision_note: note, balance_checked_at: new Date().toISOString(), balance_checked_by: actor, balance_days: avail });
-      if (logActivity) logActivity("Approved leave request (split paid/unpaid)", r.name, note, "Leave");
-    } catch (e) { alert("Could not complete the split approval: " + (e.message || e)); }
-    setBusy(false);
-  };
-
-  const toggleOps = async (r, clear) => {
-    setBusy(true);
-    try {
-      await window.BOA_DB.setLeaveOps(r.id, clear, actor);
-      const patch = clear
-        ? { ops_cleared_at: new Date().toISOString(), ops_cleared_by: actor, reviewed: true }
-        : { ops_cleared_at: null, ops_cleared_by: null };
-      patchLocal(r.id, patch);
-      if (clear) await maybeFinalize({ ...r, ...patch });
-    } catch (e) { alert("Could not update the operational check: " + (e.message || e)); }
-    setBusy(false);
-  };
-  const setBalance = async (r, ok, explicitDays) => {
-    const days = ok ? (explicitDays != null ? explicitDays : (balDraft[r.id] != null ? balDraft[r.id] : (r.balance_days != null ? r.balance_days : ""))) : "";
-    setBusy(true);
-    try {
-      await window.BOA_DB.setLeaveBalance(r.id, ok, days, actor);
-      const patch = ok
-        ? { balance_checked_at: new Date().toISOString(), balance_checked_by: actor, balance_days: (days === "" ? null : Number(days)), reviewed: true }
-        : { balance_checked_at: null, balance_checked_by: null, balance_days: null };
-      patchLocal(r.id, patch);
-      if (ok) await maybeFinalize({ ...r, ...patch });
-    } catch (e) { alert("Could not update the balance check: " + (e.message || e)); }
+      if (decision.split) {
+        const sp = decision.split;
+        let rr = r;
+        if (!rr.ops_cleared_at) { await window.BOA_DB.setLeaveOps(r.id, true, actor); rr = { ...rr, ops_cleared_at: nowIso, ops_cleared_by: actor }; }
+        const added = await approveSplitLeave(rr, sp.paidEnd, sp.avail, actor, gateDeps);
+        if (!added) { alert("No staff member or manager matches employee code \"" + (r.ec || "—") + "\" — nothing was approved."); setBusy(false); return; }
+        const note = sp.paidEnd
+          ? "SPLIT APPROVAL — paid annual leave " + r.start_date + " → " + sp.paidEnd + " (" + fmtDays(sp.paidDays) + "d, balance " + fmtDays(sp.avail) + "d) · unpaid EMERGENCY leave " + sp.unpaidStart + " → " + r.end_date + " (" + fmtDays(sp.unpaidDays) + "d, unpaid — balance exhausted)"
+          : "SPLIT APPROVAL — no annual balance available (" + fmtDays(sp.avail) + "d): entire leave " + r.start_date + " → " + r.end_date + " logged as unpaid EMERGENCY leave";
+        try { await window.BOA_DB.setLeaveBalance(r.id, true, sp.avail, actor); } catch (_e) { }
+        await window.BOA_DB.setLeaveStatus(r.id, "approved", note, actor);
+        patchLocal(r.id, { status: "approved", reviewed: true, decided_by: actor, decided_at: nowIso, decision_note: note, ops_cleared_at: rr.ops_cleared_at, ops_cleared_by: rr.ops_cleared_by, balance_checked_at: nowIso, balance_checked_by: actor, balance_days: sp.avail });
+        if (logActivity) logActivity("Approved leave request (split paid/unpaid, wizard)", r.name, note, "Leave");
+      } else {
+        const days = decision.balanceDays == null ? null : Number(decision.balanceDays);
+        await window.BOA_DB.setLeaveOps(r.id, true, actor);
+        await window.BOA_DB.setLeaveBalance(r.id, true, days, actor);
+        const patch = { ops_cleared_at: nowIso, ops_cleared_by: actor, balance_checked_at: nowIso, balance_checked_by: actor, balance_days: days, reviewed: true };
+        patchLocal(r.id, patch);
+        await finalizeLeaveIfReady({ ...r, ...patch }, gateDeps);
+      }
+      setWizard(null);
+    } catch (e) { alert("Could not complete the approval: " + (e.message || e)); }
     setBusy(false);
   };
 
@@ -14893,116 +15551,50 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
                           </div>
                         )}
 
-                        {/* ── Approval workflow: operational gate → balance gate → auto-approve ── */}
+                        {/* ── Approval preview + 3-step wizard entry ──
+                            The clash and balance cautions show inline so the list
+                            can be scanned; the actual approval always goes through
+                            the wizard (openWizard), where they're unmissable. */}
                         {r.status !== "declined" && (() => {
-                          const opsDone = !!r.ops_cleared_at;
-                          const balDone = !!r.balance_checked_at;
                           const approved = r.status === "approved";
                           const oa = assessOps(r);
                           const peopleLabel = oa.isMgr ? "managers" : "techs";
-                          const pill = (done, n, label) => (
-                            <span style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 10px", borderRadius: 999, fontSize: 11, fontWeight: 700, color: done ? "#15803d" : "#9d6a82", background: done ? "#dcfce7" : "#f6e8ef" }}>
-                              <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 15, height: 15, borderRadius: "50%", background: done ? "#15803d" : "#cbb1bd", color: "#fff", fontSize: 9 }}>{done ? "✓" : n}</span>
-                              {label}
-                            </span>
-                          );
-                          const gateBox = { border: "1px solid #f3d4e0", borderRadius: 11, padding: "11px 13px", marginBottom: 10, background: "#fffdfe" };
-                          const gateHead = { fontSize: 12.5, fontWeight: 800, color: "#831843", marginBottom: 7, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" };
-                          const stampS = { fontSize: 11, color: "#15803d", fontWeight: 600 };
-                          const btn = (bg, fg, bd) => ({ border: "1.5px solid " + bd, background: bg, color: fg, borderRadius: 9, padding: "6px 13px", fontWeight: 700, fontSize: 12, fontFamily: "inherit", cursor: "pointer" });
-                          const verdict = (bg, bd, col) => ({ background: bg, border: "1px solid " + bd, color: col, borderRadius: 8, padding: "7px 10px", fontSize: 12.5, marginBottom: 8, lineHeight: 1.45 });
+                          const bal = availableForEc(r.ec, r.start_date);   // projected to the leave's start date
+                          const need = leaveDayBreakdown(r.start_date, r.end_date, isMgrReq(r), schedOpts(r)).real;
+                          const enough = bal && bal.available + 1e-9 >= need;
+                          const future = r.start_date > _today;
+                          const verdict = (bg, bd, col) => ({ background: bg, border: "1px solid " + bd, color: col, borderRadius: 8, padding: "8px 11px", fontSize: 12.5, marginBottom: 8, lineHeight: 1.45 });
+                          const btn = (bg, fg, bd) => ({ border: "1.5px solid " + bd, background: bg, color: fg, borderRadius: 9, padding: "9px 16px", fontWeight: 800, fontSize: 13, fontFamily: "inherit", cursor: "pointer" });
                           return (
                             <div style={{ marginBottom: 14 }}>
-                              {/* Progress dots — mirror the 3-step overview at the top of the tab */}
-                              <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginBottom: 11, alignItems: "center" }}>
-                                {pill(true, 1, "Requested")}
-                                {pill(opsDone, 2, "Operational")}
-                                {pill(approved, 3, "Balance & approved")}
-                                {balDone && !approved && <span style={{ fontSize: 11, color: "#0f766e", fontWeight: 600 }}>· balance ✓, awaiting operational</span>}
-                              </div>
-
-                              {/* Gate 1 — operational */}
-                              <div style={gateBox}>
-                                <div style={gateHead}>
-                                  <span>1 · Operational check</span>
-                                  {opsDone && <span style={stampS}>✓ {r.ops_cleared_by || "—"}{r.ops_cleared_at ? " · " + fmtIncidentTime(r.ops_cleared_at) : ""}</span>}
-                                </div>
-                                {oa.matched ? (
-                                  oa.clashDays.length > 0 ? (
-                                    <div style={verdict("#fef2f2", "#fecaca", "#b91c1c")}>
-                                      ⚠ <strong>Over the limit</strong> on {oa.clashDays.length} day{oa.clashDays.length === 1 ? "" : "s"} (e.g. {oa.clashDays.slice(0, 3).map(fmtIncidentDate).join(", ")}{oa.clashDays.length > 3 ? "…" : ""}). Max <strong>{oa.maxOff}</strong> of {oa.headcount} {peopleLabel} off at {oa.branch}{oa.isMgr ? "" : " (20%)"}.
-                                    </div>
-                                  ) : (
-                                    <div style={verdict("#f0fdf4", "#bbf7d0", "#15803d")}>
-                                      ✓ <strong>Within limit</strong> — max {oa.maxOff} of {oa.headcount} {peopleLabel} off at {oa.branch}{oa.isMgr ? " (1 at a time)" : " (20%)"}.{oa.peakDays > 0 ? " ⚠ " + oa.peakDays + " day(s) fall in peak season (Oct–Mar)." : ""}
-                                    </div>
-                                  )
+                              {/* Operational preview */}
+                              {oa.matched ? (
+                                oa.clashDays.length > 0 ? (
+                                  <div style={verdict("#fef2f2", "#fecaca", "#b91c1c")}>⚠ <strong>Operational clash</strong> on {oa.clashDays.length} day{oa.clashDays.length === 1 ? "" : "s"} — max {oa.maxOff} of {oa.headcount} {peopleLabel} off at {oa.branch}{oa.isMgr ? " (1 at a time)" : " (20%)"}.{oa.peakDays > 0 ? " ⚠ " + oa.peakDays + " in peak season." : ""}</div>
                                 ) : (
-                                  <div style={verdict("#fffbeb", "#fde68a", "#92400e")}>Can't auto-check — no matching employee code{r.ec ? " (" + r.ec + ")" : ""}. Confirm operationally by hand.</div>
-                                )}
-                                {canOps ? (
-                                  opsDone
-                                    ? <button disabled={busy} onClick={() => toggleOps(r, false)} style={btn("#fff", "#9d6a82", "#e7c6d4")}>Undo operational check</button>
-                                    : <button disabled={busy} onClick={() => toggleOps(r, true)} style={btn("#fff", "#15803d", "#15803d")}>✓ Operationally clear</button>
-                                ) : (!opsDone && <span style={{ fontSize: 12, color: "#9d6a82", fontStyle: "italic" }}>Awaiting operational reviewer.</span>)}
-                              </div>
-
-                              {/* Gate 2 — leave balance (Sage) */}
-                              <div style={gateBox}>
-                                <div style={gateHead}>
-                                  <span>2 · Leave balance <span style={{ fontWeight: 600, color: "#9d6a82" }}>(check on Sage)</span></span>
-                                  {balDone && <span style={stampS}>✓ {r.balance_checked_by || "—"}{r.balance_days != null ? " · " + r.balance_days + " days available" : ""}</span>}
+                                  <div style={verdict("#f0fdf4", "#bbf7d0", "#15803d")}>✓ Operations within limit at {oa.branch}.{oa.peakDays > 0 ? " ⚠ " + oa.peakDays + " day(s) in peak season (Oct–Mar)." : ""}</div>
+                                )
+                              ) : (
+                                <div style={verdict("#fffbeb", "#fde68a", "#92400e")}>Operations can't auto-check{r.ec ? " (" + r.ec + ")" : ""} — confirm by hand in the wizard.</div>
+                              )}
+                              {/* Balance preview — projected to the leave's start date */}
+                              {bal ? (
+                                <div style={verdict(enough ? "#f0fdf4" : "#fef2f2", enough ? "#bbf7d0" : "#fecaca", enough ? "#15803d" : "#b91c1c")}>
+                                  {enough ? "✓" : "⚠"} <strong>{fmtDays(bal.available)} day{bal.available === 1 ? "" : "s"}</strong> {future ? "projected by " + fmtIncidentDate(r.start_date) : "available"} · needs <strong>{fmtDays(need)}</strong> → {enough ? "enough" : "SHORT by " + fmtDays(need - bal.available)}
+                                  {staleness.stale && <div style={{ fontSize: 10.5, fontWeight: 600, marginTop: 3, color: "#92400e" }}>⚠ Sage figures {staleness.cyclesBehind} run{staleness.cyclesBehind === 1 ? "" : "s"} behind — confirm on Sage.</div>}
                                 </div>
-                                {/* Available days from the uploaded balance sheet vs what this request needs. */}
-                                {(() => {
-                                  const bal = availableForEc(r.ec);
-                                  const need = leaveDayBreakdown(r.start_date, r.end_date, isMgrReq(r), schedOpts(r)).real;
-                                  if (!bal) return <div style={verdict("#fffbeb", "#fde68a", "#92400e")}>No balance on the uploaded sheet for {r.ec || "this person"} yet — verify on Sage.</div>;
-                                  const enough = bal.available + 1e-9 >= need;
-                                  return (
-                                    <div style={verdict(enough ? "#f0fdf4" : "#fef2f2", enough ? "#bbf7d0" : "#fecaca", enough ? "#15803d" : "#b91c1c")}>
-                                      {enough ? "✓" : "⚠"} <strong>{fmtDays(bal.available)} day{bal.available === 1 ? "" : "s"} available</strong> on the sheet · needs <strong>{fmtDays(need)}</strong> → {enough ? "enough" : "SHORT by " + fmtDays(need - bal.available)}
-                                      <div style={{ fontSize: 10.5, fontWeight: 400, marginTop: 2, opacity: 0.85 }}>opening {fmtDays(bal.opening)}{bal.adj ? " · adj " + (bal.adj > 0 ? "+" : "") + fmtDays(bal.adj) : ""}{bal.accrued ? " · +" + fmtDays(bal.accrued) + " earned" : ""}{bal.used ? " · −" + fmtDays(bal.used) + " already on calendar" : ""} <span style={{ fontStyle: "italic" }}>· still confirm on Sage</span></div>
-                                    </div>
-                                  );
-                                })()}
-                                {canPayroll ? (
-                                  balDone ? (
-                                    <button disabled={busy} onClick={() => setBalance(r, false)} style={btn("#fff", "#9d6a82", "#e7c6d4")}>Undo balance check</button>
-                                  ) : (() => {
-                                    const bal = availableForEc(r.ec);
-                                    const need = leaveDayBreakdown(r.start_date, r.end_date, isMgrReq(r), schedOpts(r)).real;
-                                    const enough = bal && bal.available + 1e-9 >= need;
-                                    const avail = bal ? Math.round(bal.available * 100) / 100 : null;
-                                    return (
-                                      <div>
-                                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                                          {enough && <button disabled={busy} onClick={() => setBalance(r, true, avail)} title={"Records " + fmtDays(avail) + " days available (from the sheet) and clears this gate — no typing needed."} style={btn("#15803d", "#fff", "#15803d")}>✓ Enough — confirm ({fmtDays(avail)} available)</button>}
-                                          <input type="number" min="0" step="0.5" placeholder={avail != null ? "or type (sheet: " + fmtDays(avail) + ")" : "days available"}
-                                            value={balDraft[r.id] != null ? balDraft[r.id] : (r.balance_days != null ? r.balance_days : "")}
-                                            onChange={e => setBalDraft({ ...balDraft, [r.id]: e.target.value })}
-                                            style={{ width: 150, fontFamily: "inherit", fontSize: 13, padding: "7px 10px", borderRadius: 9, border: "1.5px solid #e7c6d4" }} />
-                                          <button disabled={busy} onClick={() => setBalance(r, true)} style={btn(enough ? "#fff" : "#0f766e", enough ? "#0f766e" : "#fff", "#0f766e")}>✓ Balance OK</button>
-                                          <span style={{ fontSize: 11, color: "#9d6a82" }}>Needs {need} leave day(s)</span>
-                                        </div>
-                                        {!enough && (
-                                          <div style={{ marginTop: 9, background: "#fffbeb", border: "1px dashed #f59e0b", borderRadius: 9, padding: "9px 11px" }}>
-                                            <button disabled={busy} onClick={() => splitApprove(r)}
-                                              title="Approves paid annual leave up to the day the balance runs out; the remaining days are logged as unpaid emergency leave. You'll see the exact split and be asked to confirm before anything is saved."
-                                              style={btn("#b45309", "#fff", "#b45309")}>✂️ Not enough balance? Approve as paid + unpaid emergency split</button>
-                                            <div style={{ fontSize: 11.5, color: "#92400e", marginTop: 6, lineHeight: 1.5 }}>
-                                              Pays annual leave until the balance runs out{r.ops_cleared_at ? "" : " (operational check required first)"}; the remaining days become <strong>unpaid emergency leave</strong>. The Leave Planner and schedules show the unpaid stretch in orange (E / EL) and the attendance sheet pays it as unpaid. Uses the balance typed above (or the sheet figure).
-                                            </div>
-                                          </div>
-                                        )}
-                                      </div>
-                                    );
-                                  })()
-                                ) : (!balDone && <span style={{ fontSize: 12, color: "#9d6a82", fontStyle: "italic" }}>Awaiting payroll officer.</span>)}
-                              </div>
-
-                              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                                {!approved && opsDone && balDone && <span style={{ fontSize: 12, color: "#15803d", fontWeight: 700 }}>Both checks done — approving…</span>}
+                              ) : (
+                                <div style={verdict("#fffbeb", "#fde68a", "#92400e")}>No balance on the uploaded sheet for {r.ec || "this person"} — enter it in the wizard.</div>
+                              )}
+                              {/* Actions */}
+                              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 4 }}>
+                                {approved ? (
+                                  <span style={{ fontSize: 12.5, color: "#15803d", fontWeight: 800 }}>✅ Approved{r.balance_days != null ? " · balance " + fmtDays(r.balance_days) + "d" : ""}</span>
+                                ) : canOps ? (
+                                  <button disabled={busy} onClick={() => openWizard(r)} style={btn("#be185d", "#fff", "#be185d")}>▶ Approve — review &amp; confirm</button>
+                                ) : (
+                                  <span style={{ fontSize: 12, color: "#9d6a82", fontStyle: "italic" }}>Awaiting an approver.</span>
+                                )}
                                 {!approved && <button disabled={busy} onClick={() => { setDeclineId(r.id); setDeclineText(r.decision_note || ""); }} style={btn("#fff", "#b91c1c", "#b91c1c")}>Decline</button>}
                               </div>
                             </div>
@@ -15056,6 +15648,17 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
           </div>
         ))}
       </div>
+      {wizard && (
+        <LeaveApprovalWizard
+          r={wizard}
+          mode="request"
+          deps={wizardDeps}
+          actor={actor}
+          onReverse={wizardReverse}
+          onComplete={wizardComplete}
+          onCancel={() => setWizard(null)}
+        />
+      )}
     </div>
   );
 }
@@ -18008,6 +18611,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // unnoticed until someone happens to open the publisher.
   // null = not scanned yet; {count, branches, kinds, scannedAt} after a scan.
   const [pubCycleAlert, setPubCycleAlert] = useState(null);
+  // Leave-balance anchor freshness. The hub computes balances from payroll's
+  // last uploaded figures (opening + accrual − taken), so they only stay
+  // trustworthy while the upload keeps pace with Sage's payroll runs. The habit
+  // is meant to be monthly; the dashboard card nags when a run has closed
+  // without one. null = not checked yet; {stale, cyclesBehind, asOf} after.
+  // (The scan effect lives further down — it needs leaveBalancesCfg, which is
+  // declared below this point.)
+  const [balAnchorAlert, setBalAnchorAlert] = useState(null);
   const _summarizePendingRows = (rows) => {
     // Placeholder rows (codes with no employee record) are excluded — the
     // modal pre-unchecks them, and they shouldn't nag anyone to publish.
@@ -18440,6 +19051,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const c = leaveBalancesAccess || {};
     return { roles: Array.isArray(c.roles) ? c.roles : [], pins: Array.isArray(c.pins) ? c.pins : [] };
   }, [leaveBalancesAccess]);
+  // Is the balance anchor behind Sage? (state declared up with the other
+  // dashboard alerts; the effect must sit below leaveBalancesCfg's declaration.)
+  useEffect(() => {
+    if (tab !== "dashboard") return;
+    if (!(currentUser?.isOwner || accessAllows(currentUser, leaveBalancesCfg))) return;
+    if (balAnchorAlert) return;   // once per session — asOf only moves on an upload
+    if (!window.BOA_DB || !window.BOA_DB.loadLeaveBalances) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const d = await window.BOA_DB.loadLeaveBalances();
+        if (cancelled) return;
+        setBalAnchorAlert(balanceStaleness(d && d.asOf));
+      } catch (e) {
+        console.warn("[balance anchor alert] check failed (non-fatal):", e);
+        if (!cancelled) setBalAnchorAlert({ asOf: null, cyclesBehind: 0, stale: false });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [tab, currentUser, leaveBalancesCfg, balAnchorAlert]);
   const saveLeaveBalancesCfg = async (next) => {
     setLeaveBalancesAccess(next);
     try { if (window.BOA_DB.saveLeaveBalancesAccess) await window.BOA_DB.saveLeaveBalancesAccess(next); }
@@ -18509,6 +19140,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
   // ── Leave Planner state ────────────────────────────────────────────
   const [leaveRecs, setLeaveRecs] = useState([]);
+  // Manual planner entry, held for a final review pass through the 3-step wizard
+  // ({ r, commit }); the leave is only persisted when the wizard completes.
+  const [plannerWizard, setPlannerWizard] = useState(null);
+  // Uploaded Sage balance sheet (whole object), so the manual-entry wizard and
+  // the expiry radar can project balances at App scope. Loaded once on mount.
+  const [leaveBalancesData, setLeaveBalancesData] = useState(null);
+  useEffect(() => { let go = true; (async () => { try { const d = window.BOA_DB.loadLeaveBalances ? await window.BOA_DB.loadLeaveBalances() : null; if (go) setLeaveBalancesData(d || null); } catch (_e) { } })(); return () => { go = false; }; }, []);
   const [overtimeReqs, setOvertimeReqs] = useState([]);
   // Staff incident reports (confidential channel — see sql/incident_reports.sql)
   const [incidentReports, setIncidentReports] = useState([]);
@@ -21053,6 +21691,104 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
   // Enrich staff (salon nail techs).
   const enriched = useMemo(() => _enrichRoster(staff), [staff, _enrichRoster]);
+  // Remove an approved leave record and unstamp its schedule/snapshot "L" cells.
+  // Passed to the Leave Requests wizard so a new request can supersede an
+  // overlapping one that's already on the calendar (the "reverse & continue"
+  // step). Shares clearTechScheduleLeaveGrid with the planner's removeLeave.
+  const reverseLeave = async (lv) => {
+    if (!lv) return false;
+    const before = leaveRecs;
+    const remaining = leaveRecs.filter(x => x._id !== lv._id);
+    setLeaveRecs(remaining);
+    try { await window.BOA_DB.saveLeaveRecords(remaining); }
+    catch (e) {
+      // Roll the optimistic removal back — the wizard reports "not reversed",
+      // so the UI must agree with the DB (which still holds the record).
+      setLeaveRecs(before);
+      alert("Could not reverse that leave: " + (e.message || e));
+      return false;
+    }
+    try { await clearTechScheduleLeaveGrid(lv, remaining, { staff, enriched, managers, ymdToSchedYm, setSchedCache }); } catch (_e) { }
+    const st = staff.find(x => x.ec === lv.ec) || managers.find(x => x.ec === lv.ec);
+    const subj = st ? (st.name + " (" + st.ec + ")") : lv.ec;
+    if (logActivity) logActivity("Reversed leave (superseded by new approval)", subj, lv.startDate + " → " + lv.endDate + (lv.notes ? " · " + lv.notes : ""), "Leave");
+    return true;
+  };
+  // ── Leave-expiry radar (use-it-or-lose-it) ────────────────────────────────
+  // Scans the roster for annual leave heading for its 6-month redemption
+  // deadline. Feeds the dashboard card + panel, and — once per employee per
+  // deadline (dedup ledger) — auto-files an HR incident when a person goes RED
+  // (≤3 months left). Only runs for HR / National Ops (canSeeIncidents).
+  const [expiryRadar, setExpiryRadar] = useState(null);
+  const expiryScanningRef = useRef(false);
+  useEffect(() => {
+    // The full-roster scan is the most expensive computation in the app —
+    // O(roster × cycles × leaveRecs × day-walks) — so it only runs on the tabs
+    // that show the result (mirrors the balAnchorAlert gate). schedCache is
+    // deliberately NOT a dependency: it only refines off-day estimates, and its
+    // identity changes on every schedule prefetch.
+    if (tab !== "dashboard" && tab !== "leaveBalances") return;
+    if (!canSeeIncidents(currentUser)) return;
+    if (!leaveBalancesData || !leaveBalancesData.entries) return;
+    if (!(enriched.length || managers.length)) return;
+    const today = new Date().toISOString().slice(0, 10);
+    const deps = { leaveBalances: leaveBalancesData, leaveRecs, enriched, managers, schedCache, ymdToSchedYm, today };
+    const results = [], seen = new Set();
+    [...enriched, ...managers].forEach(p => {
+      if (!p || !p.ec) return;
+      const k = String(p.ec).toUpperCase();
+      if (seen.has(k)) return; seen.add(k);
+      if (p.offboarded || p.leftDate) return;             // gone — no point nagging
+      const r = leaveExpiryForPerson(p.ec, deps);
+      if (r) results.push(r);
+    });
+    results.sort((a, b) => String(a.nextDeadline).localeCompare(String(b.nextDeadline)));
+    const red = results.filter(r => r.anyRed);
+    setExpiryRadar({ all: results, red, scannedAt: today });
+    // Auto-file incidents for RED cycles we haven't filed yet.
+    if (red.length && !expiryScanningRef.current && window.BOA_DB.submitIncidentReport && window.BOA_DB.loadLeaveExpiryAlerts) {
+      expiryScanningRef.current = true;
+      (async () => {
+        try {
+          const ledger = await window.BOA_DB.loadLeaveExpiryAlerts();
+          // null = the ledger READ failed. Filing against an unknown ledger would
+          // re-file every RED incident (insert-only RPC) and the ledger save
+          // would then wipe the real dedup keys — skip the whole pass instead.
+          if (!ledger) { console.warn("[expiry radar] ledger unavailable — skipping incident filing this scan"); return; }
+          for (const person of red) {
+            for (const cy of person.cycles) {
+              if (!cy.red) continue;
+              const key = String(person.ec).toUpperCase() + "|" + cy.deadline;
+              if (ledger[key]) continue;                  // already filed for this deadline
+              try {
+                const ref = await window.BOA_DB.submitIncidentReport({
+                  // The RPC rejects a blank store ('store required') and the throw
+                  // would silently retry forever — a branch-less person still gets
+                  // an incident, just filed under a placeholder store.
+                  store: person.branch || "Head Office",
+                  category: "Other",
+                  incident_date: today,
+                  people_involved: (person.name || "") + " (" + person.ec + ")",
+                  description: "LEAVE EXPIRY — " + cy.atRisk + " day(s) of annual leave for " + (person.name || person.ec) + " (" + person.ec + ") expire on " + cy.deadline + " (about " + cy.monthsLeft + " month(s) away). Accrued in the employment year " + cy.cycleStart + " – " + cy.cycleEnd + ". Annual leave is use-it-or-lose-it — there is no payout — so it must be booked and taken before the deadline. Please arrange for this leave to be scheduled.",
+                  reporter_name: "HubOS auto",
+                  urgent: true
+                });
+                ledger[key] = { createdAt: new Date().toISOString(), refCode: ref, days: cy.atRisk };
+                // Persist the dedup key IMMEDIATELY after each filing — the RPC is
+                // insert-only and can't be undone, so a later batch-save failure
+                // must never let this incident be re-filed on the next scan.
+                try { await window.BOA_DB.saveLeaveExpiryAlerts(ledger); }
+                catch (e) { console.warn("[expiry radar] ledger save failed after filing " + key + " — may re-file:", e); }
+                if (logActivity) logActivity("Leave expiry incident filed", (person.name || "") + " (" + person.ec + ")", cy.atRisk + "d expire " + cy.deadline + (ref ? " · " + ref : ""), "Leave");
+              } catch (e) { console.warn("[expiry radar] incident file failed for " + key, e); }
+            }
+          }
+        } catch (e) { console.warn("[expiry radar] scan failed (non-fatal):", e); }
+        finally { expiryScanningRef.current = false; }
+      })();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, currentUser, leaveBalancesData, enriched, managers, leaveRecs]);
   // Same enrichment for the office population (Head Office + Call Centre &
   // Sales). hoStaff is a THIRD population that never flows through `enriched`,
   // so without this the Office Staff List would have no Status / Return Date
@@ -23264,6 +24000,45 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   day, loan, day-off swap…) that hasn't been published yet.
                   Staff / kiosk / My BOA keep showing the OLD version until
                   someone reviews + publishes — this is the nudge to do it. */}
+              {(currentUser?.isOwner || accessAllows(currentUser, leaveBalancesCfg)) && balAnchorAlert && balAnchorAlert.stale && (
+                <div style={{ background: "#f5f3ff", border: "1px solid #c4b5fd", borderRadius: 16, padding: "16px 20px", marginBottom: 20, boxShadow: "0 4px 14px rgba(109,40,217,0.10)", display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+                  <div style={{ flex: 1, minWidth: 280 }}>
+                    <div style={{ fontSize: 15, fontWeight: 800, color: "#5b21b6", letterSpacing: "0.04em", textTransform: "uppercase" }}>🧾 Sage leave balances need re-anchoring</div>
+                    <div style={{ fontSize: 12.5, color: "#6d28d9", fontWeight: 700, marginTop: 4 }}>
+                      {balAnchorAlert.cyclesBehind} payroll run{balAnchorAlert.cyclesBehind === 1 ? "" : "s"} {balAnchorAlert.cyclesBehind === 1 ? "has" : "have"} closed since the last upload ({fmtIncidentDate(balAnchorAlert.asOf)})
+                    </div>
+                    <div style={{ fontSize: 11.5, color: "#7c3aed", marginTop: 3 }}>
+                      Balances still count up correctly from that upload — but any leave captured straight into Sage since then is missing. Export a fresh balance report from Sage and upload it to re-anchor.
+                    </div>
+                  </div>
+                  <button onClick={() => tryChangeTab("leaveBalances")}
+                    title="Open the Leave Balances tab to upload a fresh Sage balance report."
+                    style={{ background: "#6d28d9", color: "#fff", border: "none", borderRadius: 10, padding: "10px 18px", fontWeight: 800, fontSize: 13, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap", boxShadow: "0 4px 12px rgba(109,40,217,0.3)" }}>
+                    Upload balances →
+                  </button>
+                </div>
+              )}
+              {/* Use-it-or-lose-it: people whose annual leave is ≤3 months from
+                  forfeiting. HR + National Ops audience; an incident is also
+                  filed automatically (once per person per deadline). */}
+              {canSeeIncidents(currentUser) && expiryRadar && expiryRadar.red.length > 0 && (
+                <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: 16, padding: "16px 20px", marginBottom: 20, boxShadow: "0 4px 14px rgba(185,28,28,0.10)", display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+                  <div style={{ flex: 1, minWidth: 280 }}>
+                    <div style={{ fontSize: 15, fontWeight: 800, color: "#b91c1c", letterSpacing: "0.04em", textTransform: "uppercase" }}>⏳ Annual leave about to expire</div>
+                    <div style={{ fontSize: 12.5, color: "#b91c1c", fontWeight: 700, marginTop: 4 }}>
+                      {expiryRadar.red.length} {expiryRadar.red.length === 1 ? "person has" : "people have"} annual leave expiring within {LEAVE_EXPIRY_RED_MONTHS} months — use-it-or-lose-it, no payout.
+                    </div>
+                    <div style={{ fontSize: 11.5, color: "#dc2626", marginTop: 3 }}>
+                      {expiryRadar.red.slice(0, 4).map(p => (p.name || p.ec) + " (" + fmtLeaveDays(p.totalAtRisk) + "d by " + fmtIncidentDate(p.nextDeadline) + ")").join(" · ")}{expiryRadar.red.length > 4 ? " · +" + (expiryRadar.red.length - 4) + " more" : ""}. An incident report has been filed for HR.
+                    </div>
+                  </div>
+                  <button onClick={() => tryChangeTab("leaveBalances")}
+                    title="Open the Leave Balances tab to see who's expiring and book the leave."
+                    style={{ background: "#b91c1c", color: "#fff", border: "none", borderRadius: 10, padding: "10px 18px", fontWeight: 800, fontSize: 13, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap", boxShadow: "0 4px 12px rgba(185,28,28,0.3)" }}>
+                    See expiring leave →
+                  </button>
+                </div>
+              )}
               {(currentUser?.isOwner || (currentUser?.role || "").toLowerCase().includes("national")) && pubCycleAlert && pubCycleAlert.count > 0 && (() => {
                 const a = pubCycleAlert;
                 const kindsTxt = Object.keys(a.kinds)
@@ -27032,7 +27807,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         {/* ── LEAVE REQUESTS TAB ── */}
         {tab === "leaveRequests" && canSeeLeaveRequests && (
-          <LeaveRequestsTab requests={leaveRequests} setRequests={setLeaveRequests} currentUser={currentUser} leaveRecs={leaveRecs} setLeaveRecs={setLeaveRecs} enriched={enriched} managers={managers} staff={staff} hoStaff={hoStaff} ccOnly={ccOnly} opsCfg={leaveOpsCfg} payrollCfg={leavePayrollCfg} logActivity={logActivity} schedCache={schedCache} ymdToSchedYm={ymdToSchedYm} />
+          <LeaveRequestsTab requests={leaveRequests} setRequests={setLeaveRequests} currentUser={currentUser} leaveRecs={leaveRecs} setLeaveRecs={setLeaveRecs} enriched={enriched} managers={managers} staff={staff} hoStaff={hoStaff} ccOnly={ccOnly} opsCfg={leaveOpsCfg} logActivity={logActivity} schedCache={schedCache} ymdToSchedYm={ymdToSchedYm} reverseLeave={reverseLeave} />
         )}
 
         {/* ── PAYROLL INBOX TAB ── */}
@@ -34508,69 +35283,32 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             : canCheckBalance
               ? { _id: Date.now(), ec: f.ec, startDate: f.startDate, endDate: f.endDate, type: "Annual leave", notes, emergency: false, balanceDays: balNum, balanceCheckedBy: who, balanceCheckedAt: nowIso, balancePending: false }
               : { _id: Date.now(), ec: f.ec, startDate: f.startDate, endDate: f.endDate, type: "Annual leave", notes, emergency: false, balanceDays: null, balanceCheckedBy: null, balanceCheckedAt: null, balancePending: true, balanceRequestedBy: who, balanceRequestedAt: nowIso };
-          persistLeaves([...leaveRecs, newRec]);
+          // Everything above validated. Instead of saving straight away, walk
+          // the entry through the SAME 3-step wizard as a request approval so the
+          // operational clash and the balance projection get one last impactful
+          // review. The leave is only persisted when the wizard completes.
+          // `currentRecs` comes from the COMPLETION-time render (the wizard can
+          // sit open for minutes) — appending to the click-time `leaveRecs`
+          // snapshot would silently revert anything saved in between, because
+          // saveLeaveRecords overwrites the whole array.
           const subj = stf ? (stf.name + " (" + stf.ec + ")") : f.ec;
-          logActivity("Added leave", subj, f.startDate + " → " + f.endDate + (f.emergency ? " · emergency (unpaid — no balance check)" : canCheckBalance ? " · balance " + balNum + "d" : " · balance pending payroll check") + (f.emergencyNote ? " · " + f.emergencyNote : ""), "Leave");
-          if (!canCheckBalance && !f.emergency) window.alert("Leave added and flagged for the payroll officer to verify the balance (you don't have access to leave balances).");
-          setLeaveForm({ ec: "", startDate: "", endDate: "", emergency: false, emergencyNote: "", balanceDays: "", balanceChecked: false });
+          const commit = async (currentRecs) => {
+            await persistLeaves([...(currentRecs || leaveRecs), newRec]);
+            logActivity("Added leave", subj, f.startDate + " → " + f.endDate + (f.emergency ? " · emergency (unpaid — no balance check)" : canCheckBalance ? " · balance " + balNum + "d" : " · balance pending payroll check") + (f.emergencyNote ? " · " + f.emergencyNote : ""), "Leave");
+            if (!canCheckBalance && !f.emergency) window.alert("Leave added and flagged for the payroll officer to verify the balance (you don't have access to leave balances).");
+            setLeaveForm({ ec: "", startDate: "", endDate: "", emergency: false, emergencyNote: "", balanceDays: "", balanceChecked: false });
+          };
+          setPlannerWizard({
+            r: { ec: f.ec, name: stf ? stf.name : "", start_date: f.startDate, end_date: f.endDate, store: stBr, emergency: f.emergency },
+            commit
+          });
         };
         // Clear the 'L' cells the Schedule auto-stamped for a now-removed leave,
         // so deleting leave in the planner also makes it disappear from the
-        // nail-tech schedule. Only the tech schedule needs this — the manager
-        // planner regenerates its grid from leaveRecs and self-heals stale 'L'.
-        // We touch only cells still reading 'L' (never a real shift / 'ML' / 'X')
-        // and skip any day still covered by another remaining leave record.
-        const clearTechScheduleLeave = async (lv, remaining) => {
-          try {
-            if (!lv || !lv.ec || !lv.startDate || !lv.endDate) return;
-            if (!window.BOA_DB || !window.BOA_DB.loadSchedule || !window.BOA_DB.saveSchedule) return;
-            // Managers (M-suffixed codes / in the managers list) self-heal — skip.
-            if (/M$/i.test(String(lv.ec).trim()) || managers.some(m => m.ec === lv.ec)) return;
-            const person = (staff || []).find(x => x.ec === lv.ec) || (enriched || []).find(x => x.ec === lv.ec);
-            const branch = person && person.branch;
-            if (!branch) return;
-            const want = String(lv.ec).trim().toUpperCase();
-            const _p2 = n => String(n).padStart(2, "0");
-            const stillCovered = (ymd) => (remaining || []).some(r => r && r.ec === lv.ec && r.startDate && r.endDate && ymd >= r.startDate && ymd <= r.endDate);
-            const sd = new Date(lv.startDate + "T00:00:00"), ed = new Date(lv.endDate + "T00:00:00");
-            if (isNaN(sd) || isNaN(ed)) return;
-            // Group the leave's days by the schedule period (25th–24th) that covers them.
-            const byYm = {};
-            for (let d = new Date(sd); d <= ed; d.setDate(d.getDate() + 1)) {
-              const ymd = d.getFullYear() + "-" + _p2(d.getMonth() + 1) + "-" + _p2(d.getDate());
-              if (stillCovered(ymd)) continue;             // another leave still owns this day
-              (byYm[ymdToSchedYm(ymd)] = byYm[ymdToSchedYm(ymd)] || new Set()).add(d.getDate());
-            }
-            for (const ym of Object.keys(byYm)) {
-              const sched = await window.BOA_DB.loadSchedule(branch, ym, false);
-              const grid = (sched && sched.grid) || {};
-              const ecKey = Object.keys(grid).find(k => String(k).trim().toUpperCase() === want);
-              if (!ecKey) continue;
-              const row = grid[ecKey];
-              let touched = false;
-              for (const dom of byYm[ym]) {
-                if (row[dom] === "L") { delete row[dom]; touched = true; }
-                if (row[String(dom)] === "L") { delete row[String(dom)]; touched = true; }
-              }
-              if (touched) {
-                grid[ecKey] = row;
-                await window.BOA_DB.saveSchedule(branch, ym, grid, false);
-                setSchedCache(prev => ({ ...prev, [branch + "|" + ym]: grid }));   // keep breakdowns in sync
-              }
-              // Mirror the revert into the published snapshot (My BOA / kiosk
-              // read it for published cycles) so cancelled leave stops showing
-              // as "On leave". Reverting "L" → blank = back to working for techs.
-              await patchApprovedSnapshotRow(branch, ym, false, want, (srow) => {
-                let t = false;
-                for (const dom of byYm[ym]) {
-                  if (srow[dom] === "L") { delete srow[dom]; t = true; }
-                  if (srow[String(dom)] === "L") { delete srow[String(dom)]; t = true; }
-                }
-                return t;
-              });
-            }
-          } catch (e) { console.error("clearTechScheduleLeave:", e); }
-        };
+        // nail-tech schedule (and the published snapshot the kiosk / My BOA read).
+        // Delegates to the module-level helper so the wizard's reverseLeave and
+        // this planner removal unstamp cells the exact same way.
+        const clearTechScheduleLeave = (lv, remaining) => clearTechScheduleLeaveGrid(lv, remaining, { staff, enriched, managers, ymdToSchedYm, setSchedCache });
         const removeLeave = (id) => {
           const lv = leaveRecs.find(x => x._id === id);
           if (!confirm("Remove this leave record?")) return;
@@ -42167,6 +42905,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       {transferModal && <TransferModal s={transferModal} onClose={() => setTransferModal(null)} onConfirm={handleTransfer} onCancelTransfer={cancelTransfer} />}
       {matModal && <MatModal rec={matModal} onClose={() => setMatModal(null)} onSave={saveMat} onDelete={delMat} people={matPickerPool} />}
       <AlertModal data={uiDialog} onResolve={resolveUiDialog} />
+      {plannerWizard && (
+        <LeaveApprovalWizard
+          r={plannerWizard.r}
+          mode="manual"
+          deps={{ enriched, managers, leaveRecs, leaveBalances: leaveBalancesData, schedCache, ymdToSchedYm, today: new Date().toISOString().slice(0, 10), requests: leaveRequests }}
+          actor={(currentUser && (currentUser.name || currentUser.pin)) || ""}
+          onReverse={null}
+          onComplete={async () => { await plannerWizard.commit(leaveRecs); setPlannerWizard(null); }}
+          onCancel={() => setPlannerWizard(null)}
+        />
+      )}
     </div>
   );
 }
