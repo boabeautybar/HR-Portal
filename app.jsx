@@ -9125,6 +9125,7 @@ const SETTINGS_TABS = [
   { t: "unpaidLegal", l: "Unpaid Leave (Legal)", cat: "People", icon: "⏸️" },
   { t: "compliance", l: "Compliance", cat: "People", icon: "📋" },
   { t: "incidents", l: "Incident Reports", cat: "People", icon: "🛡️" },
+  { t: "leaveExpiry", l: "Leave Expiry Reports", cat: "People", icon: "⏳" },
   { t: "scheduling", l: "Scheduling", cat: "Operations", icon: "📅" },
   { t: "locations", l: "Locations", cat: "Operations", icon: "📍" },
   { t: "checkins", l: "Nail Tech Check-ins", cat: "Operations", icon: "📲" },
@@ -10640,6 +10641,16 @@ const INCIDENT_STATUS = {
   reviewing: { label: "Reviewing", color: "#b45309", bg: "#fef3c7" },
   resolved: { label: "Resolved", color: "#15803d", bg: "#dcfce7" }
 };
+// The leave-expiry radar auto-files into the SAME incident_reports table, but a
+// stream of machine expiry alerts was burying genuine staff reports — so they
+// live in their own "Leave Expiry Reports" tab. Both markers are stamped by the
+// filer (below), so existing already-filed records split retroactively with no
+// migration. Keep the reporter name + tag in lock-step with the filer.
+const LEAVE_EXPIRY_REPORTER = "HubOS auto";
+const LEAVE_EXPIRY_TAG = "LEAVE EXPIRY";
+function isLeaveExpiryReport(r) {
+  return !!r && r.reporter_name === LEAVE_EXPIRY_REPORTER && typeof r.description === "string" && r.description.indexOf(LEAVE_EXPIRY_TAG) === 0;
+}
 function fmtIncidentTime(iso) {
   if (!iso) return "";
   try { return new Date(iso).toLocaleString("en-ZA", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }); }
@@ -10680,7 +10691,12 @@ function IncidentQR({ url, size }) {
   return <div ref={ref} />;
 }
 
-function IncidentReportsTab({ reports, setReports, currentUser }) {
+function IncidentReportsTab({ reports, setReports, currentUser, mode }) {
+  // Same component, two inboxes: the default view hides the auto-filed leave-
+  // expiry alerts so genuine staff reports aren't buried; mode="leaveExpiry"
+  // shows ONLY those. Everything else (status/store filters, review actions,
+  // notes, resolution) is identical, so both share this one implementation.
+  const leaveMode = mode === "leaveExpiry";
   const [statusFilter, setStatusFilter] = useState("open");   // open | all | new | reviewing | resolved
   const [storeFilter, setStoreFilter] = useState("");
   const [openId, setOpenId] = useState(null);
@@ -10699,7 +10715,9 @@ function IncidentReportsTab({ reports, setReports, currentUser }) {
     if (custom) return custom.replace(/\/+$/, "");
     return (typeof window !== "undefined" ? window.location.origin : "") + "/myboa.html";
   })();
-  const stores = Array.from(new Set(reports.map(r => r.store).filter(Boolean))).sort();
+  // This inbox's slice of the shared incident_reports set.
+  const scoped = reports.filter(r => leaveMode ? isLeaveExpiryReport(r) : !isLeaveExpiryReport(r));
+  const stores = Array.from(new Set(scoped.map(r => r.store).filter(Boolean))).sort();
 
   const patchLocal = (id, patch) => setReports(reports.map(r => r.id === id ? { ...r, ...patch } : r));
 
@@ -10751,13 +10769,13 @@ function IncidentReportsTab({ reports, setReports, currentUser }) {
     setBusy(false);
   };
 
-  const filtered = reports.filter(r => {
+  const filtered = scoped.filter(r => {
     if (storeFilter && r.store !== storeFilter) return false;
     if (statusFilter === "open") return r.status !== "resolved";
     if (statusFilter === "all") return true;
     return r.status === statusFilter;
   });
-  const urgentOpen = reports.filter(r => r.urgent && r.status !== "resolved").length;
+  const urgentOpen = scoped.filter(r => r.urgent && r.status !== "resolved").length;
 
   const card = { background: "#fff", border: "1px solid #f3d4e0", borderRadius: 14, padding: "16px 18px", marginBottom: 16 };
   const chip = (c) => ({ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 700, color: c.color, background: c.bg });
@@ -10765,15 +10783,17 @@ function IncidentReportsTab({ reports, setReports, currentUser }) {
   return (
     <div>
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 4 }}>
-        <h2 style={{ fontFamily: "'Playfair Display',serif", fontSize: 26, color: "#831843", margin: 0 }}>🛡️ Incident Reports</h2>
+        <h2 style={{ fontFamily: "'Playfair Display',serif", fontSize: 26, color: "#831843", margin: 0 }}>{leaveMode ? "⏳ Leave Expiry Reports" : "🛡️ Incident Reports"}</h2>
         {urgentOpen > 0 && <span style={chip(INCIDENT_STATUS.new)}>🚨 {urgentOpen} urgent open</span>}
       </div>
       <p style={{ color: "#9d6a82", fontSize: 13.5, marginTop: 4, maxWidth: 680 }}>
-        Confidential reports filed by staff from their own phones. Store managers cannot see these.
-        Reports are anonymous unless the person chose to add their name.
+        {leaveMode
+          ? "Auto-filed by the hub when someone's annual leave is within 3 months of expiring (use-it-or-lose-it, no payout). Review each one, then book the leave on the Leave Planner and mark it resolved. Kept separate from staff incident reports so neither buries the other."
+          : "Confidential reports filed by staff from their own phones. Store managers cannot see these. Reports are anonymous unless the person chose to add their name."}
       </p>
 
-      {/* QR — tucked away; HR clicks to reveal it only when they need to print. */}
+      {/* QR — staff incident reporting only; irrelevant to the expiry inbox. */}
+      {!leaveMode && (
       <div style={{ marginBottom: 16 }}>
         <button onClick={() => setShowQR(v => !v)}
           style={{ background: "#fff", color: "#831843", border: "1.5px solid #f9a8d4", borderRadius: 9, padding: "8px 14px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: "pointer" }}>
@@ -10801,6 +10821,7 @@ function IncidentReportsTab({ reports, setReports, currentUser }) {
           </div>
         )}
       </div>
+      )}
 
       {/* Filters */}
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
@@ -10821,7 +10842,7 @@ function IncidentReportsTab({ reports, setReports, currentUser }) {
       </div>
 
       {filtered.length === 0 && (
-        <div style={{ ...card, textAlign: "center", color: "#9d6a82" }}>No reports here yet.</div>
+        <div style={{ ...card, textAlign: "center", color: "#9d6a82" }}>{leaveMode ? "No leave-expiry reports here — nobody's annual leave is within the alert window." : "No reports here yet."}</div>
       )}
 
       {filtered.map(r => {
@@ -10935,7 +10956,9 @@ function IncidentReportsTab({ reports, setReports, currentUser }) {
 // unopened report is urgent. Alerts the people the owner named — HR, Regional
 // and National managers — via canSeeIncidents gating on the App side.
 function IncidentPopup({ reports, onView, onDismiss }) {
-  const unread = reports.filter(r => !r.reviewed);
+  // Only genuine staff reports pop — the auto-filed leave-expiry alerts have
+  // their own tab and would otherwise dominate this "new report" nudge.
+  const unread = reports.filter(r => !r.reviewed && !isLeaveExpiryReport(r));
   if (unread.length === 0) return null;
   const urgent = unread.filter(r => r.urgent);
   const isUrgent = urgent.length > 0;
@@ -21769,8 +21792,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   category: "Other",
                   incident_date: today,
                   people_involved: (person.name || "") + " (" + person.ec + ")",
-                  description: "LEAVE EXPIRY — " + cy.atRisk + " day(s) of annual leave for " + (person.name || person.ec) + " (" + person.ec + ") expire on " + cy.deadline + " (about " + cy.monthsLeft + " month(s) away). Accrued in the employment year " + cy.cycleStart + " – " + cy.cycleEnd + ". Annual leave is use-it-or-lose-it — there is no payout — so it must be booked and taken before the deadline. Please arrange for this leave to be scheduled.",
-                  reporter_name: "HubOS auto",
+                  // LEAVE_EXPIRY_TAG must stay the START of the description and
+                  // reporter_name must equal LEAVE_EXPIRY_REPORTER — isLeaveExpiryReport
+                  // keys on both to route these into the Leave Expiry Reports tab.
+                  description: LEAVE_EXPIRY_TAG + " — " + cy.atRisk + " day(s) of annual leave for " + (person.name || person.ec) + " (" + person.ec + ") expire on " + cy.deadline + " (about " + cy.monthsLeft + " month(s) away). Accrued in the employment year " + cy.cycleStart + " – " + cy.cycleEnd + ". Annual leave is use-it-or-lose-it — there is no payout — so it must be booked and taken before the deadline. Please arrange for this leave to be scheduled.",
+                  reporter_name: LEAVE_EXPIRY_REPORTER,
                   urgent: true
                 });
                 ledger[key] = { createdAt: new Date().toISOString(), refCode: ref, days: cy.atRisk };
@@ -23140,8 +23166,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t: "unpaidLegal", l: "⏸️ Unpaid Leave (Legal)" },
                   { t: "compliance", l: "📋 Compliance" },
                   ...(canSeeIncidents(currentUser) ? [(() => {
-                    const unread = incidentReports.filter(r => !r.reviewed).length;
+                    const unread = incidentReports.filter(r => !r.reviewed && !isLeaveExpiryReport(r)).length;
                     return { t: "incidents", l: "🛡️ Incident Reports" + (unread ? "  (" + unread + ")" : "") };
+                  })()] : []),
+                  ...(canSeeIncidents(currentUser) ? [(() => {
+                    const unread = incidentReports.filter(r => !r.reviewed && isLeaveExpiryReport(r)).length;
+                    return { t: "leaveExpiry", l: "⏳ Leave Expiry Reports" + (unread ? "  (" + unread + ")" : "") };
                   })()] : [])
                 ]
               },
@@ -27803,6 +27833,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         {/* ── INCIDENT REPORTS TAB ── */}
         {tab === "incidents" && canSeeIncidents(currentUser) && (
           <IncidentReportsTab reports={incidentReports} setReports={setIncidentReports} currentUser={currentUser} />
+        )}
+
+        {/* ── LEAVE EXPIRY REPORTS TAB (same component, expiry-only slice) ── */}
+        {tab === "leaveExpiry" && canSeeIncidents(currentUser) && (
+          <IncidentReportsTab reports={incidentReports} setReports={setIncidentReports} currentUser={currentUser} mode="leaveExpiry" />
         )}
 
         {/* ── LEAVE REQUESTS TAB ── */}
