@@ -118,7 +118,7 @@ function installDemoMode() {
     const noop = async () => { };
     ["saveStaff", "saveMat", "saveManager"].forEach(n => { window.BOA_DB[n] = passthrough; });
     ["saveSchedule", "saveAttendance", "saveAttendanceUndo", "clearAttendanceUndo", "saveEarlyLeaves", "saveOnboarding", "saveOffboarding",
-      "saveLeaveRecords", "saveMgrRequests", "saveManagerPins",
+      "saveLeaveRecords", "saveMgrRequests", "saveManagerPins", "saveOfficeHoursReview",
       "deleteMat", "deleteManager", "deleteSchedule", "appendActivity"
     ].forEach(n => { window.BOA_DB[n] = noop; });
   };
@@ -135,7 +135,7 @@ const READ_ONLY_GUARDED_METHODS = [
   "saveStaff", "saveMat", "saveManager", "saveSchedule", "saveAttendance", "saveEarlyLeaves",
   "saveOnboarding", "saveOffboarding", "saveLeaveRecords", "saveMgrRequests",
   "saveTechRequests", "saveManagerPins", "saveTrialPeriod", "saveInterviews", "deleteMat", "deleteManager", "deleteSchedule",
-  "saveAttendanceUndo", "clearAttendanceUndo"
+  "saveAttendanceUndo", "clearAttendanceUndo", "saveOfficeHoursReview"
 ];
 function installReadOnlyGuard() {
   const apply = () => {
@@ -9147,6 +9147,7 @@ const SETTINGS_TABS = [
   { t: "payrollProgress", l: "Payroll Progress", cat: "Payroll", icon: "📊" },
   { t: "payrollReports", l: "Reports", cat: "Payroll", icon: "📈" },
   { t: "overtime", l: "Overtime", cat: "Payroll", icon: "⏱️" },
+  { t: "officeHours", l: "Office Hours", cat: "Payroll", icon: "⏰" },
   { t: "bonusConfig", l: "Bonus & Commission", cat: "Payroll", icon: "🧮" },
   // NOTE: Payroll Inbox is intentionally NOT in this per-user permission grid.
   // Access to it is governed solely by the "Leave — payroll / balance check"
@@ -9345,7 +9346,7 @@ function AccessPanel({ title, blurb, cfg, onSave, users, roleOpts, accent, accen
   );
 }
 
-function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFreshaCfgSave, overtimeCfg, onOvertimeCfgSave, cashupReviewCfg, onCashupReviewCfgSave, leaveOpsCfg, onLeaveOpsCfgSave, leavePayrollCfg, onLeavePayrollCfgSave, leaveBalancesCfg, onLeaveBalancesCfgSave, officeStaffCfg, onOfficeStaffCfgSave }) {
+function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFreshaCfgSave, overtimeCfg, onOvertimeCfgSave, cashupReviewCfg, onCashupReviewCfgSave, leaveOpsCfg, onLeaveOpsCfgSave, leavePayrollCfg, onLeavePayrollCfgSave, leaveBalancesCfg, onLeaveBalancesCfgSave, officeStaffCfg, onOfficeStaffCfgSave, officeHoursCfg, onOfficeHoursCfgSave }) {
   const users = appUsers || {};
   const [editing, setEditing] = useState(null);   // {pin, isNew, name, role, demo, isOwner, perms, originalPin}
   const [busy, setBusy] = useState(false);
@@ -9738,6 +9739,15 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFres
           cfg={officeStaffCfg} onSave={onOfficeStaffCfgSave} users={users}
           roleOpts={[{ key: "hr", label: "HR roles" }, { key: "payroll", label: "Payroll / wages / finance roles" }]}
           accent="#3730a3" accentBg="#eef2ff" border="#c7d2fe"
+        />
+      )}
+      {onOfficeHoursCfgSave && (
+        <AccessPanel
+          title="⏰ Office Hours alerts (Payroll)"
+          blurb="Who sees the Payroll → Office Hours queue: office staff who worked short of their 9-hour day, who never clocked out, and the live list of anyone 30+ minutes past their start with no clock-in. Defaults to payroll roles — note the role match is on the words “payroll”, “wages” or “finance” in a person's role text, so if the payroll officer's role says something else, tick them by name below."
+          cfg={officeHoursCfg} onSave={onOfficeHoursCfgSave} users={users}
+          roleOpts={[{ key: "payroll", label: "Payroll / wages / finance roles" }, { key: "hr", label: "HR roles" }, { key: "national", label: "National Ops" }]}
+          accent="#b45309" accentBg="#fffbeb" border="#fde68a"
         />
       )}
 
@@ -12089,6 +12099,188 @@ HO_ROLES.concat(CC_ROLES).forEach(r => { OFFICE_ROLE_LABEL[r.key] = r.label; });
 // CC_ROLES so it can never drift from the dropdown.
 const CC_ROLE_KEYS = new Set(CC_ROLES.map(r => r.key));
 function isCcRole(role) { return CC_ROLE_KEYS.has(String(role || "").trim().toUpperCase()); }
+
+// ─── OFFICE HOURS RULE ENGINE ────────────────────────────────────────────────
+// Office staff are paid a fixed-LENGTH day, not a fixed clock window: the office
+// day is 08:00-17:00 = 9h INCLUDING lunch, so someone who starts at 07:00 and
+// leaves at 16:00 has worked it in full and owes nothing. That makes this rule
+// fundamentally different from the manager one (_mgrEarlyHoursFor), which
+// measures scheduled-END minus actual clock-out and would dock every early
+// starter an hour. We measure DURATION (out − in).
+//
+// Expected minutes come from shift-rules.js via shiftTimes(), never a hardcoded
+// 9h: the Call Centre late shift (WL 09:00-18:30) is 9.5h while its early shift
+// (07:00-16:00) and the flat office day are both 9h. Hardcoding 9 would
+// silently under-measure the late floor by 30 minutes every single day.
+//
+// FOUR verdicts, deliberately kept apart because each needs a different action:
+//   short   — in + out, worked < expected − grace     → a payroll deduction
+//   no_out  — in, never clocked out                   → hours UNVERIFIABLE, chase
+//   absent  — scheduled, day is over, never clocked in → ops/payroll question
+//   pending — scheduled TODAY, start time passed by OFFICE_LATE_ALERT_MIN and
+//             still no clock-in                       → live "where are they?"
+// `pending` is the only live one: it self-clears the moment they badge in. A
+// late arrival that still completes the full duration is NOT a short day — it
+// is recorded as `lateMin` on an otherwise-ok day, so payroll sees the pattern
+// build without being asked to action a day nobody owes hours for.
+//
+// Head Office has NO auto-clock-out (that is manager-only, on store kiosks), so
+// `no_out` is expected to be common. It is never converted into a deduction —
+// inventing an end time would manufacture a number nobody recorded.
+const OFFICE_SHORT_GRACE_MIN = 20;   // matches _MGR_EARLY_GRACE_MIN — one story to tell staff
+const OFFICE_LATE_ALERT_MIN = 30;    // "30 minutes past their start and still not in"
+const OFFICE_LATE_LOG_MIN = 10;      // arrivals later than this get noted on the day
+const OFFICE_WORK_CODES = new Set(["W", "WE", "WM", "WL", "WB", "E"]);
+
+// Index raw `clockins` rows into ec → ymd → { inTs, outTs }.
+// Dates are LOCAL (ymdStr), never toISOString() — SA is UTC+2, so a 01:00 clock
+// row would otherwise land on the previous day. Earliest IN and latest OUT win,
+// matching how the Manager Check-ins card pairs a day (app.jsx ~39311).
+function officeClockIndex(clockRows) {
+  const out = {};
+  (clockRows || []).forEach(r => {
+    if (!r || !r.ts) return;
+    const ec = String((r.staff && r.staff.employee_code) || "").trim().toUpperCase();
+    if (!ec) return;
+    const ymd = ymdStr(new Date(r.ts));
+    const byDay = (out[ec] = out[ec] || {});
+    const cell = (byDay[ymd] = byDay[ymd] || { inTs: null, outTs: null, autoOut: false });
+    if (r.type === "in") { if (!cell.inTs || r.ts < cell.inTs) cell.inTs = r.ts; }
+    else if (r.type === "out" || r.type === "out_auto") {
+      if (!cell.outTs || r.ts > cell.outTs) { cell.outTs = r.ts; cell.autoOut = r.type === "out_auto"; }
+    }
+  });
+  return out;
+}
+
+// Minutes-from-midnight of an ISO timestamp, in LOCAL time.
+function officeMinOfDay(iso) { const d = new Date(iso); return d.getHours() * 60 + d.getMinutes(); }
+
+// Build one finding per (office person × day) that needs attention.
+// PURE: every input is passed in, so the Office Hours tab, the payroll dashboard
+// card and the nav badge all read the identical answer rather than three copies
+// that drift. Days that are fine produce NO finding (except a late arrival note).
+//
+//   people    [{ ec, name, role, branch }] — the HO and/or CC roster to judge
+//   clockIdx  officeClockIndex(...) output
+//   schedGrid { [ec]: { [dayOfMonth]: code } } — the PUBLISHED office grid
+//   opts      { days: [{d, dow, ymd}], holidays: {ymd: name}, nowTs }
+function officeHoursFindings(people, clockIdx, schedGrid, opts) {
+  const o = opts || {};
+  const days = o.days || [];
+  const holidays = o.holidays || {};
+  const nowTs = o.nowTs || Date.now();
+  const now = new Date(nowTs);
+  const todayYmd = ymdStr(now);
+  const nowMin = now.getHours() * 60 + now.getMinutes();
+  const grid = schedGrid || {};
+  const findings = [];
+
+  (people || []).forEach(s => {
+    if (!s || !s.ec) return;
+    const ec = String(s.ec).trim();
+    const ecU = ec.toUpperCase();
+    const row = grid[ec] || grid[ecU] || grid[s.ec] || null;
+    if (!row) return;                                  // nobody to judge without a published row
+    const clock = clockIdx[ecU] || {};
+
+    days.forEach(dy => {
+      if (dy.ymd > todayYmd) return;                   // the future owes nothing
+      if (holidays[dy.ymd]) return;                    // public holiday — not a working day
+      const code = String(row[String(dy.d)] || row[dy.d] || "").trim().toUpperCase();
+      if (!OFFICE_WORK_CODES.has(code)) return;        // off / leave / not scheduled
+
+      const range = parseShiftRange(shiftTimes(s.role, code, HEAD_OFFICE, dy.dow));
+      if (!range) return;                              // shift-rules.js missing — degrade, don't guess
+      const expMin = range.end - range.start;
+      const rec = clock[dy.ymd] || null;
+      const base = {
+        ec, name: s.name || ec, role: s.role || "", ymd: dy.ymd, d: dy.d, code,
+        schedStart: range.start, schedEnd: range.end, expMin,
+        isCc: isCallCentreEc(ec) || isCcRole(s.role)
+      };
+
+      if (!rec || !rec.inTs) {
+        if (dy.ymd === todayYmd) {
+          // Live: only once their start time is OFFICE_LATE_ALERT_MIN behind us.
+          if (nowMin >= range.start + OFFICE_LATE_ALERT_MIN) {
+            findings.push({ ...base, kind: "pending", lateMin: nowMin - range.start });
+          }
+          return;
+        }
+        findings.push({ ...base, kind: "absent" });
+        return;
+      }
+
+      const inMin = officeMinOfDay(rec.inTs);
+      const lateMin = Math.max(0, inMin - range.start);
+
+      if (!rec.outTs) {
+        // Still mid-shift today is normal — only a CLOSED day can be missing an out.
+        if (dy.ymd === todayYmd) return;
+        findings.push({ ...base, kind: "no_out", inTs: rec.inTs, lateMin });
+        return;
+      }
+
+      const workedMin = Math.max(0, Math.round((new Date(rec.outTs) - new Date(rec.inTs)) / 60000));
+      const shortMin = expMin - workedMin;
+      if (shortMin > OFFICE_SHORT_GRACE_MIN) {
+        findings.push({
+          ...base, kind: "short", inTs: rec.inTs, outTs: rec.outTs, lateMin,
+          workedMin, shortMin,
+          // Same 0.5h rounding + 12h cap the manager deduction uses, so a short
+          // day converts to the deduction sidecar in the units payroll expects.
+          shortHours: Math.min(12, Math.round((shortMin / 60) * 2) / 2)
+        });
+        return;
+      }
+      // Full day worked. Note a late arrival so a pattern is visible, but this
+      // is explicitly NOT a payroll event — they made the hours up.
+      if (lateMin > OFFICE_LATE_LOG_MIN) {
+        findings.push({ ...base, kind: "late_ok", inTs: rec.inTs, outTs: rec.outTs, lateMin, workedMin });
+      }
+    });
+  });
+
+  findings.sort((a, b) => (a.ymd === b.ymd ? String(a.name).localeCompare(String(b.name)) : b.ymd.localeCompare(a.ymd)));
+  return findings;
+}
+
+// "1h 25m" / "45m" — one formatter so every surface reads the same.
+function officeFmtMin(min) {
+  const m = Math.max(0, Math.round(min || 0));
+  const h = Math.floor(m / 60), r = m % 60;
+  return h ? (h + "h" + (r ? " " + r + "m" : "")) : (r + "m");
+}
+// "07:58" from an ISO timestamp, in LOCAL time.
+function officeFmtTime(iso) {
+  if (!iso) return "—";
+  try { return new Date(iso).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit", hour12: false }); }
+  catch (_) { return "—"; }
+}
+// "08:00" from minutes-from-midnight.
+function officeFmtMinOfDay(min) {
+  const m = Math.max(0, Math.round(min || 0));
+  return String(Math.floor(m / 60)).padStart(2, "0") + ":" + String(m % 60).padStart(2, "0");
+}
+// Ledger key for one person-day's review state. EC is globally unique and a ymd
+// is unambiguous, so this survives a branch/department move.
+function officeReviewKey(ec, ymd) { return String(ec || "").trim().toUpperCase() + "|" + ymd; }
+// The kinds payroll is expected to action, and therefore the only ones the nav
+// badge counts.
+//
+// `absent` is deliberately NOT here. Measured against live data (Jun–Jul 2026)
+// the office kiosk is used on roughly a third of scheduled days and five office
+// people had never clocked in at all, so one cycle yields ~270 absent days
+// against ~30 genuine hours problems. Badging that buries the real queue and
+// teaches payroll to ignore the tab. Absences are still shown — rolled up per
+// person, where they read as what they actually are: a kiosk-adoption problem,
+// not 270 people who failed to come to work.
+// `late_ok` is a note about a day that WAS worked in full, so it is never a task.
+const OFFICE_ACTIONABLE = new Set(["short", "no_out"]);
+// Everything that can carry a cleared/deducted state — absences included, since
+// payroll may still want to tick one off once it's been explained.
+const OFFICE_REVIEWABLE = new Set(["short", "no_out", "absent"]);
 
 // Shared request-board classification: split a filtered request list into
 // Managers / Nail Techs / Head Office — the three colour-coded columns the
@@ -18518,7 +18710,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const NAV_TAB_TO_CATEGORY = {
     onboard: "People", offboard: "People", staff: "People", officeStaff: "People", recruitment: "People", hrLibrary: "People", maternity: "People", unpaidLegal: "People", trialPeriod: "People", smTrial: "People",
     scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", hoCheckins: "Operations", ccCheckins: "Operations", leave: "Operations", checkins: "Operations", freshaTodo: "Operations", storeOpenings: "Operations", storeHours: "Operations", movements: "Operations", cashups: "Operations", mgrCoverage: "Operations",
-    attendance: "Payroll", payrollProgress: "Payroll", payrollReports: "Payroll", overtime: "Payroll", payrollInbox: "Payroll", leaveBalances: "Payroll", frl: "Payroll",
+    attendance: "Payroll", payrollProgress: "Payroll", payrollReports: "Payroll", overtime: "Payroll", officeHours: "Payroll", payrollInbox: "Payroll", leaveBalances: "Payroll", frl: "Payroll",
     leaveRequests: "Operations", calledInSick: "Operations", extraDayRequests: "Operations",
     alerts: "Insights", activity: "Insights", storeReports: "Insights", staffingReport: "Insights",
     settings: "Admin", voucherAdmin: "Admin",
@@ -18543,6 +18735,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [hoClockinMeta, setHoClockinMeta] = useState({});  // {clockinId: meta}
   const [hoClockinDays] = useState(31);                    // how far back HO rows load
   const [hoClockinDay, setHoClockinDay] = useState(() => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); });
+
+  // ── Office Hours (Payroll) state ───────────────────────────────────
+  // Its own clock-in feed rather than reusing hoClockinRows: that one is a
+  // rolling 31-day window pinned to the Check-ins tabs, while this one must
+  // cover an exact pay cycle (25th → 24th) that payroll can step back through.
+  const [officeHoursYm, setOfficeHoursYm] = useState(() => {
+    const d = new Date(), y = d.getFullYear();
+    let m = d.getMonth() + 1;
+    if (d.getDate() <= 24) { m -= 1; }        // START-month convention (currentAttYm)
+    let yy = y; if (m < 1) { m = 12; yy -= 1; }
+    return yy + "-" + String(m).padStart(2, "0");
+  });
+  const [officeHoursRows, setOfficeHoursRows] = useState([]);       // clockins for the cycle
+  const [officeHoursSched, setOfficeHoursSched] = useState(null);   // {ho:{}, cc:{}, hoPub, ccPub} | null = not loaded
+  const [officeHoursReview, setOfficeHoursReview] = useState({});   // durable review ledger
+  const [officeHoursBusy, setOfficeHoursBusy] = useState("");       // key of the row mid-write
 
   // ── Manager Clock-ins viewer state ─────────────────────────────────
   const [mgrClockinRows, setMgrClockinRows] = useState([]);
@@ -19023,6 +19231,28 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // assertion — a render gate alone is cosmetic. Declared here, after
   // officeStaffCfg: referencing it any earlier is a TDZ crash on load.
   const canAddOfficeStaff = accessAllows(currentUser, officeStaffCfg);
+  // Who sees the Office Hours alerts — short days, missing clock-outs and the
+  // live "hasn't clocked in yet" list (boa_office_hours_access_v1). Defaults to
+  // the payroll role, since this IS the payroll officer's queue.
+  // ⚠ accessAllows matches "payroll"/"wages"/"finance" as a SUBSTRING of the
+  // free-text portal role. None of the seeded users carry any of those words, so
+  // until someone's role says "Payroll" (or their pin is ticked in Settings)
+  // this queue is owner-only and the payroll officer will never see it.
+  const [officeHoursAccess, setOfficeHoursAccess] = useState({});
+  const officeHoursCfg = useMemo(() => {
+    const c = officeHoursAccess || {};
+    return {
+      roles: Array.isArray(c.roles) ? c.roles : ["payroll"],
+      pins: Array.isArray(c.pins) ? c.pins : []
+    };
+  }, [officeHoursAccess]);
+  const saveOfficeHoursCfg = async (next) => {
+    setOfficeHoursAccess(next);
+    try { if (window.BOA_DB.saveOfficeHoursAccess) await window.BOA_DB.saveOfficeHoursAccess(next); }
+    catch (e) { window.alert("Could not save office hours access: " + (e.message || e)); }
+  };
+  // Declared after officeHoursCfg — referencing it earlier is a TDZ crash.
+  const canSeeOfficeHours = accessAllows(currentUser, officeHoursCfg);
   // Who may REVIEW ("tick off") a store's daily cash-up (boa_cashup_review_access_v1).
   // Default: Regional Ops managers (owners always allowed). Editable in Settings.
   const [cashupReviewAccess, setCashupReviewAccess] = useState({});
@@ -20686,6 +20916,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       window.BOA_DB.loadFreshaAccess ? window.BOA_DB.loadFreshaAccess() : Promise.resolve({}),
       window.BOA_DB.loadOvertimeAccess ? window.BOA_DB.loadOvertimeAccess() : Promise.resolve({}),
       window.BOA_DB.loadOfficeStaffAccess ? window.BOA_DB.loadOfficeStaffAccess() : Promise.resolve({}),
+      window.BOA_DB.loadOfficeHoursAccess ? window.BOA_DB.loadOfficeHoursAccess() : Promise.resolve({}),
       window.BOA_DB.loadCashupReviewAccess ? window.BOA_DB.loadCashupReviewAccess() : Promise.resolve({}),
       window.BOA_DB.loadLeaveOpsAccess ? window.BOA_DB.loadLeaveOpsAccess() : Promise.resolve({}),
       window.BOA_DB.loadLeavePayrollAccess ? window.BOA_DB.loadLeavePayrollAccess() : Promise.resolve({}),
@@ -20696,7 +20927,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       window.BOA_DB.loadFreshaExtraOpenings ? window.BOA_DB.loadFreshaExtraOpenings() : Promise.resolve({}),
       window.BOA_DB.loadFreshaBlocks ? window.BOA_DB.loadFreshaBlocks() : Promise.resolve({}),
       window.BOA_DB.loadInterviews ? window.BOA_DB.loadInterviews() : Promise.resolve([])
-    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess, offStaffAccess, cuReviewAccess, lvOpsAccess, lvPayrollAccess, lvBalancesAccess, incidents, leaveReqs, extraReqs, freshaExtraOpenMap, freshaBlocksMap, interviews]) => {
+    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess, offStaffAccess, offHoursAccess, cuReviewAccess, lvOpsAccess, lvPayrollAccess, lvBalancesAccess, incidents, leaveReqs, extraReqs, freshaExtraOpenMap, freshaBlocksMap, interviews]) => {
       // Register Head Office employee codes BEFORE any state update so
       // isManagerEc() never mis-classifies an HO person (e.g. a -M code) as a
       // salon manager. Rebuilt each load; empty when no HO staff exist.
@@ -20788,6 +21019,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setFreshaAccess(freshaAcc && typeof freshaAcc === "object" ? freshaAcc : {});
       setOvertimeAccess(otAccess && typeof otAccess === "object" ? otAccess : {});
       setOfficeStaffAccess(offStaffAccess && typeof offStaffAccess === "object" ? offStaffAccess : {});
+      setOfficeHoursAccess(offHoursAccess && typeof offHoursAccess === "object" ? offHoursAccess : {});
       setCashupReviewAccess(cuReviewAccess && typeof cuReviewAccess === "object" ? cuReviewAccess : {});
       setLeaveOpsAccess(lvOpsAccess && typeof lvOpsAccess === "object" ? lvOpsAccess : {});
       setLeavePayrollAccess(lvPayrollAccess && typeof lvPayrollAccess === "object" ? lvPayrollAccess : {});
@@ -21379,6 +21611,187 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     })();
     return () => { cancelled = true; };
   }, [tab, mgrClockinDay, mgrClockinRows]);
+
+  // ── Office Hours (Payroll) ─────────────────────────────────────────
+  // The pay cycle being judged: 25th of officeHoursYm → 24th of the next month,
+  // plus the SA public holidays inside it (office staff aren't expected in on a
+  // PH, so those days must never produce a finding).
+  const officeCycle = useMemo(() => {
+    const p = String(officeHoursYm).split("-");
+    const y = parseInt(p[0], 10), m = parseInt(p[1], 10);
+    const start = new Date(y, m - 1, 25), end = new Date(y, m, 24);
+    const days = [];
+    for (let cur = new Date(start); cur <= end; cur.setDate(cur.getDate() + 1)) {
+      days.push({ d: cur.getDate(), dow: cur.getDay(), ymd: ymdStr(cur) });
+    }
+    const holidays = {};
+    Array.from(new Set(days.map(dd => parseInt(dd.ymd.slice(0, 4), 10))))
+      .forEach(yr => Object.assign(holidays, saHolidays(yr)));
+    // The office schedule is a TECH-style grid, so its key uses the END-month ym
+    // (data.js schedKey takes ym RAW and the caller pre-shifts). Getting this
+    // wrong reads the neighbouring cycle's grid and every day looks unscheduled.
+    const techYm = (m === 12 ? (y + 1) + "-01" : y + "-" + String(m + 1).padStart(2, "0"));
+    return { start, end, days, holidays, techYm, startYmd: ymdStr(start), endYmd: ymdStr(end) };
+  }, [officeHoursYm]);
+
+  // Load the cycle's clock-ins, both published office grids and the review
+  // ledger. Gated on the payroll permission AND on a surface that shows it, so
+  // it costs nothing for everyone else.
+  // The Check-ins tabs load it too (without needing the payroll permission) so
+  // their "Not clocked in" roster can skip people who are simply off or on
+  // leave. Only the FINDINGS are permission-gated, not the schedule itself.
+  useEffect(() => {
+    const wantPayroll = canSeeOfficeHours && (tab === "officeHours" || tab === "dashboard");
+    const wantCheckins = tab === "hoCheckins" || tab === "ccCheckins";
+    if (!wantPayroll && !wantCheckins) return;
+    if (!window.BOA_DB || !window.BOA_DB.isReady) return;
+    let cancelled = false;
+    const safeP = (p) => Promise.resolve(p).catch(() => null);
+    // Prefer the PUBLISHED snapshot [0] — that is the schedule staff actually
+    // read and worked to. The draft can hold unpublished edits, which would
+    // judge someone against a shift nobody told them about. Fall back to the
+    // draft only when a cycle has never been published.
+    const gridFor = async (branchName) => {
+      const snaps = window.BOA_DB.loadApprovedSchedules
+        ? await safeP(window.BOA_DB.loadApprovedSchedules(branchName, officeCycle.techYm, false)) : null;
+      if (Array.isArray(snaps) && snaps[0] && snaps[0].grid) return { grid: snaps[0].grid, published: true };
+      const draft = await safeP(window.BOA_DB.loadSchedule(branchName, officeCycle.techYm, false));
+      return { grid: (draft && draft.grid) || {}, published: false };
+    };
+    (async () => {
+      // Days back from today to the cycle start, +1 so the boundary day is whole.
+      const daysBack = Math.max(1, Math.ceil((Date.now() - officeCycle.start.getTime()) / 86400000) + 1);
+      const [rows, ho, cc, ledger] = await Promise.all([
+        (wantPayroll && window.BOA_DB.listRecentHoClockins) ? safeP(window.BOA_DB.listRecentHoClockins(daysBack)) : Promise.resolve(null),
+        gridFor(HEAD_OFFICE),
+        gridFor(CALL_CENTRE),
+        (wantPayroll && window.BOA_DB.loadOfficeHoursReview) ? safeP(window.BOA_DB.loadOfficeHoursReview()) : Promise.resolve(null)
+      ]);
+      if (cancelled) return;
+      // The Check-ins tabs already have their own clock-in feed (hoClockinRows)
+      // and never read the ledger, so they skip both fetches — they only need
+      // the grids. Don't blank state they didn't load.
+      if (rows) setOfficeHoursRows(rows);
+      if (ledger) setOfficeHoursReview(typeof ledger === "object" ? ledger : {});
+      setOfficeHoursSched({ ho: ho.grid, cc: cc.grid, hoPub: ho.published, ccPub: cc.published });
+    })();
+    return () => { cancelled = true; };
+  }, [canSeeOfficeHours, tab, officeCycle]);
+
+  // Every office-hours finding for the cycle. ONE derivation — the tab, the
+  // dashboard card and the nav badge all read this, so they cannot disagree.
+  const officeFindings = useMemo(() => {
+    if (!canSeeOfficeHours || !officeHoursSched) return [];
+    const idx = officeClockIndex(officeHoursRows);
+    const opts = { days: officeCycle.days, holidays: officeCycle.holidays, nowTs: Date.now() };
+    // Judge each population against its OWN grid: HO and CC&S are separate
+    // schedule stores, and a CC person's hours come from the CC grid's WE/WL
+    // code (07:00-16:00 vs 09:00-18:30), not the flat office day.
+    return officeHoursFindings(hoOnlyStaff, idx, officeHoursSched.ho, opts)
+      .concat(officeHoursFindings(ccStaff, idx, officeHoursSched.cc, opts))
+      .sort((a, b) => (a.ymd === b.ymd ? String(a.name).localeCompare(String(b.name)) : b.ymd.localeCompare(a.ymd)));
+  }, [canSeeOfficeHours, officeHoursSched, officeHoursRows, officeCycle, hoOnlyStaff, ccStaff]);
+
+  // Findings still awaiting payroll. `late_ok` and `pending` never count:
+  // late_ok is a note about a day that was worked in full, and pending clears
+  // itself the moment the person badges in — a badge that can't reach 0 is noise.
+  const officeOpenFindings = useMemo(() => officeFindings.filter(f =>
+    OFFICE_ACTIONABLE.has(f.kind) && !officeHoursReview[officeReviewKey(f.ec, f.ymd)]
+  ), [officeFindings, officeHoursReview]);
+  const officeLiveLate = useMemo(() => officeFindings.filter(f => f.kind === "pending"), [officeFindings]);
+
+  // Persist one person-day's review state. Read-modify-write of the whole map,
+  // matching every other app_state ledger in the app.
+  const _writeOfficeReview = async (key, entry) => {
+    const next = { ...officeHoursReview };
+    if (entry) next[key] = entry; else delete next[key];
+    setOfficeHoursReview(next);
+    try { if (window.BOA_DB.saveOfficeHoursReview) await window.BOA_DB.saveOfficeHoursReview(next); }
+    catch (e) { window.alert("Could not save: " + (e.message || e)); }
+  };
+
+  // "Nothing owed" — payroll looked and is satisfied. Clears it from the badge
+  // without touching pay.
+  const clearOfficeFinding = async (f, note) => {
+    const key = officeReviewKey(f.ec, f.ymd);
+    setOfficeHoursBusy(key);
+    await _writeOfficeReview(key, {
+      status: "cleared", kind: f.kind, note: note || "",
+      by: (currentUser && currentUser.name) || "", at: new Date().toISOString()
+    });
+    setOfficeHoursBusy("");
+    logActivity("Cleared office hours flag", f.name + " · " + f.ymd, f.kind, "Payroll");
+  };
+
+  // "Deduct" — push the shortfall into the SAME boa_early_<branch>_<ym> sidecar
+  // the kiosk's "Left work early" writes, which the Attendance tab already reads
+  // into its UNPAID column (attEarly → _mgrEarlyHoursFor's fallback for an
+  // office row, whose clock-outs never populate the manager index). No new
+  // payroll pathway is invented — this feeds the one that already exists.
+  //
+  // ⚠ Attendance converts these hours to days at 8h/day (the kiosk's left-early
+  // business rule) while an office day is 9h, so a full 9h shortfall shows as
+  // 1.125 unpaid days. That divisor is shared with every nail tech, so it is
+  // deliberately not changed here.
+  //
+  // Only ever called for kind "short": a missing clock-out has no defensible
+  // number, and an absent day is a schedule/leave question, not an hours one.
+  const deductOfficeFinding = async (f) => {
+    if (f.kind !== "short" || !(f.shortHours > 0)) return;
+    const key = officeReviewKey(f.ec, f.ymd);
+    // Which store's sidecar: CC&S people live in their own attendance store.
+    const branchName = f.isCc ? CALL_CENTRE : HEAD_OFFICE;
+    // boa_early_* is keyed by the START-month ym — the same cycle key this tab
+    // is already showing, so no shifting is needed.
+    const ym = officeHoursYm;
+    setOfficeHoursBusy(key);
+    try {
+      const cur = (window.BOA_DB.loadEarlyLeaves ? await window.BOA_DB.loadEarlyLeaves(branchName, ym) : {}) || {};
+      const dayKey = String(f.d);
+      const next = { ...cur, [dayKey]: { ...(cur[dayKey] || {}) } };
+      next[dayKey][f.ec] = {
+        hours: f.shortHours,
+        recordedAt: new Date().toISOString(),
+        recordedBy: (currentUser && currentUser.name) || "Payroll"
+      };
+      await window.BOA_DB.saveEarlyLeaves(branchName, ym, next);
+      await _writeOfficeReview(key, {
+        status: "deducted", kind: f.kind, hours: f.shortHours, branch: branchName, ym,
+        by: (currentUser && currentUser.name) || "", at: new Date().toISOString()
+      });
+      logActivity("Deducted office short hours", f.name + " · " + f.ymd, f.shortHours + "h · " + branchName, "Payroll");
+    } catch (e) {
+      window.alert("Could not record the deduction: " + (e.message || e));
+    }
+    setOfficeHoursBusy("");
+  };
+
+  // Undo — drops the review entry AND, for a deduction, the sidecar hours it
+  // wrote. Leaving the hours behind would keep docking someone payroll had
+  // already changed its mind about.
+  const undoOfficeFinding = async (f) => {
+    const key = officeReviewKey(f.ec, f.ymd);
+    const prev = officeHoursReview[key];
+    setOfficeHoursBusy(key);
+    try {
+      if (prev && prev.status === "deducted" && prev.branch && prev.ym) {
+        const cur = (window.BOA_DB.loadEarlyLeaves ? await window.BOA_DB.loadEarlyLeaves(prev.branch, prev.ym) : {}) || {};
+        const dayKey = String(f.d);
+        if (cur[dayKey] && cur[dayKey][f.ec]) {
+          const nextDay = { ...cur[dayKey] };
+          delete nextDay[f.ec];
+          const next = { ...cur };
+          if (Object.keys(nextDay).length) next[dayKey] = nextDay; else delete next[dayKey];
+          await window.BOA_DB.saveEarlyLeaves(prev.branch, prev.ym, next);
+        }
+      }
+      await _writeOfficeReview(key, null);
+      logActivity("Undid office hours action", f.name + " · " + f.ymd, (prev && prev.status) || "", "Payroll");
+    } catch (e) {
+      window.alert("Could not undo: " + (e.message || e));
+    }
+    setOfficeHoursBusy("");
+  };
 
   // ── Head Office Check-ins loaders ──────────────────────────────────
   // Recent HO clock-in rows when the tab opens (and for the attendance grid's
@@ -23247,6 +23660,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t: "payrollProgress", l: "📊 Payroll Progress" },
                   { t: "payrollReports", l: "📈 Reports" },
                   { t: "overtime", l: "⏱️ Overtime" },
+                  // Badge counts only what payroll must ACTION (short / no
+                  // clock-out / absent, minus anything already reviewed) — the
+                  // live "not in yet" list clears itself and would keep it lit.
+                  ...(canSeeOfficeHours ? [{
+                    t: "officeHours",
+                    l: "⏰ Office Hours" + (officeOpenFindings.length ? "  (" + officeOpenFindings.length + ")" : ""),
+                    forceShow: true
+                  }] : []),
                   ...(accessAllows(currentUser, leavePayrollCfg) ? [(() => {
                     const nReq = (leaveRequests || []).filter(r => r.status !== "declined" && r.leave_type !== "Sick" && r.leave_type !== "Absent" && !r.balance_checked_at).length;
                     const nCal = (leaveRecs || []).filter(lv => lv && lv.balancePending && !lv.emergency).length;
@@ -24045,6 +24466,36 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     title="Open the Leave Balances tab to upload a fresh Sage balance report."
                     style={{ background: "#6d28d9", color: "#fff", border: "none", borderRadius: 10, padding: "10px 18px", fontWeight: 800, fontSize: 13, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap", boxShadow: "0 4px 12px rgba(109,40,217,0.3)" }}>
                     Upload balances →
+                  </button>
+                </div>
+              )}
+              {/* Office hours — the payroll officer's landing alert. Two separate
+                  things on purpose: who is missing RIGHT NOW (self-clearing, so
+                  it's actionable today), and how many days are waiting to be
+                  reviewed. Both derive from officeFindings — the same source the
+                  tab and the nav badge read. */}
+              {canSeeOfficeHours && (officeLiveLate.length > 0 || officeOpenFindings.length > 0) && (
+                <div style={{ background: "#fffbeb", border: "1px solid #fcd34d", borderRadius: 16, padding: "16px 20px", marginBottom: 20, boxShadow: "0 4px 14px rgba(180,83,9,0.10)", display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+                  <div style={{ flex: 1, minWidth: 280 }}>
+                    <div style={{ fontSize: 15, fontWeight: 800, color: "#92400e", letterSpacing: "0.04em", textTransform: "uppercase" }}>⏰ Office hours need a look</div>
+                    {officeLiveLate.length > 0 && (
+                      <div style={{ fontSize: 12.5, color: "#b91c1c", fontWeight: 700, marginTop: 4 }}>
+                        {officeLiveLate.length} {officeLiveLate.length === 1 ? "person is" : "people are"} more than {OFFICE_LATE_ALERT_MIN} minutes past their start with no clock-in — {officeLiveLate.slice(0, 3).map(f => f.name).join(", ")}{officeLiveLate.length > 3 ? " +" + (officeLiveLate.length - 3) + " more" : ""}.
+                      </div>
+                    )}
+                    {officeOpenFindings.length > 0 && (
+                      <div style={{ fontSize: 12.5, color: "#b45309", fontWeight: 700, marginTop: 4 }}>
+                        {officeOpenFindings.length} day{officeOpenFindings.length === 1 ? "" : "s"} this cycle waiting on you — hours worked short of the shift, or a clock-in with no matching clock-out.
+                      </div>
+                    )}
+                    <div style={{ fontSize: 11.5, color: "#a16207", marginTop: 3 }}>
+                      Office staff owe a full-length day, not a fixed window — an early start earns an early finish, so only genuine shortfalls appear.
+                    </div>
+                  </div>
+                  <button onClick={() => tryChangeTab("officeHours")}
+                    title="Open the Office Hours queue."
+                    style={{ background: "#b45309", color: "#fff", border: "none", borderRadius: 10, padding: "10px 18px", fontWeight: 800, fontSize: 13, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap", boxShadow: "0 4px 12px rgba(180,83,9,0.3)" }}>
+                    Review hours →
                   </button>
                 </div>
               )}
@@ -39010,7 +39461,25 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           .sort((x, y) => String(y.ts || "").localeCompare(String(x.ts || "")));
         const seenEcs = new Set(dayRows.map(r => r.staff && r.staff.employee_code).filter(Boolean).map(e => String(e).trim().toUpperCase()));
         const isFuture = hoClockinDay > todayYmd;
-        const absent = isFuture ? [] : (roster || []).filter(s => s && s.ec && !seenEcs.has(String(s.ec).trim().toUpperCase()));
+        // Only flag people who were actually SCHEDULED to be in. Without this
+        // the panel listed anyone with no clock-in — including people on leave,
+        // on an off day, or not yet started — so it was permanently red and
+        // told you nothing. Falls back to the old roster-wide behaviour when the
+        // day sits outside the loaded cycle or no grid has been published, and
+        // says which of the two you're looking at.
+        const _schedGrid = officeHoursSched ? (isCc ? officeHoursSched.cc : officeHoursSched.ho) : null;
+        const _dayInCycle = hoClockinDay >= officeCycle.startYmd && hoClockinDay <= officeCycle.endYmd;
+        const _schedKnown = !!(_schedGrid && Object.keys(_schedGrid).length && _dayInCycle);
+        const _domOfDay = parseInt(hoClockinDay.slice(8, 10), 10);
+        const _isHoliday = !!officeCycle.holidays[hoClockinDay];
+        const _scheduledIn = (s) => {
+          const row = _schedGrid[s.ec] || _schedGrid[String(s.ec).trim().toUpperCase()];
+          if (!row) return false;
+          return OFFICE_WORK_CODES.has(String(row[String(_domOfDay)] || "").trim().toUpperCase());
+        };
+        const absent = (isFuture || (_schedKnown && _isHoliday))
+          ? []
+          : (roster || []).filter(s => s && s.ec && !seenEcs.has(String(s.ec).trim().toUpperCase()) && (!_schedKnown || _scheduledIn(s)));
         return (
           <div style={{ padding: "0 24px" }}>
             <div style={{ marginBottom: 14 }}>
@@ -39065,9 +39534,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 )}
                 {!isFuture && (
                   <div style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 11, padding: "14px 16px" }}>
-                    <div style={{ fontWeight: 700, color: "#831843", fontSize: 13, marginBottom: 8 }}>Not clocked in ({absent.length})</div>
+                    <div style={{ fontWeight: 700, color: "#831843", fontSize: 13, marginBottom: 3 }}>Not clocked in ({absent.length})</div>
+                    <div style={{ fontSize: 11, color: "#9d174d", marginBottom: 8 }}>
+                      {_isHoliday && _schedKnown
+                        ? "Public holiday — nobody was expected in."
+                        : _schedKnown
+                          ? "Scheduled to work this day but no clock-in recorded. People who are off, on leave or not scheduled are excluded."
+                          : "⚠ No published schedule for this day, so this is the whole roster — people who were off or on leave are included."}
+                    </div>
                     {absent.length === 0
-                      ? <div style={{ fontSize: 12, color: "#16a34a" }}>Everyone at {groupWord} has clocked in.</div>
+                      ? <div style={{ fontSize: 12, color: "#16a34a" }}>{_isHoliday && _schedKnown ? "Public holiday." : "Everyone scheduled at " + groupWord + " has clocked in."}</div>
                       : <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                           {absent.map(s => (
                             <span key={s.ec} style={{ background: "#fef2f2", color: "#b91c1c", border: "1px solid #fecaca", borderRadius: 7, padding: "4px 10px", fontSize: 12 }}>{s.name || s.ec}</span>
@@ -39080,6 +39556,299 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           </div>
         );
       })()}
+
+      {tab === "officeHours" && (!canSeeOfficeHours ? (
+        <div style={{ padding: "0 24px" }}>
+          <div style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 11, padding: 20, color: "#831843", fontSize: 13 }}>
+            You don't have access to Office Hours. An owner can grant it under <b>Settings → ⏰ Office Hours alerts</b>.
+          </div>
+        </div>
+      ) : (() => {
+        // ── Office Hours (Payroll) ──────────────────────────────────────
+        // Office staff owe a 9-hour DAY, not a fixed clock window, so the whole
+        // sheet is duration-based: 07:00 → 16:00 is a complete day and shows
+        // nothing here. See officeHoursFindings for the rule.
+        const shiftYm = (ym, delta) => {
+          const p = String(ym).split("-"); let y = +p[0], m = +p[1] + delta;
+          while (m > 12) { m -= 12; y += 1; } while (m < 1) { m += 12; y -= 1; }
+          return y + "-" + String(m).padStart(2, "0");
+        };
+        const cycleLabel = (() => {
+          try {
+            const o = { day: "numeric", month: "short" };
+            return officeCycle.start.toLocaleDateString("en-ZA", o) + " – " + officeCycle.end.toLocaleDateString("en-ZA", { ...o, year: "numeric" });
+          } catch (_) { return officeHoursYm; }
+        })();
+        const nowYm = (() => { const d = new Date(); let m = d.getMonth() + 1, y = d.getFullYear(); if (d.getDate() <= 24) { m -= 1; if (m < 1) { m = 12; y -= 1; } } return y + "-" + String(m).padStart(2, "0"); })();
+        const isCurrentCycle = officeHoursYm === nowYm;
+        const loading = !officeHoursSched;
+
+        const reviewOf = (f) => officeHoursReview[officeReviewKey(f.ec, f.ymd)] || null;
+        const open = officeFindings.filter(f => OFFICE_ACTIONABLE.has(f.kind) && !reviewOf(f));
+        const actioned = officeFindings.filter(f => OFFICE_REVIEWABLE.has(f.kind) && reviewOf(f));
+        const lateOk = officeFindings.filter(f => f.kind === "late_ok");
+        const nShort = open.filter(f => f.kind === "short").length;
+        const nNoOut = open.filter(f => f.kind === "no_out").length;
+
+        // Absences roll up PER PERSON. A day-by-day list runs to hundreds of
+        // rows because the office kiosk is only partly adopted, which drowns
+        // the real hours queue; per person it becomes a short, chaseable list.
+        const absentDays = officeFindings.filter(f => f.kind === "absent" && !reviewOf(f));
+        const scheduledDays = {};   // ec -> days they were rostered (worked or not)
+        officeFindings.forEach(f => { if (f.kind !== "pending") scheduledDays[f.ec] = (scheduledDays[f.ec] || 0) + 1; });
+        const absentByPerson = (() => {
+          const by = {};
+          absentDays.forEach(f => {
+            const e = (by[f.ec] = by[f.ec] || { ec: f.ec, name: f.name, role: f.role, isCc: f.isCc, days: [] });
+            e.days.push(f.ymd);
+          });
+          return Object.values(by).sort((a, b) => b.days.length - a.days.length);
+        })();
+        // Clock-ins recorded for this person this cycle — 0 means the kiosk is
+        // simply not being used by them, which is a different conversation from
+        // "missed a day".
+        const clockedDaysByEc = (() => {
+          const idx = officeClockIndex(officeHoursRows);
+          const out = {};
+          Object.keys(idx).forEach(ec => {
+            out[ec] = Object.keys(idx[ec]).filter(ymd => ymd >= officeCycle.startYmd && ymd <= officeCycle.endYmd).length;
+          });
+          return out;
+        })();
+        const neverClocked = absentByPerson.filter(p => !clockedDaysByEc[String(p.ec).toUpperCase()]);
+        // A grid with no rows means nobody was ever scheduled, so the sheet is
+        // silent for a reason payroll must be told about — otherwise an empty
+        // page reads as "everyone was perfect".
+        const hoEmpty = !officeHoursSched || !Object.keys(officeHoursSched.ho || {}).length;
+        const ccEmpty = !officeHoursSched || !Object.keys(officeHoursSched.cc || {}).length;
+
+        const dayLbl = (ymd) => { try { return new Date(ymd + "T12:00:00").toLocaleDateString("en-ZA", { weekday: "short", day: "2-digit", month: "short" }); } catch (_) { return ymd; } };
+        const KIND = {
+          short: { lbl: "SHORT", bg: "#fee2e2", fg: "#991b1b" },
+          no_out: { lbl: "NO CLOCK-OUT", bg: "#fef3c7", fg: "#92400e" },
+          absent: { lbl: "NO CLOCK-IN", bg: "#ede9fe", fg: "#5b21b6" },
+          late_ok: { lbl: "LATE IN", bg: "#e0f2fe", fg: "#075985" },
+          pending: { lbl: "NOT IN YET", bg: "#fee2e2", fg: "#991b1b" }
+        };
+        const th = { textAlign: "left", padding: "8px 10px", fontSize: 10, fontWeight: 800, color: "#92400e", letterSpacing: "0.06em", textTransform: "uppercase", borderBottom: "2px solid #fde68a", whiteSpace: "nowrap" };
+        const td = { padding: "9px 10px", fontSize: 12, color: "#451a03", borderBottom: "1px solid #fef3c7", verticalAlign: "middle" };
+        const btn = (bg) => ({ background: bg, color: "#fff", border: "none", borderRadius: 7, padding: "5px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" });
+
+        const exportCsv = () => {
+          const head = ["Date", "EC", "Name", "Department", "Role", "Flag", "Scheduled", "Clock in", "Clock out", "Worked", "Expected", "Short (h)", "Late by", "Status", "By"];
+          const line = (f) => {
+            const rv = reviewOf(f);
+            return [
+              f.ymd, f.ec, f.name, f.isCc ? CALL_CENTRE : HEAD_OFFICE, OFFICE_ROLE_LABEL[f.role] || f.role,
+              KIND[f.kind] ? KIND[f.kind].lbl : f.kind,
+              officeFmtMinOfDay(f.schedStart) + " - " + officeFmtMinOfDay(f.schedEnd),
+              f.inTs ? officeFmtTime(f.inTs) : "", f.outTs ? officeFmtTime(f.outTs) : "",
+              f.workedMin != null ? officeFmtMin(f.workedMin) : "", officeFmtMin(f.expMin),
+              f.shortHours != null ? f.shortHours : "",
+              f.lateMin ? officeFmtMin(f.lateMin) : "",
+              rv ? rv.status : "open", rv ? (rv.by || "") : ""
+            ].map(_csvEscape).join(",");
+          };
+          const body = officeFindings.filter(f => f.kind !== "pending").map(line).join("\n");
+          _triggerDownload("office-hours_" + _safeFile(officeHoursYm) + ".csv", head.join(",") + "\n" + body, "text/csv");
+        };
+
+        const renderRows = (list, showActions) => list.map(f => {
+          const k = KIND[f.kind] || KIND.short;
+          const rv = reviewOf(f);
+          const key = officeReviewKey(f.ec, f.ymd);
+          const busy = officeHoursBusy === key;
+          return (
+            <tr key={key + "|" + f.kind}>
+              <td style={{ ...td, whiteSpace: "nowrap", fontWeight: 600 }}>{dayLbl(f.ymd)}</td>
+              <td style={td}>
+                <div style={{ fontWeight: 700 }}>{f.name}</div>
+                <div style={{ fontSize: 10, color: "#a16207" }}>{f.ec} · {OFFICE_ROLE_LABEL[f.role] || f.role || "—"}{f.isCc ? " · CC&S" : ""}</div>
+              </td>
+              <td style={td}><span style={{ background: k.bg, color: k.fg, fontWeight: 800, fontSize: 9, padding: "3px 7px", borderRadius: 5, letterSpacing: "0.04em" }}>{k.lbl}</span></td>
+              <td style={{ ...td, whiteSpace: "nowrap", color: "#a16207" }}>{officeFmtMinOfDay(f.schedStart)}–{officeFmtMinOfDay(f.schedEnd)} <span style={{ fontSize: 10 }}>({officeFmtMin(f.expMin)})</span></td>
+              <td style={{ ...td, whiteSpace: "nowrap" }}>
+                {f.inTs ? officeFmtTime(f.inTs) : <span style={{ color: "#9ca3af" }}>—</span>}
+                {f.lateMin > OFFICE_LATE_LOG_MIN ? <span style={{ color: "#b45309", fontSize: 10, fontWeight: 700 }}> +{officeFmtMin(f.lateMin)}</span> : null}
+              </td>
+              <td style={{ ...td, whiteSpace: "nowrap" }}>{f.outTs ? officeFmtTime(f.outTs) : <span style={{ color: "#9ca3af" }}>—</span>}</td>
+              <td style={{ ...td, whiteSpace: "nowrap", fontWeight: 700 }}>
+                {f.workedMin != null ? officeFmtMin(f.workedMin) : <span style={{ color: "#9ca3af", fontWeight: 400 }}>unverified</span>}
+                {f.shortMin > 0 ? <span style={{ color: "#b91c1c" }}> · short {officeFmtMin(f.shortMin)}</span> : null}
+              </td>
+              <td style={{ ...td, textAlign: "right" }}>
+                {rv ? (
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 11, color: rv.status === "deducted" ? "#b91c1c" : "#15803d", fontWeight: 700 }}>
+                      {rv.status === "deducted" ? "− " + rv.hours + "h deducted" : "✓ cleared"}
+                      {rv.by ? <span style={{ color: "#a16207", fontWeight: 500 }}> · {rv.by}</span> : null}
+                    </span>
+                    <button disabled={busy} onClick={() => undoOfficeFinding(f)} style={{ ...btn("#78716c"), opacity: busy ? 0.5 : 1 }}>Undo</button>
+                  </span>
+                ) : showActions ? (
+                  <span style={{ display: "inline-flex", gap: 6 }}>
+                    {f.kind === "short" && f.shortHours > 0 && (
+                      <button disabled={busy} onClick={() => deductOfficeFinding(f)} title={"Record " + f.shortHours + "h unpaid against " + (f.isCc ? CALL_CENTRE : HEAD_OFFICE) + " — shows in the Attendance tab's UNPAID column."} style={{ ...btn("#b91c1c"), opacity: busy ? 0.5 : 1 }}>
+                        Deduct {f.shortHours}h
+                      </button>
+                    )}
+                    <button disabled={busy} onClick={() => clearOfficeFinding(f, "")} title="Nothing owed — remove from the queue without touching pay." style={{ ...btn("#15803d"), opacity: busy ? 0.5 : 1 }}>Clear</button>
+                  </span>
+                ) : null}
+              </td>
+            </tr>
+          );
+        });
+
+        return (
+          <div style={{ padding: "0 24px" }}>
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, color: "#92400e", fontWeight: 700, marginBottom: 4 }}>⏰ Office Hours</div>
+              <div style={{ fontSize: 12, color: "#b45309", maxWidth: 900, lineHeight: 1.5 }}>
+                Head Office and Call Centre &amp; Sales staff owe a <b>full-length day</b>, not a fixed clock window — 07:00 → 16:00 is a complete 9-hour day and won't appear here. A day is flagged when the time between clock-in and clock-out falls more than <b>{OFFICE_SHORT_GRACE_MIN} minutes</b> short of the scheduled shift length.
+              </div>
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, background: "#fff", border: "1px solid #fde68a", borderRadius: 9, padding: "4px 6px" }}>
+                <button onClick={() => setOfficeHoursYm(shiftYm(officeHoursYm, -1))} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", color: "#b45309", padding: "0 8px" }}>‹</button>
+                <span style={{ fontSize: 13, fontWeight: 700, color: "#92400e", minWidth: 190, textAlign: "center" }}>{cycleLabel}{isCurrentCycle ? " · Current" : ""}</span>
+                <button onClick={() => { if (!isCurrentCycle) setOfficeHoursYm(shiftYm(officeHoursYm, +1)); }} disabled={isCurrentCycle} style={{ background: "none", border: "none", fontSize: 18, cursor: isCurrentCycle ? "not-allowed" : "pointer", color: isCurrentCycle ? "#d6d3d1" : "#b45309", padding: "0 8px" }}>›</button>
+              </div>
+              <button onClick={exportCsv} style={{ background: "#fff", color: "#b45309", border: "1px solid #fde68a", borderRadius: 8, padding: "8px 13px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>⬇ Export CSV</button>
+              <div style={{ flex: 1 }} />
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {[["Short days", nShort, "#fee2e2", "#991b1b"], ["No clock-out", nNoOut, "#fef3c7", "#92400e"], ["Never clocked in", neverClocked.length, "#ede9fe", "#5b21b6"]].map(([l, n, bg, fg]) => (
+                  <span key={l} style={{ background: bg, color: fg, borderRadius: 8, padding: "6px 11px", fontSize: 11, fontWeight: 800 }}>{n} {l}</span>
+                ))}
+              </div>
+            </div>
+
+            {loading ? (
+              <div style={{ background: "#fff", border: "1px solid #fde68a", borderRadius: 11, padding: 20, color: "#92400e", fontSize: 13 }}>Loading clock-ins and the published office schedule…</div>
+            ) : (
+              <>
+                {(hoEmpty || ccEmpty) && (
+                  <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 11, padding: "13px 16px", marginBottom: 16, fontSize: 12, color: "#92400e", lineHeight: 1.5 }}>
+                    ⚠ No published schedule for <b>{[hoEmpty ? HEAD_OFFICE : null, ccEmpty ? CALL_CENTRE : null].filter(Boolean).join(" and ")}</b> in this cycle, so nobody from {hoEmpty && ccEmpty ? "either group" : "that group"} can be checked. Publish it from <b>Scheduling</b> — until then an empty sheet here means "not measured", not "all clear".
+                  </div>
+                )}
+
+                {isCurrentCycle && (
+                  <div style={{ background: officeLiveLate.length ? "#fef2f2" : "#f0fdf4", border: "1px solid " + (officeLiveLate.length ? "#fecaca" : "#bbf7d0"), borderRadius: 11, padding: "14px 16px", marginBottom: 18 }}>
+                    <div style={{ fontWeight: 800, color: officeLiveLate.length ? "#991b1b" : "#15803d", fontSize: 13, marginBottom: 6 }}>
+                      {officeLiveLate.length ? "🔴 Not clocked in yet (" + officeLiveLate.length + ")" : "🟢 Everyone scheduled today has clocked in"}
+                    </div>
+                    <div style={{ fontSize: 11, color: officeLiveLate.length ? "#b91c1c" : "#166534", marginBottom: officeLiveLate.length ? 10 : 0, lineHeight: 1.5 }}>
+                      Scheduled to start today and now more than {OFFICE_LATE_ALERT_MIN} minutes past that start with no clock-in. This list clears itself the moment they badge in — it's a “check on them”, not a payroll record.
+                    </div>
+                    {officeLiveLate.length > 0 && (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                        {officeLiveLate.map(f => {
+                          // Someone who never clocks in will appear here every
+                          // single day. Say so, or payroll chases the same
+                          // people daily thinking each is a new event.
+                          const chronic = !clockedDaysByEc[String(f.ec).toUpperCase()];
+                          return (
+                            <span key={f.ec} style={{ background: "#fff", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 8, padding: "6px 11px", fontSize: 12 }}>
+                              <b>{f.name}</b> <span style={{ color: "#b45309" }}>· due {officeFmtMinOfDay(f.schedStart)} · {officeFmtMin(f.lateMin)} ago</span>
+                              {chronic ? <span style={{ color: "#6d28d9", fontWeight: 700 }}> · never uses the kiosk</span> : null}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <div style={{ background: "#fff", border: "1px solid #fde68a", borderRadius: 11, overflow: "hidden", marginBottom: 18 }}>
+                  <div style={{ padding: "12px 16px", borderBottom: "1px solid #fef3c7", fontWeight: 800, color: "#92400e", fontSize: 13 }}>Needs review ({open.length})</div>
+                  {open.length === 0 ? (
+                    <div style={{ padding: "16px", fontSize: 12, color: "#15803d" }}>Nothing outstanding for this cycle.</div>
+                  ) : (
+                    <div style={{ overflowX: "auto" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
+                        <thead><tr>{["Date", "Who", "Flag", "Scheduled", "In", "Out", "Worked", ""].map((h, i) => <th key={i} style={{ ...th, textAlign: i === 7 ? "right" : "left" }}>{h}</th>)}</tr></thead>
+                        <tbody>{renderRows(open, true)}</tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+
+                {absentByPerson.length > 0 && (
+                  <div style={{ background: "#fff", border: "1px solid #ddd6fe", borderRadius: 11, overflow: "hidden", marginBottom: 18 }}>
+                    <div style={{ padding: "12px 16px", borderBottom: "1px solid #ede9fe" }}>
+                      <div style={{ fontWeight: 800, color: "#5b21b6", fontSize: 13}}>Scheduled but no clock-in ({absentDays.length} day{absentDays.length === 1 ? "" : "s"} across {absentByPerson.length} {absentByPerson.length === 1 ? "person" : "people"})</div>
+                      <div style={{ fontSize: 11, color: "#6d28d9", marginTop: 3, lineHeight: 1.5 }}>
+                        Rostered to work but nothing was recorded on the kiosk. This is usually <b>the kiosk not being used</b> rather than a day off work — someone showing 0 of {"" + (scheduledDays[absentByPerson[0].ec] || 0)} days almost certainly worked them all. Treat it as a clock-in-discipline list, not an absence list, and confirm before deducting anything.
+                      </div>
+                    </div>
+                    <div style={{ overflowX: "auto" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 620 }}>
+                        <thead><tr>{["Who", "Days missed", "Clocked in", "Dates"].map((h, i) => <th key={i} style={{ ...th, color: "#5b21b6", borderBottom: "2px solid #ddd6fe" }}>{h}</th>)}</tr></thead>
+                        <tbody>
+                          {absentByPerson.map(p => {
+                            const clocked = clockedDaysByEc[String(p.ec).toUpperCase()] || 0;
+                            const sched = scheduledDays[p.ec] || (p.days.length + clocked);
+                            return (
+                              <tr key={p.ec}>
+                                <td style={td}>
+                                  <div style={{ fontWeight: 700 }}>{p.name}</div>
+                                  <div style={{ fontSize: 10, color: "#a16207" }}>{p.ec} · {OFFICE_ROLE_LABEL[p.role] || p.role || "—"}{p.isCc ? " · CC&S" : ""}</div>
+                                </td>
+                                <td style={{ ...td, fontWeight: 800, color: "#5b21b6", whiteSpace: "nowrap" }}>{p.days.length} of {sched}</td>
+                                <td style={{ ...td, whiteSpace: "nowrap" }}>
+                                  {clocked === 0
+                                    ? <span style={{ background: "#fee2e2", color: "#991b1b", fontWeight: 800, fontSize: 9, padding: "3px 7px", borderRadius: 5 }}>NEVER — not using the kiosk</span>
+                                    : <span style={{ color: "#15803d", fontWeight: 700 }}>{clocked} day{clocked === 1 ? "" : "s"}</span>}
+                                </td>
+                                <td style={{ ...td, fontSize: 10.5, color: "#78716c" }}>{p.days.slice(0, 8).map(d => d.slice(8, 10) + "/" + d.slice(5, 7)).join(" · ")}{p.days.length > 8 ? " +" + (p.days.length - 8) : ""}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {lateOk.length > 0 && (
+                  <div style={{ background: "#fff", border: "1px solid #bae6fd", borderRadius: 11, overflow: "hidden", marginBottom: 18 }}>
+                    <div style={{ padding: "12px 16px", borderBottom: "1px solid #e0f2fe" }}>
+                      <div style={{ fontWeight: 800, color: "#075985", fontSize: 13 }}>Late arrivals — full day still worked ({lateOk.length})</div>
+                      <div style={{ fontSize: 11, color: "#0369a1", marginTop: 3 }}>Started more than {OFFICE_LATE_LOG_MIN} minutes late but stayed long enough to complete the shift. Nothing is owed, so there is no action — this is here so a pattern is visible.</div>
+                    </div>
+                    <div style={{ overflowX: "auto" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
+                        <thead><tr>{["Date", "Who", "Flag", "Scheduled", "In", "Out", "Worked", ""].map((h, i) => <th key={i} style={{ ...th, textAlign: i === 7 ? "right" : "left", color: "#075985", borderBottom: "2px solid #bae6fd" }}>{h}</th>)}</tr></thead>
+                        <tbody>{renderRows(lateOk, false)}</tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {actioned.length > 0 && (
+                  <div style={{ background: "#fff", border: "1px solid #e7e5e4", borderRadius: 11, overflow: "hidden", marginBottom: 24 }}>
+                    <div style={{ padding: "12px 16px", borderBottom: "1px solid #f5f5f4", fontWeight: 800, color: "#57534e", fontSize: 13 }}>Actioned this cycle ({actioned.length})</div>
+                    <div style={{ overflowX: "auto" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
+                        <thead><tr>{["Date", "Who", "Flag", "Scheduled", "In", "Out", "Worked", ""].map((h, i) => <th key={i} style={{ ...th, textAlign: i === 7 ? "right" : "left", color: "#57534e", borderBottom: "2px solid #e7e5e4" }}>{h}</th>)}</tr></thead>
+                        <tbody>{renderRows(actioned, false)}</tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                <div style={{ fontSize: 11, color: "#a16207", lineHeight: 1.6, marginBottom: 24, maxWidth: 900 }}>
+                  <b>How each flag is decided.</b> Shift lengths come from the shared rules in <code>shift-rules.js</code> — the office day is 08:00–17:00 (9h) and the Call Centre floor runs 07:00–16:00 (9h) or, on a late shift, 09:00–18:30 (9.5h). Public holidays and non-working schedule codes are skipped entirely.
+                  <b> Deducting</b> writes the hours to the same early-leave record the salon kiosks use, so they appear in the Attendance tab's UNPAID column; Undo removes them again.
+                  <b> No clock-out</b> is never converted to a deduction — Head Office has no automatic clock-out, so the end time simply isn't known.
+                </div>
+              </>
+            )}
+          </div>
+        );
+      })())}
 
       {tab === "mgrclockins" && (() => {
         // Single-day view (defaults to today) with prev/next day navigation —
@@ -41873,6 +42642,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           onOvertimeCfgSave={saveOvertimeCfg}
           officeStaffCfg={officeStaffCfg}
           onOfficeStaffCfgSave={saveOfficeStaffCfg}
+          officeHoursCfg={officeHoursCfg}
+          onOfficeHoursCfgSave={saveOfficeHoursCfg}
           cashupReviewCfg={cashupReviewCfg}
           onCashupReviewCfgSave={saveCashupReviewCfg}
           leaveOpsCfg={leaveOpsCfg}
