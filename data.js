@@ -1053,29 +1053,69 @@
   // the Cash Ups page so finance / regional ops can monitor banking
   // status across all stores. We pull everything across branches —
   // region & branch filtering happens client-side using SALONS.
+  // Every cashups column EXCEPT yoco_photo. The photo column holds a ~220 KB
+  // base64 JPEG per row — select("*") over a date range dragged hundreds of
+  // MB through Postgres per page load and was saturating the database.
+  // The list queries return has_yoco_photo instead; the actual image is
+  // fetched per-row on demand via getCashupPhoto(id).
+  // (banking_slip stays in the list: it is a URL today. If slips ever start
+  // being stored as data URIs they must move to the same lazy path.)
+  var CASHUP_COLS = "id,branch,date,yoco,cash,vouchers,discounts,notes,signed_by,created_at," +
+    "yoco_link,card_tips,gift_card,manual_discounts,manual_discount_reason,cash_banked," +
+    "amount_banked,banking_ref,banked_by,banking_slip,total,archived_at,reopened_by," +
+    "reviewed_at,reviewed_by,review_comment";
+
+  // Mark each row with has_yoco_photo from an id-only side query (filtering on
+  // yoco_photo doesn't return its bytes), so the UI can still show the
+  // 📷 photo link without downloading a single image.
+  function _markPhotoRows(rows, photoIdsRes) {
+    if (photoIdsRes && photoIdsRes.error) console.error("cashup photo-ids:", photoIdsRes.error);
+    var has = {};
+    (((photoIdsRes && photoIdsRes.data) || [])).forEach(function (r) { has[r.id] = true; });
+    (rows || []).forEach(function (r) { r.has_yoco_photo = !!has[r.id]; });
+    return rows || [];
+  }
+
   async function listRecentCashups(daysBack) {
     var d = new Date(); d.setHours(0, 0, 0, 0);
     d.setDate(d.getDate() - (daysBack || 14));
     var since = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
-    var res = await sb.from("cashups").select("*")
-      .gte("date", since)
-      .order("date", { ascending: false })
-      .order("created_at", { ascending: false })
-      .limit(5000);
-    if (res.error) { console.error("listRecentCashups:", res.error); return []; }
-    return res.data || [];
+    var both = await Promise.all([
+      sb.from("cashups").select(CASHUP_COLS)
+        .gte("date", since)
+        .order("date", { ascending: false })
+        .order("created_at", { ascending: false })
+        .limit(5000),
+      sb.from("cashups").select("id").gte("date", since)
+        .not("yoco_photo", "is", null).limit(5000)
+    ]);
+    if (both[0].error) { console.error("listRecentCashups:", both[0].error); return []; }
+    return _markPhotoRows(both[0].data, both[1]);
   }
 
   // Cash-ups for a single day across every branch — powers the HR portal's
   // day-by-day Cash Ups navigator (region/branch filtering stays client-side).
   async function listCashupsForDate(dateStr) {
     if (!dateStr) return [];
-    var res = await sb.from("cashups").select("*")
-      .eq("date", dateStr)
-      .order("created_at", { ascending: false })
-      .limit(5000);
-    if (res.error) { console.error("listCashupsForDate:", res.error); return []; }
-    return res.data || [];
+    var both = await Promise.all([
+      sb.from("cashups").select(CASHUP_COLS)
+        .eq("date", dateStr)
+        .order("created_at", { ascending: false })
+        .limit(5000),
+      sb.from("cashups").select("id").eq("date", dateStr)
+        .not("yoco_photo", "is", null).limit(5000)
+    ]);
+    if (both[0].error) { console.error("listCashupsForDate:", both[0].error); return []; }
+    return _markPhotoRows(both[0].data, both[1]);
+  }
+
+  // The one place the actual photo bytes are fetched — on demand, for the
+  // row the user clicked.
+  async function getCashupPhoto(id) {
+    if (!id) return null;
+    var res = await sb.from("cashups").select("yoco_photo").eq("id", id).maybeSingle();
+    if (res.error) { console.error("getCashupPhoto:", res.error); return null; }
+    return (res.data && res.data.yoco_photo) || null;
   }
 
   // Manager day-status — reason captured by a ROM when a scheduled manager
@@ -1156,7 +1196,7 @@
       banking_ref:   (p.banking_ref || "").trim() || null,
       banked_by:     (p.banked_by   || "").trim() || null
     };
-    var res = await sb.from("cashups").insert(row).select().single();
+    var res = await sb.from("cashups").insert(row).select(CASHUP_COLS).single();
     if (res.error) { console.error("addCashupManual:", res.error); throw res.error; }
     return res.data;
   }
@@ -1172,7 +1212,7 @@
     var res = await sb.from("cashups")
       .update({ archived_at: new Date().toISOString(), reopened_by: (actorName || "").trim() || null })
       .eq("id", id)
-      .select()
+      .select(CASHUP_COLS)
       .maybeSingle();
     if (res.error) { console.error("reopenCashup:", res.error); throw res.error; }
     return res.data;
@@ -1203,7 +1243,7 @@
         review_comment: (comment || "").trim() || null
       })
       .eq("id", id)
-      .select()
+      .select(CASHUP_COLS)
       .maybeSingle();
     if (res.error) { console.error("reviewCashup:", res.error); throw res.error; }
     return res.data;
@@ -1216,14 +1256,14 @@
     var res = await sb.from("cashups")
       .update({ reviewed_at: null, reviewed_by: null, review_comment: null })
       .eq("id", id)
-      .select()
+      .select(CASHUP_COLS)
       .maybeSingle();
     if (res.error) { console.error("unreviewCashup:", res.error); throw res.error; }
     return res.data;
   }
 
-  // portal's spot-check viewer. Photo + GPS lives in app_state under
-  // boa_mgrclockin_meta_<id> — fetch lazily per row.
+  // portal's spot-check viewer. Photo + GPS lives in the clockin_meta table,
+  // keyed by clockin id — fetch lazily per row.
   // Fetch ALL clockins since a cutoff, paging past PostgREST's server-side
   // row cap (~1000 rows per request). The old single request silently
   // returned only the NEWEST ~1000 rows — as daily volume grew, the visible
@@ -1272,7 +1312,7 @@
   }
   // Head Office clock-ins for the "Head office check ins" tab. HO people clock in
   // via the kiosk's manager-style photo flow (addManagerClockinWithMeta → clockins
-  // row + boa_mgrclockin_meta_<id> selfie sidecar), so their rows land in the same
+  // row + clockin_meta selfie sidecar), so their rows land in the same
   // table, distinguished by their staff row's branch.
   async function listRecentHoClockins(daysBack) {
     var since = new Date(); since.setHours(0, 0, 0, 0); since.setDate(since.getDate() - (daysBack || 31));
@@ -1788,9 +1828,15 @@
     return { rows: rows, count: rows.length, staffById: staffById, sinceIso: since.toISOString() };
   }
   async function loadClockinMeta(clockinId) {
-    var res = await sb.from("app_state").select("value").eq("key", "boa_mgrclockin_meta_" + clockinId).maybeSingle();
-    if (res.error) { console.warn("loadClockinMeta:", res.error); return null; }
-    return (res.data && res.data.value) || null;
+    // Selfie/GPS sidecars live in the clockin_meta table (sql/clockin_meta_table.sql)
+    // — they were 59% of app_state's rows and ~350 MB of base64 photos. Fall back
+    // to the legacy app_state key for rows written by tabs still on old code.
+    var res = await sb.from("clockin_meta").select("value").eq("clockin_id", clockinId).maybeSingle();
+    if (res.error) console.warn("loadClockinMeta:", res.error);
+    else if (res.data) return res.data.value || null;
+    var legacy = await sb.from("app_state").select("value").eq("key", "boa_mgrclockin_meta_" + clockinId).maybeSingle();
+    if (legacy.error) { console.warn("loadClockinMeta (legacy):", legacy.error); return null; }
+    return (legacy.data && legacy.data.value) || null;
   }
 
   // Manually log a manager clock-in from the HR portal — used when a
@@ -1812,8 +1858,8 @@
     var ins = await sb.from("clockins").insert(row).select().single();
     if (ins.error) throw ins.error;
     try {
-      await sb.from("app_state").upsert({
-        key: "boa_mgrclockin_meta_" + ins.data.id,
+      await sb.from("clockin_meta").upsert({
+        clockin_id: ins.data.id,
         value: {
           source: "hr_portal_manual",
           recordedBy: opts.recordedBy || null,
@@ -1833,6 +1879,8 @@
     if (id == null) throw new Error("clock-in id is required");
     var res = await sb.from("clockins").delete().eq("id", id);
     if (res.error) { console.error("deleteClockin:", res.error); throw res.error; }
+    // clockin_meta cascades on the clockins FK; the app_state delete only
+    // covers a legacy sidecar written by a tab still on old code.
     try { await sb.from("app_state").delete().eq("key", "boa_mgrclockin_meta_" + id); }
     catch (e) { console.warn("deleteClockin meta cleanup:", e); }
     return true;
@@ -2809,6 +2857,7 @@
     // Cash-ups (from the kiosk)
     listRecentCashups: listRecentCashups,
     listCashupsForDate: listCashupsForDate,
+    getCashupPhoto: getCashupPhoto,
     addCashupManual: addCashupManual,
     reopenCashup: reopenCashup,
     deleteCashup: deleteCashup,
