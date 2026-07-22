@@ -42304,9 +42304,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           <td style={cell}><span style={{ background: rm.bg, color: rm.color, padding: "2px 8px", borderRadius: 6, fontSize: 11, fontWeight: 700 }}>{rm.short}</span></td>
                           <td style={{ ...cellNum, ...strikeIfArchived }}>
                             {_fmtMoney(r.yoco)}
-                            {r.yoco_photo ? (
+                            {r.has_yoco_photo ? (
                               <div style={{ fontSize: 10, fontWeight: 700, marginTop: 1 }}>
-                                <a href="#" onClick={e => { e.preventDefault(); setCashupSlipModal({ url: r.yoco_photo, branch: r.branch, date: r.date, label: "📸 Yoco machine balances" }); }} style={{ color: "#BE185D", textDecoration: "none" }}>📷 photo</a>
+                                {/* Photo bytes are no longer in the list rows (they were ~220 KB
+                                    each and every viewer paid for all of them) — fetch this one
+                                    row's photo only when the link is clicked. */}
+                                <a href="#" onClick={e => { e.preventDefault(); window.BOA_DB.getCashupPhoto(r.id).then(url => { if (url) setCashupSlipModal({ url, branch: r.branch, date: r.date, label: "📸 Yoco machine balances" }); }); }} style={{ color: "#BE185D", textDecoration: "none" }}>📷 photo</a>
                               </div>
                             ) : (
                               <div style={{ fontSize: 10, fontWeight: 600, color: "#cbb3bd", marginTop: 1 }} title="No photo of the Yoco machine totals was attached for this day.">no photo</div>

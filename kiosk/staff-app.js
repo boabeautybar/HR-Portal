@@ -3419,15 +3419,22 @@
                 ) +
               '</div>'
             : "") +
-          (existing.yoco_photo
-            ? '<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--pink-100)">' +
-                '<div class="lbl" style="margin-bottom:6px">📸 Yoco Machine Balances</div>' +
-                '<a href="' + existing.yoco_photo + '" target="_blank" rel="noopener">' +
-                  '<img src="' + existing.yoco_photo + '" alt="Yoco balances" style="max-width:100%;max-height:240px;border-radius:8px;border:1px solid var(--pink-100);display:block">' +
-                '</a>' +
-              '</div>'
-            : "") +
+          '<div id="cu-yoco-photo"></div>' +
         '</div>';
+      // The photo is not part of the cashup row any more (each is a ~220 KB
+      // base64 JPEG; list/summary reads exclude the column) — fetch this one
+      // row's photo separately and inject it if there is one.
+      window.APP_DATA.getCashupPhoto(existing.id).then(function (photo) {
+        var slot = document.getElementById("cu-yoco-photo");
+        if (!slot || !photo) return;
+        slot.innerHTML =
+          '<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--pink-100)">' +
+            '<div class="lbl" style="margin-bottom:6px">📸 Yoco Machine Balances</div>' +
+            '<a href="' + photo + '" target="_blank" rel="noopener">' +
+              '<img src="' + photo + '" alt="Yoco balances" style="max-width:100%;max-height:240px;border-radius:8px;border:1px solid var(--pink-100);display:block">' +
+            '</a>' +
+          '</div>';
+      });
       return;
     }
 

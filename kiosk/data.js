@@ -683,9 +683,18 @@
   // Active (non-reopened) cash-up for this branch on a given day. Defaults to
   // today; pass a YYYY-MM-DD to fetch a previous day's (used when a store
   // completes a cash-up they missed).
+  // Every cashups column EXCEPT yoco_photo — that column is a ~220 KB base64
+  // JPEG per row, and the kiosk only ever shows the money/banking fields.
+  // Pulling the photos along on every auto-refresh was a major share of the
+  // database load (the portal fetches a photo lazily when someone clicks it).
+  var CASHUP_COLS = "id,branch,date,yoco,cash,vouchers,discounts,notes,signed_by,created_at," +
+    "yoco_link,card_tips,gift_card,manual_discounts,manual_discount_reason,cash_banked," +
+    "amount_banked,banking_ref,banked_by,banking_slip,total,archived_at,reopened_by," +
+    "reviewed_at,reviewed_by,review_comment";
+
   async function cashupForDate(dateStr) {
     var c = client(); if (!c) return null;
-    var res = await c.from("cashups").select("*")
+    var res = await c.from("cashups").select(CASHUP_COLS)
       .eq("branch", branch()).eq("date", dateStr || todayStr())
       .is("archived_at", null)
       .order("created_at", { ascending: false }).limit(1);
@@ -693,6 +702,14 @@
     return (res.data || [])[0] || null;
   }
   async function todaysCashup() { return cashupForDate(todayStr()); }
+
+  // The one place the photo bytes are fetched — on demand, for a single row.
+  async function getCashupPhoto(id) {
+    var c = client(); if (!c || !id) return null;
+    var res = await c.from("cashups").select("yoco_photo").eq("id", id).maybeSingle();
+    if (res.error) { console.error("getCashupPhoto:", res.error); return null; }
+    return (res.data && res.data.yoco_photo) || null;
+  }
 
   // Previous days (most recent first) this branch still owes a cash-up for —
   // from yesterday back to the store's go-live, within the lookback window,
@@ -740,7 +757,7 @@
       banking_slip:  payload.banking_slip || null,
       yoco_photo:    payload.yoco_photo || null
     };
-    var res = await c.from("cashups").insert(row).select().single();
+    var res = await c.from("cashups").insert(row).select(CASHUP_COLS).single();
     if (res.error) throw res.error;
     return res.data;
   }
@@ -750,7 +767,7 @@
     // Exclude reopened/deleted entries (archived_at set) so a cash-up that
     // was reopened or removed from the HR portal stops showing in the store's
     // Cash History.
-    var res = await c.from("cashups").select("*").eq("branch", branch())
+    var res = await c.from("cashups").select(CASHUP_COLS).eq("branch", branch())
       .is("archived_at", null)
       .order("date", { ascending: false }).order("created_at", { ascending: false })
       .limit(limit || 30);
@@ -1951,7 +1968,7 @@
     categorizeStaff: categorizeStaff, listOffRequestStaff: listOffRequestStaff, addStaff: addStaff, updateStaff: updateStaff,
     deactivateStaff: deactivateStaff,
     lastClockinToday: lastClockinToday, addClockin: addClockin, listTodayClockins: listTodayClockins,
-    todaysCashup: todaysCashup, cashupForDate: cashupForDate, outstandingCashupDates: outstandingCashupDates, addCashup: addCashup, listRecentCashups: listRecentCashups,
+    todaysCashup: todaysCashup, cashupForDate: cashupForDate, getCashupPhoto: getCashupPhoto, outstandingCashupDates: outstandingCashupDates, addCashup: addCashup, listRecentCashups: listRecentCashups,
     currentSchedYm: currentSchedYm, periodLabel: periodLabel, periodDays: periodDays, getSchedule: getSchedule, getApprovedSchedule: getApprovedSchedule, getSchedulesForBranches: getSchedulesForBranches, getMgrTimes: getMgrTimes,
     ymForDate: ymForDate, endOfSchedulePeriod: endOfSchedulePeriod,
     getAttendance: getAttendance, setAttendanceStatus: setAttendanceStatus, backfillCheckinLog: backfillCheckinLog,
