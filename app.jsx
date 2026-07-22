@@ -287,6 +287,15 @@ function MgrReasonModalBody({ modal, personStartDate, existing, locked, currentU
   const [note, setNote] = useState(existing?.note || "");
   const [proof, setProof] = useState(existing?.proof || null);
   const [proofErr, setProofErr] = useState("");
+  // List rows carry has_proof, not the photo itself — pull the stored proof
+  // in before any save, otherwise editing the note would silently wipe the
+  // doctor's note (save() sends the proof state back to the row).
+  useEffect(() => {
+    if (!existing || !existing.id || !existing.has_proof || existing.proof) return;
+    let dead = false;
+    window.BOA_DB.getManagerDayProof(existing.id).then(p => { if (!dead && p) setProof(p); });
+    return () => { dead = true; };
+  }, []);
   const [saving, setSaving] = useState(false);
   const opt = MGR_REASON_OPTIONS.find(o => o.code === status);
   const needsProof = !!(opt && opt.needsProof);
@@ -31832,7 +31841,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           for (const ec in _mgrEcToStaffId) {
             if (String(_mgrEcToStaffId[ec]) === rid) {
               (_mgrStatusByEcYmd[ec] = _mgrStatusByEcYmd[ec] || {})[r.date] = r.status;
-              if (r.proof) (_mgrProofByEcYmd[ec] = _mgrProofByEcYmd[ec] || {})[r.date] = r.proof;
+              if (r.has_proof || r.proof) (_mgrProofByEcYmd[ec] = _mgrProofByEcYmd[ec] || {})[r.date] = { id: r.id, proof: r.proof || null };
               if (r.note) (_mgrNoteByEcYmd[ec] = _mgrNoteByEcYmd[ec] || {})[r.date] = r.note;
               (_mgrRecorderByEcYmd[ec] = _mgrRecorderByEcYmd[ec] || {})[r.date] = r.updated_by || r.recorded_by || null;
               (_mgrRecordedAtByEcYmd[ec] = _mgrRecordedAtByEcYmd[ec] || {})[r.date] = r.updated_at || r.created_at || null;
@@ -34467,18 +34476,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                       // uploaded — no kiosk proof key. Just
                                       // hand the dataUrl straight to the modal.
                                       if (isMgrRow) {
-                                        const mgrProof = (_mgrProofByEcYmd[s.ec] || {})[dy.ymd] || null;
+                                        const mgrProofRef = (_mgrProofByEcYmd[s.ec] || {})[dy.ymd] || null;
                                         const mgrNote = (_mgrNoteByEcYmd[s.ec] || {})[dy.ymd] || null;
                                         const mgrRecorder = (_mgrRecorderByEcYmd[s.ec] || {})[dy.ymd] || null;
                                         setProofModal({
-                                          loading: false,
+                                          loading: !!(mgrProofRef && !mgrProofRef.proof),
                                           name: s.name,
                                           ymd: dy.ymd,
                                           status: bareV === "sick_n" ? "Sick + note" : "FRL + proof",
                                           note: mgrNote ? (mgrNote + (mgrRecorder ? "  (recorded by " + mgrRecorder + ")" : "")) : (mgrRecorder ? "Recorded by " + mgrRecorder : null),
-                                          dataUrl: mgrProof,
+                                          dataUrl: (mgrProofRef && mgrProofRef.proof) || null,
                                           onConfirm: async () => { await autoRecordReview(s.ec, dy.d, v); }
                                         });
+                                        // The proof photo is no longer on the list row — fetch it for the modal.
+                                        if (mgrProofRef && !mgrProofRef.proof && mgrProofRef.id) {
+                                          window.BOA_DB.getManagerDayProof(mgrProofRef.id)
+                                            .then(url => setProofModal(p => p ? { ...p, loading: false, dataUrl: url } : null))
+                                            .catch(err => setProofModal(p => p ? { ...p, loading: false, error: (err && err.message) || String(err) } : null));
+                                        }
                                         return;
                                       }
                                       const proofKey = kioskProofKey || ("boa_proof_" + attBranch + "_" + attYM + "_" + s.ec + "_" + dy.d);
@@ -39993,7 +40008,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 onClick={() => setMgrReasonModal({ staffId: ns.staffId, ec: ns.ec, name: ns.name, branch: ns.branch, date: ns.ymd, existing })}
                                 title={(existing.note || "") + (existing.recorded_by ? "\n— " + existing.recorded_by : "")}
                                 style={{ background: "#dcfce7", color: "#166534", border: "1px solid #86efac", borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
-                                {statLabel(existing.status)}{existing.proof ? " 📎" : ""} ✎
+                                {statLabel(existing.status)}{(existing.has_proof || existing.proof) ? " 📎" : ""} ✎
                               </button>
                               : <button
                                 onClick={() => ns.staffId && setMgrReasonModal({ staffId: ns.staffId, ec: ns.ec, name: ns.name, branch: ns.branch, date: ns.ymd, existing: null })}
@@ -40242,7 +40257,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     onClick={() => setMgrReasonModal({ staffId: sid, ec: m.ec, name: m.name, branch: effHomeBranch(m, ymd), date: ymd, existing: tagged })}
                     title={(tagged.note || "") + (tagged.recorded_by ? "\n— " + tagged.recorded_by : "")}
                     style={{ background: "#fef3c7", color: "#92400e", border: "1px solid #fcd34d", borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
-                    {statLabel(tagged.status)}{tagged.proof ? " 📎" : ""} ✎
+                    {statLabel(tagged.status)}{(tagged.has_proof || tagged.proof) ? " 📎" : ""} ✎
                   </button>;
                 } else if (!pill) {
                   pill = <button
@@ -40280,7 +40295,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     onClick={() => setMgrReasonModal({ staffId: sid, ec: m.ec, name: m.name, branch: effHomeBranch(m, ymd), date: ymd, existing: tagged })}
                     title={(tagged.note || "") + (tagged.recorded_by ? "\n— " + tagged.recorded_by : "")}
                     style={{ background: "#fef3c7", color: "#92400e", border: "1px solid #fcd34d", borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
-                    {statLabel(tagged.status)}{tagged.proof ? " 📎" : ""} ✎
+                    {statLabel(tagged.status)}{(tagged.has_proof || tagged.proof) ? " 📎" : ""} ✎
                   </button>;
                 } else if (!pill) {
                   pill = <button
@@ -41650,7 +41665,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   )}
                   {_abs && _absStyle && (
                     <div style={{ position: "absolute", top: 3, left: 3, right: 3, background: _absStyle.bg, color: _absStyle.fg, borderRadius: 4, padding: "1px 5px", fontSize: 9, fontWeight: 800, letterSpacing: "0.05em", textAlign: "center", boxShadow: "0 1px 2px rgba(0,0,0,0.18)", opacity: 1 }}>
-                      {_absStyle.lbl}{_abs.proof ? " 📎" : ""}
+                      {_absStyle.lbl}{(_abs.has_proof || _abs.proof) ? " 📎" : ""}
                     </div>
                   )}
                   {cellVal === "E" && !_abs && (
@@ -43045,7 +43060,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         <div style={{ fontSize: 11, fontWeight: 800, color: "#831843", letterSpacing: "0.04em" }}>ABSENCE REASON</div>
                         <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 2 }}>
                           {ex
-                            ? <>Tagged: <strong style={{ color: "#831843" }}>{lbl}</strong>{ex.proof ? " 📎" : ""}{ex.note ? " — " + ex.note : ""}</>
+                            ? <>Tagged: <strong style={{ color: "#831843" }}>{lbl}</strong>{(ex.has_proof || ex.proof) ? " 📎" : ""}{ex.note ? " — " + ex.note : ""}</>
                             : "Use this when the manager has a doctor's note / FRL proof for this day (works for future dates too)."}
                         </div>
                       </div>

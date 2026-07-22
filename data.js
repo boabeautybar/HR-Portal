@@ -1122,16 +1122,38 @@
   // didn't clock in. Powers the "Mark reason" flow on Manager Check-ins,
   // overlays the absence on the attendance grid, and feeds the ROM dashboard
   // to-do list. Stored as one row per (staff_id, date).
+  // Every manager_day_status column EXCEPT proof — that column holds a
+  // compressed doctor's-note/FRL photo (~20 MB of TOAST across the table) and
+  // dragging it through select("*") was blowing the statement timeout. Rows
+  // carry has_proof instead; the image is fetched per-row via
+  // getManagerDayProof(id).
+  var MDS_COLS = "id,staff_id,date,status,note,recorded_by,updated_by,updated_at,created_at";
+
   async function loadManagerDayStatuses(daysBack) {
     var d = new Date(); d.setHours(0, 0, 0, 0);
     d.setDate(d.getDate() - (daysBack || 60));
     var since = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
-    var res = await sb.from("manager_day_status").select("*")
-      .gte("date", since)
-      .order("date", { ascending: false })
-      .limit(5000);
-    if (res.error) { console.error("loadManagerDayStatuses:", res.error); return []; }
-    return res.data || [];
+    var both = await Promise.all([
+      sb.from("manager_day_status").select(MDS_COLS)
+        .gte("date", since)
+        .order("date", { ascending: false })
+        .limit(5000),
+      sb.from("manager_day_status").select("id").gte("date", since)
+        .not("proof", "is", null).limit(5000)
+    ]);
+    if (both[0].error) { console.error("loadManagerDayStatuses:", both[0].error); return []; }
+    if (both[1].error) console.error("loadManagerDayStatuses proof-ids:", both[1].error);
+    var has = {};
+    ((both[1].data) || []).forEach(function (r) { has[r.id] = true; });
+    return (both[0].data || []).map(function (r) { r.has_proof = !!has[r.id]; return r; });
+  }
+
+  // The one place the proof photo bytes are fetched — on demand, per row.
+  async function getManagerDayProof(id) {
+    if (!id) return null;
+    var res = await sb.from("manager_day_status").select("proof").eq("id", id).maybeSingle();
+    if (res.error) { console.error("getManagerDayProof:", res.error); return null; }
+    return (res.data && res.data.proof) || null;
   }
 
   async function saveManagerDayStatus(p) {
@@ -1148,9 +1170,10 @@
     };
     var res = await sb.from("manager_day_status")
       .upsert(row, { onConflict: "staff_id,date" })
-      .select()
+      .select(MDS_COLS)
       .maybeSingle();
     if (res.error) { console.error("saveManagerDayStatus:", res.error); throw res.error; }
+    if (res.data) res.data.has_proof = !!row.proof;
     return res.data;
   }
 
@@ -2864,6 +2887,7 @@
     reviewCashup: reviewCashup,
     unreviewCashup: unreviewCashup,
     loadManagerDayStatuses: loadManagerDayStatuses,
+    getManagerDayProof: getManagerDayProof,
     saveManagerDayStatus: saveManagerDayStatus,
     deleteManagerDayStatus: deleteManagerDayStatus,
 
