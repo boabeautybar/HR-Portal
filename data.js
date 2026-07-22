@@ -2058,6 +2058,49 @@
     return config || {};
   }
 
+  // ---------- Office hours access (boa_office_hours_access_v1) ----------
+  // Who sees the Office Hours alerts — short days, missing clock-outs and the
+  // live "hasn't clocked in yet" list for Head Office / Call Centre & Sales.
+  // Shape: { roles: ["payroll"], pins: ["1234"] }. Owners always have access.
+  // Defaults to roles:["payroll"] in the portal, since this IS the payroll
+  // officer's queue; note accessAllows matches "payroll"/"wages"/"finance" as a
+  // SUBSTRING of the free-text portal role, so a user whose role says none of
+  // those must be added by pin.
+  async function loadOfficeHoursAccess() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_office_hours_access_v1").maybeSingle();
+    if (res.error) { console.error("loadOfficeHoursAccess:", res.error); return {}; }
+    return (res.data && res.data.value) || {};
+  }
+  async function saveOfficeHoursAccess(config) {
+    var res = await sb.from("app_state").upsert({ key: "boa_office_hours_access_v1", value: config || {} });
+    if (res.error) { console.error("saveOfficeHoursAccess:", res.error); throw res.error; }
+    return config || {};
+  }
+
+  // ---------- Office hours review ledger (boa_office_hours_review_v1) ----------
+  // The FINDINGS are derived live from clockins + the published office schedule
+  // (officeHoursFindings in app.jsx) and are never stored — same reasoning as
+  // trainer visits: no second write to drift, deleting a mistaken clock-in
+  // correctly makes the finding disappear, and a re-publish of the office grid
+  // can't strand a stale alert. Only the REVIEW STATE is durable, because that
+  // is the one thing not derivable from the source data.
+  //
+  // Shape: { "<EC>|<YYYY-MM-DD>": { status, hours, note, by, at } }
+  //   status: "cleared"  — payroll looked, nothing owed
+  //           "deducted" — pushed into boa_early_<branch>_<ym> as unpaid hours
+  // Keyed by EC (globally unique, never reused) so a department move keeps the
+  // history attached to the person.
+  async function loadOfficeHoursReview() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_office_hours_review_v1").maybeSingle();
+    if (res.error) { console.error("loadOfficeHoursReview:", res.error); return {}; }
+    return (res.data && res.data.value) || {};
+  }
+  async function saveOfficeHoursReview(map) {
+    var res = await sb.from("app_state").upsert({ key: "boa_office_hours_review_v1", value: map || {} });
+    if (res.error) { console.error("saveOfficeHoursReview:", res.error); throw res.error; }
+    return map || {};
+  }
+
   // ---------- Cash-up review access (boa_cashup_review_access_v1) ----------
   // Who is allowed to review ("tick off") a store's daily cash-up. Shape:
   //   { roles: ["regional"], pins: ["1234"] }
@@ -2833,6 +2876,10 @@
     saveOvertimeAccess: saveOvertimeAccess,
     loadOfficeStaffAccess: loadOfficeStaffAccess,
     saveOfficeStaffAccess: saveOfficeStaffAccess,
+    loadOfficeHoursAccess: loadOfficeHoursAccess,
+    saveOfficeHoursAccess: saveOfficeHoursAccess,
+    loadOfficeHoursReview: loadOfficeHoursReview,
+    saveOfficeHoursReview: saveOfficeHoursReview,
     loadCashupReviewAccess: loadCashupReviewAccess,
     saveCashupReviewAccess: saveCashupReviewAccess,
     loadLeaveOpsAccess: loadLeaveOpsAccess,
