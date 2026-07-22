@@ -2133,7 +2133,7 @@
         flags: meta.flags || []
       };
       try {
-        var mr = await c.from("app_state").upsert({ key: "boa_mgrclockin_meta_" + ins.data.id, value: metaRow });
+        var mr = await c.from("clockin_meta").upsert({ clockin_id: ins.data.id, value: metaRow });
         if (mr.error) console.warn("Meta save failed:", mr.error);
       } catch (e) { console.warn("Meta save threw:", e); }
     }
@@ -2142,9 +2142,15 @@
 
   async function loadClockinMeta(clockinId) {
     var c = client(); if (!c) return null;
-    var res = await c.from("app_state").select("value").eq("key", "boa_mgrclockin_meta_" + clockinId).maybeSingle();
-    if (res.error) { console.warn("loadClockinMeta:", res.error); return null; }
-    return (res.data && res.data.value) || null;
+    // Selfie/GPS sidecars live in the clockin_meta table (sql/clockin_meta_table.sql).
+    // Fall back to the legacy app_state key for rows written by tablets still
+    // on old code.
+    var res = await c.from("clockin_meta").select("value").eq("clockin_id", clockinId).maybeSingle();
+    if (res.error) console.warn("loadClockinMeta:", res.error);
+    else if (res.data) return res.data.value || null;
+    var legacy = await c.from("app_state").select("value").eq("key", "boa_mgrclockin_meta_" + clockinId).maybeSingle();
+    if (legacy.error) { console.warn("loadClockinMeta (legacy):", legacy.error); return null; }
+    return (legacy.data && legacy.data.value) || null;
   }
 
   async function loadManagerPins() {

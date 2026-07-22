@@ -18729,7 +18729,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
   // ── Head Office Check-ins viewer state ─────────────────────────────
   // HO clock-ins come from the same `clockins` table (role_type head_office),
-  // with selfies in the boa_mgrclockin_meta_<id> sidecar — same photo path as
+  // with selfies in the clockin_meta sidecar table — same photo path as
   // managers, loaded via loadClockinMeta.
   const [hoClockinRows, setHoClockinRows] = useState([]);
   const [hoClockinMeta, setHoClockinMeta] = useState({});  // {clockinId: meta}

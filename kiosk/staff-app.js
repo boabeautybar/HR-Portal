@@ -109,7 +109,7 @@
        Menu:  Home · Schedule · Today · Staff · Log out
        Tiles: Clock In (selfie mandatory) · Request Off
      Clock-in mirrors the manager photo flow (clockins row +
-     boa_mgrclockin_meta_<id> sidecar) and marks the person
+     clockin_meta selfie sidecar) and marks the person
      present on the branch attendance grid (boa_att_Head Office_*).
      NOTE: the portal Attendance + "Head office check ins" surfaces
      that read these writes land in Phase 5 — until they ship, the

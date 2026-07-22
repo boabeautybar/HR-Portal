@@ -1262,8 +1262,8 @@
     return res.data;
   }
 
-  // portal's spot-check viewer. Photo + GPS lives in app_state under
-  // boa_mgrclockin_meta_<id> — fetch lazily per row.
+  // portal's spot-check viewer. Photo + GPS lives in the clockin_meta table,
+  // keyed by clockin id — fetch lazily per row.
   // Fetch ALL clockins since a cutoff, paging past PostgREST's server-side
   // row cap (~1000 rows per request). The old single request silently
   // returned only the NEWEST ~1000 rows — as daily volume grew, the visible
@@ -1312,7 +1312,7 @@
   }
   // Head Office clock-ins for the "Head office check ins" tab. HO people clock in
   // via the kiosk's manager-style photo flow (addManagerClockinWithMeta → clockins
-  // row + boa_mgrclockin_meta_<id> selfie sidecar), so their rows land in the same
+  // row + clockin_meta selfie sidecar), so their rows land in the same
   // table, distinguished by their staff row's branch.
   async function listRecentHoClockins(daysBack) {
     var since = new Date(); since.setHours(0, 0, 0, 0); since.setDate(since.getDate() - (daysBack || 31));
@@ -1828,9 +1828,15 @@
     return { rows: rows, count: rows.length, staffById: staffById, sinceIso: since.toISOString() };
   }
   async function loadClockinMeta(clockinId) {
-    var res = await sb.from("app_state").select("value").eq("key", "boa_mgrclockin_meta_" + clockinId).maybeSingle();
-    if (res.error) { console.warn("loadClockinMeta:", res.error); return null; }
-    return (res.data && res.data.value) || null;
+    // Selfie/GPS sidecars live in the clockin_meta table (sql/clockin_meta_table.sql)
+    // — they were 59% of app_state's rows and ~350 MB of base64 photos. Fall back
+    // to the legacy app_state key for rows written by tabs still on old code.
+    var res = await sb.from("clockin_meta").select("value").eq("clockin_id", clockinId).maybeSingle();
+    if (res.error) console.warn("loadClockinMeta:", res.error);
+    else if (res.data) return res.data.value || null;
+    var legacy = await sb.from("app_state").select("value").eq("key", "boa_mgrclockin_meta_" + clockinId).maybeSingle();
+    if (legacy.error) { console.warn("loadClockinMeta (legacy):", legacy.error); return null; }
+    return (legacy.data && legacy.data.value) || null;
   }
 
   // Manually log a manager clock-in from the HR portal — used when a
@@ -1852,8 +1858,8 @@
     var ins = await sb.from("clockins").insert(row).select().single();
     if (ins.error) throw ins.error;
     try {
-      await sb.from("app_state").upsert({
-        key: "boa_mgrclockin_meta_" + ins.data.id,
+      await sb.from("clockin_meta").upsert({
+        clockin_id: ins.data.id,
         value: {
           source: "hr_portal_manual",
           recordedBy: opts.recordedBy || null,
@@ -1873,6 +1879,8 @@
     if (id == null) throw new Error("clock-in id is required");
     var res = await sb.from("clockins").delete().eq("id", id);
     if (res.error) { console.error("deleteClockin:", res.error); throw res.error; }
+    // clockin_meta cascades on the clockins FK; the app_state delete only
+    // covers a legacy sidecar written by a tab still on old code.
     try { await sb.from("app_state").delete().eq("key", "boa_mgrclockin_meta_" + id); }
     catch (e) { console.warn("deleteClockin meta cleanup:", e); }
     return true;
