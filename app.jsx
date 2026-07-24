@@ -19184,6 +19184,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [obList, setObList] = useState([]);           // joiner records (3-month contract signers)
   const [obFilter, setObFilter] = useState("recent"); // "recent" = last 31 days, "all" = every onboarded record
   const [trialList, setTrialList] = useState([]);     // trial period candidates (pre-contract)
+  const [showArchivedTrials, setShowArchivedTrials] = useState(false); // reveal archived (completed) trial candidates
   const [interviewList, setInterviewList] = useState([]); // nail-tech interview candidates (pre-trial; boa_nt_interviews_v1)
   const [freshaAccess, setFreshaAccess] = useState({}); // who opens/sees trial Fresha reminders (boa_fresha_access_v1)
   // Resolved Fresha-access config with sensible defaults: Rochelle (3030)
@@ -21318,7 +21319,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   useEffect(() => {
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
     if (!window.BOA_DB.loadManagerDayStatuses) return;
-    if (tab !== "dashboard" && tab !== "mgrclockins" && tab !== "attendance" && tab !== "mgrCoverage") return;
+    if (tab !== "dashboard" && tab !== "mgrclockins" && tab !== "attendance" && tab !== "mgrCoverage" && tab !== "hoCheckins" && tab !== "ccCheckins") return;
     let cancelled = false;
     window.BOA_DB.loadManagerDayStatuses(60).then(rows => {
       if (!cancelled) { setMgrDayStatuses(rows || []); setMgrDayStatusesLoaded(true); }
@@ -29563,7 +29564,69 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           setTForm({ name: "", phone: "", email: "", homeAddress: "", trainerName: "", inductionPassDate: "", branch: SALONS[0].name, startDate: "", notes: "", boaPathways: false, role: "nt", _open: false, _editId: null });
         };
 
-        const currentList = trialList.filter(r => (r.role || "nt") === trialSubTab);
+        // Archived candidates are a soft-flag (r.archived) — never deleted, per
+        // the data-retention rule. They drop out of EVERY board list below (all
+        // of which filter currentList) and live only in the "Show archived"
+        // section, restorable. subTabList keeps the whole role bucket so the
+        // archive count and section can still see them.
+        const subTabList = trialList.filter(r => (r.role || "nt") === trialSubTab);
+        const archivedList = subTabList.filter(r => r.archived);
+        const currentList = subTabList.filter(r => !r.archived);
+
+        // Already-onboarded detection. Trial records carry no EC, so a NAME is
+        // the only join to a real staff / onboard record. This fixes a card
+        // stuck on "Promote" after the person was hired by a path that never
+        // flipped the trial status to "hired" (added straight to onboarding) —
+        // the B1014 case.
+        //
+        // A name ALONE is unsafe: common SA names collide, and a false match
+        // would hide the Promote buttons from a candidate who genuinely hasn't
+        // been onboarded and mark them archivable. So a match must CORROBORATE
+        // on a second field — phone, branch or email — or carry the explicit
+        // promotedToOnboarding flag. A name-only match falls through to null,
+        // which safely SHOWS Promote rather than hiding it (the safe direction).
+        const _normNm = s => String(s || "").trim().toLowerCase().replace(/\s+/g, " ");
+        const _digits9 = s => String(s || "").replace(/\D/g, "").slice(-9);   // last 9 digits — tolerant of +27 / 0 prefixes
+        const _onboardedIndex = {};
+        const _idxAdd = (name, rec) => { if (!name || !rec.ec) return; const k = _normNm(name); (_onboardedIndex[k] = _onboardedIndex[k] || []).push(rec); };
+        [...(staff || []), ...(managers || []), ...(hoStaff || [])].forEach(p => { if (p && p.name) _idxAdd(p.name, { ec: p.ec, branch: p.branch, phone: p.cellNumber || p.phone, email: p.email }); });
+        (obList || []).forEach(o => { if (o && o.name) _idxAdd(o.name, { ec: o.ec || "onboarding", branch: o.branch, phone: o.phone, email: o.email }); });
+        const alreadyOnboardedEc = (r) => {
+          if (!r || !r.name) return null;
+          const cands = _onboardedIndex[_normNm(r.name)];
+          if (!cands || !cands.length) return null;
+          // An explicit promotion flag on the trial record is a definite yes.
+          if (r.promotedToOnboarding) { const w = cands.find(c => c.ec && c.ec !== "onboarding") || cands[0]; return w.ec; }
+          // Otherwise require a second field to agree, so a same-name stranger
+          // at a different branch with a different number can't lock a real
+          // candidate out of promotion. Prefer a corroborating record that
+          // carries a real EC over a bare "onboarding" placeholder.
+          const rPhone = _digits9(r.phone), rBranch = _normNm(r.branch), rEmail = _normNm(r.email);
+          const corroborates = (c) =>
+            (rPhone && rPhone === _digits9(c.phone)) ||
+            (rBranch && rBranch === _normNm(c.branch)) ||
+            (rEmail && rEmail === _normNm(c.email));
+          const m = cands.find(c => c.ec !== "onboarding" && corroborates(c)) || cands.find(corroborates);
+          return m ? m.ec : null;
+        };
+        // "Past" candidates the Archive action targets: hired, failed, not
+        // onboarding, or passed-and-already-onboarded (the stuck ones).
+        const isTrialComplete = (r) => r.status === "hired" || trialIsGone(r) || (r.status === "passed" && !!alreadyOnboardedEc(r));
+
+        const _stampArchive = (on) => on
+          ? { archived: true, archivedAt: new Date().toISOString(), archivedBy: (currentUser && currentUser.name) || "" }
+          : { archived: false, archivedAt: null, archivedBy: null };
+        const archiveTrial = (id) => { persistTrial(trialList.map(r => r._id === id ? { ...r, ..._stampArchive(true), updatedAt: new Date().toISOString() } : r)); };
+        const unarchiveTrial = (id) => { persistTrial(trialList.map(r => r._id === id ? { ...r, ..._stampArchive(false), updatedAt: new Date().toISOString() } : r)); };
+        const completedToArchive = currentList.filter(isTrialComplete);
+        const archiveAllCompleted = () => {
+          if (!completedToArchive.length) return;
+          if (!window.confirm("Archive " + completedToArchive.length + " completed " + (trialSubTab === "am" ? "Assistant Manager" : "nail tech") + " candidate" + (completedToArchive.length === 1 ? "" : "s") + "?\n\nThey move to the archive (hired, failed, not onboarding, or already onboarded) and can be restored anytime. Nothing is deleted.")) return;
+          const ids = new Set(completedToArchive.map(r => r._id));
+          persistTrial(trialList.map(r => ids.has(r._id) ? { ...r, ..._stampArchive(true), updatedAt: new Date().toISOString() } : r));
+          if (typeof logActivity === "function") { try { logActivity("Archived trial candidates", ids.size + " " + (trialSubTab === "am" ? "AM" : "nail tech") + " candidate" + (ids.size === 1 ? "" : "s"), "", "People"); } catch (_e) { } }
+        };
+
         const activeTrials = currentList.filter(r => r.status !== "passed" && !trialIsGone(r) && r.status !== "hired");
         // Passed = cleared the trial but not yet onboarded (status flips to
         // "hired" only when the onboarding form is submitted). We intentionally
@@ -29692,6 +29755,28 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 ➕ Add Trainee
               </button>
             </div>
+
+            {/* Archive controls — clean the board of completed candidates
+                (hired / failed / not onboarding / already onboarded). Archive is
+                a soft flag: records are hidden, never deleted, and restorable. */}
+            {(completedToArchive.length > 0 || archivedList.length > 0) && (
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 20, background: "#faf5ff", border: "1px solid #ede9fe", borderRadius: 12, padding: "10px 14px" }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: "#6b21a8" }}>🗄️ Tidy up the board</span>
+                {completedToArchive.length > 0 && (
+                  <button onClick={archiveAllCompleted} title="Move all completed candidates into the archive. They can be restored anytime; nothing is deleted."
+                    style={{ padding: "7px 14px", borderRadius: 8, border: "none", background: "#7c3aed", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700 }}>
+                    Archive completed ({completedToArchive.length})
+                  </button>
+                )}
+                <div style={{ flex: 1 }} />
+                {archivedList.length > 0 && (
+                  <button onClick={() => setShowArchivedTrials(v => !v)}
+                    style={{ padding: "7px 14px", borderRadius: 8, border: "1px solid #ddd6fe", background: showArchivedTrials ? "#ede9fe" : "#fff", color: "#6b21a8", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700 }}>
+                    {showArchivedTrials ? "Hide" : "Show"} archived ({archivedList.length})
+                  </button>
+                )}
+              </div>
+            )}
 
             {/* ── Trainer notification: AM trial days with no check-in ──
                 Flags any Assistant-Manager trial day (Mon–Fri, excl. SA public
@@ -29925,6 +30010,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 );
                               })()}
                               <button onClick={() => editTrial(r)} title="Edit details and trial days / dates" style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 12px", borderRadius: 7, border: "1px solid #ddd6fe", background: "#f5f3ff", color: "#6b21a8", cursor: "pointer", fontWeight: 800, fontSize: 11 }}>✏️ Edit</button>
+                              {isTrialComplete(r) && (
+                                <button onClick={() => archiveTrial(r._id)} title="Archive — move this completed candidate off the board (restorable, not deleted)" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 30, height: 28, borderRadius: 7, border: "1px solid #ddd6fe", background: "#faf5ff", color: "#6b21a8", cursor: "pointer", fontSize: 13 }}>🗄️</button>
+                              )}
                               <button onClick={() => deleteCandidate(r)} title="Delete this candidate (e.g. a duplicate) — cannot be undone" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 30, height: 28, borderRadius: 7, border: "1px solid #fecaca", background: "#fff", color: "#dc2626", cursor: "pointer", fontSize: 13 }}>🗑</button>
                             </div>
                           </div>
@@ -29986,11 +30074,27 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 {trialSubTab === "am" && finalDue && !heldFinal && (
                                   <button onClick={() => setEvalForm({ rec: r, which: "final" })} style={btn("#7c3aed", "#fff")}>📋 Complete final evaluation</button>
                                 )}
-                                {/* Passed → onboarding, or record that they aren't joining. */}
-                                {st === "passed" && (<>
-                                  <button onClick={() => promoteToOnboarding(r)} style={btn("#BE185D", "#fff")}>🌱 Promote to Onboarding</button>
-                                  <button onClick={() => setNotOnbDraft({ id: r._id, reason: "", note: "" })} title="They passed but aren't joining — record why" style={btn("#fff", "#92400e", "1px solid #fcd34d")}>🚫 Not onboarding</button>
-                                </>)}
+                                {/* Passed → onboarding, or record that they aren't joining.
+                                    If a staff/onboard record already exists for this
+                                    name, they've BEEN onboarded (by a path that never
+                                    flipped the trial status) — show that instead of the
+                                    Promote buttons so the card can't imply work still to
+                                    do, and offer to archive it. (The B1014 case.) */}
+                                {st === "passed" && (() => {
+                                  const onbEc = alreadyOnboardedEc(r);
+                                  if (onbEc) return (
+                                    <div style={{ width: "100%", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 10, padding: "9px 12px", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                                      <span style={{ fontSize: 12.5, fontWeight: 800, color: "#15803d" }}>✅ Already onboarded{onbEc !== "onboarding" ? " · " + onbEc : ""}</span>
+                                      <span style={{ fontSize: 11, color: "#166534" }}>They're on the system as an active staff member — nothing more to do here.</span>
+                                      <div style={{ flex: 1 }} />
+                                      <button onClick={() => archiveTrial(r._id)} title="Archive this trial record — it's done. Restorable, not deleted." style={btn("#7c3aed", "#fff")}>🗄️ Archive</button>
+                                    </div>
+                                  );
+                                  return (<>
+                                    <button onClick={() => promoteToOnboarding(r)} style={btn("#BE185D", "#fff")}>🌱 Promote to Onboarding</button>
+                                    <button onClick={() => setNotOnbDraft({ id: r._id, reason: "", note: "" })} title="They passed but aren't joining — record why" style={btn("#fff", "#92400e", "1px solid #fcd34d")}>🚫 Not onboarding</button>
+                                  </>);
+                                })()}
                                 {/* Reason picker — inline, mirroring the induction start-date
                                     banner. A reason is required; the note is optional unless
                                     "Other" is chosen, where the label alone says nothing. */}
@@ -30147,6 +30251,33 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       <button onClick={() => deleteTrial(r._id)} style={{ background: "none", border: "1px solid #fca5a5", borderRadius: 6, padding: "3px 10px", cursor: "pointer", fontSize: 11, color: "#991b1b" }}>Remove</button>
                     </div>
                   ))}
+                </div>
+              </div>
+            )}
+
+            {/* Archived — completed candidates tidied off the board. Shown only
+                when the "Show archived" toggle is on; each restorable. */}
+            {showArchivedTrials && archivedList.length > 0 && (
+              <div style={{ marginTop: 32 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#6b21a8", marginBottom: 4 }}>🗄️ Archived ({archivedList.length})</div>
+                <div style={{ fontSize: 11, color: "#9ca3af", marginBottom: 10, fontStyle: "italic" }}>Completed candidates moved off the board. Nothing is deleted — Restore brings one back to its original state.</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {archivedList.slice().sort((a, b) => Date.parse(b.archivedAt || 0) - Date.parse(a.archivedAt || 0)).map(r => {
+                    const _statusLbl = r.status === "hired" ? "🎉 Hired" : r.status === "failed" ? "❌ Failed" : r.status === "not_onboarding" ? "🚫 Not onboarding" : r.status === "passed" ? "✅ Passed" : r.status;
+                    const _arLbl = r.archivedAt ? new Date(r.archivedAt).toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }) : "";
+                    return (
+                      <div key={r._id} style={{ background: "#fff", borderRadius: 10, border: "1px solid #ede9fe", padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                        <div style={{ minWidth: 0 }}>
+                          <span style={{ fontWeight: 700, color: "#4b5563", fontSize: 13 }}>{r.name}</span>
+                          <span style={{ fontSize: 11, color: "#9ca3af", marginLeft: 8 }}>{_statusLbl}{r.branch ? " · 📍 " + r.branch : ""}{_arLbl ? " · archived " + _arLbl : ""}</span>
+                        </div>
+                        <div style={{ display: "flex", gap: 6 }}>
+                          <button onClick={() => unarchiveTrial(r._id)} title="Bring this candidate back onto the board" style={{ background: "#f5f3ff", border: "1px solid #ddd6fe", borderRadius: 6, padding: "4px 12px", cursor: "pointer", fontSize: 11, color: "#6b21a8", fontWeight: 700 }}>↩ Restore</button>
+                          <button onClick={() => deleteTrial(r._id)} title="Permanently delete this trial record" style={{ background: "none", border: "1px solid #e5e7eb", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 11, color: "#9ca3af" }}>Delete</button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -39471,6 +39602,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (t === "out_auto") return { lbl: "AUTO-OUT", bg: "#fee2e2", fg: "#7f1d1d" };
           return { lbl: t, bg: "#f3f4f6", fg: "#374151" };
         };
+        // Recorded absence reasons — the SAME manager_day_status store the
+        // Manager Check-ins tab writes (keyed by staff_id + date, so it's
+        // population-agnostic). Lets payroll/ops record WHY an office person
+        // didn't clock in — sick, FRL, absent, no-show — with the same modal,
+        // reason codes and attendance overlay managers already get.
+        const statByKey = {};
+        (mgrDayStatuses || []).forEach(s => { if (s && s.staff_id) statByKey[s.staff_id + "|" + s.date] = s; });
+        const statLabel = (code) => (MGR_REASON_OPTIONS.find(o => o.code === code) || { label: code }).label;
         const dayRows = (hoClockinRows || [])
           .filter(r => rowMatch(r) && localYmd(r.ts) === hoClockinDay)
           .sort((x, y) => String(y.ts || "").localeCompare(String(x.ts || "")));
@@ -39554,15 +39693,35 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       {_isHoliday && _schedKnown
                         ? "Public holiday — nobody was expected in."
                         : _schedKnown
-                          ? "Scheduled to work this day but no clock-in recorded. People who are off, on leave or not scheduled are excluded."
-                          : "⚠ No published schedule for this day, so this is the whole roster — people who were off or on leave are included."}
+                          ? "Scheduled to work this day but no clock-in recorded. Tap anyone to record a reason (sick, FRL, absent, no-show). People who are off, on leave or not scheduled are excluded."
+                          : "⚠ No published schedule for this day, so this is the whole roster — people who were off or on leave are included. Tap anyone to record a reason."}
                     </div>
                     {absent.length === 0
                       ? <div style={{ fontSize: 12, color: "#16a34a" }}>{_isHoliday && _schedKnown ? "Public holiday." : "Everyone scheduled at " + groupWord + " has clocked in."}</div>
                       : <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                          {absent.map(s => (
-                            <span key={s.ec} style={{ background: "#fef2f2", color: "#b91c1c", border: "1px solid #fecaca", borderRadius: 7, padding: "4px 10px", fontSize: 12 }}>{s.name || s.ec}</span>
-                          ))}
+                          {absent.map(s => {
+                            // A recorded reason shows as an amber, editable badge;
+                            // no reason yet shows a red "add reason" chip. Both
+                            // open the shared MgrReasonModalBody. Needs the staff
+                            // UUID (s.id) — rowToStaff supplies it for hoStaff.
+                            const tagged = s.id ? statByKey[s.id + "|" + hoClockinDay] : null;
+                            const openReason = () => setMgrReasonModal({ staffId: s.id, ec: s.ec, name: s.name, branch: s.branch || groupWord, date: hoClockinDay, existing: tagged || null });
+                            if (!s.id) return (
+                              <span key={s.ec} title="No staff record id — reason can't be recorded for this row" style={{ background: "#fef2f2", color: "#b91c1c", border: "1px solid #fecaca", borderRadius: 7, padding: "4px 10px", fontSize: 12 }}>{s.name || s.ec}</span>
+                            );
+                            if (tagged) return (
+                              <button key={s.ec} onClick={openReason} title={(tagged.note || "") + (tagged.recorded_by ? "\n— " + tagged.recorded_by : "")}
+                                style={{ background: "#fef3c7", color: "#92400e", border: "1px solid #fcd34d", borderRadius: 7, padding: "4px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                                {s.name || s.ec} · {statLabel(tagged.status)}{(tagged.has_proof || tagged.proof) ? " 📎" : ""} ✎
+                              </button>
+                            );
+                            return (
+                              <button key={s.ec} onClick={openReason} title="Record a reason for this absence"
+                                style={{ background: "#fef2f2", color: "#b91c1c", border: "1px solid #fecaca", borderRadius: 7, padding: "4px 10px", fontSize: 12, cursor: "pointer" }}>
+                                {s.name || s.ec} <span style={{ fontWeight: 700 }}>＋ reason</span>
+                              </button>
+                            );
+                          })}
                         </div>}
                   </div>
                 )}
@@ -43606,7 +43765,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // future date (e.g. a manager handing one in for next Monday)
         // needs to be recordable in advance. Future cycles stay open.
         const locked = payrollYmFor(m.date) < payrollYmFor(t0);
-        const _mgrRec = (managers || []).find(mm => String(mm._id || mm.id) === String(m.staffId)) || (managers || []).find(mm => lbNormEc(mm.ec) === lbNormEc(m.ec));
+        // Look the person up for their start date (FRL eligibility guard). Search
+        // managers first, then office staff — the HO/CC check-in tabs open this
+        // same modal for head-office / call-centre people.
+        const _mgrRec = (managers || []).find(mm => String(mm._id || mm.id) === String(m.staffId))
+          || (hoStaff || []).find(mm => String(mm._id || mm.id) === String(m.staffId))
+          || (managers || []).find(mm => lbNormEc(mm.ec) === lbNormEc(m.ec))
+          || (hoStaff || []).find(mm => lbNormEc(mm.ec) === lbNormEc(m.ec));
         return (
           <MgrReasonModalBody
             modal={m}
