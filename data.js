@@ -16,6 +16,54 @@
     auth: { persistSession: false }
   });
 
+  // ---------- Conditional-GET cache for hot app_state singletons ----------
+  // A handful of shared singletons (trial period ~191 KB, leave, offers, news…)
+  // are read on nearly every page load by every device, but change only a few
+  // times a day. Re-downloading them in lockstep across the fleet is what
+  // OOM-crashed the database during the morning rush.
+  //
+  // app_state.updated_at is bumped server-side on EVERY write (the
+  // app_state_touch trigger sets it to now()), so it uniquely identifies a
+  // value's version. cachedSingleton() therefore reads only the tiny
+  // updated_at first, and pulls the full value ONLY when it differs from what
+  // we last cached. The cached value is returned exclusively when its stored
+  // updated_at equals the live one — so it is provably identical to a fresh
+  // read, never staler. The cache lives in localStorage so it survives the
+  // app's periodic full-page reloads.
+  //
+  // Use ONLY for pure display reads. Read-modify-write paths must keep doing a
+  // plain full read (they need the bytes anyway, and skipping the validator
+  // round-trip is simpler) — see e.g. the trial-evaluation writers.
+  function _ssCacheGet(key) {
+    try { var raw = localStorage.getItem("boa_ss_cache_" + key); return raw ? JSON.parse(raw) : null; }
+    catch (_e) { return null; }
+  }
+  function _ssCacheSet(key, updatedAt, value) {
+    try { localStorage.setItem("boa_ss_cache_" + key, JSON.stringify({ u: updatedAt, v: value })); }
+    catch (_e) { /* private mode / quota — caching is best-effort, never fatal */ }
+  }
+  async function cachedSingleton(key) {
+    // Step 1: cheap validator read.
+    var head = await sb.from("app_state").select("updated_at").eq("key", key).maybeSingle();
+    if (head.error) {
+      // Validator failed — fall back to a normal full read so a transient error
+      // can only ever cost a fetch, never return stale/empty data.
+      var fb = await sb.from("app_state").select("value").eq("key", key).maybeSingle();
+      if (fb.error) { console.error("cachedSingleton fallback:", key, fb.error); return null; }
+      return fb.data ? fb.data.value : null;
+    }
+    if (!head.data) return null;                       // key doesn't exist yet
+    var updatedAt = head.data.updated_at;
+    var cached = _ssCacheGet(key);
+    if (cached && cached.u === updatedAt) return cached.v;   // unchanged → free, no value transfer
+    // Step 2: changed / first sight → pull the full value and cache it.
+    var full = await sb.from("app_state").select("value").eq("key", key).maybeSingle();
+    if (full.error) { console.error("cachedSingleton value:", key, full.error); return cached ? cached.v : null; }
+    var value = full.data ? full.data.value : null;
+    _ssCacheSet(key, updatedAt, value);
+    return value;
+  }
+
   // ---------- Row ↔ React-shape transforms ----------
   // Tolerant Head Office branch matcher — branch strings drift in the data, so
   // never compare with a raw `=== "Head Office"`.
@@ -966,9 +1014,7 @@
   //   addedAt, updatedAt
   // }
   async function loadTrialPeriod() {
-    var res = await sb.from("app_state").select("value").eq("key", "boa_trial_period_v1").maybeSingle();
-    if (res.error) { console.error("loadTrialPeriod:", res.error); return []; }
-    var v = res.data && res.data.value;
+    var v = await cachedSingleton("boa_trial_period_v1");
     return Array.isArray(v) ? v : [];
   }
   async function saveTrialPeriod(records) {
@@ -1007,9 +1053,7 @@
   // ---------- Off-boarding (boa_offboard_v1) ----------
   // Each record: {ec, name, branch, leftDate, reason, notes, addedAt}
   async function loadOffboarding() {
-    var res = await sb.from("app_state").select("value").eq("key", "boa_offboard_v1").maybeSingle();
-    if (res.error) { console.error("loadOffboarding:", res.error); return []; }
-    var v = res.data && res.data.value;
+    var v = await cachedSingleton("boa_offboard_v1");
     return Array.isArray(v) ? v : [];
   }
   async function saveOffboarding(records) {
@@ -1929,9 +1973,7 @@
   // Each record: {_id, ec, startDate, endDate, type, notes, emergency}
   // type values: "Annual leave" | "Sick leave" | "Maternity" | "Unpaid"
   async function loadLeaveRecords() {
-    var res = await sb.from("app_state").select("value").eq("key", "boa_leave_v1").maybeSingle();
-    if (res.error) { console.error("loadLeaveRecords:", res.error); return []; }
-    var v = res.data && res.data.value;
+    var v = await cachedSingleton("boa_leave_v1");
     return Array.isArray(v) ? v : [];
   }
   async function saveLeaveRecords(records) {
@@ -1949,9 +1991,7 @@
   //         "terminated" = hearing held + contract terminated
   // Used by the HR portal's "Unpaid Leave (Legal)" admin tab.
   async function loadUnpaidLegalRecords() {
-    var res = await sb.from("app_state").select("value").eq("key", "boa_unpaid_legal_v1").maybeSingle();
-    if (res.error) { console.error("loadUnpaidLegalRecords:", res.error); return []; }
-    var v = res.data && res.data.value;
+    var v = await cachedSingleton("boa_unpaid_legal_v1");
     return Array.isArray(v) ? v : [];
   }
   async function saveUnpaidLegalRecords(records) {
@@ -1985,9 +2025,7 @@
   // existing row for that pair). Read by both the HR portal "Today's
   // Movements" tab and the check-in kiosk to adapt its check-in gate.
   async function loadTechLoans() {
-    var res = await sb.from("app_state").select("value").eq("key", "boa_tech_loans_v1").maybeSingle();
-    if (res.error) { console.error("loadTechLoans:", res.error); return []; }
-    var v = res.data && res.data.value;
+    var v = await cachedSingleton("boa_tech_loans_v1");
     return Array.isArray(v) ? v : [];
   }
   async function saveTechLoans(records) {
@@ -2001,9 +2039,7 @@
   // (manager, day) cross-store assignment. Same shape as tech loans
   // so the kiosk and reports can reuse the same lookup pattern.
   async function loadMgrLoans() {
-    var res = await sb.from("app_state").select("value").eq("key", "boa_mgr_loans_v1").maybeSingle();
-    if (res.error) { console.error("loadMgrLoans:", res.error); return []; }
-    var v = res.data && res.data.value;
+    var v = await cachedSingleton("boa_mgr_loans_v1");
     return Array.isArray(v) ? v : [];
   }
   async function saveMgrLoans(records) {
@@ -2219,9 +2255,8 @@
   //   { asOf: "YYYY-MM-DD", entries: { <ec>: { ec, rawEc, name, opening,
   //     adjustments: [{ id, days, reason, by, ts }] } }, updatedBy, updatedAt }
   async function loadLeaveBalances() {
-    var res = await sb.from("app_state").select("value").eq("key", "boa_leave_balances_v1").maybeSingle();
-    if (res.error) { console.error("loadLeaveBalances:", res.error); return null; }
-    return (res.data && res.data.value) || null;
+    var v = await cachedSingleton("boa_leave_balances_v1");
+    return v || null;
   }
   async function saveLeaveBalances(data) {
     var res = await sb.from("app_state").upsert({ key: "boa_leave_balances_v1", value: data || {} });

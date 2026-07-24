@@ -20,7 +20,15 @@
 
   var IDLE_MS         = 90 * 1000;        // "idle" = no interaction for 90s
   var POLL_MS         = 60 * 1000;        // how often we check
-  var DATA_REFRESH_MS = 6 * 60 * 1000;    // pull fresh data ~every 6 min when idle
+  // Periodic data reload. Every store tablet doing this on a fixed 6-min timer
+  // meant the whole fleet re-downloaded every app_state singleton in lockstep;
+  // during the 09:00 check-in rush those synchronized reloads spiked the
+  // database hard enough to OOM it. Two fixes in one: (1) a longer base
+  // interval — a re-published schedule landing up to ~15 min later on an idle
+  // tablet is fine, the acting user's own device reloads on their next tap;
+  // (2) per-device jitter so tablets scatter across the window instead of
+  // firing together. Re-rolled on every load, so it stays desynchronised.
+  var DATA_REFRESH_MS = (12 + Math.random() * 6) * 60 * 1000;  // ~15 min avg, 12–18 per tablet
   var MIN_UPTIME_MS   = 2 * 60 * 1000;    // never reload within 2 min of a load
   var HIDDEN_WAKE_MS  = 60 * 1000;        // reload on return if hidden this long
 
