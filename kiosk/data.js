@@ -29,6 +29,45 @@
     return sb;
   }
 
+  // ---------- Conditional-GET cache for hot app_state singletons ----------
+  // Shared singletons (leave, offers, loans, trial period…) are read on nearly
+  // every tablet reload but change only a few times a day. Re-downloading them
+  // fleet-wide in lockstep is what OOM-crashed the database at the morning rush.
+  // app_state.updated_at is bumped server-side on EVERY write (app_state_touch
+  // trigger → now()), so it uniquely identifies a value version: read the tiny
+  // updated_at first, and pull the full value ONLY when it changed since we
+  // last cached it. The cached value is returned exclusively when its stored
+  // updated_at equals the live one, so it is provably identical to a fresh
+  // read — never staler. localStorage survives the tablet's periodic reloads.
+  // Pure display reads ONLY — read-modify-write paths must read fresh.
+  function _ssCacheGet(key) {
+    try { var raw = localStorage.getItem("boa_ss_cache_" + key); return raw ? JSON.parse(raw) : null; }
+    catch (_e) { return null; }
+  }
+  function _ssCacheSet(key, updatedAt, value) {
+    try { localStorage.setItem("boa_ss_cache_" + key, JSON.stringify({ u: updatedAt, v: value })); }
+    catch (_e) { /* private mode / quota — caching is best-effort, never fatal */ }
+  }
+  async function cachedSingleton(key) {
+    var c = client(); if (!c) return null;
+    var head = await c.from("app_state").select("updated_at").eq("key", key).maybeSingle();
+    if (head.error) {
+      // Validator failed — normal full read so an error never serves stale data.
+      var fb = await c.from("app_state").select("value").eq("key", key).maybeSingle();
+      if (fb.error) { console.error("cachedSingleton fallback:", key, fb.error); return null; }
+      return fb.data ? fb.data.value : null;
+    }
+    if (!head.data) return null;                       // key doesn't exist yet
+    var updatedAt = head.data.updated_at;
+    var cached = _ssCacheGet(key);
+    if (cached && cached.u === updatedAt) return cached.v;   // unchanged → free
+    var full = await c.from("app_state").select("value").eq("key", key).maybeSingle();
+    if (full.error) { console.error("cachedSingleton value:", key, full.error); return cached ? cached.v : null; }
+    var value = full.data ? full.data.value : null;
+    _ssCacheSet(key, updatedAt, value);
+    return value;
+  }
+
   function branch()        { return cfg.branchName        || "Green Point"; }
   function branchDisplay() { return cfg.branchDisplayName || branch(); }
 
@@ -176,17 +215,12 @@
   // kiosk schedule overlays EL the same way it overlays ML — global key, matched
   // by employee code (not branch-filtered).
   async function listUnpaidLegal() {
-    var c = client(); if (!c) return [];
-    var res = await c.from("app_state").select("value").eq("key", "boa_unpaid_legal_v1").maybeSingle();
-    if (res.error) { console.error("listUnpaidLegal:", res.error); return []; }
-    return (res.data && res.data.value) || [];
+    var v = await cachedSingleton("boa_unpaid_legal_v1");
+    return Array.isArray(v) ? v : [];
   }
 
   async function listLeaveRecords() {
-    var c = client(); if (!c) return [];
-    var res = await c.from("app_state").select("value").eq("key", "boa_leave_v1").maybeSingle();
-    if (res.error) { console.error("listLeaveRecords:", res.error); return []; }
-    var v = res.data && res.data.value;
+    var v = await cachedSingleton("boa_leave_v1");
     return Array.isArray(v) ? v : [];
   }
 
@@ -198,10 +232,7 @@
   // kiosk MUST consult this list to know who's actually left. Otherwise
   // staff off-boarded via the dedicated tab still look active here.
   async function loadOffboarding() {
-    var c = client(); if (!c) return [];
-    var res = await c.from("app_state").select("value").eq("key", "boa_offboard_v1").maybeSingle();
-    if (res.error) { console.error("loadOffboarding:", res.error); return []; }
-    var v = res.data && res.data.value;
+    var v = await cachedSingleton("boa_offboard_v1");
     return Array.isArray(v) ? v : [];
   }
 
@@ -213,10 +244,7 @@
   // the day, and add any guests loaned IN as honorary roster entries tagged
   // with _guest = true / _homeBranch = fromBranch so the UI can chip them.
   async function listTechLoans(dateIso) {
-    var c = client(); if (!c) return [];
-    var res = await c.from("app_state").select("value").eq("key", "boa_tech_loans_v1").maybeSingle();
-    if (res.error) { console.error("listTechLoans:", res.error); return []; }
-    var v = res.data && res.data.value;
+    var v = await cachedSingleton("boa_tech_loans_v1");
     var arr = Array.isArray(v) ? v : [];
     if (!dateIso) return arr;
     return arr.filter(function (l) { return l && l.date === dateIso; });
@@ -230,10 +258,7 @@
   // view must overlay these rather than trust the cell alone. Whole array (no
   // date filter) so a full-cycle grid can look up any day.
   async function listMgrLoans() {
-    var c = client(); if (!c) return [];
-    var res = await c.from("app_state").select("value").eq("key", "boa_mgr_loans_v1").maybeSingle();
-    if (res.error) { console.error("listMgrLoans:", res.error); return []; }
-    var v = res.data && res.data.value;
+    var v = await cachedSingleton("boa_mgr_loans_v1");
     return Array.isArray(v) ? v : [];
   }
 
@@ -245,10 +270,7 @@
   // includes today's weekday) and whose branches list includes this
   // kiosk's branch (or is empty, meaning all branches).
   async function listKioskReminders() {
-    var c = client(); if (!c) return [];
-    var res = await c.from("app_state").select("value").eq("key", "boa_daily_tasks_v1").maybeSingle();
-    if (res.error) { console.error("listKioskReminders:", res.error); return []; }
-    var v = res.data && res.data.value;
+    var v = await cachedSingleton("boa_daily_tasks_v1");
     var all = Array.isArray(v) ? v : [];
     var now = new Date();
     var ymd = now.getFullYear() + "-" + String(now.getMonth()+1).padStart(2,"0") + "-" + String(now.getDate()).padStart(2,"0");
@@ -1679,7 +1701,11 @@
   // back in the portal. Reuse the generic request load/save helpers above.
   var ED_OFFERS_KEY   = "boa_mgr_ed_offers_v1";
   var ED_REQUESTS_KEY = "boa_mgr_ed_requests_v1";
-  function loadEdOffers()   { return _loadRequestsAt(ED_OFFERS_KEY); }
+  // Offers are read-only on the kiosk (published from the portal; claims go to
+  // the separate REQUESTS key), so this pure display read is cache-eligible.
+  // loadEdRequests stays on the fresh _loadRequestsAt path — it's the read half
+  // of the claim read-modify-write.
+  function loadEdOffers()   { return cachedSingleton(ED_OFFERS_KEY).then(function (v) { return Array.isArray(v) ? v : []; }); }
   function loadEdRequests() { return _loadRequestsAt(ED_REQUESTS_KEY); }
   // Append a pending claim. Read-modify-write; a manager can hold only ONE
   // active (pending/approved) request per offer — idempotent re-claim.
@@ -1896,10 +1922,7 @@
   }
 
   async function listTrialCandidates() {
-    var c = client(); if (!c) return [];
-    var res = await c.from("app_state").select("value").eq("key", "boa_trial_period_v1").maybeSingle();
-    if (res.error) { console.error("listTrialCandidates:", res.error); return []; }
-    var v = res.data && res.data.value;
+    var v = await cachedSingleton("boa_trial_period_v1");
     return Array.isArray(v) ? v : [];
   }
 
