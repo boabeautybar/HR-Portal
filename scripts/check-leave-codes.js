@@ -289,6 +289,7 @@ const riskPreamble =
 const riskCode = [
   grabFn("normYmd"), grabFn("ymdStr"), grabFn("ymdAddDays"), grabFn("monthsBetween"), grabFn("addMonthsYmd"),
   grabFn("anniversaryCreditDates"), grabFn("anniversariesBetween"), extractScalar("LEAVE_ACCRUAL_PER_CYCLE"),
+  extractScalar("LEAVE_SEED_ANCHOR"),
   grabFn("accruedLeaveFor"), extractScalar("LEAVE_EXPIRY_MONTHS"), extractScalar("LEAVE_EXPIRY_RED_MONTHS"),
   grabFn("annualLeaveCycles"), grabFn("annualBalanceFor"), grabFn("leaveExpiryForPerson")
 ].join("\n");
@@ -314,14 +315,18 @@ riskNear((leaveExpiryForPerson("B300", mkDeps("B300", "2025-07-01", 8, "2026-07-
 riskNear((leaveExpiryForPerson("B400", mkDeps("B400", "2020-05-15", 30, "2026-07-29")) || {}).totalAtRisk, 15, "hoarder capped at one full year");
 // <1-year employee: nothing to expire.
 if (leaveExpiryForPerson("B200", mkDeps("B200", "2026-05-01", 2, "2026-07-17")) !== null) fail("at-risk: <1-year employee should have no expiring leave");
-// Per-entry asOf WINS over a drifted sheet field: same as Fazlin but the sheet
-// field is wrongly set to today (2026-07-29) while her entry is pinned to the
-// real 2026-06-25 upload → still 9.0, not the 7.75 the drifted field would give.
-const pinnedDeps = mkDeps("B147M", "2023-05-15", 10.25, "2026-07-29");
-pinnedDeps.leaveBalances.asOf = "2026-07-29";                      // drifted field
-pinnedDeps.leaveBalances.entries.B147M.asOf = "2026-06-25";        // pinned upload date
-riskNear((leaveExpiryForPerson("B147M", pinnedDeps) || {}).totalAtRisk, 9.0, "entry.asOf overrides a drifted sheet field");
-if (!failures) console.log("  ✓ 7 at-risk cases correct (oldest-taken-first split, anniversary boundary, one-year cap, booking rescue, per-entry anchor)");
+// The editable "Balance as of" field is IGNORED as an anchor: even with the
+// sheet field drifted to today, an unstamped balance still anchors to the fixed
+// seed (2026-06-25), so the July accrual is never swallowed → 9.0, not 7.75.
+const driftedDeps = mkDeps("B147M", "2023-05-15", 10.25, "2026-07-29");
+driftedDeps.leaveBalances.asOf = "2026-07-29";                     // drifted field — must be ignored
+riskNear((leaveExpiryForPerson("B147M", driftedDeps) || {}).totalAtRisk, 9.0, "drifted sheet field is ignored; anchor stays the fixed seed");
+// A stamped entry.asOf overrides the seed: a May-25 upload anchors earlier, so
+// both June + July credits are current-year → 10.25 at risk.
+const stampedDeps = mkDeps("B147M", "2023-05-15", 10.25, "2026-07-29");
+stampedDeps.leaveBalances.entries.B147M.asOf = "2026-05-25";
+riskNear((leaveExpiryForPerson("B147M", stampedDeps) || {}).totalAtRisk, 10.25, "entry.asOf (a May-25 upload) overrides the seed anchor");
+if (!failures) console.log("  ✓ 8 at-risk cases correct (oldest-taken-first split, anniversary boundary, one-year cap, booking rescue, fixed-seed anchor, per-entry override)");
 
 // ── Report ────────────────────────────────────────────────────────────────────
 const unconfirmed = Object.keys(LEAVE_CODES).filter(k => LEAVE_CODES[k].sage === "?");

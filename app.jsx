@@ -11127,10 +11127,11 @@ function annualBalanceFor(ec, deps, asAt) {
   const target = asAt || today;   // the date we're projecting the balance to
   // Each opening is truth AS OF the date it was uploaded. A person's own
   // entry.asOf (stamped at import) is the anchor — so a later upload re-anchors
-  // just that employee — falling back to the sheet-level date only for legacy
-  // rows uploaded before per-entry stamping. The editable "Balance as of" field
-  // is the date STAMPED onto the next upload, not a live re-basing knob.
-  const asOf = entry.asOf || lb.asOf || "2026-05-24";
+  // just that employee — falling back to the fixed seed date for legacy rows
+  // uploaded before per-entry stamping. NEVER the editable "Balance as of"
+  // field: that's a view lens now, so the anchor can't drift and accrual always
+  // counts forward from the real upload date.
+  const asOf = entry.asOf || LEAVE_SEED_ANCHOR;
   const opening = Number(entry.opening) || 0;
   const adj = (entry.adjustments || []).reduce((s, a) => s + (Number(a.days) || 0), 0);
   const p = findLeavePerson(ec, deps.enriched, deps.managers);
@@ -11189,7 +11190,7 @@ function leaveExpiryForPerson(ec, deps) {
   const norm = lbNormEc(ec);
   const lb = deps.leaveBalances;
   const entry = lb && lb.entries ? lb.entries[norm] : null;   // per-entry upload date wins, same as annualBalanceFor
-  const asOf = (entry && entry.asOf) || (lb && lb.asOf) || "2026-05-24";
+  const asOf = (entry && entry.asOf) || LEAVE_SEED_ANCHOR;    // fixed anchor, never the editable view field
   const opts = { schedCache: deps.schedCache, ymdToSchedYm: deps.ymdToSchedYm, ec: (p && p.ec) || ec, branch: p && p.branch };
   const redBy = addMonthsYmd(today, LEAVE_EXPIRY_RED_MONTHS);
   const out = [];
@@ -11282,6 +11283,13 @@ function leaveDays(s, e) {
 // `toYmd` (0 if before the first credit). Month-aligned to the 25th, so it's
 // independent of whether asOf is stored as the 24th or 25th.
 const LEAVE_ACCRUAL_PER_CYCLE = 1.25;
+// The date the original 493-employee balance file was uploaded (documented in
+// the seed archive boa_leave_openings_v1). It's the immutable anchor for any
+// balance that predates per-entry asOf stamping — every seed opening is truth
+// as of this date. Later uploads carry their OWN entry.asOf, which always wins.
+// This is NOT the editable "Balance as of" field (that's now a view lens): the
+// anchor can never drift, so accrual always counts forward from the real upload.
+const LEAVE_SEED_ANCHOR = "2026-06-25";
 function accrualCyclesEarned(asOfYmd, toYmd) {
   if (!asOfYmd || !toYmd) return 0;
   const a = new Date(asOfYmd + "T00:00:00"), t = new Date(toYmd + "T00:00:00");
@@ -13009,6 +13017,10 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
   const [saving, setSaving] = useState(false);
   const [q, setQ] = useState("");
   const [sortBy, setSortBy] = useState("name");   // "name" | "code"
+  // "Balance as of" is a VIEW date, not the anchor — it projects every balance
+  // to this date (accrual counts forward from each person's own upload date).
+  // Defaults to today; local only, never persisted, so it can't corrupt anything.
+  const [viewDate, setViewDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [showImport, setShowImport] = useState(false);
   const [pasteText, setPasteText] = useState("");
   const [preview, setPreview] = useState(null);
@@ -13143,14 +13155,21 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
       + (ignored ? "\n\n" + ignored + " row" + (ignored === 1 ? "" : "s") + " are NOT on the HR portal and will be ignored." : "")
       + (existing ? "\n\n" + existing + " already have an opening balance — it will be updated (your adjustments are kept)." : "");
     if (!window.confirm(msg)) return;
+    // Capture the date these balances are measured AS OF — each employee is
+    // anchored to it and accrual counts forward from it. The view field is just
+    // a lens, so the upload must state its own date; default to today.
+    const defaultAsOf = new Date().toISOString().slice(0, 10);
+    const asked = window.prompt("What date are these balances measured as of? (YYYY-MM-DD)\n\nEach employee's balance is anchored to this date and accrual counts forward from it — usually the date Sage exported the report.", data.asOf || defaultAsOf);
+    if (asked === null) return;   // cancelled
+    const uploadAsOf = /^\d{4}-\d{2}-\d{2}$/.test((asked || "").trim()) ? asked.trim() : defaultAsOf;
     setImportBusy(true);
     const entries = { ...data.entries };
     matched.forEach(x => {
       const k = lbNormEc(x.portalEc);
       const prev = entries[k] || {};
       // Stamp THIS upload's as-of date onto the entry — it's this employee's new
-      // truth from now on, independent of the sheet field or anyone else's date.
-      entries[k] = { ec: k, rawEc: x.portalEc, name: x.name || prev.name || "", opening: x.days, adjustments: prev.adjustments || [], asOf: (data.asOf || "2026-06-25") };
+      // truth from now on, independent of the view field or anyone else's date.
+      entries[k] = { ec: k, rawEc: x.portalEc, name: x.name || prev.name || "", opening: x.days, adjustments: prev.adjustments || [], asOf: uploadAsOf };
     });
     // Archive this anchor before it becomes the live one. Every computed balance
     // hangs off these openings, so the history is what makes the starting point
@@ -13158,7 +13177,6 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
     // Best-effort: a failed snapshot must never block payroll's import.
     try {
       if (window.BOA_DB.appendLeaveOpening) {
-        const uploadAsOf = data.asOf || "2026-06-25";
         const frozen = {};
         matched.forEach(x => {
           const k = lbNormEc(x.portalEc);
@@ -13175,9 +13193,9 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
         });
       }
     } catch (e) { console.error("appendLeaveOpening:", e); }
-    await persist({ ...data, entries: entries });
+    await persist({ ...data, asOf: uploadAsOf, entries: entries });
     setImportBusy(false); setPreview(null); setPasteText(""); setFileName(""); setShowImport(false);
-    if (logActivity) logActivity("Imported leave balances", matched.length + " employees" + (ignored ? " (" + ignored + " ignored — not on system)" : "") + " · as of " + (data.asOf || ""), "", "Payroll");
+    if (logActivity) logActivity("Imported leave balances", matched.length + " employees" + (ignored ? " (" + ignored + " ignored — not on system)" : "") + " · as of " + uploadAsOf, "", "Payroll");
   };
 
   const addAdjustment = async (norm) => {
@@ -13227,20 +13245,6 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
     await persist({ ...data, entries: {} });
     if (logActivity) logActivity("Cleared all leave balances", n + " records", "", "Payroll");
   };
-  // Stamp every current balance with the date it was actually uploaded, so it's
-  // pinned truth AS OF that date and the editable field can never re-base it
-  // again. Entries already carrying their own asOf are left alone (a later upload
-  // is their newer truth). One-time cleanup for the pre-per-entry-asOf seed.
-  const lockAnchorToUpload = async (dateYmd) => {
-    if (!data) return;
-    const keys = Object.keys(data.entries);
-    const loose = keys.filter(k => !data.entries[k].asOf).length;
-    if (!window.confirm("Pin all " + keys.length + " balances to their upload date (" + dateYmd + ")?\n\n" + loose + " balance" + (loose === 1 ? "" : "s") + " will be stamped with this date so editing the field can never re-base them again. Later uploads still re-anchor each employee. Continue?")) return;
-    const entries = {};
-    keys.forEach(k => { const e = data.entries[k]; entries[k] = e.asOf ? e : { ...e, asOf: dateYmd }; });
-    await persist({ ...data, asOf: dateYmd, entries });
-    if (logActivity) logActivity("Pinned leave balances to upload date", loose + " stamped · as of " + dateYmd, "", "Payroll");
-  };
 
   // ── Leave-deduction engine ───────────────────────────────────────────
   // Opening balances are AS OF data.asOf (end of the previous cycle), so they
@@ -13259,7 +13263,7 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
   // booked. Uploaded balances are left untouched — these are shown separately.
   const newStarters = useMemo(() => {
     if (!data) return [];
-    const asOf = data.asOf || "2026-05-24";
+    const asOf = LEAVE_SEED_ANCHOR;   // sheet capture date — "new hire" = started after it, not on the sheet
     const seen = new Set(); const out = [];
     const add = (p, role) => {
       if (!p || !p.ec) return; const norm = lbNormEc(p.ec); if (!norm || seen.has(norm)) return; seen.add(norm);
@@ -13384,6 +13388,11 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
   };
 
   const computeRow = (norm, e) => {
+    // The whole row is computed AS OF the view date: "taken"/"earned"/"current"
+    // all reflect the balance on that date (default today). Shadowing todayYmd is
+    // deliberate — expiry + new-hire detection keep the real clock via their own
+    // functions; this only moves the balance lens.
+    const todayYmd = viewDate;
     const adjs = e.adjustments || [];
     const net = adjs.reduce((s, a) => s + (Number(a.days) || 0), 0);
     const opening = Number(e.opening) || 0;
@@ -13392,9 +13401,10 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
     const branch = r ? r.branch : "";
     const isMgr = isManagerEc(ec);
     // Per-entry upload date is the anchor (a later upload re-anchors just this
-    // person); the sheet-level field is only the fallback for legacy rows +
-    // the default stamped onto the next upload. Matches annualBalanceFor.
-    const asOf = e.asOf || (data && data.asOf) || "2026-05-24";
+    // person); legacy rows fall back to the fixed seed date — NEVER the view
+    // field, so accrual can't be erased by changing the date. Matches
+    // annualBalanceFor.
+    const asOf = e.asOf || LEAVE_SEED_ANCHOR;
     // Accrual: +1.25 leave days on each person's monthly START-DATE anniversary
     // (so balances tick up on different days across the roster — "updates daily").
     // No start date on file (seed-only managers) falls back to the 25th cycle.
@@ -13481,7 +13491,7 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
   // only for the row that's open. Shares leaveExpiryForPerson with the radar so
   // the "at risk" numbers here always match the panel and the auto-incident scan.
   const buildBreakdown = (r) => {
-    const asOf = r.asOf || (data && data.asOf) || "2026-05-24";
+    const asOf = r.asOf || LEAVE_SEED_ANCHOR;   // the balance's own upload date (never the view field)
     const startDate = r.startDate || "";
     // Past ledger: opening → (adjustments, accrual credits, leave taken, in date
     // order) → Current. Deltas sum to Current exactly, by construction.
@@ -13490,7 +13500,9 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
       date: a.ts ? new Date(a.ts).toISOString().slice(0, 10) : asOf,
       label: a.reason ? a.reason : "Manual adjustment", by: a.by, delta: Number(a.days) || 0
     }));
-    if (startDate) anniversaryCreditDates(startDate, asOf, todayYmd).forEach(c =>
+    // Accrual credits up to the VIEW date, so the running total lands on r.current
+    // (which computeRow also computes as of the view date).
+    if (startDate) anniversaryCreditDates(startDate, asOf, viewDate).forEach(c =>
       rest.push({ date: c, label: "Accrued — monthly anniversary of start date", delta: LEAVE_ACCRUAL_PER_CYCLE }));
     (r.takenItems || []).forEach(t => rest.push({
       date: t.start, label: "Annual leave taken", range: [t.start, t.end], cal: t.cal, delta: -t.days
@@ -13520,7 +13532,7 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
     if (!data) return [];
     return Object.keys(data.entries).map(norm => computeRow(norm, data.entries[norm]))
       .sort((a, b) => (a.name || a.rawEc).localeCompare(b.name || b.rawEc));
-  }, [data, lookups, leaveRecs, schedCache, attGrids, clockSet, cycle]);
+  }, [data, lookups, leaveRecs, schedCache, attGrids, clockSet, cycle, viewDate]);
 
   const rows = useMemo(() => {
     const qq = q.trim().toLowerCase();
@@ -13656,21 +13668,11 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
         <div style={{ ...card, flex: "1 1 160px", minWidth: 150 }}>
           <div style={{ fontSize: 10, fontWeight: 800, color: "#9d174d", letterSpacing: "0.06em", textTransform: "uppercase" }}>Balance as of</div>
-          {/* Each balance is anchored to its OWN upload date (entry.asOf). This field
-              is the date stamped onto the next upload + the fallback for any row not
-              yet pinned — editing it no longer re-bases pinned balances. Guarded so a
-              stray edit can't shift the still-unpinned rows. */}
-          <input type="date" value={(data && data.asOf) || ""} onChange={e => {
-            const v = e.target.value; const prev = (data && data.asOf) || "";
-            if (!v || v === prev) return;
-            const loose = data ? Object.keys(data.entries).filter(k => !data.entries[k].asOf).length : 0;
-            if (!window.confirm("Set the upload date to " + v + "?\n\nThis is the date stamped onto the NEXT upload. It also anchors the " + loose + " balance" + (loose === 1 ? "" : "s") + " not yet pinned to their own date. Pinned balances are unaffected. Continue?")) return;
-            persist({ ...data, asOf: v });
-          }} style={{ ...inp, marginTop: 6, width: "100%" }} />
-          {data && Object.keys(data.entries).some(k => !data.entries[k].asOf) && (
-            <button onClick={() => lockAnchorToUpload("2026-06-25")} title="Stamp each current balance with 25 Jun 2026 (the upload date) so the field can never re-base them again" style={{ marginTop: 6, width: "100%", background: "#fdf2f8", color: "#9d174d", border: "1px solid #FBCFE8", borderRadius: 8, padding: "6px 8px", fontWeight: 700, fontSize: 11, cursor: "pointer" }}>📌 Pin balances to the 25 Jun 2026 upload</button>
-          )}
-          <div style={{ fontSize: 9.5, color: "#b98aa2", marginTop: 4, lineHeight: 1.35 }}>Each balance keeps its own upload date; later uploads re-anchor per employee.</div>
+          {/* A VIEW date, not the anchor: it projects every balance to this date
+              (accrual counts forward from each person's own upload date). Local
+              only — changing it can never alter or persist a balance. */}
+          <input type="date" value={viewDate} onChange={e => setViewDate(e.target.value || new Date().toISOString().slice(0, 10))} style={{ ...inp, marginTop: 6, width: "100%" }} />
+          <div style={{ fontSize: 9.5, color: "#b98aa2", marginTop: 4, lineHeight: 1.35 }}>Projects the balance to this date — accrual counts forward from each upload. {viewDate !== new Date().toISOString().slice(0, 10) && <button onClick={() => setViewDate(new Date().toISOString().slice(0, 10))} style={{ background: "none", border: "none", color: "#9d174d", fontWeight: 700, cursor: "pointer", padding: 0, fontSize: 9.5, textDecoration: "underline" }}>reset to today</button>}</div>
         </div>
         <div style={{ ...card, flex: "1 1 120px", minWidth: 120 }}>
           <div style={{ fontSize: 10, fontWeight: 800, color: "#9d174d", letterSpacing: "0.06em", textTransform: "uppercase" }}>Employees</div>
@@ -13877,8 +13879,8 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
                                         </tr>
                                       ))}
                                       <tr style={{ background: "#FDF2F8" }}>
-                                        <td style={{ ...ledTd, fontWeight: 800, color: "#831843" }}>Today</td>
-                                        <td style={{ ...ledTd, fontWeight: 800, color: "#831843" }}>Current balance</td>
+                                        <td style={{ ...ledTd, fontWeight: 800, color: "#831843" }}>{viewDate === new Date().toISOString().slice(0, 10) ? "Today" : fmtLD(viewDate)}</td>
+                                        <td style={{ ...ledTd, fontWeight: 800, color: "#831843" }}>{viewDate === new Date().toISOString().slice(0, 10) ? "Current balance" : "Balance on this date"}</td>
                                         <td style={ledTd}></td>
                                         <td style={{ ...ledTd, textAlign: "right", fontWeight: 800, fontSize: 14, color: "#831843" }}>{fmtDays(r.current)}</td>
                                       </tr>
@@ -14024,7 +14026,7 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
         <div style={{ ...card, padding: 0, overflow: "hidden", marginTop: 18 }}>
           <div style={{ padding: "12px 16px", borderBottom: "1px solid #FBCFE8" }}>
             <div style={{ fontSize: 14, fontWeight: 800, color: "#15803d" }}>🌱 New starters — earned from start date</div>
-            <div style={{ fontSize: 11.5, color: "#9d6a82", marginTop: 2 }}>Hired after {(data && data.asOf) ? new Date(data.asOf + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }) : "the as-of date"} and not on the uploaded sheet. Balance = <strong>1.25 × completed months</strong> since their start date, minus annual leave taken/booked. Uploaded balances above are unchanged.</div>
+            <div style={{ fontSize: 11.5, color: "#9d6a82", marginTop: 2 }}>Hired after {new Date(LEAVE_SEED_ANCHOR + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" })} and not on the uploaded sheet. Balance = <strong>1.25 × completed months</strong> since their start date, minus annual leave taken/booked. Uploaded balances above are unchanged.</div>
           </div>
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 800 }}>
