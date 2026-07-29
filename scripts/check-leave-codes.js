@@ -272,6 +272,57 @@ if (annualLeaveCycles("2026-05-01", "2026-07-17").length !== 0) fail("annualLeav
 if (annualLeaveCycles("", "2026-07-17").length !== 0) fail("annualLeaveCycles(\"\") should be empty");
 if (!failures) console.log("  ✓ cycle window, 6-month deadline, and ≤3-month RED boundary all correct");
 
+// ── 7. Leave-expiry AT-RISK decomposition ──────────────────────────────────────
+// A single uploaded balance carries no per-year breakdown, so days-at-risk is
+// split oldest-taken-first: the days you still hold are your NEWEST accrual, so
+// strip the current-year accrual and cap at one full year (15). This stops a
+// lump-sum opening from being dumped whole onto the nearest deadline. The credit
+// landing ON the anniversary belongs to the year just completed (annivClose).
+console.log("7. Leave-expiry at-risk decomposition");
+const riskPreamble =
+  'const lbNormEc = (ec) => String(ec == null ? "" : ec).toUpperCase().replace(/[^A-Z0-9]/g, "");\n' +
+  'const isManagerEc = (ec) => /M$/i.test(String(ec || "").replace(/[^A-Za-z0-9]/g, ""));\n' +
+  'const findLeavePerson = (ec, enriched, managers) => (enriched || []).concat(managers || []).find(p => p && lbNormEc(p.ec) === lbNormEc(ec)) || null;\n' +
+  'const canonicalLeaveType = (rec) => rec ? (rec.leaveType || (rec.emergency ? "Unpaid" : "Annual")) : "Annual";\n' +
+  'const isPaidAnnualRec = (lv) => !!lv && canonicalLeaveType(lv) === "Annual" && !lv.emergency;\n' +
+  'const leaveDayBreakdown = (s, e) => { const d = Math.round((new Date(e+"T00:00:00") - new Date(s+"T00:00:00"))/86400000)+1; return { real: Math.max(0,d), cal: Math.max(0,d) }; };\n';
+const riskCode = [
+  grabFn("normYmd"), grabFn("ymdStr"), grabFn("ymdAddDays"), grabFn("monthsBetween"), grabFn("addMonthsYmd"),
+  grabFn("anniversaryCreditDates"), grabFn("anniversariesBetween"), extractScalar("LEAVE_ACCRUAL_PER_CYCLE"),
+  grabFn("accruedLeaveFor"), extractScalar("LEAVE_EXPIRY_MONTHS"), extractScalar("LEAVE_EXPIRY_RED_MONTHS"),
+  grabFn("annualLeaveCycles"), grabFn("annualBalanceFor"), grabFn("leaveExpiryForPerson")
+].join("\n");
+const rbox = {};
+new Function("exports", riskPreamble + riskCode + "\nexports.leaveExpiryForPerson = leaveExpiryForPerson;")(rbox);
+const { leaveExpiryForPerson } = rbox;
+const mkDeps = (ec, start, opening, today, recs) => ({
+  leaveBalances: { asOf: "2026-06-25", entries: { [ec]: { ec, opening, adjustments: [] } } },
+  leaveRecs: recs || [], enriched: [{ ec, name: ec, branch: "Bree", startDate: start }],
+  managers: [], schedCache: {}, ymdToSchedYm: (y) => y.slice(0, 7), today
+});
+const riskNear = (got, want, why) => { if (got == null || Math.abs(got - want) > 1e-6) fail("at-risk " + why + ": expected " + want + ", got " + got); };
+// Fazlin's live case: start 2023-05-15, opening 10.25 as of 2026-06-25, today
+// 2026-07-29. Her 15 Jun 2026 credit is NEXT year's → 10.25 − 1.25 = 9.0.
+riskNear((leaveExpiryForPerson("B147M", mkDeps("B147M", "2023-05-15", 10.25, "2026-07-29")) || {}).totalAtRisk, 9.0, "pre-anchor (Fazlin) strips one current-year credit");
+// Pre-anchor, 3 current-year credits baked in: opening 10 − 3.75 = 6.25.
+riskNear((leaveExpiryForPerson("B100", mkDeps("B100", "2024-03-10", 10, "2026-07-17")) || {}).totalAtRisk, 6.25, "pre-anchor strips 3 current-year credits");
+// Booking 6 days in the redemption window draws the 6.25 down to 0.25.
+riskNear((leaveExpiryForPerson("B100", mkDeps("B100", "2024-03-10", 10, "2026-07-17", [{ ec: "B100", startDate: "2026-08-01", endDate: "2026-08-06", type: "Annual leave", leaveType: "Annual" }])) || {}).totalAtRisk, 0.25, "window booking rescues at-risk days");
+// Post-anchor person: opening 8 + the closing anniversary credit = 9.25.
+riskNear((leaveExpiryForPerson("B300", mkDeps("B300", "2025-07-01", 8, "2026-07-29")) || {}).totalAtRisk, 9.25, "post-anchor includes the closing anniversary credit");
+// Hoarder: capped at one full year = 15 (not the whole 30).
+riskNear((leaveExpiryForPerson("B400", mkDeps("B400", "2020-05-15", 30, "2026-07-29")) || {}).totalAtRisk, 15, "hoarder capped at one full year");
+// <1-year employee: nothing to expire.
+if (leaveExpiryForPerson("B200", mkDeps("B200", "2026-05-01", 2, "2026-07-17")) !== null) fail("at-risk: <1-year employee should have no expiring leave");
+// Per-entry asOf WINS over a drifted sheet field: same as Fazlin but the sheet
+// field is wrongly set to today (2026-07-29) while her entry is pinned to the
+// real 2026-06-25 upload → still 9.0, not the 7.75 the drifted field would give.
+const pinnedDeps = mkDeps("B147M", "2023-05-15", 10.25, "2026-07-29");
+pinnedDeps.leaveBalances.asOf = "2026-07-29";                      // drifted field
+pinnedDeps.leaveBalances.entries.B147M.asOf = "2026-06-25";        // pinned upload date
+riskNear((leaveExpiryForPerson("B147M", pinnedDeps) || {}).totalAtRisk, 9.0, "entry.asOf overrides a drifted sheet field");
+if (!failures) console.log("  ✓ 7 at-risk cases correct (oldest-taken-first split, anniversary boundary, one-year cap, booking rescue, per-entry anchor)");
+
 // ── Report ────────────────────────────────────────────────────────────────────
 const unconfirmed = Object.keys(LEAVE_CODES).filter(k => LEAVE_CODES[k].sage === "?");
 if (unconfirmed.length) {

@@ -2273,7 +2273,9 @@
   // This key is the append-only history of those anchors — one snapshot per
   // import, each a frozen copy of the openings as uploaded:
   //   [ { asOf, savedAt, source, uploadedBy, entries: { <ec>: { ec, rawEc,
-  //       name, opening } } }, ... ]
+  //       name, opening, asOf } } }, ... ]   // per-entry asOf = this upload's date,
+  //       so a restore re-anchors each employee to their own upload, not the field
+
   // NEWEST FIRST (value[0] = the anchor in force), matching the boa_schedapproved_*
   // convention. Nothing here is ever edited or deleted — adjustments and edits
   // live on the working copy, not on the record of what payroll actually sent.

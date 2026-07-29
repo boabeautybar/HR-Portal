@@ -11125,7 +11125,12 @@ function annualBalanceFor(ec, deps, asAt) {
   if (!entry) return null;
   const today = deps.today || new Date().toISOString().slice(0, 10);
   const target = asAt || today;   // the date we're projecting the balance to
-  const asOf = lb.asOf || "2026-05-24";
+  // Each opening is truth AS OF the date it was uploaded. A person's own
+  // entry.asOf (stamped at import) is the anchor — so a later upload re-anchors
+  // just that employee — falling back to the sheet-level date only for legacy
+  // rows uploaded before per-entry stamping. The editable "Balance as of" field
+  // is the date STAMPED onto the next upload, not a live re-basing knob.
+  const asOf = entry.asOf || lb.asOf || "2026-05-24";
   const opening = Number(entry.opening) || 0;
   const adj = (entry.adjustments || []).reduce((s, a) => s + (Number(a.days) || 0), 0);
   const p = findLeavePerson(ec, deps.enriched, deps.managers);
@@ -11182,7 +11187,9 @@ function leaveExpiryForPerson(ec, deps) {
   let remaining = cur ? Math.max(0, cur.available) : 0;
   if (remaining <= 1e-9) return null;
   const norm = lbNormEc(ec);
-  const asOf = (deps.leaveBalances && deps.leaveBalances.asOf) || "2026-05-24";
+  const lb = deps.leaveBalances;
+  const entry = lb && lb.entries ? lb.entries[norm] : null;   // per-entry upload date wins, same as annualBalanceFor
+  const asOf = (entry && entry.asOf) || (lb && lb.asOf) || "2026-05-24";
   const opts = { schedCache: deps.schedCache, ymdToSchedYm: deps.ymdToSchedYm, ec: (p && p.ec) || ec, branch: p && p.branch };
   const redBy = addMonthsYmd(today, LEAVE_EXPIRY_RED_MONTHS);
   const out = [];
@@ -13141,7 +13148,9 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
     matched.forEach(x => {
       const k = lbNormEc(x.portalEc);
       const prev = entries[k] || {};
-      entries[k] = { ec: k, rawEc: x.portalEc, name: x.name || prev.name || "", opening: x.days, adjustments: prev.adjustments || [] };
+      // Stamp THIS upload's as-of date onto the entry — it's this employee's new
+      // truth from now on, independent of the sheet field or anyone else's date.
+      entries[k] = { ec: k, rawEc: x.portalEc, name: x.name || prev.name || "", opening: x.days, adjustments: prev.adjustments || [], asOf: (data.asOf || "2026-06-25") };
     });
     // Archive this anchor before it becomes the live one. Every computed balance
     // hangs off these openings, so the history is what makes the starting point
@@ -13149,13 +13158,17 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
     // Best-effort: a failed snapshot must never block payroll's import.
     try {
       if (window.BOA_DB.appendLeaveOpening) {
+        const uploadAsOf = data.asOf || "2026-06-25";
         const frozen = {};
         matched.forEach(x => {
           const k = lbNormEc(x.portalEc);
-          frozen[k] = { ec: k, rawEc: x.portalEc, name: x.name || (entries[k] && entries[k].name) || "", opening: x.days };
+          // Freeze each opening WITH its own upload date, matching the live entry,
+          // so a restore from this snapshot re-anchors per employee (never re-bases
+          // to whatever the sheet field happens to say at restore time).
+          frozen[k] = { ec: k, rawEc: x.portalEc, name: x.name || (entries[k] && entries[k].name) || "", opening: x.days, asOf: uploadAsOf };
         });
         await window.BOA_DB.appendLeaveOpening({
-          asOf: data.asOf || "", savedAt: new Date().toISOString(),
+          asOf: uploadAsOf, savedAt: new Date().toISOString(),
           source: fileName ? ("upload: " + fileName) : "pasted rows",
           uploadedBy: (currentUser && (currentUser.name || currentUser.email)) || "",
           entries: frozen
@@ -13213,6 +13226,20 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
     if (!window.confirm("Are you sure? This permanently deletes all " + n + " records.")) return;
     await persist({ ...data, entries: {} });
     if (logActivity) logActivity("Cleared all leave balances", n + " records", "", "Payroll");
+  };
+  // Stamp every current balance with the date it was actually uploaded, so it's
+  // pinned truth AS OF that date and the editable field can never re-base it
+  // again. Entries already carrying their own asOf are left alone (a later upload
+  // is their newer truth). One-time cleanup for the pre-per-entry-asOf seed.
+  const lockAnchorToUpload = async (dateYmd) => {
+    if (!data) return;
+    const keys = Object.keys(data.entries);
+    const loose = keys.filter(k => !data.entries[k].asOf).length;
+    if (!window.confirm("Pin all " + keys.length + " balances to their upload date (" + dateYmd + ")?\n\n" + loose + " balance" + (loose === 1 ? "" : "s") + " will be stamped with this date so editing the field can never re-base them again. Later uploads still re-anchor each employee. Continue?")) return;
+    const entries = {};
+    keys.forEach(k => { const e = data.entries[k]; entries[k] = e.asOf ? e : { ...e, asOf: dateYmd }; });
+    await persist({ ...data, asOf: dateYmd, entries });
+    if (logActivity) logActivity("Pinned leave balances to upload date", loose + " stamped · as of " + dateYmd, "", "Payroll");
   };
 
   // ── Leave-deduction engine ───────────────────────────────────────────
@@ -13364,7 +13391,10 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
     const ec = (r && r.ec) || e.rawEc || norm;
     const branch = r ? r.branch : "";
     const isMgr = isManagerEc(ec);
-    const asOf = (data && data.asOf) || "2026-05-24";
+    // Per-entry upload date is the anchor (a later upload re-anchors just this
+    // person); the sheet-level field is only the fallback for legacy rows +
+    // the default stamped onto the next upload. Matches annualBalanceFor.
+    const asOf = e.asOf || (data && data.asOf) || "2026-05-24";
     // Accrual: +1.25 leave days on each person's monthly START-DATE anniversary
     // (so balances tick up on different days across the roster — "updates daily").
     // No start date on file (seed-only managers) falls back to the 25th cycle.
@@ -13580,15 +13610,15 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
         </div>
       </div>
 
-      {/* How far behind Sage these figures are. They aren't wrong when stale —
-          accrual keeps counting — but leave captured straight into Sage since
-          the upload is missing, so a fresh export is the only way to be sure. */}
+      {/* The hub keeps these current by accruing forward from each balance's own
+          upload date, so a monthly re-upload is NOT required — it's just an
+          optional reconciliation against Sage. Kept as a calm note, not a nag. */}
       {(() => {
         const st = balanceStaleness(data && data.asOf);
         if (!st.stale) return null;
         return (
-          <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 11, padding: "11px 14px", marginBottom: 12, fontSize: 12.5, color: "#92400e", lineHeight: 1.5 }}>
-            ⚠ <strong>These figures are {st.cyclesBehind} payroll run{st.cyclesBehind === 1 ? "" : "s"} behind Sage.</strong> They're anchored to the upload as of {fmtIncidentDate(st.asOf)}, and {st.cyclesBehind === 1 ? "a run has" : st.cyclesBehind + " runs have"} closed since. Accrual keeps counting, so nothing here is wrong — but any leave captured directly in Sage isn't reflected. Upload a fresh balance report to re-anchor.
+          <div style={{ background: "#fdf2f8", border: "1px solid #FBCFE8", borderRadius: 11, padding: "10px 14px", marginBottom: 12, fontSize: 12, color: "#9d6a82", lineHeight: 1.5 }}>
+            ℹ These balances are anchored to their upload date and the hub accrues forward from there — they stay current on their own, no monthly upload needed. Re-upload a Sage export only when you want to reconcile (e.g. leave captured directly in Sage); it re-anchors each employee to the new figure.
           </div>
         );
       })()}
@@ -13626,16 +13656,21 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
         <div style={{ ...card, flex: "1 1 160px", minWidth: 150 }}>
           <div style={{ fontSize: 10, fontWeight: 800, color: "#9d174d", letterSpacing: "0.06em", textTransform: "uppercase" }}>Balance as of</div>
-          {/* Load-bearing: this is the anchor EVERY balance is measured from. A stray
-              edit re-bases accrual + expiry for all employees, so it's confirm-gated. */}
+          {/* Each balance is anchored to its OWN upload date (entry.asOf). This field
+              is the date stamped onto the next upload + the fallback for any row not
+              yet pinned — editing it no longer re-bases pinned balances. Guarded so a
+              stray edit can't shift the still-unpinned rows. */}
           <input type="date" value={(data && data.asOf) || ""} onChange={e => {
             const v = e.target.value; const prev = (data && data.asOf) || "";
             if (!v || v === prev) return;
-            const n = data ? Object.keys(data.entries).length : 0;
-            if (!window.confirm("Change the balance anchor from " + (prev || "—") + " to " + v + "?\n\nThis is the date the uploaded balances are measured from. Changing it re-bases accrual AND leave-expiry for all " + n + " employees — only do this to match the date Sage exported the sheet. Continue?")) return;
+            const loose = data ? Object.keys(data.entries).filter(k => !data.entries[k].asOf).length : 0;
+            if (!window.confirm("Set the upload date to " + v + "?\n\nThis is the date stamped onto the NEXT upload. It also anchors the " + loose + " balance" + (loose === 1 ? "" : "s") + " not yet pinned to their own date. Pinned balances are unaffected. Continue?")) return;
             persist({ ...data, asOf: v });
           }} style={{ ...inp, marginTop: 6, width: "100%" }} />
-          <div style={{ fontSize: 9.5, color: "#b98aa2", marginTop: 4, lineHeight: 1.35 }}>🔒 Re-bases every balance — change only to match Sage's export date.</div>
+          {data && Object.keys(data.entries).some(k => !data.entries[k].asOf) && (
+            <button onClick={() => lockAnchorToUpload("2026-06-25")} title="Stamp each current balance with 25 Jun 2026 (the upload date) so the field can never re-base them again" style={{ marginTop: 6, width: "100%", background: "#fdf2f8", color: "#9d174d", border: "1px solid #FBCFE8", borderRadius: 8, padding: "6px 8px", fontWeight: 700, fontSize: 11, cursor: "pointer" }}>📌 Pin balances to the 25 Jun 2026 upload</button>
+          )}
+          <div style={{ fontSize: 9.5, color: "#b98aa2", marginTop: 4, lineHeight: 1.35 }}>Each balance keeps its own upload date; later uploads re-anchor per employee.</div>
         </div>
         <div style={{ ...card, flex: "1 1 120px", minWidth: 120 }}>
           <div style={{ fontSize: 10, fontWeight: 800, color: "#9d174d", letterSpacing: "0.06em", textTransform: "uppercase" }}>Employees</div>
