@@ -1790,6 +1790,12 @@
     var yesterdayDate = new Date(now); yesterdayDate.setDate(yesterdayDate.getDate() - 1);
     var yesterdayK = _ymdToday(yesterdayDate);
     var autoOutedYesterday = {};
+    // Own-branch only: this kiosk auto-outs an open clock-in ONLY if it was made
+    // at THIS kiosk's branch, so each open shift is owned by exactly one kiosk
+    // (the one the manager clocked in at) — no cross-branch closes, no legacy
+    // 18:30 fallback for a schedule this kiosk doesn't hold, and no two-kiosk
+    // race to double-out one shift. See docs/manager-autoout-cross-branch-investigation.md.
+    var kioskBranch = String((cfg && cfg.branchName) || "").trim();
     for (var ec in groups) {
       for (var k in groups[ec]) {
         var dayRows = groups[ec][k].slice().sort(function (a, b) { return a.ts.localeCompare(b.ts); });
@@ -1798,6 +1804,10 @@
           if ((last.type === "out_auto") && k === yesterdayK) autoOutedYesterday[ec] = last;
           continue;
         }
+        // Own-branch guard: only auto-out a clock-in made AT this kiosk's branch,
+        // so no kiosk closes another store's manager (wrong branch + 18:30
+        // fallback) and two kiosks can't race to double-out the same shift.
+        if (kioskBranch && String(last.branch || "").trim() !== kioskBranch) continue;
         // last is "in" and not closed — figure out the right end time.
         var mgr = mgrByEc && mgrByEc[String(ec).trim()];
         var schedCode = schedLookup ? schedLookup(ec, k) : null;
@@ -1831,6 +1841,7 @@
         try {
           await window.APP_DATA.addManagerClockinWithMeta(last.staff_id, "out_auto", {
             tsOverride: endIso,
+            branchOverride: last.branch || null,   // the store they clocked in at, never the kiosk device's
             flags: ["auto_clockout"]
           });
           if (k === yesterdayK) autoOutedYesterday[ec] = { type: "out_auto", ts: endIso };

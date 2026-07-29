@@ -2141,7 +2141,11 @@
         throw new Error("Already clocked in today — only one clock-in per day is allowed.");
       }
     }
-    var row = { staff_id: staffId, branch: branch(), type: type };
+    // Normal clock-ins take the kiosk device's branch (the manager is physically
+    // here). The auto-out routine passes branchOverride = the branch of the "in"
+    // it's closing, so a forgotten clock-out is never mis-stamped with the device
+    // of whichever kiosk ran the sweep. See docs/manager-autoout-cross-branch-investigation.md.
+    var row = { staff_id: staffId, branch: (meta && meta.branchOverride) || branch(), type: type };
     if (meta && meta.tsOverride) row.ts = meta.tsOverride;
     var ins = await c.from("clockins").insert(row).select().single();
     if (ins.error) throw ins.error;
