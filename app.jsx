@@ -11125,7 +11125,12 @@ function annualBalanceFor(ec, deps, asAt) {
   if (!entry) return null;
   const today = deps.today || new Date().toISOString().slice(0, 10);
   const target = asAt || today;   // the date we're projecting the balance to
-  const asOf = lb.asOf || "2026-05-24";
+  // Each opening is truth AS OF the date it was uploaded. A person's own
+  // entry.asOf (stamped at import) is the anchor — so a later upload re-anchors
+  // just that employee — falling back to the sheet-level date only for legacy
+  // rows uploaded before per-entry stamping. The editable "Balance as of" field
+  // is the date STAMPED onto the next upload, not a live re-basing knob.
+  const asOf = entry.asOf || lb.asOf || "2026-05-24";
   const opening = Number(entry.opening) || 0;
   const adj = (entry.adjustments || []).reduce((s, a) => s + (Number(a.days) || 0), 0);
   const p = findLeavePerson(ec, deps.enriched, deps.managers);
@@ -11158,11 +11163,18 @@ function annualBalanceFor(ec, deps, asAt) {
   return { available: opening + adj + accrued - used, opening, adj, accrued, used, asOf, asAt: target, startDate, startDateMissing };
 }
 // Use-it-or-lose-it radar for ONE person. For each completed employment-year
-// cycle still inside its redemption window, days-at-risk = the balance that had
-// vested by the cycle's end, minus paid annual leave booked in the redemption
-// window (future bookings rescue at-risk days). The person's CURRENT projected
-// balance is the hard cap, consumed oldest-cycle-first (FIFO) so nothing is
-// double-counted and the total never exceeds what they actually still hold.
+// cycle still inside its redemption window, days-at-risk = the leave from THAT
+// cycle still un-taken, minus paid annual leave booked in the redemption window
+// (future bookings rescue at-risk days). The person's CURRENT projected balance
+// is the hard cap, consumed oldest-cycle-first (FIFO) so nothing is double-
+// counted and the total never exceeds what they actually still hold.
+//
+// Attributing a single balance to a cycle uses OLDEST-LEAVE-TAKEN-FIRST: the
+// days you still hold are your NEWEST accrual, so from the balance standing at
+// the cycle we strip the current-in-progress-year accrual (it rides a LATER
+// deadline) and cap at what one completed year could ever earn (≈13.75). This
+// is what stops a lump-sum uploaded balance — which carries no per-year split —
+// from being dumped whole onto the nearest deadline (the pre-anchor over-flag).
 // Returns null when nothing is at risk. deps: same as annualBalanceFor + today.
 function leaveExpiryForPerson(ec, deps) {
   const today = deps.today || new Date().toISOString().slice(0, 10);
@@ -11175,24 +11187,42 @@ function leaveExpiryForPerson(ec, deps) {
   let remaining = cur ? Math.max(0, cur.available) : 0;
   if (remaining <= 1e-9) return null;
   const norm = lbNormEc(ec);
+  const lb = deps.leaveBalances;
+  const entry = lb && lb.entries ? lb.entries[norm] : null;   // per-entry upload date wins, same as annualBalanceFor
+  const asOf = (entry && entry.asOf) || (lb && lb.asOf) || "2026-05-24";
   const opts = { schedCache: deps.schedCache, ymdToSchedYm: deps.ymdToSchedYm, ec: (p && p.ec) || ec, branch: p && p.branch };
   const redBy = addMonthsYmd(today, LEAVE_EXPIRY_RED_MONTHS);
   const out = [];
   cycles.forEach(cy => {                                  // annualLeaveCycles is oldest-first
     if (remaining <= 1e-9) return;
-    // "Vested by cycle end" can't rewind past the sheet anchor: for a cycleEnd
-    // before asOf, annualBalanceFor returns the ASOF balance (opening+adj),
-    // which already has leave taken in (cycleEnd, asOf] baked in. The booked
-    // sweep must therefore start AFTER whichever is later — cycleEnd or the
-    // anchor — or that same leave would be subtracted twice.
-    const be = annualBalanceFor(ec, deps, cy.cycleEnd);
-    const vested = be ? Math.max(0, be.available) : 0;
-    const bookFrom = (be && be.asOf && be.asOf > cy.cycleEnd) ? be.asOf : cy.cycleEnd;
+    // Cycle C's LAST accrual credit lands on the anniversary — the day AFTER
+    // cycleEnd (annualLeaveCycles sets cycleEnd to anniversary − 1). Earned by
+    // working the final month of C, it belongs to C, so C owns every credit in
+    // (cycleStart, annivClose]; anything after annivClose is a LATER cycle on a
+    // later deadline. Evaluate at the first date we hold a known balance that
+    // already contains all of C's accrual: the closing anniversary if C ended
+    // on/after the sheet anchor, else the anchor itself (we can't rewind past it).
+    const annivClose = ymdAddDays(cy.cycleEnd, 1);
+    const evalPoint = cy.cycleEnd >= asOf ? annivClose : asOf;
+    const be = annualBalanceFor(ec, deps, evalPoint);
+    const balEval = be ? Math.max(0, be.available) : 0;
+    // Oldest-taken-first: the days you still hold are your NEWEST accrual, so
+    // strip accrual newer than C already baked into balEval (credits after
+    // annivClose up to evalPoint — pre-anchor only), then cap at one full year's
+    // worth. What's left is genuinely C's un-taken leave, i.e. what forfeits at
+    // the deadline. (Overflow above a year is even-older leave whose own deadline
+    // already passed — not actionable, so not shown.)
+    const newerInBal = accruedLeaveFor(startDate, annivClose, evalPoint);
+    const cycleEarned = accruedLeaveFor(startDate, cy.cycleStart, annivClose);
+    const vested = Math.max(0, Math.min(balEval - newerInBal, cycleEarned));
+    // Paid annual leave taken/booked in the redemption window (evalPoint, deadline]
+    // draws C down oldest-first (rescues at-risk days). Starting at evalPoint —
+    // not cycleEnd — avoids re-subtracting leave already netted into balEval.
     let booked = 0;
     (deps.leaveRecs || []).forEach(lv => {
       if (!lv || !isPaidAnnualRec(lv) || !lv.startDate || !lv.endDate) return;
       if (lbNormEc(lv.ec) !== norm) return;
-      const from = lv.startDate > ymdAddDays(bookFrom, 1) ? lv.startDate : ymdAddDays(bookFrom, 1);
+      const from = lv.startDate > ymdAddDays(evalPoint, 1) ? lv.startDate : ymdAddDays(evalPoint, 1);
       const to = lv.endDate < cy.deadline ? lv.endDate : cy.deadline;
       if (from > to) return;
       booked += leaveDayBreakdown(from, to, isManagerEc(ec), opts).real;
@@ -11552,6 +11582,90 @@ function _bakeSnapshotHours(grid, managers, branch) {
     });
   });
   return hours;
+}
+// ── Elapsed-day label freeze (shared) ───────────────────────────────────────
+// Carry-forward "freeze" for already-worked days: for every date STRICTLY
+// BEFORE todayYmd whose cell is still working, restore the concrete WE/WM/WL/WB
+// the last publish (prevGrid) committed; today-onward keeps the fresh derive. A
+// worked day's published shift is immutable (the payroll principle). Called at
+// publish (so pay can't move) AND by the editor + Coverage displays (so what HR
+// sees on a past day matches what payroll/My BOA/kiosk read, instead of a
+// re-derive that can differ). PINS are applied AFTER this, so a deliberate
+// past-day correction still wins. No-op when prevGrid is absent (first publish,
+// or the archive cache hasn't loaded yet on a display surface).
+function carryForwardElapsedLabels(grid, prevGrid, managers, dates, todayYmd) {
+  if (!grid || !prevGrid) return;
+  const _isWork = (v) => v === "W" || v === "WE" || v === "WM" || v === "WL" || v === "WB";
+  (dates || []).forEach((dy) => {
+    if (!(dy.d < todayYmd)) return;                          // only days already worked
+    (managers || []).forEach((m) => {
+      const grow = m && grid[m.ec];
+      if (!grow || !_isWork(grow[dy.d])) return;             // only a working cell can hold a shift label
+      const prow = prevGrid[m.ec];
+      if (!prow) return;
+      const dom = String(parseInt(String(dy.d).slice(8, 10), 10));
+      const pk = prow[dy.d] !== undefined ? dy.d : (prow[dom] !== undefined ? dom : null);
+      const prev = pk === null ? null : prow[pk];
+      // Carry forward only a concrete published variant (never bare "W" / off /
+      // leave) — otherwise leave the fresh derive in place.
+      if (prev === "WE" || prev === "WM" || prev === "WL" || prev === "WB") grow[dy.d] = prev;
+    });
+  });
+}
+// ── Manager early-leave alert helpers (dashboard) ───────────────────────────
+// Shared, pure classifier behind the "manager docked minus hours" alert. It
+// mirrors the render-time deduction (_mgrEarlyHoursFor, app.jsx early-leave
+// block) AND the validated clock-in audit (docs/relabel-audit.js) so the alert
+// can tell a payroll ERROR (label charges a shift the clock-in shows they never
+// worked → fixable by pinning) from a GENUINE early leave (they were on the
+// labelled shift and left early). Kept at module scope so both the dashboard
+// memo and a unit test can call it.
+const _MGR_EARLY_ALERT_GRACE = 20;    // minutes of grace, matches _MGR_EARLY_GRACE_MIN
+const _MGR_START_MARGIN = 20;         // label-start must beat the nearest candidate by this to call a mislabel
+const _MGR_START_MAXGAP = 90;         // …and the clock-in must sit within this of that candidate's start
+// Distinct concrete shift windows a manager could have worked at this store/
+// role/day — the candidate set the clock-in is matched against.
+function mgrShiftCandidates(role, branch, dow) {
+  const out = [];
+  ["WE", "WM", "WL", "WB"].forEach(code => {
+    const r = parseShiftRange(shiftTimes(role, code, branch, dow));
+    if (!r) return;
+    if (!out.some(o => o.start === r.start && o.end === r.end)) out.push({ code, start: r.start, end: r.end });
+  });
+  return out;
+}
+// Minutes short of the shift END beyond the grace → hours, rounded to 0.5, cap
+// 12. Pure mirror of the _mgrEarlyHoursFor arithmetic.
+function mgrEarlyLeaveHours(endMin, outMin, graceMin) {
+  const shortMin = endMin - outMin;
+  if (shortMin <= graceMin) return 0;
+  const h = Math.round((shortMin / 60) * 2) / 2;
+  return h > 12 ? 12 : h;
+}
+// Classify ONE manager working-day. Returns null when there's no minus-hours
+// deduction (nothing to alert). Otherwise: { docked, verdict, correctedCode,
+// reversible } where verdict is "mislabel" (label wrong vs clock-in — reversible
+// hours are auto-recoverable by pinning correctedCode), "genuine" (real early
+// leave — deduction stands), or "unclear" (no clock-in to judge — flag for review).
+function classifyMgrEarly(opts) {
+  const { role, branch, dow, code, custom, inMin, outMin } = opts;
+  const G = _MGR_EARLY_ALERT_GRACE;
+  const labelRange = parseShiftRange(custom || shiftTimes(role, code, branch, dow));
+  if (!labelRange || outMin == null) return null;
+  const docked = mgrEarlyLeaveHours(labelRange.end, outMin, G);
+  if (docked <= 0) return null;                          // on time / overran / within grace → no alert
+  // Custom hours are the ROM's explicit call — never a mislabel; a short is real.
+  if (custom) return { docked, verdict: "genuine", correctedCode: code, reversible: 0 };
+  if (inMin == null) return { docked, verdict: "unclear", correctedCode: code, reversible: 0 };
+  const cands = mgrShiftCandidates(role, branch, dow);
+  let nearest = null;
+  cands.forEach(c => { const g = Math.abs(inMin - c.start); if (!nearest || g < nearest.g) nearest = { c, g }; });
+  const labelGap = Math.abs(inMin - labelRange.start);
+  if (nearest && nearest.c.code !== code && (labelGap - nearest.g) >= _MGR_START_MARGIN && nearest.g <= _MGR_START_MAXGAP) {
+    const corrected = mgrEarlyLeaveHours(nearest.c.end, outMin, G);
+    return { docked, verdict: "mislabel", correctedCode: nearest.c.code, reversible: Math.max(0, docked - corrected) };
+  }
+  return { docked, verdict: "genuine", correctedCode: code, reversible: 0 };
 }
 // ── "Publish current cycle" engine ─────────────────────────────────────────
 // Diff every branch's draft schedule against its published snapshot, keep only
@@ -13034,7 +13148,9 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
     matched.forEach(x => {
       const k = lbNormEc(x.portalEc);
       const prev = entries[k] || {};
-      entries[k] = { ec: k, rawEc: x.portalEc, name: x.name || prev.name || "", opening: x.days, adjustments: prev.adjustments || [] };
+      // Stamp THIS upload's as-of date onto the entry — it's this employee's new
+      // truth from now on, independent of the sheet field or anyone else's date.
+      entries[k] = { ec: k, rawEc: x.portalEc, name: x.name || prev.name || "", opening: x.days, adjustments: prev.adjustments || [], asOf: (data.asOf || "2026-06-25") };
     });
     // Archive this anchor before it becomes the live one. Every computed balance
     // hangs off these openings, so the history is what makes the starting point
@@ -13042,13 +13158,17 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
     // Best-effort: a failed snapshot must never block payroll's import.
     try {
       if (window.BOA_DB.appendLeaveOpening) {
+        const uploadAsOf = data.asOf || "2026-06-25";
         const frozen = {};
         matched.forEach(x => {
           const k = lbNormEc(x.portalEc);
-          frozen[k] = { ec: k, rawEc: x.portalEc, name: x.name || (entries[k] && entries[k].name) || "", opening: x.days };
+          // Freeze each opening WITH its own upload date, matching the live entry,
+          // so a restore from this snapshot re-anchors per employee (never re-bases
+          // to whatever the sheet field happens to say at restore time).
+          frozen[k] = { ec: k, rawEc: x.portalEc, name: x.name || (entries[k] && entries[k].name) || "", opening: x.days, asOf: uploadAsOf };
         });
         await window.BOA_DB.appendLeaveOpening({
-          asOf: data.asOf || "", savedAt: new Date().toISOString(),
+          asOf: uploadAsOf, savedAt: new Date().toISOString(),
           source: fileName ? ("upload: " + fileName) : "pasted rows",
           uploadedBy: (currentUser && (currentUser.name || currentUser.email)) || "",
           entries: frozen
@@ -13106,6 +13226,20 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
     if (!window.confirm("Are you sure? This permanently deletes all " + n + " records.")) return;
     await persist({ ...data, entries: {} });
     if (logActivity) logActivity("Cleared all leave balances", n + " records", "", "Payroll");
+  };
+  // Stamp every current balance with the date it was actually uploaded, so it's
+  // pinned truth AS OF that date and the editable field can never re-base it
+  // again. Entries already carrying their own asOf are left alone (a later upload
+  // is their newer truth). One-time cleanup for the pre-per-entry-asOf seed.
+  const lockAnchorToUpload = async (dateYmd) => {
+    if (!data) return;
+    const keys = Object.keys(data.entries);
+    const loose = keys.filter(k => !data.entries[k].asOf).length;
+    if (!window.confirm("Pin all " + keys.length + " balances to their upload date (" + dateYmd + ")?\n\n" + loose + " balance" + (loose === 1 ? "" : "s") + " will be stamped with this date so editing the field can never re-base them again. Later uploads still re-anchor each employee. Continue?")) return;
+    const entries = {};
+    keys.forEach(k => { const e = data.entries[k]; entries[k] = e.asOf ? e : { ...e, asOf: dateYmd }; });
+    await persist({ ...data, asOf: dateYmd, entries });
+    if (logActivity) logActivity("Pinned leave balances to upload date", loose + " stamped · as of " + dateYmd, "", "Payroll");
   };
 
   // ── Leave-deduction engine ───────────────────────────────────────────
@@ -13257,7 +13391,10 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
     const ec = (r && r.ec) || e.rawEc || norm;
     const branch = r ? r.branch : "";
     const isMgr = isManagerEc(ec);
-    const asOf = (data && data.asOf) || "2026-05-24";
+    // Per-entry upload date is the anchor (a later upload re-anchors just this
+    // person); the sheet-level field is only the fallback for legacy rows +
+    // the default stamped onto the next upload. Matches annualBalanceFor.
+    const asOf = e.asOf || (data && data.asOf) || "2026-05-24";
     // Accrual: +1.25 leave days on each person's monthly START-DATE anniversary
     // (so balances tick up on different days across the roster — "updates daily").
     // No start date on file (seed-only managers) falls back to the 25th cycle.
@@ -13277,6 +13414,7 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
     let taken = 0, bookedCycle = 0, bookedBeyond = 0;
     let takenCal = 0, bookedCal = 0;   // raw calendar days (before off-day deduction)
     const future = [];
+    const takenItems = [];             // past leave slices (after the anchor) — for the Details ledger
     const cEnd = cycle ? cycle.end : todayYmd;   // last day of the current pay cycle
     annual.forEach(lv => {
       // Off-days are worked out ONCE for the WHOLE leave (so 21 days is always 15
@@ -13289,7 +13427,7 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
       const weight = wb.cal > 0 ? wb.real / wb.cal : 0;
       // Taken: after the as-of cutoff (already in opening), up to & incl. today.
       const ps = maxYmd(lv.startDate, addDaysYmd(asOf, 1)), pe = minYmd(lv.endDate, todayYmd);
-      if (ps <= pe) { const c = leaveDays(ps, pe); taken += c * weight; takenCal += c; }
+      if (ps <= pe) { const c = leaveDays(ps, pe); taken += c * weight; takenCal += c; takenItems.push({ start: ps, end: pe, days: c * weight, cal: c, emergency: !!lv.emergency }); }
       // Booked: strictly after today. A range that straddles the cycle end is
       // split — the part within this cycle vs the part beyond it.
       const fs = maxYmd(lv.startDate, addDaysYmd(todayYmd, 1));
@@ -13331,9 +13469,51 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
       norm, rawEc: e.rawEc || norm, name: e.name || (r ? r.name : ""), branch, role: r ? r.role : "", isMgr,
       opening, openingSet: e.opening != null, net, taken, booked, bookedCycle, bookedBeyond, current, projected, adjustments: adjs,
       accrued, accruedCycles: accCyclesToday, futureEarned, projectedWithEarnings, lastFutureStart,
-      takenCal, bookedCal, calTotal: takenCal + bookedCal,
-      recon, future, workedCount: recon.filter(x => x.status === "worked").length, overbooked: projected < -0.001
+      takenCal, bookedCal, calTotal: takenCal + bookedCal, startDate, asOf,
+      recon, future, takenItems, workedCount: recon.filter(x => x.status === "worked").length, overbooked: projected < -0.001
     };
+  };
+
+  // Full human-readable calculation trail for one row — powers the Details panel
+  // so a payroll officer can follow every day in and out. Derived live from start
+  // date + anchor + leave records, so it is a running history that extends itself
+  // as months pass (each new anniversary credit simply appears). Built lazily,
+  // only for the row that's open. Shares leaveExpiryForPerson with the radar so
+  // the "at risk" numbers here always match the panel and the auto-incident scan.
+  const buildBreakdown = (r) => {
+    const asOf = r.asOf || (data && data.asOf) || "2026-05-24";
+    const startDate = r.startDate || "";
+    // Past ledger: opening → (adjustments, accrual credits, leave taken, in date
+    // order) → Current. Deltas sum to Current exactly, by construction.
+    const rest = [];
+    (r.adjustments || []).forEach(a => rest.push({
+      date: a.ts ? new Date(a.ts).toISOString().slice(0, 10) : asOf,
+      label: a.reason ? a.reason : "Manual adjustment", by: a.by, delta: Number(a.days) || 0
+    }));
+    if (startDate) anniversaryCreditDates(startDate, asOf, todayYmd).forEach(c =>
+      rest.push({ date: c, label: "Accrued — monthly anniversary of start date", delta: LEAVE_ACCRUAL_PER_CYCLE }));
+    (r.takenItems || []).forEach(t => rest.push({
+      date: t.start, label: "Annual leave taken", range: [t.start, t.end], cal: t.cal, delta: -t.days
+    }));
+    rest.sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
+    let bal = r.opening;
+    const past = [{ date: asOf, label: "Opening balance — uploaded from Sage", delta: null, bal }];
+    rest.forEach(e => { bal += e.delta; past.push({ ...e, bal }); });
+    // Future ledger: booked leave draws Current down to Projected.
+    let fbal = r.current;
+    const futureRows = (r.future || []).slice().sort((a, b) => a.start < b.start ? -1 : 1).map(f => {
+      fbal -= f.days;
+      return { date: f.start, label: f.bucket === "cycle" ? "Booked — this pay cycle" : "Booked — later", range: [f.start, f.end], cal: f.cal, delta: -f.days, bal: fbal };
+    });
+    // Expiry buckets (same engine as the radar / dashboard card / auto-incident).
+    const deps = { leaveBalances: data, leaveRecs, enriched, managers, schedCache, ymdToSchedYm, today: todayYmd };
+    const expiry = startDate ? leaveExpiryForPerson(r.rawEc || r.norm, deps) : null;
+    let tenure = "";
+    if (startDate) {
+      const m = monthsBetween(startDate, todayYmd), yy = Math.floor(m / 12), mm = m % 12;
+      tenure = (yy ? yy + " yr" + (yy === 1 ? "" : "s") : "") + (yy && mm ? " " : "") + (mm ? mm + " mth" + (mm === 1 ? "" : "s") : (yy ? "" : "under a month"));
+    }
+    return { asOf, startDate, tenure, past, futureRows, expiry };
   };
 
   const allRows = useMemo(() => {
@@ -13389,6 +13569,10 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
     </span>
   );
   const td = { padding: "8px 10px", fontSize: 13, color: "#831843", borderBottom: "1px solid #FCE7F3", verticalAlign: "top" };
+  // Details-panel ledger styles + a full "25 Jun 2026" date format.
+  const ledTh = { textAlign: "left", padding: "6px 8px", fontSize: 10, fontWeight: 800, color: "#9d174d", textTransform: "uppercase", letterSpacing: "0.04em", borderBottom: "1px solid #FBCFE8", whiteSpace: "nowrap" };
+  const ledTd = { padding: "6px 8px", fontSize: 12, color: "#831843", borderBottom: "1px solid #FCE7F3", whiteSpace: "nowrap" };
+  const fmtLD = (ymd) => { const d = new Date(ymd + "T00:00:00"); return isNaN(d.getTime()) ? String(ymd || "—") : d.toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }); };
 
   // Use-it-or-lose-it radar — everyone with annual leave heading for its
   // forfeit deadline, oldest cycle first. Same engine (leaveExpiryForPerson)
@@ -13426,15 +13610,15 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
         </div>
       </div>
 
-      {/* How far behind Sage these figures are. They aren't wrong when stale —
-          accrual keeps counting — but leave captured straight into Sage since
-          the upload is missing, so a fresh export is the only way to be sure. */}
+      {/* The hub keeps these current by accruing forward from each balance's own
+          upload date, so a monthly re-upload is NOT required — it's just an
+          optional reconciliation against Sage. Kept as a calm note, not a nag. */}
       {(() => {
         const st = balanceStaleness(data && data.asOf);
         if (!st.stale) return null;
         return (
-          <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 11, padding: "11px 14px", marginBottom: 12, fontSize: 12.5, color: "#92400e", lineHeight: 1.5 }}>
-            ⚠ <strong>These figures are {st.cyclesBehind} payroll run{st.cyclesBehind === 1 ? "" : "s"} behind Sage.</strong> They're anchored to the upload as of {fmtIncidentDate(st.asOf)}, and {st.cyclesBehind === 1 ? "a run has" : st.cyclesBehind + " runs have"} closed since. Accrual keeps counting, so nothing here is wrong — but any leave captured directly in Sage isn't reflected. Upload a fresh balance report to re-anchor.
+          <div style={{ background: "#fdf2f8", border: "1px solid #FBCFE8", borderRadius: 11, padding: "10px 14px", marginBottom: 12, fontSize: 12, color: "#9d6a82", lineHeight: 1.5 }}>
+            ℹ These balances are anchored to their upload date and the hub accrues forward from there — they stay current on their own, no monthly upload needed. Re-upload a Sage export only when you want to reconcile (e.g. leave captured directly in Sage); it re-anchors each employee to the new figure.
           </div>
         );
       })()}
@@ -13472,7 +13656,21 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
         <div style={{ ...card, flex: "1 1 160px", minWidth: 150 }}>
           <div style={{ fontSize: 10, fontWeight: 800, color: "#9d174d", letterSpacing: "0.06em", textTransform: "uppercase" }}>Balance as of</div>
-          <input type="date" value={(data && data.asOf) || ""} onChange={e => persist({ ...data, asOf: e.target.value })} style={{ ...inp, marginTop: 6, width: "100%" }} />
+          {/* Each balance is anchored to its OWN upload date (entry.asOf). This field
+              is the date stamped onto the next upload + the fallback for any row not
+              yet pinned — editing it no longer re-bases pinned balances. Guarded so a
+              stray edit can't shift the still-unpinned rows. */}
+          <input type="date" value={(data && data.asOf) || ""} onChange={e => {
+            const v = e.target.value; const prev = (data && data.asOf) || "";
+            if (!v || v === prev) return;
+            const loose = data ? Object.keys(data.entries).filter(k => !data.entries[k].asOf).length : 0;
+            if (!window.confirm("Set the upload date to " + v + "?\n\nThis is the date stamped onto the NEXT upload. It also anchors the " + loose + " balance" + (loose === 1 ? "" : "s") + " not yet pinned to their own date. Pinned balances are unaffected. Continue?")) return;
+            persist({ ...data, asOf: v });
+          }} style={{ ...inp, marginTop: 6, width: "100%" }} />
+          {data && Object.keys(data.entries).some(k => !data.entries[k].asOf) && (
+            <button onClick={() => lockAnchorToUpload("2026-06-25")} title="Stamp each current balance with 25 Jun 2026 (the upload date) so the field can never re-base them again" style={{ marginTop: 6, width: "100%", background: "#fdf2f8", color: "#9d174d", border: "1px solid #FBCFE8", borderRadius: 8, padding: "6px 8px", fontWeight: 700, fontSize: 11, cursor: "pointer" }}>📌 Pin balances to the 25 Jun 2026 upload</button>
+          )}
+          <div style={{ fontSize: 9.5, color: "#b98aa2", marginTop: 4, lineHeight: 1.35 }}>Each balance keeps its own upload date; later uploads re-anchor per employee.</div>
         </div>
         <div style={{ ...card, flex: "1 1 120px", minWidth: 120 }}>
           <div style={{ fontSize: 10, fontWeight: 800, color: "#9d174d", letterSpacing: "0.06em", textTransform: "uppercase" }}>Employees</div>
@@ -13657,6 +13855,80 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
                       {open && (
                         <tr style={{ background: "#FDF2F8" }}>
                           <td style={{ ...td, borderBottom: "2px solid #FBCFE8" }} colSpan={10}>
+                            {/* Calculation trail — how opening → current → projected is built, plus expiry */}
+                            {(() => { const bd = buildBreakdown(r); return (
+                              <div style={{ marginBottom: 12, background: "#fff", border: "1px solid #FCE7F3", borderRadius: 9, padding: "12px 14px" }}>
+                                <div style={{ fontSize: 11.5, fontWeight: 800, color: "#9d174d", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 2 }}>How this balance is calculated</div>
+                                <div style={{ fontSize: 11.5, color: "#9d6a82", marginBottom: 10, lineHeight: 1.5 }}>
+                                  {bd.startDate
+                                    ? <>Started <strong>{fmtLD(bd.startDate)}</strong>{bd.tenure ? " · " + bd.tenure + " service" : ""} · earns <strong>1.25 days</strong> on day {Number(bd.startDate.slice(8, 10))} of every month · opening balance measured as of <strong>{fmtLD(bd.asOf)}</strong> (already net of everything taken before that date).</>
+                                    : <span style={{ color: "#b45309" }}>⚠ No start date on file — accrual falls back to the 25th-of-month cycle and leave expiry can't be tracked. Add a start date on the People page to fix both.</span>}
+                                </div>
+                                <div style={{ overflowX: "auto" }}>
+                                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                                    <thead><tr><th style={ledTh}>Date</th><th style={ledTh}>Event</th><th style={{ ...ledTh, textAlign: "right" }}>Change</th><th style={{ ...ledTh, textAlign: "right" }}>Balance</th></tr></thead>
+                                    <tbody>
+                                      {bd.past.map((e, i) => (
+                                        <tr key={"p" + i}>
+                                          <td style={ledTd}>{fmtLD(e.date)}</td>
+                                          <td style={{ ...ledTd, whiteSpace: "normal" }}>{e.label}{e.range ? <span style={{ color: "#9d6a82" }}> · {fmtLD(e.range[0])}{e.range[1] !== e.range[0] ? " – " + fmtLD(e.range[1]) : ""}{e.cal ? " (" + e.cal + " cal day" + (e.cal === 1 ? "" : "s") + ")" : ""}</span> : null}{e.by ? <span style={{ color: "#9d6a82" }}> · {e.by}</span> : null}</td>
+                                          <td style={{ ...ledTd, textAlign: "right", fontWeight: 700, color: e.delta == null ? "#9d6a82" : e.delta >= 0 ? "#15803d" : "#b91c1c" }}>{e.delta == null ? "—" : (e.delta >= 0 ? "+" : "−") + fmtDays(Math.abs(e.delta))}</td>
+                                          <td style={{ ...ledTd, textAlign: "right", fontWeight: 700 }}>{fmtDays(e.bal)}</td>
+                                        </tr>
+                                      ))}
+                                      <tr style={{ background: "#FDF2F8" }}>
+                                        <td style={{ ...ledTd, fontWeight: 800, color: "#831843" }}>Today</td>
+                                        <td style={{ ...ledTd, fontWeight: 800, color: "#831843" }}>Current balance</td>
+                                        <td style={ledTd}></td>
+                                        <td style={{ ...ledTd, textAlign: "right", fontWeight: 800, fontSize: 14, color: "#831843" }}>{fmtDays(r.current)}</td>
+                                      </tr>
+                                      {bd.futureRows.map((e, i) => (
+                                        <tr key={"f" + i}>
+                                          <td style={ledTd}>{fmtLD(e.date)}</td>
+                                          <td style={{ ...ledTd, whiteSpace: "normal", color: "#92400e" }}>{e.label}{e.range ? <span style={{ color: "#9d6a82" }}> · {fmtLD(e.range[0])}{e.range[1] !== e.range[0] ? " – " + fmtLD(e.range[1]) : ""}{e.cal ? " (" + e.cal + " cal day" + (e.cal === 1 ? "" : "s") + ")" : ""}</span> : null}</td>
+                                          <td style={{ ...ledTd, textAlign: "right", fontWeight: 700, color: "#b91c1c" }}>−{fmtDays(Math.abs(e.delta))}</td>
+                                          <td style={{ ...ledTd, textAlign: "right", fontWeight: 700 }}>{fmtDays(e.bal)}</td>
+                                        </tr>
+                                      ))}
+                                      {bd.futureRows.length > 0 && (
+                                        <tr style={{ background: "#f5f3ff" }}>
+                                          <td style={{ ...ledTd, fontWeight: 800, color: "#6b21a8" }}>After booked</td>
+                                          <td style={{ ...ledTd, fontWeight: 800, color: "#6b21a8" }}>Projected balance</td>
+                                          <td style={ledTd}></td>
+                                          <td style={{ ...ledTd, textAlign: "right", fontWeight: 800, fontSize: 14, color: r.overbooked ? "#b91c1c" : "#6b21a8" }}>{fmtDays(r.projected)}{r.overbooked ? " ⚠" : ""}</td>
+                                        </tr>
+                                      )}
+                                    </tbody>
+                                  </table>
+                                </div>
+                                {bd.expiry ? (
+                                  <div style={{ marginTop: 12 }}>
+                                    <div style={{ fontSize: 11.5, fontWeight: 800, color: "#9d174d", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 6 }}>Use-it-or-lose-it — leave heading for forfeiture</div>
+                                    <div style={{ overflowX: "auto" }}>
+                                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                                        <thead><tr><th style={ledTh}>Earned in the year</th><th style={{ ...ledTh, textAlign: "right" }}>Days at risk</th><th style={ledTh}>Forfeit by</th><th style={{ ...ledTh, textAlign: "center" }}>Months left</th><th style={ledTh}>Status</th></tr></thead>
+                                        <tbody>
+                                          {bd.expiry.cycles.map((cy, i) => (
+                                            <tr key={"x" + i} style={{ background: cy.red ? "#fef2f2" : "#fffbeb" }}>
+                                              <td style={ledTd}>{fmtLD(cy.cycleStart)} – {fmtLD(cy.cycleEnd)}</td>
+                                              <td style={{ ...ledTd, textAlign: "right", fontWeight: 800, color: cy.red ? "#b91c1c" : "#92400e" }}>{fmtDays(cy.atRisk)}</td>
+                                              <td style={ledTd}>{fmtLD(cy.deadline)}</td>
+                                              <td style={{ ...ledTd, textAlign: "center" }}>{cy.monthsLeft}</td>
+                                              <td style={ledTd}>{cy.red ? <span style={{ fontSize: 10, fontWeight: 800, color: "#fff", background: "#b91c1c", borderRadius: 5, padding: "2px 7px" }}>RED</span> : <span style={{ fontSize: 10, fontWeight: 800, color: "#92400e", background: "#fde68a", borderRadius: 5, padding: "2px 7px" }}>SOON</span>}</td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                    <div style={{ fontSize: 11.5, color: "#831843", marginTop: 8, lineHeight: 1.5 }}>
+                                      <strong>{fmtDays(bd.expiry.totalAtRisk)}</strong> of the current <strong>{fmtDays(r.current)}</strong> day{r.current === 1 ? "" : "s"} {bd.expiry.totalAtRisk === 1 ? "was" : "were"} earned in the completed employment year and must be taken by <strong>{fmtLD(bd.expiry.nextDeadline)}</strong> or {bd.expiry.totalAtRisk === 1 ? "it forfeits" : "they forfeit"} — no payout. Newer days ride a later deadline; booking annual leave before then draws this down oldest-first.
+                                    </div>
+                                  </div>
+                                ) : bd.startDate ? (
+                                  <div style={{ fontSize: 11.5, color: "#15803d", marginTop: 10, fontWeight: 600 }}>✓ Nothing heading for forfeiture — no completed employment year is currently inside its 6-month redemption window.</div>
+                                ) : null}
+                              </div>
+                            ); })()}
                             {/* Reconciliation — this cycle's past leave days vs what actually happened */}
                             {cycle && (
                               <div style={{ marginBottom: 12, background: "#fff", border: "1px solid #FCE7F3", borderRadius: 9, padding: "10px 12px" }}>
@@ -19263,6 +19535,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   };
   // Declared after officeHoursCfg — referencing it earlier is a TDZ crash.
   const canSeeOfficeHours = accessAllows(currentUser, officeHoursCfg);
+  // Manager minus-hours alert audience: National Ops + whoever sees the payroll
+  // Office-Hours queue (payroll officer), plus owners. Same "investigate now"
+  // crowd, since a wrong manager deduction is a payroll error to catch early.
+  const canSeeMgrHours = !!(currentUser?.isOwner
+    || (currentUser?.role || "").toLowerCase().includes("national")
+    || canSeeOfficeHours);
   // Who may REVIEW ("tick off") a store's daily cash-up (boa_cashup_review_access_v1).
   // Default: Regional Ops managers (owners always allowed). Editable in Settings.
   const [cashupReviewAccess, setCashupReviewAccess] = useState({});
@@ -21554,11 +21832,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     return () => { cancelled = true; };
   }, [tab, mgrCoverageWeekStart]);
 
-  // Load cross-store manager loans when the coverage tab opens. Used to
-  // render "↪ <destination>" on a home-branch loan_out cell and to drive
-  // the kiosk's expected-manager list.
+  // Load cross-store manager loans + custom shift times. Used to render
+  // "↪ <destination>" on a home-branch loan_out cell, to drive the kiosk's
+  // expected-manager list, and (on the dashboard) so the manager minus-hours
+  // alert excludes loan-out days and respects ROM-set custom hours — without
+  // mgrCustomTimes here it would over-report a custom-hours manager as docked.
   useEffect(() => {
-    if (tab !== "mgrCoverage" && tab !== "mgrclockins" && tab !== "attendance" && tab !== "scheduling") return;
+    if (tab !== "mgrCoverage" && tab !== "mgrclockins" && tab !== "attendance" && tab !== "scheduling" && tab !== "dashboard") return;
     if (!window.BOA_DB || !window.BOA_DB.loadMgrLoans) return;
     let cancelled = false;
     window.BOA_DB.loadMgrLoans().then(rows => {
@@ -21709,6 +21989,86 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     OFFICE_ACTIONABLE.has(f.kind) && !officeHoursReview[officeReviewKey(f.ec, f.ymd)]
   ), [officeFindings, officeHoursReview]);
   const officeLiveLate = useMemo(() => officeFindings.filter(f => f.kind === "pending"), [officeFindings]);
+
+  // ── Manager minus-hours alert (dashboard) ──────────────────────────────────
+  // Scan every ELAPSED day of the OPEN pay cycle across all stores for any SM/AM
+  // docked minus hours on the Attendance sheet, and classify each (mislabel vs
+  // genuine) from the clock-in. Self-clearing: a day drops off the moment the
+  // deduction goes to 0 (pinned/corrected). Reuses the same data the dashboard
+  // already loads for the "manager reasons to add" scan — no extra fetch. All
+  // guards fail closed to "no alert" (never a false payroll claim).
+  const mgrEarlyAlert = useMemo(() => {
+    if (!canSeeMgrHours || !mgrClockinsLoaded) return null;
+    const ymNow = (window.BOA_DB && window.BOA_DB.currentAttYm && window.BOA_DB.currentAttYm()) || null;
+    if (!ymNow) return null;                                   // START-month ym = the current cycle's grid key
+    const _p2 = (n) => String(n).padStart(2, "0");
+    const _localYmd = (ts) => { const d = new Date(ts); return d.getFullYear() + "-" + _p2(d.getMonth() + 1) + "-" + _p2(d.getDate()); };
+    const _now = new Date();
+    const today = _now.getFullYear() + "-" + _p2(_now.getMonth() + 1) + "-" + _p2(_now.getDate());
+    const cm = String(ymNow).split("-").map(Number);
+    const cycleStart = cm[0] + "-" + _p2(cm[1]) + "-25";      // cycle opens on the 25th of the START month
+    const smTrial = new Set((smTrialList || []).filter(t => t && t.status === "active" && t.ec).map(t => String(t.ec).trim()));
+    // Loaned-out days: the manager clocked at ANOTHER store, so their home
+    // shift end must not judge that clock-out. Normally the home cell is baked
+    // "loan_out" (skipped by _isWorkCode), but a re-publish can clobber it back
+    // to a working code — the durable loan record is the safety net.
+    const loanedOut = new Set();
+    (mgrLoanRows || []).forEach(l => { if (l && l.ec && l.date) loanedOut.add(String(l.ec).trim().toUpperCase() + "|" + l.date); });
+    // staff_id → manager, and a home-branch/role/ec resolver tolerant of either
+    // the row's embedded staff or the managers list.
+    const mgrById = {};
+    (managers || []).forEach(m => { const sid = m && (m._id != null ? m._id : m.id); if (sid != null && m.ec) mgrById[String(sid)] = m; });
+    const mgrByEc = {};
+    (managers || []).forEach(m => { if (m && m.ec) mgrByEc[String(m.ec).trim().toUpperCase()] = m; });
+    // Fold clock rows → earliest IN + latest OUT minutes per (ec, ymd), within
+    // the elapsed-cycle window only.
+    const io = {};                                            // ec → ymd → {inMin, outMin}
+    (mgrClockinRows || []).forEach(r => {
+      if (!r || !r.ts || !r.type) return;
+      const ymd = _localYmd(r.ts);
+      if (ymd < cycleStart || ymd >= today) return;           // elapsed days of the open cycle only
+      const sid = r.staff_id != null ? String(r.staff_id) : (r.staff && r.staff.id != null ? String(r.staff.id) : null);
+      const ecRaw = (r.staff && r.staff.employee_code) || (sid && mgrById[sid] && mgrById[sid].ec) || "";
+      const ec = String(ecRaw).trim().toUpperCase();
+      if (!ec) return;
+      const d = new Date(r.ts); const min = d.getHours() * 60 + d.getMinutes();
+      const rec = ((io[ec] = io[ec] || {})[ymd] = io[ec][ymd] || {});
+      if (r.type === "in") { if (rec.inMin == null || min < rec.inMin) rec.inMin = min; }
+      else if (r.type === "out" || r.type === "out_auto") { if (rec.outMin == null || min > rec.outMin) rec.outMin = min; }
+    });
+    const _isWorkCode = (v) => v === "W" || v === "WE" || v === "WM" || v === "WL" || v === "WB" || v === "E";
+    const findings = [];
+    Object.keys(io).forEach(ec => {
+      const m = mgrByEc[ec]; if (!m) return;                  // unknown / non-manager clock → skip
+      const role = m.role || "AM"; if (role === "NT") return;
+      const branch = m.branch || "";
+      const effRole = (role === "AM" && (m.smTrial || smTrial.has(ec))) ? "SM" : role;
+      // Published label grid for this store × current cycle (frozen archive);
+      // draft only as a last resort. All cycle days share the START-month key.
+      const grid = mgrApprovedFallbackCache[branch + "|" + ymNow] || mgrClockinSchedCache[branch + "|" + ymNow] || null;
+      if (!grid) return;                                      // cache not loaded yet → no claim
+      const grow = grid[m.ec] || grid[ec] || null;
+      if (!grow) return;
+      Object.keys(io[ec]).forEach(ymd => {
+        const rec = io[ec][ymd];
+        if (rec.outMin == null) return;                       // need a clock-out to judge a short
+        if (loanedOut.has(ec + "|" + ymd)) return;            // worked at another store that day
+        const code = grow[ymd];
+        if (!_isWorkCode(code)) return;                       // off / leave / loan overlay → not a plain worked shift
+        let dow = -1; try { dow = new Date(ymd + "T12:00:00").getDay(); } catch (_e) { }
+        const custom = ((mgrCustomTimes && (mgrCustomTimes[m.ec] || mgrCustomTimes[ec])) || {})[ymd] || null;
+        const cls = classifyMgrEarly({ role: effRole, branch, dow, code, custom, inMin: rec.inMin, outMin: rec.outMin });
+        if (!cls) return;
+        findings.push({ ec: m.ec, name: m.name || m.ec, branch, ymd, inMin: rec.inMin, outMin: rec.outMin, code, ...cls });
+      });
+    });
+    if (!findings.length) return null;
+    findings.sort((a, b) => b.ymd.localeCompare(a.ymd) || String(a.name).localeCompare(String(b.name)));
+    const mislabels = findings.filter(f => f.verdict === "mislabel");
+    const review = findings.filter(f => f.verdict !== "mislabel");   // genuine + unclear
+    const reversible = mislabels.reduce((s, f) => s + (f.reversible || 0), 0);
+    return { findings, mislabels, review, reversible };
+  }, [canSeeMgrHours, mgrClockinsLoaded, mgrClockinRows, mgrApprovedFallbackCache, mgrClockinSchedCache, managers, smTrialList, mgrCustomTimes, mgrLoanRows]);
 
   // Persist one person-day's review state. Read-modify-write of the whole map,
   // matching every other app_state ledger in the app.
@@ -24506,6 +24866,49 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     title="Open the Office Hours queue."
                     style={{ background: "#b45309", color: "#fff", border: "none", borderRadius: 10, padding: "10px 18px", fontWeight: 800, fontSize: 13, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap", boxShadow: "0 4px 12px rgba(180,83,9,0.3)" }}>
                     Review hours →
+                  </button>
+                </div>
+              )}
+              {/* Manager minus-hours — the payroll-error early-warning. Fires the
+                  day after a shift when an SM/AM was docked hours, and classifies
+                  each: a "mislabel" is charged against a shift the clock-in shows
+                  they never worked (fixable by pinning the correct shift — the
+                  exact bug behind the June −1h queries); a "genuine early leave"
+                  stands. National Ops + payroll see it so it's caught live, not
+                  a cycle later. Self-clears as each day is pinned/corrected. */}
+              {canSeeMgrHours && mgrEarlyAlert && (
+                <div style={{ background: "#fff1f2", border: "1px solid #fda4af", borderRadius: 16, padding: "16px 20px", marginBottom: 20, boxShadow: "0 4px 14px rgba(190,18,60,0.10)", display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+                  <div style={{ flex: 1, minWidth: 280 }}>
+                    <div style={{ fontSize: 15, fontWeight: 800, color: "#9f1239", letterSpacing: "0.04em", textTransform: "uppercase" }}>⏱ Manager hours docked — investigate</div>
+                    {mgrEarlyAlert.mislabels.length > 0 && (
+                      <div style={{ fontSize: 12.5, color: "#be123c", fontWeight: 700, marginTop: 4 }}>
+                        {mgrEarlyAlert.mislabels.length} manager-day{mgrEarlyAlert.mislabels.length === 1 ? "" : "s"} look mis-labelled — {mgrEarlyAlert.reversible}h charged against a shift the clock-in shows they didn't work. Pin the correct shift on Manager Coverage to clear it.
+                      </div>
+                    )}
+                    {mgrEarlyAlert.review.length > 0 && (
+                      <div style={{ fontSize: 12.5, color: "#9f1239", fontWeight: 700, marginTop: 4 }}>
+                        {mgrEarlyAlert.review.length} {mgrEarlyAlert.review.length === 1 ? "day looks like a genuine early leave" : "days look like genuine early leaves"} — confirm the deduction is right.
+                      </div>
+                    )}
+                    <div style={{ fontSize: 11.5, color: "#9f1239", marginTop: 5, lineHeight: 1.55 }}>
+                      {mgrEarlyAlert.findings.slice(0, 5).map(f => {
+                        const hm = (mn) => mn == null ? "—" : String(Math.floor(mn / 60)).padStart(2, "0") + ":" + String(mn % 60).padStart(2, "0");
+                        const tag = f.verdict === "mislabel" ? "likely mislabel → pin " + f.correctedCode : f.verdict === "unclear" ? "no clock-in — review" : "genuine early leave";
+                        return (
+                          <div key={f.ec + "|" + f.ymd} style={{ marginTop: 2 }}>
+                            <span style={{ fontWeight: 700 }}>{f.name || f.ec}</span> ({f.ec}) · {f.branch} · {fmtIncidentDate(f.ymd)} · in {hm(f.inMin)}/out {hm(f.outMin)} · {f.code} −{f.docked}h → {tag}
+                          </div>
+                        );
+                      })}
+                      {mgrEarlyAlert.findings.length > 5 && (
+                        <div style={{ marginTop: 2, fontStyle: "italic" }}>+{mgrEarlyAlert.findings.length - 5} more</div>
+                      )}
+                    </div>
+                  </div>
+                  <button onClick={() => tryChangeTab("mgrCoverage")}
+                    title="Open Manager Coverage to pin the correct shift (clears a wrong deduction) or confirm a genuine early leave."
+                    style={{ background: "#be123c", color: "#fff", border: "none", borderRadius: 10, padding: "10px 18px", fontWeight: 800, fontSize: 13, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap", boxShadow: "0 4px 12px rgba(190,18,60,0.3)" }}>
+                    Check &amp; fix →
                   </button>
                 </div>
               )}
@@ -37015,10 +37418,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             }
           }
           result.conflicts = newConflicts;
-          // Re-apply Sandown WE / WL after merging the saved draft so
-          // the labels survive a reload. The merge above stomps the
-          // earlier stamps with the draft's plain W cells.
-          _applyBranchShiftRules(result.grid, result.dates, result.managers);
+          // Re-apply Sandown WE / WL after merging the saved draft so the labels
+          // survive a reload (the merge above stomps the earlier stamps with the
+          // draft's plain W cells). Then READ THROUGH to the published label for
+          // every already-worked day (carryForwardElapsedLabels), so the editor
+          // shows the same past-day shift payroll / My BOA / kiosk read from the
+          // frozen snapshot — not a re-derive that can differ. Today-onward keeps
+          // the live rotation; pins are applied last so a hand-set variant wins.
+          applyBranchShiftRules(result.grid, result.dates, result.managers, branch);
+          {
+            const _tY = (() => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); })();
+            carryForwardElapsedLabels(result.grid, mgrApprovedFallbackCache[branch + "|" + ymKey], result.managers, result.dates, _tY);
+          }
+          _applyShiftPins(result.grid, result.dates, result.managers);
         } else {
           // No draft yet — show an empty grid + Generate CTA. We keep the
           // structural fields (dates, managers, weeksMap, weekOrder) but
@@ -37680,7 +38092,31 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // shows (idempotent — the grid is re-labelled on render anyway).
           // Hoisted before the prompts so the publish diff below compares the
           // EXACT baked grid + hours staff will see.
-          _applyBranchShiftRules(_approvedGrid, result.dates, result.managers);
+          //
+          // Load the CURRENT published[0] once, up front — it feeds BOTH the
+          // elapsed-day label freeze (just below) and the publish diff.
+          let _prevSnap = null;
+          try {
+            const _prevList = window.BOA_DB.loadApprovedSchedules
+              ? await window.BOA_DB.loadApprovedSchedules(branch, ymKey, true)
+              : [];
+            _prevSnap = (_prevList && _prevList[0]) || null;
+          } catch (_pl) {
+            console.error("[saveFinal] manager — could not load prior snapshot (freeze + diff treat as none):", _pl);
+          }
+          // Derive fresh WE/WM/WL labels across the whole cycle...
+          applyBranchShiftRules(_approvedGrid, result.dates, result.managers, branch);
+          // ...then STRUCTURAL FREEZE (payroll immutability): a manager's
+          // published shift on a day they have ALREADY worked must never move on
+          // a later re-publish, or the Attendance early-leave deduction (which
+          // reads the live label) silently mis-docks pay — root-caused
+          // 2026-07-28, docs/attendance-shift-relabel-investigation.md (17 wrong
+          // deductions across 5 stores). carryForwardElapsedLabels restores each
+          // already-worked day's last-published label; only today-onward
+          // re-derives. Pins run AFTER, so a deliberate past-day correction wins.
+          const _todayYmdPub = (() => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); })();
+          carryForwardElapsedLabels(_approvedGrid, _prevSnap && _prevSnap.grid, result.managers, result.dates, _todayYmdPub);
+          _applyShiftPins(_approvedGrid, result.dates, result.managers);
           const _apNames = {}; (result.managers || []).forEach(m => { if (m && m.ec) _apNames[String(m.ec).trim()] = m.name || ""; });
           // Phase 1.1: bake the portal-authoritative shift hours per working
           // cell so kiosk / My BOA render the SAME times this tab shows instead
@@ -37690,11 +38126,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // hours per day) vs the live published[0] before committing. Fails
           // open — a preview error never blocks the publish.
           try {
-            const _prevList = window.BOA_DB.loadApprovedSchedules
-              ? await window.BOA_DB.loadApprovedSchedules(branch, ymKey, true)
-              : [];
-            const _prev = (_prevList && _prevList[0]) || null;
-            const _diff = computePublishDiff(_prev && _prev.grid, _prev && _prev.hours, _approvedGrid, _apHours, _apNames);
+            const _diff = computePublishDiff(_prevSnap && _prevSnap.grid, _prevSnap && _prevSnap.hours, _approvedGrid, _apHours, _apNames);
             const _proceed = await showPublishDiffDialog({ kind: "Manager schedule", branch, ym: ymKey, diff: _diff });
             if (!_proceed) return;
           } catch (_pd) { console.error("[saveFinal] manager — publish diff preview failed (continuing):", _pd); }
@@ -41199,6 +41631,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             mgrs.forEach(m => { (grid[m.ec] = grid[m.ec] || {})[ymd] = readWithFallback(branchName, m.ec, _d) || ""; });
           }
           applyBranchShiftRules(grid, dates, mgrs, branchName);
+          // Read-through freeze: for every ALREADY-WORKED day, show the published
+          // archive label (what payroll / My BOA / kiosk read from the frozen
+          // snapshot) instead of a re-derive that can differ. Today-onward keeps
+          // the live WE/WM/WL rotation; pins overlaid below still win.
+          {
+            const _tY = (() => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); })();
+            carryForwardElapsedLabels(grid, _approvedFallbackCache[branchName + "|" + mgrYm], mgrs, dates, _tY);
+          }
           // Overlay manual shift pins (same as the schedule tab) so a hand-set
           // WE/WM/WL variant shows identically here. Only working cells carry one.
           mgrs.forEach(m => {
