@@ -8,29 +8,42 @@
 -- own branch and (usually) the legacy 18:30 fallback time.
 --
 -- ⚠ ORDER MATTERS — DEPLOY THE CODE FIX FIRST.
---   The kiosk fix (own-branch scope + branchOverride) must be live before you
---   run the DELETE. Otherwise the OLD kiosk code re-creates the same strays on
---   the next sweep and you're back where you started.
+--   The kiosk fix (own-branch scope + branchOverride, commit 335cf9a) must be
+--   live — and open kiosks reloaded — before you run the DELETE. Otherwise the
+--   OLD kiosk code re-creates the same strays on the next sweep.
 --
 -- ⚠ Run STEP 1 (preview) and read it before STEP 2/3 (delete). Deletes are not
---   reversible. Cleaner keys "same day" on Africa/Johannesburg local time and is
---   scoped to the last 35 days to bound blast radius (widen if needed).
+--   reversible.
+--
+-- ── SCOPE: current pay cycle only (ymd >= 2026-07-25) ────────────────────────
+-- All three steps are scoped to the OPEN cycle (opened 25 Jul 2026). This is
+-- deliberate and excludes two things you must NOT sweep blindly:
+--   1. PREVIOUS cycle (20–24 Jul, i.e. 25 Jun→24 Jul): under active payroll
+--      correction (the 17 wrong-deduction reversals). Deleting a clock-out there
+--      can shift the "latest out" the deduction reads and change already-computed
+--      hours. Leave it until that reconciliation is closed.
+--   2. B782M (Robin Lee Pharo) 22 Jul: a separate anomaly — ~80 out_auto rows at
+--      06:00 across every branch (NOT the 18:30 cross-branch bug), still under
+--      investigation. The date scope skips it (22 Jul < 25 Jul).
+-- To clean a different/older window later, change _CYCLE_START below in each step
+-- (and only after confirming that cycle's payroll is settled).
+--
+-- Note: rows with outs_left_after = 0 have ONLY stray outs — deleting them leaves
+-- that manager with no clock-out for the day (0 payroll impact; managers fall back
+-- to 0). 28 Jul self-heals on the next own-branch sweep after deploy; 25–27 Jul
+-- leaves an honest "forgot to clock out" gap.
+--
+-- Cleaner keys "same day" on Africa/Johannesburg local time and reads the last
+-- 35 days, then the ymd scope narrows to the current cycle.
 -- ============================================================================
 
--- ── shared CTEs (identical in preview + delete) ─────────────────────────────
--- rows      : recent clock rows tagged with their SA-local day
--- in_branch : the branch of each (staff, day)'s single clock-IN
--- outs      : how many out/out_auto rows exist per (staff, day)
--- strays    : out_auto rows whose branch != that day's clock-in branch
-
 -- ════════════════════════════════════════════════════════════════════════════
--- STEP 1 — PREVIEW. Review this before deleting anything.
---   stray_branch      = the wrong branch that will be removed
---   worked_branch     = where they actually clocked in (kept)
---   outs_left_after   = out/out_auto rows remaining for that manager-day AFTER
---                       the delete. If 0, that manager will show "still clocked
---                       in" until their OWN store's kiosk next sweeps and
---                       re-creates a correct out (at the right branch + end).
+-- STEP 1 — PREVIEW (scoped to the current cycle). Review before deleting.
+--   stray_branch    = the wrong branch that will be removed
+--   worked_branch   = where they actually clocked in (kept)
+--   outs_left_after = out/out_auto rows remaining for that manager-day AFTER the
+--                     delete (0 = manager will show "still clocked in" until the
+--                     next own-branch sweep re-creates one, for the last ~2 days).
 -- ════════════════════════════════════════════════════════════════════════════
 with rows as (
   select c.id, c.staff_id, c.branch, c.type, c.ts,
@@ -52,6 +65,7 @@ strays as (
   join in_branch ib on ib.staff_id = r.staff_id and ib.ymd = r.ymd
   where r.type = 'out_auto'
     and coalesce(trim(r.branch), '') <> coalesce(trim(ib.in_branch), '')
+    and r.ymd >= '2026-07-25'          -- _CYCLE_START: current cycle only (skips prev cycle + B782M 22-Jul anomaly)
 )
 select st.employee_code                                                    as ec,
        st.name,
@@ -69,7 +83,7 @@ order by s.ymd desc, st.name;
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- STEP 2 — delete the sidecar meta for the strays (photos/flags), FK-safe first.
---   Only run after STEP 1 looks right.
+--   Only run after STEP 1 looks right. Same scope as STEP 1.
 -- ════════════════════════════════════════════════════════════════════════════
 -- with rows as (
 --   select c.id, c.staff_id, c.branch, c.type, c.ts,
@@ -85,11 +99,12 @@ order by s.ymd desc, st.name;
 --   join in_branch ib on ib.staff_id = r.staff_id and ib.ymd = r.ymd
 --   where r.type = 'out_auto'
 --     and coalesce(trim(r.branch), '') <> coalesce(trim(ib.in_branch), '')
+--     and r.ymd >= '2026-07-25'          -- _CYCLE_START: keep identical to STEP 1
 -- )
 -- delete from clockin_meta where clockin_id in (select id from strays);
 
 -- ════════════════════════════════════════════════════════════════════════════
--- STEP 3 — delete the stray clock rows themselves.
+-- STEP 3 — delete the stray clock rows themselves. Same scope as STEP 1/2.
 -- ════════════════════════════════════════════════════════════════════════════
 -- with rows as (
 --   select c.id, c.staff_id, c.branch, c.type, c.ts,
@@ -105,5 +120,6 @@ order by s.ymd desc, st.name;
 --   join in_branch ib on ib.staff_id = r.staff_id and ib.ymd = r.ymd
 --   where r.type = 'out_auto'
 --     and coalesce(trim(r.branch), '') <> coalesce(trim(ib.in_branch), '')
+--     and r.ymd >= '2026-07-25'          -- _CYCLE_START: keep identical to STEP 1
 -- )
 -- delete from clockins where id in (select id from strays);
