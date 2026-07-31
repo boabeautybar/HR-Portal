@@ -3815,6 +3815,189 @@ function OfficeStaffModal({ s, pin, dept, onClose, onSave, onDelete }) {
   );
 }
 
+// ─── OFFICE OFFBOARDING ─────────────────────────────────────────────────────
+// The exit checklist for a Head Office / Call Centre & Sales leaver. An office
+// exit has structured tasks a salon leaver doesn't (equipment, system access,
+// final pay). Each task stores { done, by, at } on the offboard record's `exit`
+// object. Grouped so the modal can section them; order = the order they render.
+const OFFICE_EXIT_TASKS = [
+  { key: "resignationLetter",  label: "Resignation / termination letter on file", icon: "📄", group: "HR" },
+  { key: "handover",           label: "Handover completed",                       icon: "🤝", group: "HR" },
+  { key: "exitInterview",      label: "Exit interview completed",                 icon: "💬", group: "HR" },
+  { key: "equipment",          label: "Equipment returned (laptop, phone, card, keys)", icon: "💻", group: "Access & equipment" },
+  { key: "accessRevoked",      label: "Kiosk PIN + portal access revoked",        icon: "🔑", group: "Access & equipment" },
+  { key: "systemsDeactivated", label: "Email + systems access deactivated",       icon: "📧", group: "Systems" },
+  { key: "finalPay",           label: "Final pay processed",                      icon: "💰", group: "Payroll" },
+  { key: "leavePayout",        label: "Leave balance paid out",                   icon: "🧾", group: "Payroll" }
+];
+const OFFICE_OFFBOARD_REASONS = ["Resigned", "Terminated", "Mutual agreement", "End of contract", "Retired", "Other"];
+function officeExitProgress(exit) {
+  const done = OFFICE_EXIT_TASKS.filter(t => exit && exit[t.key] && exit[t.key].done).length;
+  return { done, total: OFFICE_EXIT_TASKS.length };
+}
+
+// Offboard / manage-exit modal for one office person. Works in two modes off the
+// same form: BEFORE offboarding it collects last day + reason + notes and lets
+// tasks be pre-ticked; AFTER, it shows the leaver state and lets the exit
+// checklist be worked through over the notice period, with a Restore.
+function OfficeOffboardModal({ person, existing, isCc, todayStr, currentUserName, onClose, onSubmit, onToggleTask, onSaveMeta, onRestore }) {
+  const off = existing || null;
+  const [leftDate, setLeftDate] = React.useState((off && off.leftDate) || todayStr || "");
+  const [reason, setReason] = React.useState((off && off.reason) || "Resigned");
+  const [notes, setNotes] = React.useState((off && off.notes) || "");
+  // A link (e.g. a Google Drive folder) hosting this person's exit paperwork —
+  // resignation letter, deactivation email screenshots, handover notes. We store
+  // just the URL, not the files: the documents live in Drive, the portal points
+  // at them. Forward-fits a later Drive API integration that fills this in.
+  const [docsUrl, setDocsUrl] = React.useState((off && off.docsUrl) || "");
+  const [busy, setBusy] = React.useState(false);
+  // Create mode holds checklist ticks locally until Off-board is pressed; manage
+  // mode reads the LIVE record (re-derived by the parent each render) so a toggle
+  // persists and shows immediately.
+  const [draftExit, setDraftExit] = React.useState((off && off.exit) || {});
+  const [showHelp, setShowHelp] = React.useState(false);
+  const exit = off ? (off.exit || {}) : draftExit;
+  const prog = officeExitProgress(exit);
+  // Only ever render an http(s) link — never a bare/`javascript:` string — so a
+  // pasted value can't become an XSS vector in the href.
+  const _docHref = /^https?:\/\//i.test(String(docsUrl).trim()) ? String(docsUrl).trim() : "";
+  const name = (person && person.name) || (off && off.name) || "";
+  const ec = (person && person.ec) || (off && off.ec) || "";
+  const deptLbl = isCc ? "Call Centre & Sales" : "Head Office";
+  const fmt = (ymd) => { try { return new Date(String(ymd).replace(/\//g, "-") + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }); } catch (_) { return ymd; } };
+  const onNotice = off && off.leftDate && off.leftDate > (todayStr || "");
+
+  const groups = [];
+  OFFICE_EXIT_TASKS.forEach(t => { const g = groups.find(x => x.name === t.group); (g ? g.items : (groups.push({ name: t.group, items: [] }), groups[groups.length - 1].items)).push(t); });
+
+  const lbl = { display: "block", fontSize: 10, fontWeight: 800, color: "#831843", letterSpacing: "0.08em", marginBottom: 4, textTransform: "uppercase" };
+  const inp = { width: "100%", padding: "9px 11px", border: "1px solid #FBCFE8", borderRadius: 9, fontSize: 13, fontFamily: "inherit", background: "#fff", boxSizing: "border-box" };
+
+  return (
+    <React.Fragment>
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(131,24,67,0.4)", zIndex: 9200, display: "flex", alignItems: "center", justifyContent: "center", padding: "30px 20px", overflow: "auto" }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "22px 24px", width: "min(560px, 100%)", maxHeight: "90vh", overflow: "auto", border: "1px solid #FBCFE8", boxShadow: "0 20px 50px rgba(131,24,67,0.25)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 4 }}>
+          <div>
+            <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 20, color: "#831843", fontWeight: 700 }}>{off ? "👋 Exit — " : "👋 Off-board — "}{name}</div>
+            <div style={{ fontSize: 12, color: "#9ca3af" }}>{ec} · {deptLbl}{off ? (onNotice ? " · ⏳ on notice, leaves " + fmt(off.leftDate) : " · left " + fmt(off.leftDate)) : ""}</div>
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexShrink: 0 }}>
+            <button onClick={() => setShowHelp(true)} title="How off-boarding works" aria-label="How off-boarding works"
+              style={{ width: 26, height: 26, borderRadius: "50%", border: "1px solid #FBCFE8", background: "#FDF2F8", color: "#BE185D", fontSize: 14, fontWeight: 800, cursor: "pointer", lineHeight: 1, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "inherit" }}>?</button>
+            <button onClick={onClose} style={{ background: "transparent", border: "none", fontSize: 22, cursor: "pointer", color: "#831843", lineHeight: 1 }}>×</button>
+          </div>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 16 }}>
+          <div>
+            <label style={lbl}>Last day worked</label>
+            <input type="date" value={leftDate} onChange={e => setLeftDate(e.target.value)} style={inp} />
+            <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 3 }}>A future date = working their notice.</div>
+          </div>
+          <div>
+            <label style={lbl}>Reason</label>
+            <select value={reason} onChange={e => setReason(e.target.value)} style={inp}>
+              {OFFICE_OFFBOARD_REASONS.map(r => <option key={r} value={r}>{r}</option>)}
+            </select>
+          </div>
+        </div>
+        <div style={{ marginTop: 12 }}>
+          <label style={lbl}>Notes (optional)</label>
+          <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2} placeholder="Anything payroll / HR should know…" style={{ ...inp, resize: "vertical" }} />
+        </div>
+        <div style={{ marginTop: 12 }}>
+          <label style={lbl}>Supporting documents (link)</label>
+          <div style={{ display: "flex", gap: 8, alignItems: "stretch" }}>
+            <input type="url" value={docsUrl} onChange={e => setDocsUrl(e.target.value)} placeholder="https://drive.google.com/…" style={{ ...inp, flex: 1 }} />
+            {_docHref
+              ? <a href={_docHref} target="_blank" rel="noopener noreferrer" style={{ flexShrink: 0, display: "inline-flex", alignItems: "center", padding: "0 14px", borderRadius: 9, background: "#831843", color: "#fff", fontSize: 12, fontWeight: 700, textDecoration: "none" }}>📎 Open ↗</a>
+              : null}
+          </div>
+          <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 3 }}>Paste a Drive link to the folder with this person's exit paperwork (letter, deactivation emails, handover).</div>
+        </div>
+
+        {/* Exit checklist */}
+        <div style={{ marginTop: 18, background: "#FDF2F8", border: "1px solid #FBCFE8", borderRadius: 12, padding: "14px 16px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <div style={{ fontSize: 13, fontWeight: 800, color: "#831843" }}>Exit checklist</div>
+            <div style={{ fontSize: 12, fontWeight: 800, color: prog.done === prog.total ? "#15803d" : "#BE185D" }}>{prog.done}/{prog.total} done</div>
+          </div>
+          {!off && <div style={{ fontSize: 11, color: "#9d174d", marginBottom: 10 }}>Tick anything already done — you can complete the rest over the notice period after off-boarding.</div>}
+          {groups.map(g => (
+            <div key={g.name} style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 9.5, fontWeight: 800, color: "#BE185D", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 4 }}>{g.name}</div>
+              {g.items.map(t => {
+                const st = exit[t.key];
+                const done = !!(st && st.done);
+                return (
+                  <label key={t.key} style={{ display: "flex", alignItems: "flex-start", gap: 9, padding: "5px 0", cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1 }}>
+                    <input type="checkbox" checked={done} disabled={busy}
+                      onChange={async (e) => {
+                        const on = e.target.checked;
+                        // Create mode: hold in local draft. Manage mode: persist now.
+                        if (!off) { setDraftExit(prev => ({ ...prev, [t.key]: on ? { done: true, by: currentUserName || "", at: new Date().toISOString() } : undefined })); return; }
+                        setBusy(true); try { await onToggleTask(off.ec, t.key, on); } finally { setBusy(false); }
+                      }}
+                      style={{ width: 16, height: 16, accentColor: "#BE185D", marginTop: 1, flexShrink: 0 }} />
+                    <span style={{ fontSize: 12.5, color: done ? "#15803d" : "#831843", fontWeight: done ? 700 : 500, textDecoration: done ? "none" : "none" }}>
+                      {t.icon} {t.label}
+                      {done && st && st.by ? <span style={{ fontSize: 10, color: "#9ca3af", fontWeight: 500 }}> · {st.by}{st.at ? " · " + fmt(String(st.at).slice(0, 10)) : ""}</span> : null}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+
+        <div style={{ display: "flex", gap: 10, marginTop: 20, justifyContent: "space-between", alignItems: "center" }}>
+          {off
+            ? <button onClick={() => onRestore(off.ec)} style={{ padding: "9px 14px", borderRadius: 9, border: "1px solid #FBCFE8", background: "#fff", color: "#831843", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700 }}>↺ Restore to active</button>
+            : <span />}
+          <div style={{ display: "flex", gap: 10, marginLeft: "auto" }}>
+            <button onClick={onClose} style={{ padding: "9px 18px", borderRadius: 9, border: "1px solid #FBCFE8", background: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 13 }}>{off ? "Close" : "Cancel"}</button>
+            {off
+              ? <button disabled={busy} onClick={async () => { setBusy(true); try { await onSaveMeta(off.ec, { leftDate, reason, notes, docsUrl }); onClose(); } finally { setBusy(false); } }} style={{ padding: "9px 22px", borderRadius: 9, border: "none", background: "#1e293b", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 }}>Save changes</button>
+              : <button disabled={!leftDate || busy} onClick={async () => { setBusy(true); try { await onSubmit({ leftDate, reason, notes, exit, docsUrl }); } finally { setBusy(false); } }} style={{ padding: "9px 22px", borderRadius: 9, border: "none", background: !leftDate ? "#d1d5db" : "#BE185D", color: "#fff", cursor: !leftDate ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 }}>👋 Off-board</button>}
+          </div>
+        </div>
+      </div>
+    </div>
+    {showHelp && (
+      <div onClick={() => setShowHelp(false)} style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.55)", zIndex: 9300, display: "flex", alignItems: "center", justifyContent: "center", padding: "30px 20px", overflow: "auto" }}>
+        <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "22px 24px", width: "min(540px, 100%)", maxHeight: "88vh", overflow: "auto", border: "1px solid #FBCFE8", boxShadow: "0 24px 60px rgba(15,23,42,0.35)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 6 }}>
+            <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 19, color: "#831843", fontWeight: 700 }}>👋 How off-boarding works</div>
+            <button onClick={() => setShowHelp(false)} aria-label="Close help" style={{ background: "transparent", border: "none", fontSize: 22, cursor: "pointer", color: "#831843", lineHeight: 1, flexShrink: 0 }}>×</button>
+          </div>
+          <div style={{ fontSize: 12, color: "#9ca3af", marginBottom: 14 }}>A quick guide to off-boarding a Head Office / Call Centre &amp; Sales person.</div>
+          {[
+            { n: "1", t: "Last day & reason", d: "Pick their last working day and why they're leaving. A future date means they're working their notice; today or a past date means they've already left." },
+            { n: "2", t: "Notes & documents", d: "Add anything payroll or HR should know. Paste a Google Drive link to the folder with their exit paperwork (letter, deactivation emails, handover) — a 📎 Open button then lets anyone view it." },
+            { n: "3", t: "Work the exit checklist", d: "Tick the 8 tasks across HR, Access & equipment, Systems and Payroll. Tick what's done now and finish the rest over the notice period — each tick records who completed it and when." },
+            { n: "4", t: "Off-board", d: "Click 👋 Off-board to record them as a leaver. Re-open them any time from the Office Staff List or Off-boarding tab to keep working the checklist (the button shows progress, e.g. Exit 3/8)." },
+            { n: "5", t: "After they leave", d: "They stay visible as a recent leaver for about 31 days — time to close out final pay and paperwork — then move out of the active staff views. Their record and completed checklist are kept in the off-boarding history." },
+            { n: "6", t: "Made a mistake?", d: "Open their exit window and click ↺ Restore to active. This reverses the off-boarding and clears the record and checklist." }
+          ].map(s => (
+            <div key={s.n} style={{ display: "flex", gap: 12, marginBottom: 13 }}>
+              <div style={{ flexShrink: 0, width: 24, height: 24, borderRadius: "50%", background: "#BE185D", color: "#fff", fontSize: 12, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }}>{s.n}</div>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 800, color: "#831843", marginBottom: 2 }}>{s.t}</div>
+                <div style={{ fontSize: 12, color: "#4b5563", lineHeight: 1.5 }}>{s.d}</div>
+              </div>
+            </div>
+          ))}
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 6 }}>
+            <button onClick={() => setShowHelp(false)} style={{ padding: "9px 20px", borderRadius: 9, border: "none", background: "#BE185D", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 }}>Got it</button>
+          </div>
+        </div>
+      </div>
+    )}
+    </React.Fragment>
+  );
+}
+
 // ─── SCHEDULE EDITOR (Phase 2a — manual editing, save to Supabase) ──────────────
 function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, leaveRecs, obList, techLoans, onTechLoansChange, initialBranch, isOwner, branchList, requestStore }) {
   // requestStore (optional, "ho" | "cc") names the persistence target for
@@ -18880,6 +19063,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // record is a VIEW concept — it picks the role list and label; the stored
   // branch is always Head Office.
   const [officeModal, setOfficeModal] = useState(null);
+  const [officeOffboardModal, setOfficeOffboardModal] = useState(null); // { person } — office offboard / exit-checklist modal
   // Its own filter state, deliberately NOT shared with the Salon Staff list:
   // a leftover fBranch="Sea Point" or fRole="Tech" would render the office list
   // empty with nothing on screen to explain why (the office filters can't even
@@ -23672,6 +23856,74 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       logActivity("Removed office staff", (target.name || "") + (target.ec ? " (" + target.ec + ")" : ""), "");
     } catch (e) { alert("Could not remove: " + (e.message || e)); }
   }
+  // ── Office offboarding ──────────────────────────────────────────────
+  // Reuses the shared leaver store (boa_offboard_v1) so office leavers show in
+  // the Off-boarding tab audit alongside salon staff and pick up the same 31-day
+  // window + Left/Notice badges the enrichment already computes for them. What's
+  // office-specific: an `exit` checklist on the record, and a `left_date` write
+  // to the staff row (office schedule/attendance read RAW hoStaff, not the
+  // enriched roster, so a sidecar record alone wouldn't drop them there).
+  async function offboardOfficeStaff(person, meta) {
+    if (!canAddOfficeStaff) { alert("You don't have permission to off-board office staff. An owner can grant it under Settings → Add office staff."); return; }
+    const raw = (hoStaff || []).find(h => h && (h._id === person._id || h.ec === person.ec));
+    if (!raw) { alert("Staff not found."); return; }
+    const ec = raw.ec;
+    const rec = {
+      ec, name: raw.name, branch: HEAD_OFFICE,
+      leftDate: meta.leftDate, reason: meta.reason || "", notes: meta.notes || "",
+      docsUrl: meta.docsUrl || "",
+      office: true, exit: meta.exit || {}, addedAt: new Date().toISOString()
+    };
+    const nextOff = [...(offList || []).filter(o => o && o.ec !== ec), rec];   // idempotent per EC
+    setOffList(nextOff);
+    try {
+      await window.BOA_DB.saveOffboarding(nextOff);
+      const saved = await window.BOA_DB.saveStaff({ ...raw, branch: HEAD_OFFICE, leftDate: meta.leftDate });
+      setHoStaff(p => p.map(x => x._id === raw._id ? saved : x));
+    } catch (e) { alert("Could not off-board: " + (e.message || e)); return; }
+    setOfficeOffboardModal(null);
+    logActivity("Off-boarded office staff", (raw.name || "") + " (" + ec + ")", "Last day " + meta.leftDate + (meta.reason ? " · " + meta.reason : ""), "People");
+  }
+  async function toggleOfficeExitTask(ec, taskKey, done) {
+    const nextOff = (offList || []).map(o => {
+      if (!o || o.ec !== ec) return o;
+      const exit = { ...(o.exit || {}) };
+      exit[taskKey] = done ? { done: true, by: (currentUser && currentUser.name) || "", at: new Date().toISOString() } : null;
+      return { ...o, exit };
+    });
+    setOffList(nextOff);
+    try { await window.BOA_DB.saveOffboarding(nextOff); }
+    catch (e) { alert("Could not save exit task: " + (e.message || e)); }
+  }
+  async function saveOfficeExitMeta(ec, meta) {
+    const raw = (hoStaff || []).find(h => h && h.ec === ec);
+    const prev = (offList || []).find(o => o && o.ec === ec);
+    const nextOff = (offList || []).map(o => (o && o.ec === ec) ? { ...o, leftDate: meta.leftDate, reason: meta.reason, notes: meta.notes, docsUrl: meta.docsUrl || "" } : o);
+    setOffList(nextOff);
+    try {
+      await window.BOA_DB.saveOffboarding(nextOff);
+      if (raw && prev && meta.leftDate !== prev.leftDate) {
+        const saved = await window.BOA_DB.saveStaff({ ...raw, branch: HEAD_OFFICE, leftDate: meta.leftDate });
+        setHoStaff(p => p.map(x => x._id === raw._id ? saved : x));
+      }
+    } catch (e) { alert("Could not save: " + (e.message || e)); }
+  }
+  async function restoreOfficeStaff(ec) {
+    if (!window.confirm("Restore this person to active office staff? Their off-board record and exit checklist will be removed.")) return;
+    const tgt = (offList || []).find(o => o && o.ec === ec);
+    const nextOff = (offList || []).filter(o => o && o.ec !== ec);
+    setOffList(nextOff);
+    const raw = (hoStaff || []).find(h => h && h.ec === ec);
+    try {
+      await window.BOA_DB.saveOffboarding(nextOff);
+      if (raw && (raw.leftDate || raw.active === false || raw.active === "false")) {
+        const saved = await window.BOA_DB.saveStaff({ ...raw, branch: HEAD_OFFICE, leftDate: null, active: true });
+        setHoStaff(p => p.map(x => x._id === raw._id ? saved : x));
+      }
+    } catch (e) { alert("Could not restore: " + (e.message || e)); return; }
+    setOfficeOffboardModal(null);
+    if (tgt) logActivity("Restored office staff from off-board", (tgt.name || "") + " (" + ec + ")", "", "People");
+  }
   async function delMgr(id) {
     const target = managers.find(x => x._id === id);
     // Shadow records are derived UI rows, not real DB entries — clearing
@@ -26388,10 +26640,27 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 {p.onMat && <span style={{ marginLeft: 6, fontSize: 10, background: "#FBCFE8", color: "#8E5570", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>🤱 mat.</span>}
                               </td>
                               <td style={{ padding: "10px 12px", fontSize: 11, color: "#831843" }}>{p.matRec && p.matRec.returnDate ? new Date(p.matRec.returnDate.replace(/\//g, "-") + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : <span style={{ color: "#d1d5db" }}>—</span>}</td>
-                              <td style={{ padding: "10px 12px", textAlign: "right" }}>
+                              <td style={{ padding: "10px 12px", textAlign: "right", whiteSpace: "nowrap" }}>
                                 {canAddOfficeStaff && (
-                                  <button onClick={() => setOfficeModal({ ...p, _dept: isCallCentreStaff(p) ? "CC" : "HO" })}
-                                    style={{ background: "#e2e8f0", border: "none", borderRadius: 6, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700, color: "#831843" }}>✏️ Edit</button>
+                                  <span style={{ display: "inline-flex", gap: 6, justifyContent: "flex-end" }}>
+                                    {(departed || onNotice) ? (() => {
+                                      const prog = officeExitProgress(p.offRec && p.offRec.exit);
+                                      const full = prog.done === prog.total;
+                                      return (
+                                        <button onClick={() => setOfficeOffboardModal({ person: p })}
+                                          title={"Manage exit — " + prog.done + " of " + prog.total + " exit tasks done. Complete the checklist or restore them."}
+                                          style={{ background: full ? "#dcfce7" : "#fef3c7", border: "1px solid " + (full ? "#86efac" : "#fcd34d"), borderRadius: 6, padding: "5px 10px", cursor: "pointer", fontSize: 11, fontWeight: 800, color: full ? "#166534" : "#92400e" }}>
+                                          👋 Exit {prog.done}/{prog.total}{full ? " ✓" : ""}
+                                        </button>
+                                      );
+                                    })() : (
+                                      <button onClick={() => setOfficeOffboardModal({ person: p })}
+                                        title="Off-board this person — set their last day and work the exit checklist"
+                                        style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 6, padding: "5px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700, color: "#9d174d" }}>👋 Off-board</button>
+                                    )}
+                                    <button onClick={() => setOfficeModal({ ...p, _dept: isCallCentreStaff(p) ? "CC" : "HO" })}
+                                      style={{ background: "#e2e8f0", border: "none", borderRadius: 6, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700, color: "#831843" }}>✏️ Edit</button>
+                                  </span>
                                 )}
                               </td>
                             </tr>
@@ -31890,6 +32159,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // reappear on the schedule and Locations as fully active.
           const techRec = (staff || []).find(s => s && s.ec === ec);
           const mgrRec = !techRec ? (managers || []).find(m => m && m.ec === ec) : null;
+          const hoRec = (!techRec && !mgrRec) ? (hoStaff || []).find(h => h && h.ec === ec) : null;
           try {
             if (techRec && (techRec.leftDate || techRec.active === false || techRec.active === "false")) {
               const saved = await window.BOA_DB.saveStaff({ ...techRec, leftDate: null, active: true });
@@ -31897,9 +32167,38 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             } else if (mgrRec && (mgrRec.leftDate || mgrRec.active === false || mgrRec.active === "false")) {
               const saved = await window.BOA_DB.saveManager({ ...mgrRec, leftDate: null, active: true });
               setManagers(p => p.map(x => x._id === mgrRec._id ? saved : x));
+            } else if (hoRec && (hoRec.leftDate || hoRec.active === false || hoRec.active === "false")) {
+              // Office staff live in the same offboard store; reactivate their
+              // row too (branch forced to Head Office, matching saveOfficeStaff).
+              const saved = await window.BOA_DB.saveStaff({ ...hoRec, branch: HEAD_OFFICE, leftDate: null, active: true });
+              setHoStaff(p => p.map(x => x._id === hoRec._id ? saved : x));
             }
           } catch (e) { console.warn("Failed to clear leftDate on restore:", e); }
           if (tgt) logActivity("Restored from off-board", (tgt.name || "") + " (" + tgt.ec + ")", tgt.branch || "");
+        };
+        // Exit-checklist chip for office leavers (records carry an `exit` object).
+        // Salon records have none, so this returns null and leaves them untouched.
+        // Clicking opens the office offboard modal to work the checklist.
+        const renderExitBadge = (o) => {
+          if (!o || !o.exit) return null;
+          const prog = officeExitProgress(o.exit);
+          const full = prog.done === prog.total;
+          const raw = (hoStaff || []).find(h => h && h.ec === o.ec);
+          const docHref = /^https?:\/\//i.test(String(o.docsUrl || "").trim()) ? String(o.docsUrl).trim() : "";
+          return (
+            <React.Fragment>
+              <button onClick={() => setOfficeOffboardModal({ person: raw || { ec: o.ec, name: o.name } })} title="Open the exit checklist"
+                style={{ marginTop: 8, marginLeft: 8, background: full ? "#dcfce7" : "#fef3c7", border: "1px solid " + (full ? "#86efac" : "#fcd34d"), color: full ? "#166534" : "#92400e", padding: "3px 9px", borderRadius: 5, fontSize: 10, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>
+                📋 Exit {prog.done}/{prog.total}{full ? " ✓" : ""}
+              </button>
+              {docHref && (
+                <a href={docHref} target="_blank" rel="noopener noreferrer" title="View supporting documents"
+                  style={{ marginTop: 8, marginLeft: 6, display: "inline-block", background: "#f5f3ff", border: "1px solid #ddd6fe", color: "#5b21b6", padding: "3px 9px", borderRadius: 5, fontSize: 10, fontWeight: 800, textDecoration: "none" }}>
+                  📎 Docs ↗
+                </a>
+              )}
+            </React.Fragment>
+          );
         };
         const submitQuickPick = () => {
           if (!quickPick) return;
@@ -32073,7 +32372,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           Last day {dStr}<span style={{ opacity: 0.75 }}> · {daysUntil === 0 ? "today" : daysUntil === 1 ? "tomorrow" : "in " + daysUntil + " days"}</span>
                         </div>
                         {o.notes && <div style={{ fontSize: 11, color: "#831843", marginTop: 6, fontStyle: "italic", whiteSpace: "pre-wrap" }}>{o.notes}</div>}
-                        <button onClick={() => undoOff(o.ec)} style={{ marginTop: 8, background: "transparent", border: "1px solid #fde68a", color: "#92400e", padding: "4px 10px", borderRadius: 5, fontSize: 10, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>↺ Cancel</button>
+                        <button onClick={() => undoOff(o.ec)} style={{ marginTop: 8, background: "transparent", border: "1px solid #fde68a", color: "#92400e", padding: "4px 10px", borderRadius: 5, fontSize: 10, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>↺ Cancel</button>{renderExitBadge(o)}
                       </div>
                     );
                   })}
@@ -32110,7 +32409,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           Left {dStr}<span style={{ opacity: 0.7 }}> · {daysAgo === 0 ? "today" : daysAgo === 1 ? "yesterday" : daysAgo + " days ago"}</span>
                         </div>
                         {o.notes && <div style={{ fontSize: 11, color: "#831843", marginTop: 6, fontStyle: "italic", whiteSpace: "pre-wrap" }}>{o.notes}</div>}
-                        <button onClick={() => undoOff(o.ec)} style={{ marginTop: 8, background: "transparent", border: "1px solid #FBCFE8", color: "#831843", padding: "4px 10px", borderRadius: 5, fontSize: 10, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>↺ Restore</button>
+                        <button onClick={() => undoOff(o.ec)} style={{ marginTop: 8, background: "transparent", border: "1px solid #FBCFE8", color: "#831843", padding: "4px 10px", borderRadius: 5, fontSize: 10, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>↺ Restore</button>{renderExitBadge(o)}
                       </div>
                     );
                   })}
@@ -32155,7 +32454,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             Left {dStr}<span style={{ opacity: 0.7 }}> · {daysAgo} days ago</span>
                           </div>
                           {o.notes && <div style={{ fontSize: 11, color: "#831843", marginTop: 6, fontStyle: "italic", whiteSpace: "pre-wrap" }}>{o.notes}</div>}
-                          <button onClick={() => undoOff(o.ec)} style={{ marginTop: 8, background: "transparent", border: "1px solid #FBCFE8", color: "#831843", padding: "4px 10px", borderRadius: 5, fontSize: 10, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>↺ Restore</button>
+                          <button onClick={() => undoOff(o.ec)} style={{ marginTop: 8, background: "transparent", border: "1px solid #FBCFE8", color: "#831843", padding: "4px 10px", borderRadius: 5, fontSize: 10, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>↺ Restore</button>{renderExitBadge(o)}
                         </div>
                       );
                     })}
@@ -44480,6 +44779,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       {staffModal && <StaffModal s={(() => { const mr = (matRecs || []).find(r => r && r.ec && staffModal.ec && r.ec.trim() === staffModal.ec.trim()); return mr ? { ...staffModal, matStatus: staffModal.matStatus || mr.matStatus, matStart: staffModal.matStart || mr.matStart, matEnd: staffModal.matEnd || mr.matEnd, matReturn: staffModal.matReturn || mr.returnDate, matNotes: staffModal.matNotes || mr.notes } : staffModal; })()} onClose={() => setStaffModal(null)} onSave={saveStaff} onTransfer={(s) => setTransferModal(s)} allStaff={staff} isOwner={!!currentUser?.isOwner} onHardDelete={hardDeleteStaff} />}
       {mgrModal && <ManagerModal m={(() => { const mr = (matRecs || []).find(r => r && r.ec && mgrModal.ec && r.ec.trim() === mgrModal.ec.trim()); return mr ? { ...mgrModal, matStatus: mgrModal.matStatus || mr.matStatus, matStart: mgrModal.matStart || mr.matStart, matEnd: mgrModal.matEnd || mr.matEnd, matReturn: mgrModal.matReturn || mr.returnDate, matNotes: mgrModal.matNotes || mr.notes } : mgrModal; })()} pin={mgrPins[mgrModal.ec] || ""} onClose={() => setMgrModal(null)} onSave={saveMgr} onDelete={delMgr} smTrialActive={!!(smTrialList || []).find(r => r.ec === mgrModal.ec && r.status === "active")} onStartSmTrial={startSmTrialFor} />}
       {officeModal && <OfficeStaffModal s={(() => { const mr = (matRecs || []).find(r => r && r.ec && officeModal.ec && r.ec.trim() === officeModal.ec.trim()); return mr ? { ...officeModal, matStatus: officeModal.matStatus || mr.matStatus, matStart: officeModal.matStart || mr.matStart, matEnd: officeModal.matEnd || mr.matEnd, matReturn: officeModal.matReturn || mr.returnDate, matNotes: officeModal.matNotes || mr.notes } : officeModal; })()} pin={mgrPins[officeModal.ec] || ""} dept={officeModal._dept} onClose={() => setOfficeModal(null)} onSave={saveOfficeStaff} onDelete={delOfficeStaff} />}
+      {officeOffboardModal && (() => {
+        const person = officeOffboardModal.person;
+        // Derive `existing` fresh from offList each render so a checklist toggle
+        // reflects live without re-opening the modal.
+        const existing = (offList || []).find(o => o && o.ec === person.ec) || null;
+        return (
+          <OfficeOffboardModal
+            person={person}
+            existing={existing}
+            isCc={isCallCentreStaff(person)}
+            todayStr={(() => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); })()}
+            currentUserName={(currentUser && currentUser.name) || ""}
+            onClose={() => setOfficeOffboardModal(null)}
+            onSubmit={(meta) => offboardOfficeStaff(person, meta)}
+            onToggleTask={toggleOfficeExitTask}
+            onSaveMeta={saveOfficeExitMeta}
+            onRestore={restoreOfficeStaff}
+          />
+        );
+      })()}
       {transferModal && <TransferModal s={transferModal} onClose={() => setTransferModal(null)} onConfirm={handleTransfer} onCancelTransfer={cancelTransfer} />}
       {matModal && <MatModal rec={matModal} onClose={() => setMatModal(null)} onSave={saveMat} onDelete={delMat} people={matPickerPool} />}
       <AlertModal data={uiDialog} onResolve={resolveUiDialog} />
