@@ -12514,6 +12514,15 @@ const OFFICE_SHORT_GRACE_MIN = 20;   // matches _MGR_EARLY_GRACE_MIN — one sto
 const OFFICE_LATE_ALERT_MIN = 30;    // "30 minutes past their start and still not in"
 const OFFICE_LATE_LOG_MIN = 10;      // arrivals later than this get noted on the day
 const OFFICE_WORK_CODES = new Set(["W", "WE", "WM", "WL", "WB", "E"]);
+// Head Office earliest-leave floor. The flat office day (08:00-17:00) may be
+// started early to finish early — a 07:00 start earning a 16:00 finish is the
+// whole point — but the earliest anyone may clock out is 16:00. A full-LENGTH
+// day that still ends before this is surfaced for the payroll officer to report
+// (kind "early_out"); it is deliberately NOT auto-deducted, because the hours
+// were worked and whether an early leave is docked is a case-by-case call.
+// HO-only: the Call Centre & Sales split has its own scheduled ends (16:00 /
+// 18:30), so this floor never applies to a CC row (guarded by !isCc below).
+const OFFICE_EARLIEST_OUT_MIN = 16 * 60;   // 16:00
 
 // Index raw `clockins` rows into ec → ymd → { inTs, outTs }.
 // Dates are LOCAL (ymdStr), never toISOString() — SA is UTC+2, so a 01:00 clock
@@ -12617,6 +12626,19 @@ function officeHoursFindings(people, clockIdx, schedGrid, opts) {
         });
         return;
       }
+      // Earliest-leave floor (Head Office only): the full DURATION was worked,
+      // but they clocked out before 16:00. Surfaced for payroll to report — never
+      // an automatic deduction, since the hours were made. CC&S is exempt: its
+      // scheduled ends already are 16:00 / 18:30, and a short CC day is caught by
+      // the duration rule above.
+      if (!base.isCc) {
+        const outMin = officeMinOfDay(rec.outTs);
+        const earlyMin = OFFICE_EARLIEST_OUT_MIN - outMin;
+        if (earlyMin > OFFICE_SHORT_GRACE_MIN) {
+          findings.push({ ...base, kind: "early_out", inTs: rec.inTs, outTs: rec.outTs, lateMin, workedMin, outMin, earlyMin });
+          return;
+        }
+      }
       // Full day worked. Note a late arrival so a pattern is visible, but this
       // is explicitly NOT a payroll event — they made the hours up.
       if (lateMin > OFFICE_LATE_LOG_MIN) {
@@ -12660,10 +12682,13 @@ function officeReviewKey(ec, ymd) { return String(ec || "").trim().toUpperCase()
 // person, where they read as what they actually are: a kiosk-adoption problem,
 // not 270 people who failed to come to work.
 // `late_ok` is a note about a day that WAS worked in full, so it is never a task.
-const OFFICE_ACTIONABLE = new Set(["short", "no_out"]);
+// `early_out` IS a task: a full day's hours were made but the person left before
+// the 16:00 floor, and payroll asked to see those so they can report/handle them
+// (no auto-deduction — the Clear action just acknowledges it).
+const OFFICE_ACTIONABLE = new Set(["short", "no_out", "early_out"]);
 // Everything that can carry a cleared/deducted state — absences included, since
 // payroll may still want to tick one off once it's been explained.
-const OFFICE_REVIEWABLE = new Set(["short", "no_out", "absent"]);
+const OFFICE_REVIEWABLE = new Set(["short", "no_out", "absent", "early_out"]);
 
 // Shared request-board classification: split a filtered request list into
 // Managers / Nail Techs / Head Office — the three colour-coded columns the
@@ -25211,11 +25236,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     )}
                     {officeOpenFindings.length > 0 && (
                       <div style={{ fontSize: 12.5, color: "#b45309", fontWeight: 700, marginTop: 4 }}>
-                        {officeOpenFindings.length} day{officeOpenFindings.length === 1 ? "" : "s"} this cycle waiting on you — hours worked short of the shift, or a clock-in with no matching clock-out.
+                        {officeOpenFindings.length} day{officeOpenFindings.length === 1 ? "" : "s"} this cycle waiting on you — hours short of the shift, a clock-in with no matching clock-out, or a Head Office finish before the 4pm floor.
                       </div>
                     )}
                     <div style={{ fontSize: 11.5, color: "#a16207", marginTop: 3 }}>
-                      Office staff owe a full-length day, not a fixed window — an early start earns an early finish, so only genuine shortfalls appear.
+                      Office staff owe a full-length day, not a fixed window — an early start earns an early finish, down to a 4pm floor for Head Office.
                     </div>
                   </div>
                   <button onClick={() => tryChangeTab("officeHours")}
@@ -40648,6 +40673,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const lateOk = officeFindings.filter(f => f.kind === "late_ok");
         const nShort = open.filter(f => f.kind === "short").length;
         const nNoOut = open.filter(f => f.kind === "no_out").length;
+        const nEarly = open.filter(f => f.kind === "early_out").length;
 
         // Absences roll up PER PERSON. A day-by-day list runs to hundreds of
         // rows because the office kiosk is only partly adopted, which drowns
@@ -40685,6 +40711,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const KIND = {
           short: { lbl: "SHORT", bg: "#fee2e2", fg: "#991b1b" },
           no_out: { lbl: "NO CLOCK-OUT", bg: "#fef3c7", fg: "#92400e" },
+          early_out: { lbl: "BEFORE 4PM", bg: "#ffedd5", fg: "#9a3412" },
           absent: { lbl: "NO CLOCK-IN", bg: "#ede9fe", fg: "#5b21b6" },
           late_ok: { lbl: "LATE IN", bg: "#e0f2fe", fg: "#075985" },
           pending: { lbl: "NOT IN YET", bg: "#fee2e2", fg: "#991b1b" }
@@ -40730,7 +40757,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 {f.inTs ? officeFmtTime(f.inTs) : <span style={{ color: "#9ca3af" }}>—</span>}
                 {f.lateMin > OFFICE_LATE_LOG_MIN ? <span style={{ color: "#b45309", fontSize: 10, fontWeight: 700 }}> +{officeFmtMin(f.lateMin)}</span> : null}
               </td>
-              <td style={{ ...td, whiteSpace: "nowrap" }}>{f.outTs ? officeFmtTime(f.outTs) : <span style={{ color: "#9ca3af" }}>—</span>}</td>
+              <td style={{ ...td, whiteSpace: "nowrap" }}>
+                {f.outTs ? officeFmtTime(f.outTs) : <span style={{ color: "#9ca3af" }}>—</span>}
+                {f.kind === "early_out" ? <span style={{ color: "#c2410c", fontSize: 10, fontWeight: 700 }}> · {officeFmtMin(f.earlyMin)} before 16:00</span> : null}
+              </td>
               <td style={{ ...td, whiteSpace: "nowrap", fontWeight: 700 }}>
                 {f.workedMin != null ? officeFmtMin(f.workedMin) : <span style={{ color: "#9ca3af", fontWeight: 400 }}>unverified</span>}
                 {f.shortMin > 0 ? <span style={{ color: "#b91c1c" }}> · short {officeFmtMin(f.shortMin)}</span> : null}
@@ -40764,7 +40794,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             <div style={{ marginBottom: 14 }}>
               <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, color: "#92400e", fontWeight: 700, marginBottom: 4 }}>⏰ Office Hours</div>
               <div style={{ fontSize: 12, color: "#b45309", maxWidth: 900, lineHeight: 1.5 }}>
-                Head Office and Call Centre &amp; Sales staff owe a <b>full-length day</b>, not a fixed clock window — 07:00 → 16:00 is a complete 9-hour day and won't appear here. A day is flagged when the time between clock-in and clock-out falls more than <b>{OFFICE_SHORT_GRACE_MIN} minutes</b> short of the scheduled shift length.
+                Head Office and Call Centre &amp; Sales staff owe a <b>full-length day</b>, not a fixed clock window — 07:00 → 16:00 is a complete 9-hour day and won't appear here. A day is flagged when the time between clock-in and clock-out falls more than <b>{OFFICE_SHORT_GRACE_MIN} minutes</b> short of the scheduled shift length. Head Office may <b>start early to finish early</b>, but the earliest clock-out is <b>16:00</b> — an earlier finish on a full day is flagged as <b>“Left before 4pm”</b> for you to report, not auto-deducted.
               </div>
             </div>
 
@@ -40777,7 +40807,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <button onClick={exportCsv} style={{ background: "#fff", color: "#b45309", border: "1px solid #fde68a", borderRadius: 8, padding: "8px 13px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>⬇ Export CSV</button>
               <div style={{ flex: 1 }} />
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                {[["Short days", nShort, "#fee2e2", "#991b1b"], ["No clock-out", nNoOut, "#fef3c7", "#92400e"], ["Never clocked in", neverClocked.length, "#ede9fe", "#5b21b6"]].map(([l, n, bg, fg]) => (
+                {[["Short days", nShort, "#fee2e2", "#991b1b"], ["No clock-out", nNoOut, "#fef3c7", "#92400e"], ["Left before 4pm", nEarly, "#ffedd5", "#9a3412"], ["Never clocked in", neverClocked.length, "#ede9fe", "#5b21b6"]].map(([l, n, bg, fg]) => (
                   <span key={l} style={{ background: bg, color: fg, borderRadius: 8, padding: "6px 11px", fontSize: 11, fontWeight: 800 }}>{n} {l}</span>
                 ))}
               </div>
@@ -40902,6 +40932,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <b>How each flag is decided.</b> Shift lengths come from the shared rules in <code>shift-rules.js</code> — the office day is 08:00–17:00 (9h) and the Call Centre floor runs 07:00–16:00 (9h) or, on a late shift, 09:00–18:30 (9.5h). Public holidays and non-working schedule codes are skipped entirely.
                   <b> Deducting</b> writes the hours to the same early-leave record the salon kiosks use, so they appear in the Attendance tab's UNPAID column; Undo removes them again.
                   <b> No clock-out</b> is never converted to a deduction — Head Office has no automatic clock-out, so the end time simply isn't known.
+                  <b> Left before 4pm</b> means a Head Office person made their full day's hours but clocked out before the 16:00 earliest-leave floor — it's surfaced for you to report and cleared with a tick; it is never auto-deducted (they worked the hours). Call Centre &amp; Sales, whose day can legitimately end at 16:00, is exempt.
                 </div>
               </>
             )}
