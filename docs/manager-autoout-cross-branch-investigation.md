@@ -183,6 +183,44 @@ Previous-cycle reach is intended and was cleared with payroll (it removes the ph
 
 ---
 
+## 9 · Policy change — managers are no longer auto-clocked-out (2026-07-31)
+
+After the cross-branch (§1-7) and runaway (§8) fixes, the auto-out itself was retired
+for managers. The reason is a payroll-integrity one that neither fix addressed:
+
+**Auto-out MASKS an early leaver.** A manager who leaves early and doesn't clock out
+was auto-stamped at their *scheduled end*, so the day looked full and the attendance
+early-leave deduction (`_mgrEarlyHoursFor`) never fired. Manager pay is driven by the
+published schedule label, not the clock-out — `_mgrEarlyHoursFor` only ever *subtracts*
+and returns **0 when there's no clock-out** (app.jsx). So:
+
+- **Genuine forget** → removing auto-out costs nothing: no out → no deduction → still
+  paid the full scheduled day.
+- **Left early, skipped clock-out** → auto-out used to pay them full silently; now the
+  missing clock-out is *visible* for review, and the actual docking happens when a
+  reviewer stamps the real leave time.
+
+**What shipped:**
+1. **Kiosk** — `ensureAutoOuts` early-returns `{}` (no `out_auto` writes). The
+   schedule-aware sweep + all §1-8 guards are kept but unreachable → one-line revert.
+   (Staff are never auto-clocked-out, so this is manager-only by nature.)
+2. **Dashboard alert** — the `mgrEarlyAlert` memo now also returns `noClockOut`:
+   managers who clocked IN on a scheduled work day (open pay cycle, elapsed days) but
+   never clocked OUT, excluding loaned-out days. Rendered as a sibling rose card
+   ("🕐 Manager didn't clock out — review"), same National-Ops/payroll audience
+   (`canSeeMgrHours`). Self-clears when the shift is closed.
+3. **Manual close** — each alert row has a **Clock out** button opening the manager
+   manual-clock modal in a new `mode:"out"`. It writes a real `out` via
+   `recordManualManagerClockin`, defaulting the time to the manager's scheduled end
+   (one tap = a genuine forget, paid full) but **editable** — an earlier time makes the
+   early-leave logic dock the correct hours. Tagged `recordedBy` for audit.
+
+Net: a forgotten shift is a human decision at the real time, and an early leaver can no
+longer hide behind the auto-out. Validated: app.jsx transpiles (esbuild), the
+no-clock-out partition passes 10/10 (`scratchpad/noclockout-test.js`).
+
+---
+
 *Sources (live-tree trace): `ensureAutoOuts` + legacy cutoff + de-dup (kiosk/manager-app.js:1776-1841),
 auto-out write (kiosk/manager-app.js:1832), branch hardcode (kiosk/data.js:2144 + branch() :71),
 unfiltered load (kiosk/data.js:2105-2118), grouping vs label (app.jsx:40485 / 41060), prior comment

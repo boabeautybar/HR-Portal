@@ -1774,6 +1774,17 @@
   // (Phase 1.1) — preferred over the local shiftTimes copy for the auto-out
   // end time so a drifted copy can't clock a manager out early/late.
   async function ensureAutoOuts(recentRows, schedLookup, mgrByEc, customTimes, schedHoursLookup) {
+    // ── POLICY 2026-07-31: managers are NO LONGER auto-clocked-out. ────────────
+    // Auto-outing a forgotten shift stamped the SCHEDULED end, which masked a
+    // manager who left early — the day looked full, so payroll never saw it. A
+    // missing manager clock-out is now surfaced on the HR dashboard ("Manager
+    // didn't clock out" alert) for National Ops / payroll to review and close at
+    // the REAL time: a genuine forget is paid the full scheduled day, a real
+    // early leave is docked. So the kiosk writes NO out_auto rows for managers.
+    // The schedule-aware sweep below (with the own-branch + before-in +
+    // existence-dedup guards from the cross-branch/runaway fixes) is retained but
+    // unreachable, so re-enabling is a one-line revert. See docs/manager-autoout-*.
+    return {};
     var groups = {};                                 // {ec: {ymd: [rows...]}}
     recentRows.forEach(function (r) {
       var ec = r.staff && r.staff.employee_code; if (!ec) return;
