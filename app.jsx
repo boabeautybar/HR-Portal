@@ -4407,6 +4407,55 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
   //  6. Off-day preference: Mon/Tue → Wed/Thu → Sun, avoid Fri/Sat where coverage permits
   //  7. Weekday flexibility: short of off-days? Fill from Mon-Thu, NEVER Sunday
   //  8. Day-off requests HARD — applied as R, override everything else
+  // Head Office one-click fill: lay down the standard office week — Monday–Friday
+  // as "W" (08:00–17:00 via shift-rules) and Saturday/Sunday as "O" (off) — for
+  // every active office person on this grid. SA public holidays are set OFF too:
+  // all Head Office staff are off on every public holiday (the grid already paints
+  // a PH marker on those dates, and the Office Hours sheet skips them). Unlike
+  // autoFill (station-capacity rotation, meaningless for HO), the office week is a
+  // flat M–F pattern, so this is the intended per-cycle fill. Fills EMPTY cells
+  // only — approved leave (L), off-day requests (R), maternity (ML) and any hand
+  // edit are preserved — with ONE exception: a work code sitting on a public
+  // holiday is corrected to "O" (HO is always off on holidays). So it's safely
+  // repeatable (re-hitting tops up newly-added people or cleared days, and heals a
+  // stray holiday shift). On-mat people and arriving transfer shadows are skipped,
+  // and no cell is written past a leaver's last day. Not saved until Save —
+  // snapshotted for Undo.
+  function autoPopulateHoWeek() {
+    if (!days.length) return;
+    const eligible = techs.filter(t => t && t.ec && !t.onMat && !t.isShadow);
+    if (!eligible.length) { alert("No office staff on this schedule to populate."); return; }
+    const _ymd = (dy) => dy.year + "-" + String(dy.monthIdx + 1).padStart(2, "0") + "-" + String(dy.d).padStart(2, "0");
+    const _isHol = (dy) => !!(saHolidays(dy.year) || {})[_ymd(dy)];   // incl. Sunday-observed Mondays
+    const snap = JSON.parse(JSON.stringify(grid || {}));
+    const next = JSON.parse(JSON.stringify(grid || {}));
+    let filled = 0;
+    eligible.forEach(t => {
+      const ec = t.ec;
+      if (!next[ec]) next[ec] = {};
+      const left = t.leftDate || null;
+      days.forEach(d => {
+        if (left && _ymd(d) > left) return;                 // nothing past a leaver's exit
+        const cur = next[ec][d.d];
+        const curU = String(cur == null ? "" : cur).trim().toUpperCase();
+        const isHol = _isHol(d);
+        // Public-holiday enforcement (Head Office only): HO is off on EVERY public
+        // holiday, so a work code sitting on one — a hand edit or a copied pattern —
+        // is corrected to "O". Left as work it would read in the staff app as a
+        // double-pay holiday shift (myboa/schedule.js), which HO never earns.
+        if (isHol && OFFICE_WORK_CODES.has(curU)) { next[ec][d.d] = "O"; filled++; return; }
+        if (cur != null && cur !== "") return;              // preserve leave / requests / ML / off / manual
+        const isWorkday = d.dow >= 1 && d.dow <= 5 && !isHol;   // Mon–Fri, not a public holiday
+        next[ec][d.d] = isWorkday ? "W" : "O";              // work; weekends + SA public holidays off
+        filled++;
+      });
+    });
+    if (!filled) { alert("Nothing to fill — every day is already set for the staff on this schedule. Use “Clear period” first if you want to reset it."); return; }
+    setUndoSnap({ grid: snap, label: "Auto-populate" });
+    setGrid(next);
+    setDirty(true);
+  }
+
   async function autoFill() {
     if (Object.keys(grid).length > 0 && !confirm("Replace existing schedule with auto-generated one? Day-off requests will be honoured. Existing manual entries will be lost.")) return;
     // Snapshot the pre-fill grid so the whole auto-fill can be rolled back.
@@ -6844,6 +6893,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
         {savedAt && !dirty && <span style={{ fontSize: 11, color: "#15803d", fontStyle: "italic" }}>✓ Saved {new Date(savedAt).toLocaleString()}</span>}
         {dirty && <span style={{ fontSize: 11, color: "#b45309", fontWeight: 600 }}>● Unsaved changes</span>}
         {!_isHoSchedule && <button onClick={autoFill} style={{ padding: "8px 14px", borderRadius: 9, border: "1px solid #BE185D", background: "#FCE7F3", color: "#831843", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 }}>✨ Auto-fill</button>}
+        {_isHoSchedule && <button onClick={autoPopulateHoWeek} title="Fill the standard office week: Monday–Friday 08:00–17:00 (W), weekends off (O), and SA public holidays off, for all office staff. Fills empty cells only — leave, requests and manual edits are kept. Undoable; click Save to keep." style={{ padding: "8px 14px", borderRadius: 9, border: "1px solid #BE185D", background: "#FCE7F3", color: "#831843", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 }}>✨ Auto-populate Mon–Fri</button>}
         {undoSnap && (
           <button onClick={() => { setGrid(undoSnap.grid); setDirty(true); setUndoSnap(null); }}
             title={"Undo " + undoSnap.label + " — restores the schedule to just before it (click Save to keep the rollback)"}
