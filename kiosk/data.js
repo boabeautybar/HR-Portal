@@ -109,10 +109,15 @@
   // that (only the CC Manager, whose code is -M, needs the role lookup).
   var CALL_CENTRE = "Call Centre & Sales";
   var _ccEcSet = Object.create(null);
+  // Head Office exceptions to the -CC rule — see check-cc-classifier.js. Codes
+  // that carry a -CC suffix but are Head Office by exception (Jae Lee Naidoo,
+  // B477-CC / EPA). MUST stay byte-identical across all five classifier copies.
+  var CC_HO_EXCEPTION_ECS = new Set(["B477-CC"]);
   function _staffIsCcSales(s) {
     if (!s) return false;
     var ec = String(s.employee_code || "").trim().toUpperCase();
     var role = String(s.role || "").trim().toUpperCase();
+    if (CC_HO_EXCEPTION_ECS.has(ec)) return false;   // explicit Head Office exception
     return /-CC$/.test(ec) || role === "MCC" || role === "CC" || role === "SALES";
   }
   function _registerCcRoster(rows) {
@@ -122,6 +127,7 @@
   }
   function _isCcEc(ec) {
     var e = String(ec || "").trim().toUpperCase();
+    if (CC_HO_EXCEPTION_ECS.has(e)) return false;    // Head Office exception — route to HO store, not CC
     return /-CC$/.test(e) || !!_ccEcSet[e];
   }
   // The store a person's per-person keys live under: CC&S people on the Head

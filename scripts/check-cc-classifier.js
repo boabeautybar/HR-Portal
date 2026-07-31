@@ -97,8 +97,34 @@ const CANONICAL_CC_ROLES = ["MCC", "CC", "SALES"];
   }
 }
 
+// ── Head Office exception set must be identical AND consulted ────────────────
+// Each classifier short-circuits to Head Office for codes on an explicit allow-
+// list (CC_HO_EXCEPTION_ECS) — the escape hatch for a -CC code that belongs to
+// Head Office (e.g. Jae Lee Naidoo, B477-CC / EPA). If one copy's set drifts, or
+// a copy defines the set but forgets to consult it, that person classifies Head
+// Office on one surface and CC&S on another — the exact split this checker
+// exists to prevent. So: every copy must define the SAME set, and its classifier
+// body must actually call CC_HO_EXCEPTION_ECS.has(...).
+{
+  const SET_RE = /CC_HO_EXCEPTION_ECS\s*=\s*new Set\(\s*(\[[^\]]*\])\s*\)/;
+  const norm = (arr) => JSON.stringify([...arr].map(s => String(s).trim().toUpperCase()).sort());
+  let canonical = null, canonicalFile = null;
+  for (const site of SITES) {
+    const src = fs.readFileSync(path.join(ROOT, site.file), "utf8");
+    const m = src.match(SET_RE);
+    if (!m) { console.error("✗ " + site.file + " :: CC_HO_EXCEPTION_ECS set not found — every classifier copy must define it"); drift++; continue; }
+    let ecs;
+    try { ecs = JSON.parse(m[1]); } catch (_) { console.error("✗ " + site.file + " :: CC_HO_EXCEPTION_ECS is not a parseable array literal"); drift++; continue; }
+    const key = norm(ecs);
+    if (canonical === null) { canonical = key; canonicalFile = site.file; }
+    else if (key !== canonical) { console.error("✗ " + site.file + " :: CC_HO_EXCEPTION_ECS " + key + " ≠ " + canonicalFile + " " + canonical); drift++; }
+    const body = extractFunction(src, site.fn, site.file);
+    if (!/CC_HO_EXCEPTION_ECS\s*\.\s*has\s*\(/.test(body)) { console.error("✗ " + site.file + " :: " + site.fn + " defines CC_HO_EXCEPTION_ECS but never consults it"); drift++; }
+  }
+}
+
 if (drift) {
   console.error("\n✗ CC&S classifier drift in " + drift + " place(s) — the copies no longer encode the same rule.");
   process.exit(1);
 }
-console.log("✓ CC&S classifier consistent — all " + SITES.length + " copies + the CC_ROLES dropdown test the -CC suffix + roles MCC/CC/SALES");
+console.log("✓ CC&S classifier consistent — all " + SITES.length + " copies test the -CC suffix + roles MCC/CC/SALES, share the same Head Office exception set, and the CC_ROLES dropdown matches");

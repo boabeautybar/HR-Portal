@@ -42,9 +42,14 @@ if (!KEY) {
 const HEADERS = { apikey: KEY, Authorization: "Bearer " + KEY, "Content-Type": "application/json" };
 const REST = SUPABASE_URL + "/rest/v1";
 
+// Head Office exceptions to the -CC rule — see check-cc-classifier.js. Codes
+// that carry a -CC suffix but are Head Office by exception (Jae Lee Naidoo,
+// B477-CC / EPA). MUST stay byte-identical across all five classifier copies.
+const CC_HO_EXCEPTION_ECS = new Set(["B477-CC"]);
 function isCcSales(row) {
   const ec = String((row && row.employee_code) || "").trim().toUpperCase();
   const role = String((row && row.role) || "").trim().toUpperCase();
+  if (CC_HO_EXCEPTION_ECS.has(ec)) return false;   // explicit Head Office exception
   return /-CC$/.test(ec) || role === "MCC" || role === "CC" || role === "SALES";
 }
 

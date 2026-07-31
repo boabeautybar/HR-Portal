@@ -1031,12 +1031,17 @@
   // Sales floor — agents ("CC"), the Call Centre Manager ("MCC"), and any
   // future "SALES" — vs everyone else ("Office Staff": HR, Marketing, Admin,
   // Recruiter, Trainer, Payroll, Hygienist, EPA, and anyone with no department).
+  // Head Office exceptions to the -CC rule — see check-cc-classifier.js. Codes
+  // that carry a -CC suffix but are Head Office by exception (Jae Lee Naidoo,
+  // B477-CC / EPA). MUST stay byte-identical across all five classifier copies.
+  var CC_HO_EXCEPTION_ECS = new Set(["B477-CC"]);
   function _hoIsCcSales(s) {
     var r = String((s && s.role) || "").trim().toUpperCase();
     var ec = String((s && s.employee_code) || "").trim().toUpperCase();
     // -CC code suffix OR a Call-Centre role — same rule as the HR portal, so the
     // two surfaces classify identically (a -CC person whose role isn't set still
     // lands on the CC&S side).
+    if (CC_HO_EXCEPTION_ECS.has(ec)) return false;   // explicit Head Office exception
     return /-CC$/.test(ec) || r === "CC" || r === "MCC" || r === "SALES";
   }
   // True when a branch string is Head Office (tolerant of casing/whitespace),
