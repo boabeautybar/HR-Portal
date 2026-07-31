@@ -144,7 +144,84 @@ the server-cron on the shelf as future hardening.
 
 ---
 
+## 8 · B782M / 22 Jul — the auto-out RUNAWAY (a second, distinct bug) · fix landed 2026-07-30
+
+While cleaning §6's strays, one manager stood apart: **B782M (Robin Lee Pharo), 22 Jul — ~88 `out_auto`
+rows, all at 06:00, spanning every branch** (vs the normal one-per-kiosk 18:30 strays). Two things
+compound:
+
+1. **A before-in end time (the trigger).** `_scheduledEndDate` builds the end on the shift day and takes
+   the range's trailing time (`kiosk/manager-app.js:1733-1747`); the legacy fallback is a hard 18:30. So
+   **06:00 can only come from a resolved range ending "06:00"** — and since it's one manager on one day
+   (not store-wide), it's a bad per-day **custom time** (`boa_mgr_times_v1[B782M]["2026-07-22"]`, e.g. an
+   end typo'd to 06:00 / an overnight "… - 06:00"). `setHours(6,0)` lands the auto-out at 06:00 that
+   morning — **before** the clock-in.
+2. **A ts-order de-dup (the amplifier).** The old "already closed?" test keyed on the *latest-by-ts* row
+   being an "in". With the auto-out at 06:00 and the clock-in later, the **"in" stays latest**, the skip
+   never fires, and every sweep (× every kiosk under the old global scan) re-creates the auto-out — a
+   runaway. It stopped only when 22 Jul aged out of the 2-day window.
+
+**Payroll tail:** all of B782M's 22-Jul outs precede the clock-in, so `_mgrEarlyHoursFor` computes a
+capped **phantom −12h** early-leave for that day (previous cycle). Removing the junk (leaving the "in")
+→ no out → paid full scheduled day (correct).
+
+**The §6 kiosk-scope fix only half-covers this** — it stops the ×every-kiosk fan-out, but the same-kiosk
+runaway remains whenever an end resolves before the in. So two more guards were added to `ensureAutoOuts`
+(commit 2026-07-30), validated by a 10/10 old-vs-new sweep simulation:
+
+- **Existence-based de-dup** — skip if the day already has ANY `out`/`out_auto`, regardless of ts order
+  (one clock-in per day is enforced, so existence is the correct test). Order-independent → immune to a
+  before-in stamp.
+- **Before-in skip** — never write an auto-out whose resolved end is at/before the clock-in
+  (`new Date(endIso) <= new Date(last.ts)`); the shift data is wrong, so skip rather than fabricate a
+  clock-out-before-clock-in.
+
+**Cleanup:** `docs/cleanup-autoout-before-in.sql` — detection (any `out_auto` before the same-day first
+"in"), preview, delete, plus inspect/clear of the bad 22-Jul custom time. The before-in signature is
+precise (a clock-out can't precede its clock-in), so it cleans B782M/22-Jul and any other latent case.
+Previous-cycle reach is intended and was cleared with payroll (it removes the phantom −12h).
+
+---
+
+## 9 · Policy change — managers are no longer auto-clocked-out (2026-07-31)
+
+After the cross-branch (§1-7) and runaway (§8) fixes, the auto-out itself was retired
+for managers. The reason is a payroll-integrity one that neither fix addressed:
+
+**Auto-out MASKS an early leaver.** A manager who leaves early and doesn't clock out
+was auto-stamped at their *scheduled end*, so the day looked full and the attendance
+early-leave deduction (`_mgrEarlyHoursFor`) never fired. Manager pay is driven by the
+published schedule label, not the clock-out — `_mgrEarlyHoursFor` only ever *subtracts*
+and returns **0 when there's no clock-out** (app.jsx). So:
+
+- **Genuine forget** → removing auto-out costs nothing: no out → no deduction → still
+  paid the full scheduled day.
+- **Left early, skipped clock-out** → auto-out used to pay them full silently; now the
+  missing clock-out is *visible* for review, and the actual docking happens when a
+  reviewer stamps the real leave time.
+
+**What shipped:**
+1. **Kiosk** — `ensureAutoOuts` early-returns `{}` (no `out_auto` writes). The
+   schedule-aware sweep + all §1-8 guards are kept but unreachable → one-line revert.
+   (Staff are never auto-clocked-out, so this is manager-only by nature.)
+2. **Dashboard alert** — the `mgrEarlyAlert` memo now also returns `noClockOut`:
+   managers who clocked IN on a scheduled work day (open pay cycle, elapsed days) but
+   never clocked OUT, excluding loaned-out days. Rendered as a sibling rose card
+   ("🕐 Manager didn't clock out — review"), same National-Ops/payroll audience
+   (`canSeeMgrHours`). Self-clears when the shift is closed.
+3. **Manual close** — each alert row has a **Clock out** button opening the manager
+   manual-clock modal in a new `mode:"out"`. It writes a real `out` via
+   `recordManualManagerClockin`, defaulting the time to the manager's scheduled end
+   (one tap = a genuine forget, paid full) but **editable** — an earlier time makes the
+   early-leave logic dock the correct hours. Tagged `recordedBy` for audit.
+
+Net: a forgotten shift is a human decision at the real time, and an early leaver can no
+longer hide behind the auto-out. Validated: app.jsx transpiles (esbuild), the
+no-clock-out partition passes 10/10 (`scratchpad/noclockout-test.js`).
+
+---
+
 *Sources (live-tree trace): `ensureAutoOuts` + legacy cutoff + de-dup (kiosk/manager-app.js:1776-1841),
 auto-out write (kiosk/manager-app.js:1832), branch hardcode (kiosk/data.js:2144 + branch() :71),
 unfiltered load (kiosk/data.js:2105-2118), grouping vs label (app.jsx:40485 / 41060), prior comment
-(data.js:1393).*
+(data.js:1393); B782M runaway: end resolution (kiosk/manager-app.js:1733-1747), ts-order de-dup (:1801-1806).*

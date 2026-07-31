@@ -13010,7 +13010,7 @@ function BargainingCouncilTab({ enriched, managers, currentUser, logActivity, on
 // (per employee, as of a date) and layer manual add/remove-day adjustments on
 // top. Everything is stored in Supabase (app_state boa_leave_balances_v1) — no
 // balances are hard-coded.
-function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveRecs, schedCache, ymdToSchedYm }) {
+function LeaveBalancesTab({ enriched, managers, office, currentUser, logActivity, leaveRecs, schedCache, ymdToSchedYm }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [loadErr, setLoadErr] = useState("");
@@ -13054,8 +13054,9 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
     };
     (enriched || []).forEach(p => add(p, "Nail tech"));
     (managers || []).forEach(m => add(m, m.role || "Manager"));
+    (office || []).forEach(p => add(p, isCallCentreStaff(p) ? "Call Centre & Sales" : "Head Office"));
     return { byNorm, byCore, byName };
-  }, [enriched, managers]);
+  }, [enriched, managers, office]);
   // Code first (tolerant of -M / M / case), then fall back to the person's name.
   const resolve = (rawEc, name) => {
     const n = lbNormEc(rawEc);
@@ -13077,8 +13078,9 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
     };
     (enriched || []).forEach(p => add(p, "Nail tech"));
     (managers || []).forEach(m => add(m, m.role || "Manager"));
+    (office || []).forEach(p => add(p, isCallCentreStaff(p) ? "Call Centre & Sales" : "Head Office"));
     return out.sort((a, b) => (a.name || a.ec).localeCompare(b.name || b.ec));
-  }, [enriched, managers]);
+  }, [enriched, managers, office]);
   // Active portal staff who have no leave-balance record yet.
   const missing = useMemo(() => {
     if (!data) return [];
@@ -13288,8 +13290,9 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
     };
     (enriched || []).forEach(p => add(p, "Nail tech"));
     (managers || []).forEach(m => add(m, m.role || "Manager"));
+    (office || []).forEach(p => add(p, isCallCentreStaff(p) ? "Call Centre & Sales" : "Head Office"));
     return out.sort((a, b) => (a.name || a.ec).localeCompare(b.name || b.ec));
-  }, [data, enriched, managers, leaveRecs, schedCache, ymdToSchedYm]);
+  }, [data, enriched, managers, office, leaveRecs, schedCache, ymdToSchedYm]);
 
   // Current pay cycle (25th→24th). Attendance grids key by the START-month
   // (currentAttYm); the schedule keys by END-month (ymdToSchedYm) — different
@@ -13518,7 +13521,7 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
       return { date: f.start, label: f.bucket === "cycle" ? "Booked — this pay cycle" : "Booked — later", range: [f.start, f.end], cal: f.cal, delta: -f.days, bal: fbal };
     });
     // Expiry buckets (same engine as the radar / dashboard card / auto-incident).
-    const deps = { leaveBalances: data, leaveRecs, enriched, managers, schedCache, ymdToSchedYm, today: todayYmd };
+    const deps = { leaveBalances: data, leaveRecs, enriched: (enriched || []).concat(office || []), managers, schedCache, ymdToSchedYm, today: todayYmd };
     const expiry = startDate ? leaveExpiryForPerson(r.rawEc || r.norm, deps) : null;
     let tenure = "";
     if (startDate) {
@@ -13592,9 +13595,11 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
   const expiryList = useMemo(() => {
     if (!data || !data.entries) return [];
     const today = new Date().toISOString().slice(0, 10);
-    const deps = { leaveBalances: data, leaveRecs, enriched, managers, schedCache, ymdToSchedYm, today };
+    // Office (Head Office + CC&S) ride the same balance/expiry engine as techs,
+    // so fold them into the person pool findLeavePerson searches.
+    const deps = { leaveBalances: data, leaveRecs, enriched: (enriched || []).concat(office || []), managers, schedCache, ymdToSchedYm, today };
     const out = [], seen = new Set();
-    [...(enriched || []), ...(managers || [])].forEach(p => {
+    [...(enriched || []), ...(managers || []), ...(office || [])].forEach(p => {
       if (!p || !p.ec) return;
       const k = String(p.ec).toUpperCase();
       if (seen.has(k)) return; seen.add(k);
@@ -13603,7 +13608,7 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
       if (r) out.push(r);
     });
     return out.sort((a, b) => String(a.nextDeadline).localeCompare(String(b.nextDeadline)));
-  }, [data, leaveRecs, enriched, managers, schedCache, ymdToSchedYm]);
+  }, [data, leaveRecs, enriched, managers, office, schedCache, ymdToSchedYm]);
 
   if (loading) return <div style={{ padding: 24, color: "#9ca3af", fontStyle: "italic" }}>Loading leave balances…</div>;
   if (loadErr) return <div style={{ padding: 24, color: "#b91c1c" }}>Could not load: {loadErr}</div>;
@@ -21992,12 +21997,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   ), [officeFindings, officeHoursReview]);
   const officeLiveLate = useMemo(() => officeFindings.filter(f => f.kind === "pending"), [officeFindings]);
 
-  // ── Manager minus-hours alert (dashboard) ──────────────────────────────────
-  // Scan every ELAPSED day of the OPEN pay cycle across all stores for any SM/AM
-  // docked minus hours on the Attendance sheet, and classify each (mislabel vs
-  // genuine) from the clock-in. Self-clearing: a day drops off the moment the
-  // deduction goes to 0 (pinned/corrected). Reuses the same data the dashboard
-  // already loads for the "manager reasons to add" scan — no extra fetch. All
+  // ── Manager hours alert (dashboard) ────────────────────────────────────────
+  // Scan every ELAPSED day of the OPEN pay cycle across all stores and surface
+  // two things for National Ops / payroll:
+  //   • findings   — an SM/AM docked minus hours, classified (mislabel vs
+  //                  genuine) from the clock-in. Self-clears when the deduction
+  //                  goes to 0 (pinned/corrected).
+  //   • noClockOut — clocked IN on a scheduled work day but never clocked OUT.
+  //                  Now that the kiosk no longer auto-outs managers, a missing
+  //                  clock-out is shown here (not silently stamped at the
+  //                  scheduled end) so a human closes it at the REAL time — a
+  //                  forget is paid full, a genuine early leave is docked.
+  // Reuses the same data the dashboard already loads — no extra fetch. All
   // guards fail closed to "no alert" (never a false payroll claim).
   const mgrEarlyAlert = useMemo(() => {
     if (!canSeeMgrHours || !mgrClockinsLoaded) return null;
@@ -22040,10 +22051,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     });
     const _isWorkCode = (v) => v === "W" || v === "WE" || v === "WM" || v === "WL" || v === "WB" || v === "E";
     const findings = [];
+    const noClockOut = [];                                    // clocked in, never clocked out
     Object.keys(io).forEach(ec => {
       const m = mgrByEc[ec]; if (!m) return;                  // unknown / non-manager clock → skip
       const role = m.role || "AM"; if (role === "NT") return;
       const branch = m.branch || "";
+      const staffId = (m._id != null ? m._id : m.id);
       const effRole = (role === "AM" && (m.smTrial || smTrial.has(ec))) ? "SM" : role;
       // Published label grid for this store × current cycle (frozen archive);
       // draft only as a last resort. All cycle days share the START-month key.
@@ -22053,23 +22066,38 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       if (!grow) return;
       Object.keys(io[ec]).forEach(ymd => {
         const rec = io[ec][ymd];
-        if (rec.outMin == null) return;                       // need a clock-out to judge a short
         if (loanedOut.has(ec + "|" + ymd)) return;            // worked at another store that day
         const code = grow[ymd];
         if (!_isWorkCode(code)) return;                       // off / leave / loan overlay → not a plain worked shift
         let dow = -1; try { dow = new Date(ymd + "T12:00:00").getDay(); } catch (_e) { }
         const custom = ((mgrCustomTimes && (mgrCustomTimes[m.ec] || mgrCustomTimes[ec])) || {})[ymd] || null;
+        if (rec.outMin == null) {
+          // Clocked IN on a scheduled work day but never clocked OUT. With the
+          // kiosk auto-out gone, this is no longer silently stamped at the
+          // scheduled end — surface it so a human closes it at the real time (a
+          // forget → full day; a genuine early leave → docked). Needs an IN to
+          // have a shift to close.
+          if (rec.inMin == null) return;
+          const _r = parseShiftRange(custom || shiftTimes(effRole, code, branch, dow));
+          noClockOut.push({
+            ec: m.ec, name: m.name || m.ec, branch, ymd, inMin: rec.inMin, code,
+            staffId: staffId != null ? staffId : null,
+            schedEndMin: (_r && _r.end != null) ? _r.end : null
+          });
+          return;
+        }
         const cls = classifyMgrEarly({ role: effRole, branch, dow, code, custom, inMin: rec.inMin, outMin: rec.outMin });
         if (!cls) return;
         findings.push({ ec: m.ec, name: m.name || m.ec, branch, ymd, inMin: rec.inMin, outMin: rec.outMin, code, ...cls });
       });
     });
-    if (!findings.length) return null;
+    if (!findings.length && !noClockOut.length) return null;
     findings.sort((a, b) => b.ymd.localeCompare(a.ymd) || String(a.name).localeCompare(String(b.name)));
+    noClockOut.sort((a, b) => b.ymd.localeCompare(a.ymd) || String(a.name).localeCompare(String(b.name)));
     const mislabels = findings.filter(f => f.verdict === "mislabel");
     const review = findings.filter(f => f.verdict !== "mislabel");   // genuine + unclear
     const reversible = mislabels.reduce((s, f) => s + (f.reversible || 0), 0);
-    return { findings, mislabels, review, reversible };
+    return { findings, mislabels, review, reversible, noClockOut };
   }, [canSeeMgrHours, mgrClockinsLoaded, mgrClockinRows, mgrApprovedFallbackCache, mgrClockinSchedCache, managers, smTrialList, mgrCustomTimes, mgrLoanRows]);
 
   // Persist one person-day's review state. Read-modify-write of the whole map,
@@ -22538,11 +22566,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     if (tab !== "dashboard" && tab !== "leaveBalances") return;
     if (!canSeeIncidents(currentUser)) return;
     if (!leaveBalancesData || !leaveBalancesData.entries) return;
-    if (!(enriched.length || managers.length)) return;
+    // Head Office + CC&S ride the same expiry radar/auto-incident as techs. They
+    // live in enrichedOffice (declared below this effect, so only referenced in
+    // the body — which runs after render, so it's initialised — never in the dep
+    // array, where it would be in the temporal dead zone).
+    const officePool = enrichedOffice || [];
+    if (!(enriched.length || managers.length || officePool.length)) return;
     const today = new Date().toISOString().slice(0, 10);
-    const deps = { leaveBalances: leaveBalancesData, leaveRecs, enriched, managers, schedCache, ymdToSchedYm, today };
+    const deps = { leaveBalances: leaveBalancesData, leaveRecs, enriched: enriched.concat(officePool), managers, schedCache, ymdToSchedYm, today };
     const results = [], seen = new Set();
-    [...enriched, ...managers].forEach(p => {
+    [...enriched, ...managers, ...officePool].forEach(p => {
       if (!p || !p.ec) return;
       const k = String(p.ec).toUpperCase();
       if (seen.has(k)) return; seen.add(k);
@@ -24878,7 +24911,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   exact bug behind the June −1h queries); a "genuine early leave"
                   stands. National Ops + payroll see it so it's caught live, not
                   a cycle later. Self-clears as each day is pinned/corrected. */}
-              {canSeeMgrHours && mgrEarlyAlert && (
+              {canSeeMgrHours && mgrEarlyAlert && mgrEarlyAlert.findings.length > 0 && (
                 <div style={{ background: "#fff1f2", border: "1px solid #fda4af", borderRadius: 16, padding: "16px 20px", marginBottom: 20, boxShadow: "0 4px 14px rgba(190,18,60,0.10)", display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
                   <div style={{ flex: 1, minWidth: 280 }}>
                     <div style={{ fontSize: 15, fontWeight: 800, color: "#9f1239", letterSpacing: "0.04em", textTransform: "uppercase" }}>⏱ Manager hours docked — investigate</div>
@@ -24914,6 +24947,56 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   </button>
                 </div>
               )}
+              {/* Manager didn't clock out — the replacement for kiosk auto-out.
+                  A manager who clocked in on a scheduled work day but never
+                  clocked out is no longer auto-stamped at the scheduled end (which
+                  masked early leavers). It's surfaced here for National Ops /
+                  payroll to review and close at the REAL time: "Clock out"
+                  defaults to the scheduled end (one tap = a genuine forget, paid
+                  full) but the time is editable, so a real early leave gets the
+                  correct deduction. Self-clears the moment the shift is closed. */}
+              {canSeeMgrHours && mgrEarlyAlert && mgrEarlyAlert.noClockOut.length > 0 && (() => {
+                const _hm = (mn) => mn == null ? null : String(Math.floor(mn / 60)).padStart(2, "0") + ":" + String(mn % 60).padStart(2, "0");
+                const _rows = mgrEarlyAlert.noClockOut;
+                const _shown = _rows.slice(0, 12);
+                return (
+                  <div style={{ background: "#fff1f2", border: "1px solid #fda4af", borderRadius: 16, padding: "16px 20px", marginBottom: 20, boxShadow: "0 4px 14px rgba(190,18,60,0.10)" }}>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+                      <div style={{ fontSize: 15, fontWeight: 800, color: "#9f1239", letterSpacing: "0.04em", textTransform: "uppercase" }}>🕐 Manager didn't clock out — review</div>
+                      <div style={{ fontSize: 12, color: "#be123c", fontWeight: 700 }}>{_rows.length} open shift{_rows.length === 1 ? "" : "s"} this cycle</div>
+                    </div>
+                    <div style={{ fontSize: 11.5, color: "#9f1239", marginTop: 5, lineHeight: 1.55 }}>
+                      Clocked in but never clocked out. Managers aren't auto-clocked-out — check what really happened, then close the shift at the real time. <b>Clock out</b> defaults to their scheduled end (a genuine forget = paid the full day); enter an earlier time if they left early and payroll will dock the difference.
+                    </div>
+                    <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
+                      {_shown.map(f => {
+                        const _t = _hm(f.schedEndMin) || "17:00";
+                        return (
+                          <div key={f.ec + "|" + f.ymd} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, background: "#fff", border: "1px solid #fecdd3", borderRadius: 10, padding: "8px 12px" }}>
+                            <div style={{ fontSize: 12.5, color: "#9f1239", minWidth: 0 }}>
+                              <span style={{ fontWeight: 700 }}>{f.name || f.ec}</span> <span style={{ fontFamily: "monospace", fontSize: 11, color: "#be123c" }}>({f.ec})</span> · {f.branch} · {fmtIncidentDate(f.ymd)} · in {_hm(f.inMin) || "—"} · <span style={{ fontWeight: 700 }}>no clock-out</span> · sched. end {_hm(f.schedEndMin) || "?"}
+                            </div>
+                            {f.staffId != null ? (
+                              <button onClick={() => setManualMgrClockinModal({ mode: "out", staffId: f.staffId, branch: f.branch, ec: f.ec, name: f.name, ymd: f.ymd, time: _t, note: "" })}
+                                title={"Close " + (f.name || f.ec) + "'s shift on " + f.ymd + ". Defaults to their scheduled end (" + _t + ") — edit the time if they left early."}
+                                style={{ background: "#be123c", color: "#fff", border: "none", borderRadius: 9, padding: "7px 14px", fontWeight: 800, fontSize: 12, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap", flexShrink: 0 }}>
+                                Clock out →
+                              </button>
+                            ) : (
+                              <button onClick={() => tryChangeTab("mgrclockins")} style={{ background: "#fff", color: "#be123c", border: "1px solid #fda4af", borderRadius: 9, padding: "7px 14px", fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap", flexShrink: 0 }}>
+                                Open →
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                      {_rows.length > 12 && (
+                        <div style={{ fontSize: 11.5, color: "#9f1239", fontStyle: "italic" }}>+{_rows.length - 12} more — open <span onClick={() => tryChangeTab("mgrclockins")} style={{ textDecoration: "underline", cursor: "pointer", fontWeight: 700 }}>Manager Check-ins</span> to review the rest.</div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
               {/* Use-it-or-lose-it: people whose annual leave is ≤3 months from
                   forfeiting. HR + National Ops audience; an incident is also
                   filed automatically (once per person per deadline). */}
@@ -28718,7 +28801,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         {/* ── LEAVE BALANCES TAB ── */}
         {tab === "leaveBalances" && accessAllows(currentUser, leaveBalancesCfg) && (
-          <LeaveBalancesTab enriched={enriched} managers={enrichedManagers} currentUser={currentUser} logActivity={logActivity} leaveRecs={leaveRecs} schedCache={schedCache} ymdToSchedYm={ymdToSchedYm} />
+          <LeaveBalancesTab enriched={enriched} managers={enrichedManagers} office={enrichedOffice} currentUser={currentUser} logActivity={logActivity} leaveRecs={leaveRecs} schedCache={schedCache} ymdToSchedYm={ymdToSchedYm} />
         )}
 
         {tab === "frl" && accessAllows(currentUser, leaveBalancesCfg) && (
@@ -43924,6 +44007,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           banner check, and the dashboard manager-attendance tile. */}
       {manualMgrClockinModal && (() => {
         const m = manualMgrClockinModal;
+        const _mode = m.mode === "out" ? "out" : "in";   // "out" = close a forgotten shift (from the dashboard alert)
         const _close = () => setManualMgrClockinModal(null);
         const scopedBranches = SALONS.filter(s => !_hasStoreScope || scopedSalonNames.has(s.name));
         // Settle completed transfers so a transferred manager is picked from
@@ -43939,7 +44023,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const _save = async () => {
           if (!m.staffId) { _set({ _err: "Pick a manager." }); return; }
           if (!m.ymd) { _set({ _err: "Pick a date." }); return; }
-          if (!m.time || !/^\d{2}:\d{2}$/.test(m.time)) { _set({ _err: "Pick a time (HH:MM)." }); return; }
+          if (!m.time || !/^\d{2}:\d{2}$/.test(m.time)) { _set({ _err: _mode === "out" ? "Enter a clock-out time (HH:MM)." : "Pick a time (HH:MM)." }); return; }
           if (!window.BOA_DB || !window.BOA_DB.recordManualManagerClockin) { _set({ _err: "Not connected." }); return; }
           _set({ _saving: true, _err: "" });
           try {
@@ -43952,9 +44036,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             await window.BOA_DB.recordManualManagerClockin({
               staffId: m.staffId,
               branch: m.branch,
-              type: "in",
+              type: _mode,
               ts: tsIso,
-              note: m.note || null,
+              note: m.note || (_mode === "out" ? "Closed on review — no kiosk clock-out" : null),
               recordedBy: (currentUser && (currentUser.name || currentUser.pin)) || null
             });
             // Refresh the clock-in window so the new row hits every
@@ -43971,6 +44055,50 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         };
         const inp = { display: "block", width: "100%", marginTop: 4, padding: "8px 10px", borderRadius: 8, border: "1px solid #FBCFE8", fontSize: 13, background: "#fff", boxSizing: "border-box" };
         const lbl = { fontSize: 10, fontWeight: 800, color: "#F472B6", letterSpacing: "0.06em" };
+        // ── Out-mode: close a forgotten shift (opened from the "Manager didn't
+        //    clock out" dashboard alert). Identity + date are fixed by the
+        //    finding; only the clock-out time (prefilled to the scheduled end)
+        //    and a note are editable. Writes a real "out" at the chosen time, so
+        //    the attendance early-leave logic docks the difference if it's early.
+        if (_mode === "out") {
+          const _dLabel = (() => { try { return new Date(m.ymd + "T12:00:00").toLocaleDateString("en-ZA", { weekday: "short", day: "2-digit", month: "short", year: "numeric" }); } catch (_) { return m.ymd; } })();
+          return (
+            <div onClick={_close} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+              <div onClick={ev => ev.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "20px 22px", width: "100%", maxWidth: 460 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+                  <div>
+                    <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 19, color: "#9f1239", fontWeight: 700 }}>🕐 Clock out — {m.name || m.ec}</div>
+                    <div style={{ fontSize: 12, color: "#9ca3af" }}>Close a forgotten shift. Defaults to the scheduled end (a genuine forget = paid the full day). Enter an earlier time if they left early — payroll will dock the difference.</div>
+                  </div>
+                  <button onClick={_close} style={{ background: "transparent", border: "none", fontSize: 22, cursor: "pointer", color: "#9f1239", lineHeight: 1 }}>×</button>
+                </div>
+                <div style={{ marginTop: 14, background: "#fff1f2", border: "1px solid #fecdd3", borderRadius: 10, padding: "10px 12px", fontSize: 12.5, color: "#9f1239" }}>
+                  <div><b>{m.name || m.ec}</b> <span style={{ fontFamily: "monospace", fontSize: 11 }}>({m.ec})</span></div>
+                  <div style={{ marginTop: 2 }}>{m.branch} · {_dLabel}</div>
+                </div>
+                <div style={{ marginTop: 12 }}>
+                  <label style={lbl}>CLOCK-OUT TIME</label>
+                  <input type="time" value={m.time || ""} onChange={ev => _set({ time: ev.target.value })} style={inp} />
+                </div>
+                <div style={{ marginTop: 12 }}>
+                  <label style={lbl}>NOTE (optional)</label>
+                  <input value={m.note || ""} onChange={ev => _set({ note: ev.target.value })} placeholder="e.g. confirmed forgot to tap — left at scheduled end"
+                    style={{ ...inp, fontFamily: "inherit" }} />
+                </div>
+                {m._err && (
+                  <div style={{ marginTop: 10, background: "#fee2e2", border: "1px solid #fca5a5", color: "#7f1d1d", borderRadius: 8, padding: "8px 10px", fontSize: 12 }}>{m._err}</div>
+                )}
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+                  <button onClick={_close} disabled={!!m._saving} style={{ padding: "9px 16px", borderRadius: 9, border: "1px solid #fecdd3", background: "#fff", color: "#9f1239", fontWeight: 700, fontSize: 13, cursor: m._saving ? "not-allowed" : "pointer" }}>Cancel</button>
+                  <button onClick={_save} disabled={!!m._saving}
+                    style={{ padding: "9px 20px", borderRadius: 9, border: "none", background: m._saving ? "#fecdd3" : "#be123c", color: "#fff", fontWeight: 700, fontSize: 13, cursor: m._saving ? "not-allowed" : "pointer" }}>
+                    {m._saving ? "Clocking out…" : "🕐 Clock out"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        }
         return (
           <div onClick={_close} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
             <div onClick={ev => ev.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "20px 22px", width: "100%", maxWidth: 480 }}>

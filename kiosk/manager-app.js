@@ -1774,6 +1774,17 @@
   // (Phase 1.1) — preferred over the local shiftTimes copy for the auto-out
   // end time so a drifted copy can't clock a manager out early/late.
   async function ensureAutoOuts(recentRows, schedLookup, mgrByEc, customTimes, schedHoursLookup) {
+    // ── POLICY 2026-07-31: managers are NO LONGER auto-clocked-out. ────────────
+    // Auto-outing a forgotten shift stamped the SCHEDULED end, which masked a
+    // manager who left early — the day looked full, so payroll never saw it. A
+    // missing manager clock-out is now surfaced on the HR dashboard ("Manager
+    // didn't clock out" alert) for National Ops / payroll to review and close at
+    // the REAL time: a genuine forget is paid the full scheduled day, a real
+    // early leave is docked. So the kiosk writes NO out_auto rows for managers.
+    // The schedule-aware sweep below (with the own-branch + before-in +
+    // existence-dedup guards from the cross-branch/runaway fixes) is retained but
+    // unreachable, so re-enabling is a one-line revert. See docs/manager-autoout-*.
+    return {};
     var groups = {};                                 // {ec: {ymd: [rows...]}}
     recentRows.forEach(function (r) {
       var ec = r.staff && r.staff.employee_code; if (!ec) return;
@@ -1800,10 +1811,23 @@
       for (var k in groups[ec]) {
         var dayRows = groups[ec][k].slice().sort(function (a, b) { return a.ts.localeCompare(b.ts); });
         var last = dayRows[dayRows.length - 1];
-        if (last.type !== "in") {
-          if ((last.type === "out_auto") && k === yesterdayK) autoOutedYesterday[ec] = last;
+        // "Already closed?" tests the EXISTENCE of any out / out_auto for the day
+        // — NOT whether the latest-by-ts row is an "in". Keying on ts order
+        // breaks when an auto-out is stamped BEFORE the clock-in (a bad/early
+        // resolved end): the "in" stays latest, the skip never fires, and every
+        // sweep re-creates the auto-out — the B782M 22-Jul runaway (~88 rows).
+        // One clock-in per day is enforced, so existence is the correct,
+        // order-independent test. docs/manager-autoout-cross-branch-investigation.md.
+        var _existingOut = null;
+        for (var _di = 0; _di < dayRows.length; _di++) {
+          var _dt = dayRows[_di].type;
+          if (_dt === "out" || _dt === "out_auto") { _existingOut = dayRows[_di]; break; }
+        }
+        if (_existingOut) {
+          if (_existingOut.type === "out_auto" && k === yesterdayK) autoOutedYesterday[ec] = _existingOut;
           continue;
         }
+        if (last.type !== "in") continue;   // no out, and the latest row isn't an "in" → nothing to close
         // Own-branch guard: only auto-out a clock-in made AT this kiosk's branch,
         // so no kiosk closes another store's manager (wrong branch + 18:30
         // fallback) and two kiosks can't race to double-out the same shift.
@@ -1838,6 +1862,15 @@
         var isPast = k < todayK;
         var isTodayAndPastCutoff = (k === todayK) && (now >= fireCutoff);
         if (!isPast && !isTodayAndPastCutoff) continue;
+        // An auto-out can NEVER precede the clock-in it closes. If the resolved
+        // end (scheduled/custom or legacy) lands at/before the "in", the shift
+        // data is wrong — skip rather than write a clock-out-before-clock-in,
+        // which both re-triggers the sweep and manufactures a phantom ~12h
+        // early-leave deduction (the B782M 22-Jul trigger was a 06:00 end).
+        if (last.ts && new Date(endIso).getTime() <= new Date(last.ts).getTime()) {
+          console.warn("[auto-out] skipped — resolved end", endIso, "is at/before clock-in", last.ts, "for", ec, k);
+          continue;
+        }
         try {
           await window.APP_DATA.addManagerClockinWithMeta(last.staff_id, "out_auto", {
             tsOverride: endIso,
