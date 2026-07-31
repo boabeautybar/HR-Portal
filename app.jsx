@@ -13010,7 +13010,7 @@ function BargainingCouncilTab({ enriched, managers, currentUser, logActivity, on
 // (per employee, as of a date) and layer manual add/remove-day adjustments on
 // top. Everything is stored in Supabase (app_state boa_leave_balances_v1) — no
 // balances are hard-coded.
-function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveRecs, schedCache, ymdToSchedYm }) {
+function LeaveBalancesTab({ enriched, managers, office, currentUser, logActivity, leaveRecs, schedCache, ymdToSchedYm }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [loadErr, setLoadErr] = useState("");
@@ -13054,8 +13054,9 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
     };
     (enriched || []).forEach(p => add(p, "Nail tech"));
     (managers || []).forEach(m => add(m, m.role || "Manager"));
+    (office || []).forEach(p => add(p, isCallCentreStaff(p) ? "Call Centre & Sales" : "Head Office"));
     return { byNorm, byCore, byName };
-  }, [enriched, managers]);
+  }, [enriched, managers, office]);
   // Code first (tolerant of -M / M / case), then fall back to the person's name.
   const resolve = (rawEc, name) => {
     const n = lbNormEc(rawEc);
@@ -13077,8 +13078,9 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
     };
     (enriched || []).forEach(p => add(p, "Nail tech"));
     (managers || []).forEach(m => add(m, m.role || "Manager"));
+    (office || []).forEach(p => add(p, isCallCentreStaff(p) ? "Call Centre & Sales" : "Head Office"));
     return out.sort((a, b) => (a.name || a.ec).localeCompare(b.name || b.ec));
-  }, [enriched, managers]);
+  }, [enriched, managers, office]);
   // Active portal staff who have no leave-balance record yet.
   const missing = useMemo(() => {
     if (!data) return [];
@@ -13288,8 +13290,9 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
     };
     (enriched || []).forEach(p => add(p, "Nail tech"));
     (managers || []).forEach(m => add(m, m.role || "Manager"));
+    (office || []).forEach(p => add(p, isCallCentreStaff(p) ? "Call Centre & Sales" : "Head Office"));
     return out.sort((a, b) => (a.name || a.ec).localeCompare(b.name || b.ec));
-  }, [data, enriched, managers, leaveRecs, schedCache, ymdToSchedYm]);
+  }, [data, enriched, managers, office, leaveRecs, schedCache, ymdToSchedYm]);
 
   // Current pay cycle (25th→24th). Attendance grids key by the START-month
   // (currentAttYm); the schedule keys by END-month (ymdToSchedYm) — different
@@ -13518,7 +13521,7 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
       return { date: f.start, label: f.bucket === "cycle" ? "Booked — this pay cycle" : "Booked — later", range: [f.start, f.end], cal: f.cal, delta: -f.days, bal: fbal };
     });
     // Expiry buckets (same engine as the radar / dashboard card / auto-incident).
-    const deps = { leaveBalances: data, leaveRecs, enriched, managers, schedCache, ymdToSchedYm, today: todayYmd };
+    const deps = { leaveBalances: data, leaveRecs, enriched: (enriched || []).concat(office || []), managers, schedCache, ymdToSchedYm, today: todayYmd };
     const expiry = startDate ? leaveExpiryForPerson(r.rawEc || r.norm, deps) : null;
     let tenure = "";
     if (startDate) {
@@ -13592,9 +13595,11 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
   const expiryList = useMemo(() => {
     if (!data || !data.entries) return [];
     const today = new Date().toISOString().slice(0, 10);
-    const deps = { leaveBalances: data, leaveRecs, enriched, managers, schedCache, ymdToSchedYm, today };
+    // Office (Head Office + CC&S) ride the same balance/expiry engine as techs,
+    // so fold them into the person pool findLeavePerson searches.
+    const deps = { leaveBalances: data, leaveRecs, enriched: (enriched || []).concat(office || []), managers, schedCache, ymdToSchedYm, today };
     const out = [], seen = new Set();
-    [...(enriched || []), ...(managers || [])].forEach(p => {
+    [...(enriched || []), ...(managers || []), ...(office || [])].forEach(p => {
       if (!p || !p.ec) return;
       const k = String(p.ec).toUpperCase();
       if (seen.has(k)) return; seen.add(k);
@@ -13603,7 +13608,7 @@ function LeaveBalancesTab({ enriched, managers, currentUser, logActivity, leaveR
       if (r) out.push(r);
     });
     return out.sort((a, b) => String(a.nextDeadline).localeCompare(String(b.nextDeadline)));
-  }, [data, leaveRecs, enriched, managers, schedCache, ymdToSchedYm]);
+  }, [data, leaveRecs, enriched, managers, office, schedCache, ymdToSchedYm]);
 
   if (loading) return <div style={{ padding: 24, color: "#9ca3af", fontStyle: "italic" }}>Loading leave balances…</div>;
   if (loadErr) return <div style={{ padding: 24, color: "#b91c1c" }}>Could not load: {loadErr}</div>;
@@ -22561,11 +22566,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     if (tab !== "dashboard" && tab !== "leaveBalances") return;
     if (!canSeeIncidents(currentUser)) return;
     if (!leaveBalancesData || !leaveBalancesData.entries) return;
-    if (!(enriched.length || managers.length)) return;
+    // Head Office + CC&S ride the same expiry radar/auto-incident as techs. They
+    // live in enrichedOffice (declared below this effect, so only referenced in
+    // the body — which runs after render, so it's initialised — never in the dep
+    // array, where it would be in the temporal dead zone).
+    const officePool = enrichedOffice || [];
+    if (!(enriched.length || managers.length || officePool.length)) return;
     const today = new Date().toISOString().slice(0, 10);
-    const deps = { leaveBalances: leaveBalancesData, leaveRecs, enriched, managers, schedCache, ymdToSchedYm, today };
+    const deps = { leaveBalances: leaveBalancesData, leaveRecs, enriched: enriched.concat(officePool), managers, schedCache, ymdToSchedYm, today };
     const results = [], seen = new Set();
-    [...enriched, ...managers].forEach(p => {
+    [...enriched, ...managers, ...officePool].forEach(p => {
       if (!p || !p.ec) return;
       const k = String(p.ec).toUpperCase();
       if (seen.has(k)) return; seen.add(k);
@@ -28791,7 +28801,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         {/* ── LEAVE BALANCES TAB ── */}
         {tab === "leaveBalances" && accessAllows(currentUser, leaveBalancesCfg) && (
-          <LeaveBalancesTab enriched={enriched} managers={enrichedManagers} currentUser={currentUser} logActivity={logActivity} leaveRecs={leaveRecs} schedCache={schedCache} ymdToSchedYm={ymdToSchedYm} />
+          <LeaveBalancesTab enriched={enriched} managers={enrichedManagers} office={enrichedOffice} currentUser={currentUser} logActivity={logActivity} leaveRecs={leaveRecs} schedCache={schedCache} ymdToSchedYm={ymdToSchedYm} />
         )}
 
         {tab === "frl" && accessAllows(currentUser, leaveBalancesCfg) && (
