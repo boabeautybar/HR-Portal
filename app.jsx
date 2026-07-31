@@ -3566,8 +3566,11 @@ function OfficeStaffModal({ s, pin, dept, onClose, onSave, onDelete }) {
   const _roleMismatch = !!(f.role && !roleOpts.some(r => r.key === f.role));
   // Hard block: an office role on a -CC code lands on the CC&S roster/schedule
   // while shift-rules (which reads role only) still pays office hours — the two
-  // classifiers disagree and nothing surfaces it.
-  const _ecBlocked = d === "HO" && _ecIsCc;
+  // classifiers disagree and nothing surfaces it. EXCEPT for codes on the
+  // explicit Head Office allow-list (CC_HO_EXCEPTION_ECS), where that mismatch
+  // is resolved centrally — those are allowed to keep their -CC code under HO.
+  const _ecException = CC_HO_EXCEPTION_ECS.has(_ecU);
+  const _ecBlocked = d === "HO" && _ecIsCc && !_ecException;
   const _hasName = !!((f.firstName || "").trim() || (f.surname || "").trim());
   // EC is REQUIRED: every downstream system keys on it (schedules, attendance,
   // PINs, HEAD_OFFICE_ECS), and an EC-less row crashes the roster enrichment.
@@ -3588,6 +3591,11 @@ function OfficeStaffModal({ s, pin, dept, onClose, onSave, onDelete }) {
             {_ecBlocked && (
               <div style={{ fontSize: 11, color: "#dc2626", marginTop: 4, lineHeight: 1.45 }}>
                 A <strong>-CC</strong> code marks someone as Call Centre &amp; Sales, so this person would show on the CC&amp;S roster and schedule — but still be paid Head Office hours (08:00–17:00), because hours read the <em>role</em>. Use a non-<strong>-CC</strong> code (e.g. <code>{_ecU.replace(/-CC$/, "-M")}</code>), or switch Department to Call Centre &amp; Sales.
+              </div>
+            )}
+            {d === "HO" && _ecIsCc && _ecException && (
+              <div style={{ fontSize: 11, color: "#15803d", marginTop: 4, lineHeight: 1.45 }}>
+                This <strong>-CC</strong> code is on the Head Office exception list, so this person stays under Head Office (and is paid office hours) despite the suffix. Their code is kept as-is.
               </div>
             )}
             {d === "CC" && f.ec && !_ecIsCc && (
@@ -12186,9 +12194,20 @@ function isHeadOfficeEc(ec) { return HEAD_OFFICE_ECS.has(String(ec || "").trim()
 // salon-manager test above — so every cc-vs-ho check must test CC first.
 const CALL_CENTRE = "Call Centre & Sales";
 function isCallCentreBranch(b) { return String(b == null ? "" : b).trim().toLowerCase() === "call centre & sales"; }
+// ── Head Office exceptions to the -CC rule ──────────────────────────────────
+// Employee codes that carry a -CC suffix (or a CC role) but are Head Office by
+// EXPLICIT EXCEPTION, not Call Centre & Sales. Jae Lee Naidoo (B477-CC, role
+// EPA / Executive PA) was assigned a -CC code during the CC&S carve-out; her
+// code is referenced outside the portal so it's kept, and she is force-
+// classified Head Office everywhere instead. This set MUST stay byte-identical
+// across all five classifier copies (app.jsx, kiosk/data.js, kiosk/staff-app.js,
+// myboa/cycle.js, scripts/split-call-centre-sales.js) AND be consulted by each —
+// check-cc-classifier.js enforces both.
+const CC_HO_EXCEPTION_ECS = new Set(["B477-CC"]);
 function isCallCentreStaff(s) {
   const ec = String((s && s.ec) || (s && s.employee_code) || "").trim().toUpperCase();
   const role = String((s && s.role) || "").trim().toUpperCase();
+  if (CC_HO_EXCEPTION_ECS.has(ec)) return false;   // explicit Head Office exception
   return ec.endsWith("-CC") || role === "MCC" || role === "CC" || role === "SALES";
 }
 let CALL_CENTRE_ECS = new Set();

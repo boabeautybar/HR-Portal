@@ -57,9 +57,14 @@
   // isCallCentreStaff / the kiosk's _hoIsCcSales: EC ends -CC OR role is
   // MCC / CC / SALES (the CC Manager's code is -M, so role matters).
   var CC_STORE = "Call Centre & Sales";
+  // Head Office exceptions to the -CC rule — see check-cc-classifier.js. Codes
+  // that carry a -CC suffix but are Head Office by exception (Jae Lee Naidoo,
+  // B477-CC / EPA). MUST stay byte-identical across all five classifier copies.
+  var CC_HO_EXCEPTION_ECS = new Set(["B477-CC"]);
   function isCcSales(ec, role) {
     var e = String(ec == null ? "" : ec).trim().toUpperCase();
     var r = String(role == null ? "" : role).trim().toUpperCase();
+    if (CC_HO_EXCEPTION_ECS.has(e)) return false;   // explicit Head Office exception
     return /-CC$/.test(e) || r === "MCC" || r === "CC" || r === "SALES";
   }
   // The store a person's schedule keys live under, given the store they picked
