@@ -3831,8 +3831,19 @@ const OFFICE_EXIT_TASKS = [
   { key: "leavePayout",        label: "Leave balance paid out",                   icon: "🧾", group: "Payroll" }
 ];
 const OFFICE_OFFBOARD_REASONS = ["Resigned", "Terminated", "Mutual agreement", "End of contract", "Retired", "Other"];
+// An exit item is answered Yes or No. Tolerates the legacy { done:true } shape
+// (from before the yes/no switch), which means "yes".
+function officeExitAnswer(st) {
+  if (!st) return null;
+  if (st.answer === "yes" || st.answer === "no") return st.answer;
+  if (st.done) return "yes";
+  return null;
+}
+// Progress = how many items have been REVIEWED (answered either way). A "No" is a
+// completed decision (it carries a reason), so it counts as reviewed. `done` is
+// kept as the field name so the badge callers don't change.
 function officeExitProgress(exit) {
-  const done = OFFICE_EXIT_TASKS.filter(t => exit && exit[t.key] && exit[t.key].done).length;
+  const done = OFFICE_EXIT_TASKS.filter(t => officeExitAnswer(exit && exit[t.key])).length;
   return { done, total: OFFICE_EXIT_TASKS.length };
 }
 
@@ -3840,7 +3851,7 @@ function officeExitProgress(exit) {
 // same form: BEFORE offboarding it collects last day + reason + notes and lets
 // tasks be pre-ticked; AFTER, it shows the leaver state and lets the exit
 // checklist be worked through over the notice period, with a Restore.
-function OfficeOffboardModal({ person, existing, isCc, todayStr, currentUserName, onClose, onSubmit, onToggleTask, onSaveMeta, onRestore }) {
+function OfficeOffboardModal({ person, existing, isCc, todayStr, currentUserName, onClose, onSubmit, onSetAnswer, onSaveMeta, onRestore }) {
   const off = existing || null;
   const [leftDate, setLeftDate] = React.useState((off && off.leftDate) || todayStr || "");
   const [reason, setReason] = React.useState((off && off.reason) || "Resigned");
@@ -3851,13 +3862,35 @@ function OfficeOffboardModal({ person, existing, isCc, todayStr, currentUserName
   // at them. Forward-fits a later Drive API integration that fills this in.
   const [docsUrl, setDocsUrl] = React.useState((off && off.docsUrl) || "");
   const [busy, setBusy] = React.useState(false);
-  // Create mode holds checklist ticks locally until Off-board is pressed; manage
-  // mode reads the LIVE record (re-derived by the parent each render) so a toggle
-  // persists and shows immediately.
-  const [draftExit, setDraftExit] = React.useState((off && off.exit) || {});
+  // Local working copy of the exit answers for BOTH modes. Create mode submits it
+  // on Off-board; manage mode persists each change to the parent as it's made (an
+  // answer immediately, a No-reason note on blur) — the textarea can't round-trip
+  // through the parent on every keystroke, so the modal owns the edit and pushes.
+  const [exitState, setExitState] = React.useState(() => JSON.parse(JSON.stringify((off && off.exit) || {})));
   const [showHelp, setShowHelp] = React.useState(false);
-  const exit = off ? (off.exit || {}) : draftExit;
+  const exit = exitState;
   const prog = officeExitProgress(exit);
+  const noCount = OFFICE_EXIT_TASKS.filter(t => officeExitAnswer(exit[t.key]) === "no").length;
+  const _exitStamp = () => ({ by: currentUserName || "", at: new Date().toISOString() });
+  // Set a task's Yes/No answer. A Yes drops any No-reason; a No keeps the note so
+  // switching Yes→No→Yes doesn't lose an in-progress reason mid-session.
+  const setAnswer = (key, answer) => {
+    setExitState(prev => {
+      const note = answer === "no" ? ((prev[key] && prev[key].note) || "") : "";
+      return { ...prev, [key]: { answer, note, ..._exitStamp() } };
+    });
+    if (off) onSetAnswer(off.ec, key, answer, answer === "no" ? ((exit[key] && exit[key].note) || "") : "");
+  };
+  // Note edits are local as you type; persisted on blur (manage mode).
+  const setNoteLocal = (key, note) => setExitState(prev => ({ ...prev, [key]: { ...(prev[key] || { answer: "no", ..._exitStamp() }), note } }));
+  const persistNote = (key, note) => { if (off) onSetAnswer(off.ec, key, "no", note); };
+  const segStyle = (active, kind) => ({
+    padding: "4px 13px", borderRadius: 7, fontSize: 11, fontWeight: 800, cursor: busy ? "default" : "pointer", fontFamily: "inherit",
+    border: "1px solid " + (active ? (kind === "yes" ? "#15803d" : "#b91c1c") : "#FBCFE8"),
+    background: active ? (kind === "yes" ? "#15803d" : "#b91c1c") : "#fff",
+    color: active ? "#fff" : (kind === "yes" ? "#166534" : "#b91c1c"),
+    opacity: busy ? 0.6 : 1
+  });
   // Only ever render an http(s) link — never a bare/`javascript:` string — so a
   // pasted value can't become an XSS vector in the href.
   const _docHref = /^https?:\/\//i.test(String(docsUrl).trim()) ? String(docsUrl).trim() : "";
@@ -3921,30 +3954,39 @@ function OfficeOffboardModal({ person, existing, isCc, todayStr, currentUserName
         <div style={{ marginTop: 18, background: "#FDF2F8", border: "1px solid #FBCFE8", borderRadius: 12, padding: "14px 16px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
             <div style={{ fontSize: 13, fontWeight: 800, color: "#831843" }}>Exit checklist</div>
-            <div style={{ fontSize: 12, fontWeight: 800, color: prog.done === prog.total ? "#15803d" : "#BE185D" }}>{prog.done}/{prog.total} done</div>
+            <div style={{ fontSize: 12, fontWeight: 800, color: prog.done === prog.total ? "#15803d" : "#BE185D" }}>
+              {prog.done}/{prog.total} reviewed{noCount ? <span style={{ color: "#b91c1c" }}> · {noCount} flagged</span> : null}
+            </div>
           </div>
-          {!off && <div style={{ fontSize: 11, color: "#9d174d", marginBottom: 10 }}>Tick anything already done — you can complete the rest over the notice period after off-boarding.</div>}
+          <div style={{ fontSize: 11, color: "#9d174d", marginBottom: 10 }}>Mark each item <b>Yes</b> or <b>No</b> — a <b>No</b> opens a box to say why.{!off ? " You can finish the rest over the notice period after off-boarding." : ""}</div>
           {groups.map(g => (
             <div key={g.name} style={{ marginBottom: 10 }}>
               <div style={{ fontSize: 9.5, fontWeight: 800, color: "#BE185D", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 4 }}>{g.name}</div>
               {g.items.map(t => {
                 const st = exit[t.key];
-                const done = !!(st && st.done);
+                const ans = officeExitAnswer(st);
+                const note = (st && st.note) || "";
                 return (
-                  <label key={t.key} style={{ display: "flex", alignItems: "flex-start", gap: 9, padding: "5px 0", cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1 }}>
-                    <input type="checkbox" checked={done} disabled={busy}
-                      onChange={async (e) => {
-                        const on = e.target.checked;
-                        // Create mode: hold in local draft. Manage mode: persist now.
-                        if (!off) { setDraftExit(prev => ({ ...prev, [t.key]: on ? { done: true, by: currentUserName || "", at: new Date().toISOString() } : undefined })); return; }
-                        setBusy(true); try { await onToggleTask(off.ec, t.key, on); } finally { setBusy(false); }
-                      }}
-                      style={{ width: 16, height: 16, accentColor: "#BE185D", marginTop: 1, flexShrink: 0 }} />
-                    <span style={{ fontSize: 12.5, color: done ? "#15803d" : "#831843", fontWeight: done ? 700 : 500, textDecoration: done ? "none" : "none" }}>
-                      {t.icon} {t.label}
-                      {done && st && st.by ? <span style={{ fontSize: 10, color: "#9ca3af", fontWeight: 500 }}> · {st.by}{st.at ? " · " + fmt(String(st.at).slice(0, 10)) : ""}</span> : null}
-                    </span>
-                  </label>
+                  <div key={t.key} style={{ padding: "6px 0", borderBottom: "1px dashed #FBCFE8" }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                      <span style={{ fontSize: 12.5, color: ans === "yes" ? "#15803d" : ans === "no" ? "#b91c1c" : "#831843", fontWeight: ans ? 700 : 500 }}>
+                        {t.icon} {t.label}
+                        {ans && st && st.by ? <span style={{ fontSize: 10, color: "#9ca3af", fontWeight: 500 }}> · {st.by}{st.at ? " · " + fmt(String(st.at).slice(0, 10)) : ""}</span> : null}
+                      </span>
+                      <span style={{ display: "inline-flex", gap: 5, flexShrink: 0 }}>
+                        <button type="button" disabled={busy} onClick={() => setAnswer(t.key, "yes")} style={segStyle(ans === "yes", "yes")}>Yes</button>
+                        <button type="button" disabled={busy} onClick={() => setAnswer(t.key, "no")} style={segStyle(ans === "no", "no")}>No</button>
+                      </span>
+                    </div>
+                    {ans === "no" && (
+                      <textarea value={note} disabled={busy}
+                        onChange={e => setNoteLocal(t.key, e.target.value)}
+                        onBlur={e => persistNote(t.key, e.target.value)}
+                        placeholder="Why not? Add a note (e.g. laptop still outstanding, will be in next payroll run)…"
+                        rows={2}
+                        style={{ width: "100%", marginTop: 7, padding: "7px 9px", border: "1px solid #fecaca", borderRadius: 8, fontSize: 12, fontFamily: "inherit", color: "#7f1d1d", background: "#fff", boxSizing: "border-box", resize: "vertical" }} />
+                    )}
+                  </div>
                 );
               })}
             </div>
@@ -3975,7 +4017,7 @@ function OfficeOffboardModal({ person, existing, isCc, todayStr, currentUserName
           {[
             { n: "1", t: "Last day & reason", d: "Pick their last working day and why they're leaving. A future date means they're working their notice; today or a past date means they've already left." },
             { n: "2", t: "Notes & documents", d: "Add anything payroll or HR should know. Paste a Google Drive link to the folder with their exit paperwork (letter, deactivation emails, handover) — a 📎 Open button then lets anyone view it." },
-            { n: "3", t: "Work the exit checklist", d: "Tick the 8 tasks across HR, Access & equipment, Systems and Payroll. Tick what's done now and finish the rest over the notice period — each tick records who completed it and when." },
+            { n: "3", t: "Work the exit checklist", d: "Answer each of the 8 items across HR, Access & equipment, Systems and Payroll Yes or No. A No opens a box to record why (e.g. laptop still outstanding). Answer what you can now and finish the rest over the notice period — each answer records who set it and when." },
             { n: "4", t: "Off-board", d: "Click 👋 Off-board to record them as a leaver. Re-open them any time from the Office Staff List or Off-boarding tab to keep working the checklist (the button shows progress, e.g. Exit 3/8)." },
             { n: "5", t: "After they leave", d: "They stay visible as a recent leaver for about 31 days — time to close out final pay and paperwork — then move out of the active staff views. Their record and completed checklist are kept in the off-boarding history." },
             { n: "6", t: "Made a mistake?", d: "Open their exit window and click ↺ Restore to active. This reverses the off-boarding and clears the record and checklist." }
@@ -23959,16 +24001,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     setOfficeOffboardModal(null);
     logActivity("Off-boarded office staff", (raw.name || "") + " (" + ec + ")", "Last day " + meta.leftDate + (meta.reason ? " · " + meta.reason : ""), "People");
   }
-  async function toggleOfficeExitTask(ec, taskKey, done) {
+  async function setOfficeExitAnswer(ec, taskKey, answer, note) {
     const nextOff = (offList || []).map(o => {
       if (!o || o.ec !== ec) return o;
       const exit = { ...(o.exit || {}) };
-      exit[taskKey] = done ? { done: true, by: (currentUser && currentUser.name) || "", at: new Date().toISOString() } : null;
+      exit[taskKey] = answer ? { answer, note: note || "", by: (currentUser && currentUser.name) || "", at: new Date().toISOString() } : null;
       return { ...o, exit };
     });
     setOffList(nextOff);
     try { await window.BOA_DB.saveOffboarding(nextOff); }
-    catch (e) { alert("Could not save exit task: " + (e.message || e)); }
+    catch (e) { alert("Could not save exit item: " + (e.message || e)); }
   }
   async function saveOfficeExitMeta(ec, meta) {
     const raw = (hoStaff || []).find(h => h && h.ec === ec);
@@ -26723,7 +26765,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                       const full = prog.done === prog.total;
                                       return (
                                         <button onClick={() => setOfficeOffboardModal({ person: p })}
-                                          title={"Manage exit — " + prog.done + " of " + prog.total + " exit tasks done. Complete the checklist or restore them."}
+                                          title={"Manage exit — " + prog.done + " of " + prog.total + " exit items reviewed. Answer the rest Yes/No or restore them."}
                                           style={{ background: full ? "#dcfce7" : "#fef3c7", border: "1px solid " + (full ? "#86efac" : "#fcd34d"), borderRadius: 6, padding: "5px 10px", cursor: "pointer", fontSize: 11, fontWeight: 800, color: full ? "#166534" : "#92400e" }}>
                                           👋 Exit {prog.done}/{prog.total}{full ? " ✓" : ""}
                                         </button>
@@ -44874,7 +44916,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             currentUserName={(currentUser && currentUser.name) || ""}
             onClose={() => setOfficeOffboardModal(null)}
             onSubmit={(meta) => offboardOfficeStaff(person, meta)}
-            onToggleTask={toggleOfficeExitTask}
+            onSetAnswer={setOfficeExitAnswer}
             onSaveMeta={saveOfficeExitMeta}
             onRestore={restoreOfficeStaff}
           />
