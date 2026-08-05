@@ -547,9 +547,9 @@ function _officeRowsToCsv(hoRows, ccRows, roleLabels) {
 // needs the form's pass mark AND every Key Indicator at/above its minimum.
 // `onSubmit({ scores, by, notes })` hands the raw form back to the caller,
 // which validates completeness, confirms, and persists/advances.
-function TrialEvalModal({ name, which, sections, max, keyMin, pass, onClose, onSubmit }) {
+function TrialEvalModal({ name, which, sections, max, keyMin, pass, title: titleProp, subtitle, initialBy, lockBy, onClose, onSubmit }) {
   const [scores, setScores] = React.useState({});
-  const [by, setBy] = React.useState("");
+  const [by, setBy] = React.useState(initialBy || "");
   const [notes, setNotes] = React.useState("");
   const [guide, setGuide] = React.useState(false);
   const [openK, setOpenK] = React.useState({});
@@ -557,7 +557,7 @@ function TrialEvalModal({ name, which, sections, max, keyMin, pass, onClose, onS
   sections.forEach(sec => sec.items.forEach(it => { count++; const v = Number(scores[it.k]) || 0; if (v >= 1 && v <= 5) { total += v; answered++; if (it.key && v < keyMin) keyOk = false; } }));
   const complete = answered === count;
   const willPass = complete && total >= pass && keyOk;
-  const title = which === "final" ? "Final evaluation" : "Week 1 evaluation";
+  const title = titleProp || (which === "final" ? "Final evaluation" : "Week 1 evaluation");
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.55)", zIndex: 100001, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "40px 16px", overflowY: "auto" }}>
       <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, maxWidth: 580, width: "100%", padding: "20px 22px", boxShadow: "0 24px 70px rgba(0,0,0,0.35)" }}>
@@ -566,6 +566,7 @@ function TrialEvalModal({ name, which, sections, max, keyMin, pass, onClose, onS
           <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af", fontSize: 20, lineHeight: 1, padding: 0 }}>✕</button>
         </div>
         <div style={{ fontSize: 12, color: "#6b7280", margin: "6px 0 2px", lineHeight: 1.5 }}>Score each criterion 1 (poor) – 5 (excellent). A pass needs <b>{pass}/{max}</b> and every Key Indicator at <b>{keyMin}+</b>. The form is submitted to HR either way.</div>
+        {subtitle && <div style={{ fontSize: 11.5, color: "#6b21a8", background: "#f5f3ff", border: "1px solid #ede9fe", borderRadius: 7, padding: "6px 9px", margin: "6px 0 0", lineHeight: 1.45 }}>{subtitle}</div>}
         <div style={{ display: "flex", gap: 8, alignItems: "center", margin: "6px 0" }}>
           <button onClick={() => setGuide(g => !g)} style={{ border: "1px solid #ddd6fe", background: "#f5f3ff", color: "#6b21a8", borderRadius: 8, padding: "6px 11px", fontSize: 11.5, fontWeight: 800, cursor: "pointer" }}>{guide ? "ⓘ Hide guidance" : "ⓘ Show guidance for every point"}</button>
         </div>
@@ -601,7 +602,9 @@ function TrialEvalModal({ name, which, sections, max, keyMin, pass, onClose, onS
           );
         })}
         <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#374151", margin: "14px 0 4px" }}>Evaluator name</label>
-        <input value={by} onChange={e => setBy(e.target.value)} placeholder="Trainer / evaluator full name" style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 13, fontFamily: "inherit" }} />
+        {/* Locked when the caller knows who is signed in — an evaluation that
+            decides a promotion must be attributable, not self-declared. */}
+        <input value={by} onChange={e => setBy(e.target.value)} readOnly={!!lockBy} placeholder="Trainer / evaluator full name" style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 13, fontFamily: "inherit", background: lockBy ? "#f9fafb" : "#fff", color: lockBy ? "#6b7280" : "inherit", cursor: lockBy ? "not-allowed" : "text" }} />
         <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#374151", margin: "10px 0 4px" }}>Notes (optional)</label>
         <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2} placeholder="Anything HR should know" style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 13, fontFamily: "inherit", resize: "vertical" }} />
         <div style={{ marginTop: 12, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
@@ -615,6 +618,733 @@ function TrialEvalModal({ name, which, sections, max, keyMin, pass, onClose, onS
     </div>
   );
 }
+// ── Assistant-Manager evaluation (BOA Manager Evaluation Form) ──────────────
+// 27 criteria across 5 sections, scored 1–5 (max 135). Pass = 70% (95/135)
+// AND every Key Indicator ≥4 (per the form's extension rule). Module scope
+// because two features use it: the AM trial-period pipeline scores against it
+// directly, and the SM trial seeds its editable criteria blob from it.
+const AM_EVAL_SECTIONS = [
+  {
+    title: "Customer Service Excellence", max: 50, items: [
+      { k: "greeting_ssco", label: "Client Greeting – SSCO", key: true, desc: "Greets all clients warmly using Stand–Smile–Confirm–Offer." },
+      { k: "booking_conf", label: "Booking Confirmation", desc: "Confirms booking and treatment details before the appointment time." },
+      { k: "proactive", label: "Proactive Service", desc: "Anticipates client needs and ensures comfort." },
+      { k: "recovery", label: "Service Recovery", desc: "Handles complaints effectively, maintains calmness." },
+      { k: "presentation", label: "Professional Presentation", key: true, desc: "Displays neat grooming and welcoming demeanor. Wears full BOA uniform." },
+      { k: "wait_mgmt", label: "Wait Management", desc: "Informs clients of delays courteously." },
+      { k: "product_know", label: "Product Knowledge", desc: "Explains services and retail confidently." },
+      { k: "feedback", label: "Feedback Collection", desc: "Encourages positive Google Reviews." },
+      { k: "upsell", label: "Upselling & Retail", desc: "Suggests appropriate upgrades and aftercare." },
+      { k: "brand_rep", label: "Brand Representation", desc: "Creates a calm, elegant atmosphere in line with BOA." }]
+  },
+  {
+    title: "Leadership & Team Management", max: 25, items: [
+      { k: "team_comm", label: "Team Communication", desc: "Holds regular briefings and maintains professionalism." },
+      { k: "fairness", label: "Fairness & Discipline", desc: "Applies HR policies consistently and fairly." },
+      { k: "motivation", label: "Motivation & Recognition", desc: "Supports and recognizes team effort." },
+      { k: "scheduling", label: "Scheduling", key: true, desc: "Manages shifts, off-days, and attendance accurately." },
+      { k: "conflict", label: "Conflict Resolution", desc: "Resolves disputes respectfully and promptly." }]
+  },
+  {
+    title: "Cleanliness & Hygiene Compliance", max: 20, items: [
+      { k: "tool_san", label: "Tool Sanitation Checks", desc: "Verifies clean tools and sends photo proof on Basket Check Day before 10 a.m." },
+      { k: "salon_appear", label: "Salon Appearance", key: true, desc: "Maintains spotless and inviting salon atmosphere." },
+      { k: "product_mgmt", label: "Product Management", desc: "Prevents waste, monitors stock use." },
+      { k: "staff_hygiene", label: "Staff Hygiene", desc: "Ensures uniforms and grooming standards are met." }]
+  },
+  {
+    title: "Operational & Policy Adherence", max: 25, items: [
+      { k: "hr_policy", label: "HR Policy Compliance", key: true, desc: "Enforces attendance, cellphone and language rules." },
+      { k: "cash_digital", label: "Cash & Digital Handling", key: true, desc: "Enforces only accepted payment methods." },
+      { k: "report_sub", label: "Report Submission", desc: "Submits accurate End-Day-Reports." },
+      { k: "fresha_usage", label: "Fresha Usage", key: true, desc: "Uses Fresha accurately and efficiently." },
+      { k: "stock_takes", label: "Stock Takes", key: true, desc: "Conducts accurate stock takes and places orders timely." }]
+  },
+  {
+    title: "Brand Ambassadorship & Professionalism", max: 15, items: [
+      { k: "brand_image", label: "Brand Image", key: true, desc: "Acts as the face of BOA in demeanor and attitude." },
+      { k: "community", label: "Community Presence", desc: "Promotes BOA positively in local and online spaces." },
+      { k: "ethical", label: "Ethical Leadership", desc: "Displays honesty, fairness, and discretion." }]
+  }
+];
+const AM_EVAL_MAX = 135, AM_EVAL_PASS = 95, AM_EVAL_KEY_MIN = 4;
+
+// Score a set of marks against an arbitrary form ({sections, max, pass, keyMin}).
+// Same rule as the role-keyed scoreEval in the trial-period tab, but takes the
+// form directly so the SM trial can score against its editable config.
+function scoreForm(scores, form) {
+  const f = form || {};
+  const secs = Array.isArray(f.sections) ? f.sections : [];
+  const keyMin = Number(f.keyMin) || 0;
+  let total = 0, answered = 0, count = 0, keyOk = true;
+  secs.forEach(sec => (sec.items || []).forEach(it => {
+    count++;
+    const v = Number((scores || {})[it.k]) || 0;
+    if (v >= 1 && v <= 5) { total += v; answered++; if (it.key && v < keyMin) keyOk = false; }
+  }));
+  const complete = count > 0 && answered === count;
+  return { total, count, answered, complete, keyOk, pass: complete && total >= (Number(f.pass) || 0) && keyOk, max: Number(f.max) || 0, keyMin };
+}
+// Sum of a form's section maxima — sections are 5 points per criterion.
+function formMaxOf(sections) {
+  return (Array.isArray(sections) ? sections : []).reduce((a, s) => a + ((s.items || []).length * 5), 0);
+}
+
+// ─── SM (Store Manager) trial criteria, form & policy ───────────────────────
+// National ops / HR own all of this — it defines what "ready to be an SM"
+// means, so it is config (boa_sm_criteria_v1), not code. These are only the
+// seed defaults used until someone edits them in Settings.
+const SM_CRITERIA_DEFAULT = {
+  version: 1,
+  // The monthly evaluation the region's ROM fills in. Seeded from the AM
+  // manager evaluation form, then editable independently of it.
+  evalForm: { sections: AM_EVAL_SECTIONS, max: AM_EVAL_MAX, pass: AM_EVAL_PASS, keyMin: AM_EVAL_KEY_MIN },
+  // Gate an AM must clear before an application to reclassify is accepted.
+  classification: {
+    minTenureMonths: 9,
+    items: [
+      { k: "targets", label: "Consistently meets store targets", desc: "Store has met or beaten target under their watch over recent months." },
+      { k: "unsupervised", label: "Runs the floor unsupervised", desc: "Has covered for the SM (leave/absence) with no escalation needed." },
+      { k: "systems", label: "Fresha, stock & cash-up competent", desc: "Accurate bookings, stock takes and daily cash-ups without correction." },
+      { k: "reporting", label: "Reporting accurate and on time", desc: "End-Day-Reports and requested submissions arrive complete and on deadline." },
+      { k: "team", label: "Leads the team credibly", desc: "Holds staff to standard fairly; no pattern of avoidable conflict or attrition." },
+      { k: "clean_record", label: "No active disciplinary warnings", desc: "No live written or final warning at the time of application." }
+    ]
+  },
+  trial: {
+    trialDays: 90,
+    // One evaluation per month of the trial.
+    checkpoints: [
+      { key: "m1", label: "Month 1 Evaluation", dueOffset: 30 },
+      { key: "m2", label: "Month 2 Evaluation", dueOffset: 60 },
+      { key: "m3", label: "Month 3 (Final) Evaluation", dueOffset: 90 }
+    ],
+    // How long a failed candidate waits before being considered again.
+    cooldownMonths: 6
+  }
+};
+// Merge a stored config over the defaults so a blob written by an older build
+// (or a partially-filled one) still yields a complete, usable config.
+function smCriteriaMerged(stored) {
+  const d = SM_CRITERIA_DEFAULT;
+  const s = (stored && typeof stored === "object") ? stored : {};
+  const ef = (s.evalForm && typeof s.evalForm === "object") ? s.evalForm : {};
+  const cl = (s.classification && typeof s.classification === "object") ? s.classification : {};
+  const tr = (s.trial && typeof s.trial === "object") ? s.trial : {};
+  const sections = Array.isArray(ef.sections) && ef.sections.length ? ef.sections : d.evalForm.sections;
+  const cps = Array.isArray(tr.checkpoints) && tr.checkpoints.length ? tr.checkpoints : d.trial.checkpoints;
+  return {
+    version: 1,
+    evalForm: {
+      sections,
+      max: Number(ef.max) || formMaxOf(sections) || d.evalForm.max,
+      pass: Number(ef.pass) || d.evalForm.pass,
+      keyMin: Number(ef.keyMin) || d.evalForm.keyMin
+    },
+    classification: {
+      minTenureMonths: Number(cl.minTenureMonths) >= 0 ? Number(cl.minTenureMonths) : d.classification.minTenureMonths,
+      items: Array.isArray(cl.items) ? cl.items : d.classification.items
+    },
+    trial: {
+      trialDays: Number(tr.trialDays) || d.trial.trialDays,
+      checkpoints: cps.map((c, i) => ({
+        key: c.key || ("m" + (i + 1)),
+        label: c.label || ("Month " + (i + 1) + " Evaluation"),
+        dueOffset: Number(c.dueOffset) || ((i + 1) * 30)
+      })),
+      // Policy is 3–6 months; clamp so a bad stored value can't strand someone.
+      cooldownMonths: Math.min(6, Math.max(3, Number(tr.cooldownMonths) || d.trial.cooldownMonths))
+    },
+    updatedAt: s.updatedAt || "",
+    updatedBy: s.updatedBy || ""
+  };
+}
+function smUid(prefix) {
+  return (prefix || "id") + "_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+}
+// Bring an SM trial record up to the rev-2 shape (checkpoints with many
+// attributed evals, warnings log, application block). Read-side and pure —
+// records persist in the new shape the next time they are saved, so two open
+// HR tabs can't race a bulk rewrite.
+//
+// Older records stored `evaluations:[{key,dueOffset,doneAt,notes}]` — either
+// mid/final @45/90 or m1/m2/final @30/60/90. A completed legacy checkpoint had
+// no score and no submitter, so it becomes a single eval flagged `legacy`.
+function normalizeSmTrialRec(rec, cfg) {
+  if (!rec || typeof rec !== "object") return rec;
+  const trial = (cfg && cfg.trial) || SM_CRITERIA_DEFAULT.trial;
+  const out = Object.assign({}, rec);
+  out.status = out.status || "active";
+  out.trialDays = Number(out.trialDays) || trial.trialDays || 90;
+  out.warnings = Array.isArray(out.warnings) ? out.warnings : [];
+  out.origin = out.origin || (out.application ? "application" : "nominated");
+
+  if (Array.isArray(out.checkpoints) && out.checkpoints.length) {
+    out.checkpoints = out.checkpoints.map(cp => Object.assign({}, cp, {
+      evals: Array.isArray(cp.evals) ? cp.evals : []
+    }));
+  } else {
+    const legacy = Array.isArray(out.evaluations) ? out.evaluations : [];
+    out.checkpoints = legacy.map(ev => ({
+      key: ev.key || smUid("cp"),
+      label: ev.label || "",
+      dueOffset: Number(ev.dueOffset) || 0,
+      evals: ev.doneAt ? [{
+        id: smUid("ev"),
+        submittedAt: ev.doneAt,
+        submittedBy: { name: "", pin: "", role: "" },
+        notes: ev.notes || "",
+        legacy: true                       // completed before scored evaluations existed
+      }] : []
+    }));
+    // Only a still-running trial gets moved onto the current checkpoint set —
+    // a closed record is history and must keep the shape it was judged under.
+    // Legacy checkpoints that were never completed are dropped (an empty
+    // "final @ day 90" alongside the new "Month 3 @ day 90" is just noise);
+    // ones with a completed evaluation are kept so no history is lost.
+    if (out.status === "active" || out.status === "applied") {
+      out.checkpoints = out.checkpoints.filter(cp => (cp.evals || []).length > 0);
+      trial.checkpoints.forEach(def => {
+        const clash = out.checkpoints.some(cp =>
+          cp.key === def.key || (Number(cp.dueOffset) || 0) === (Number(def.dueOffset) || 0));
+        if (!clash) out.checkpoints.push({ key: def.key, label: def.label, dueOffset: def.dueOffset, evals: [] });
+      });
+      out.checkpoints.sort((a, b) => (Number(a.dueOffset) || 0) - (Number(b.dueOffset) || 0));
+    }
+    if (!out.checkpoints.length) {
+      out.checkpoints = trial.checkpoints.map(d => ({ key: d.key, label: d.label, dueOffset: d.dueOffset, evals: [] }));
+    }
+    delete out.evaluations;
+  }
+  out.rev = 2;
+  return out;
+}
+// Label for a checkpoint: the record's own label, else the configured one, else
+// a day-offset fallback so legacy mid/final records still read sensibly.
+function smCheckpointLabel(cp, cfg) {
+  if (!cp) return "";
+  if (cp.label) return cp.label;
+  const cps = ((cfg && cfg.trial) || SM_CRITERIA_DEFAULT.trial).checkpoints || [];
+  const hit = cps.find(c => c.key === cp.key);
+  if (hit) return hit.label;
+  if (cp.key === "final") return "Final evaluation";
+  if (cp.key === "mid") return "Mid evaluation";
+  return "Day " + (cp.dueOffset || 0) + " evaluation";
+}
+
+// Short date for SM trial surfaces.
+function smFmt(ymd) {
+  const s = normYmd(ymd);
+  if (!s) return "—";
+  const d = new Date(s + "T00:00:00");
+  return isNaN(d.getTime()) ? "—" : d.toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" });
+}
+// Incident reports tagged to this candidate that fall inside the trial window.
+// Untagged reports are invisible here by design — an IR only counts against
+// someone once HR has explicitly attributed it to them.
+function smIrsForTrial(rec, reports) {
+  const ec = String((rec && rec.ec) || "").trim();
+  if (!ec) return [];
+  const start = normYmd(rec.startDate);
+  if (!start) return [];
+  const end = ymdAddDays(start, Number(rec.trialDays) || 90);
+  const whenOf = r => normYmd(r.incident_date) || String(r.created_at || "").slice(0, 10);
+  return (reports || []).filter(r => {
+    const tags = Array.isArray(r.tagged_ecs) ? r.tagged_ecs : [];
+    if (!tags.some(t => String(t).trim() === ec)) return false;
+    const w = whenOf(r);
+    return w && w >= start && w <= end;
+  }).sort((a, b) => whenOf(a).localeCompare(whenOf(b)));
+}
+// Evidence for the pass/fail conversation. Deliberately returns FACTS and no
+// verdict — the outcome is a joint HR + Ops call, and the system has no view
+// on whether a given incident report is fair.
+function smTrialSummary(rec, cfg, irs) {
+  const checkpoints = (rec.checkpoints || []).map(cp => {
+    const all = cp.evals || [];
+    const scored = all.filter(e => typeof e.total === "number");
+    return {
+      key: cp.key,
+      label: smCheckpointLabel(cp, cfg),
+      dueOffset: Number(cp.dueOffset) || 0,
+      total: all.length,
+      legacy: all.filter(e => e.legacy).length,
+      scored: scored.length,
+      best: scored.length ? Math.max.apply(null, scored.map(e => e.total)) : null,
+      passed: scored.filter(e => e.pass).length,
+      held: scored.filter(e => e.heldForHr).length,
+      submitters: all.map(e => (e.submittedBy && e.submittedBy.name) || "").filter(Boolean)
+    };
+  });
+  const warnings = rec.warnings || [];
+  const endYmd = ymdAddDays(normYmd(rec.startDate), Number(rec.trialDays) || 90);
+  // The HR pain point this exists for: a batch of reports landing right as the
+  // final evaluation is due reads very differently from the same reports spread
+  // across the trial. Surface the shape, let HR judge it.
+  const clusterFrom = ymdAddDays(endYmd, -14);
+  const lateFiled = (irs || []).filter(r => {
+    const filed = String(r.created_at || "").slice(0, 10);
+    return filed && filed >= clusterFrom && filed <= endYmd;
+  }).length;
+  return {
+    checkpoints,
+    evalsTotal: checkpoints.reduce((a, c) => a + c.total, 0),
+    heldTotal: checkpoints.reduce((a, c) => a + c.held, 0),
+    missingCheckpoints: checkpoints.filter(c => c.total === 0).length,
+    warningsByType: {
+      verbal: warnings.filter(w => w.type === "verbal").length,
+      written: warnings.filter(w => w.type === "written").length,
+      final: warnings.filter(w => w.type === "final").length
+    },
+    warningsTotal: warnings.length,
+    irTotal: (irs || []).length,
+    irLateFiled: lateFiled,
+    irClustered: lateFiled >= 2,
+    endYmd
+  };
+}
+
+// ── SM trial: incident timeline ─────────────────────────────────────────────
+// One row across the trial window. A solid dot marks when the incident
+// happened; a hollow marker on the line below marks when it was FILED, drawn
+// only when filing lagged the incident by 3+ days. Reports that were all filed
+// in the same week then show up as a visible cluster instead of a flat count.
+function SmIrTimeline({ irs, startYmd, days, checkpoints, cfg }) {
+  const start = normYmd(startYmd);
+  const total = Number(days) || 90;
+  if (!start) return null;
+  const pctOf = (ymd) => {
+    const s = normYmd(ymd);
+    if (!s) return null;
+    const off = Math.round((new Date(s + "T00:00:00") - new Date(start + "T00:00:00")) / 86400000);
+    if (isNaN(off)) return null;
+    return Math.max(0, Math.min(100, (off / total) * 100));
+  };
+  const marks = (irs || []).map(r => {
+    const inc = normYmd(r.incident_date) || String(r.created_at || "").slice(0, 10);
+    const filed = String(r.created_at || "").slice(0, 10);
+    const lag = (inc && filed) ? Math.round((new Date(filed + "T00:00:00") - new Date(inc + "T00:00:00")) / 86400000) : 0;
+    return { r, inc, filed, lag, incPct: pctOf(inc), filedPct: pctOf(filed) };
+  }).filter(m => m.incPct !== null);
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div style={{ position: "relative", height: 34, marginBottom: 2 }}>
+        <div style={{ position: "absolute", top: 11, left: 0, right: 0, height: 4, background: "#f3f4f6", borderRadius: 2 }} />
+        {/* The record's own checkpoints when it has them — a legacy trial ran
+            to a different cadence than today's config and should show its. */}
+        {((checkpoints && checkpoints.length ? checkpoints : ((cfg && cfg.trial && cfg.trial.checkpoints) || []))).map((c, i) => {
+          const p = Math.max(0, Math.min(100, ((Number(c.dueOffset) || 0) / total) * 100));
+          return <div key={"t" + i + c.key} title={smCheckpointLabel(c, cfg)} style={{ position: "absolute", left: "calc(" + p + "% - 1px)", top: 6, width: 2, height: 14, background: "#ddd6fe" }} />;
+        })}
+        {marks.map((m, i) => (
+          <React.Fragment key={m.r.id || i}>
+            <div title={"Incident " + smFmt(m.inc) + (m.lag >= 3 ? " · filed " + smFmt(m.filed) + " (" + m.lag + "d later)" : "")}
+              style={{ position: "absolute", left: "calc(" + m.incPct + "% - 5px)", top: 8, width: 10, height: 10, borderRadius: "50%", background: m.r.urgent ? "#dc2626" : "#f97316", border: "2px solid #fff", boxShadow: "0 0 0 1px " + (m.r.urgent ? "#dc2626" : "#f97316") }} />
+            {m.lag >= 3 && m.filedPct !== null && (
+              <div title={"Filed " + smFmt(m.filed) + " — " + m.lag + " days after the incident"}
+                style={{ position: "absolute", left: "calc(" + m.filedPct + "% - 4px)", top: 24, width: 8, height: 8, borderRadius: "50%", background: "#fff", border: "1.5px solid #9ca3af" }} />
+            )}
+          </React.Fragment>
+        ))}
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9.5, color: "#9ca3af", fontWeight: 600 }}>
+        <span>{smFmt(start)} · trial start</span>
+        <span>{smFmt(ymdAddDays(start, total))} · trial end</span>
+      </div>
+      <div style={{ fontSize: 10, color: "#6b7280", marginTop: 5, lineHeight: 1.5 }}>
+        ● when the incident happened · ○ when it was filed (shown when filed 3+ days later).
+        Filing dates are shown so you can see whether reports came in steadily or all at once.
+      </div>
+    </div>
+  );
+}
+
+// ── SM trial: read-only view of one submitted evaluation ────────────────────
+// Scored against the form as it stood when submitted (formSnapshot), so later
+// edits to the criteria in Settings never silently re-grade past evaluations.
+function SmEvalViewModal({ rec, cp, ev, cfg, onClose }) {
+  if (!ev) return null;
+  const form = (ev.formSnapshot && ev.formSnapshot.sections) ? ev.formSnapshot : cfg.evalForm;
+  const sections = form.sections || [];
+  const by = ev.submittedBy || {};
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.55)", zIndex: 100001, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "40px 16px", overflowY: "auto" }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, maxWidth: 620, width: "100%", padding: "20px 22px", boxShadow: "0 24px 70px rgba(0,0,0,0.35)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+          <div>
+            <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 19, fontWeight: 700, color: "#7c3aed" }}>📋 {smCheckpointLabel(cp, cfg)} — {rec.name}</div>
+            <div style={{ fontSize: 11.5, color: "#6b7280", marginTop: 3 }}>
+              Submitted {smFmt(String(ev.submittedAt || "").slice(0, 10))}
+              {by.name ? <> by <b>{by.name}</b>{by.role ? " · " + by.role : ""}</> : null}
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af", fontSize: 20, lineHeight: 1, padding: 0 }}>✕</button>
+        </div>
+        {ev.legacy ? (
+          <div style={{ marginTop: 12, background: "#f9fafb", border: "1px dashed #e5e7eb", borderRadius: 9, padding: "10px 12px", fontSize: 12, color: "#6b7280" }}>
+            Recorded before scored evaluations existed — marked complete with a note only, no criteria scores.
+          </div>
+        ) : (
+          <>
+            <div style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <span style={{ fontSize: 14, fontWeight: 800, color: ev.pass ? "#16a34a" : "#b45309" }}>{ev.total} / {ev.max}</span>
+              <span style={{ fontSize: 10.5, fontWeight: 800, borderRadius: 999, padding: "3px 9px", background: ev.pass ? "#dcfce7" : "#fef3c7", color: ev.pass ? "#15803d" : "#92400e" }}>
+                {ev.pass ? "PASS" : "BELOW PASS — held for HR"}
+              </span>
+              {!ev.keyOk && <span style={{ fontSize: 10.5, fontWeight: 800, borderRadius: 999, padding: "3px 9px", background: "#fee2e2", color: "#991b1b" }}>Key indicator below minimum</span>}
+            </div>
+            {sections.map(sec => {
+              const sub = (sec.items || []).reduce((a, it) => a + (Number((ev.scores || {})[it.k]) || 0), 0);
+              return (
+                <div key={sec.title} style={{ marginTop: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, fontWeight: 800, color: "#6b21a8" }}>
+                    <span>{sec.title}</span><span style={{ color: "#9ca3af" }}>{sub}/{(sec.items || []).length * 5}</span>
+                  </div>
+                  {(sec.items || []).map(it => {
+                    const v = Number((ev.scores || {})[it.k]) || 0;
+                    const low = it.key && v > 0 && v < (Number(form.keyMin) || 0);
+                    return (
+                      <div key={it.k} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "5px 0", borderTop: "1px solid #f3f4f6", fontSize: 12 }}>
+                        <span style={{ color: "#374151" }}>{it.label}{it.key && <span style={{ marginLeft: 5, background: "#fef3c7", color: "#92400e", borderRadius: 4, padding: "0 5px", fontSize: 9, fontWeight: 800 }}>Key</span>}</span>
+                        <span style={{ fontWeight: 800, color: low ? "#dc2626" : v ? "#111827" : "#d1d5db" }}>{v || "—"}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })}
+          </>
+        )}
+        {ev.notes && (
+          <div style={{ marginTop: 12 }}>
+            <div style={{ fontSize: 10.5, fontWeight: 800, color: "#6b7280", letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 4 }}>Evaluator notes</div>
+            <div style={{ fontSize: 12.5, color: "#374151", background: "#f9fafb", border: "1px solid #f3f4f6", borderRadius: 8, padding: "9px 11px", whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{ev.notes}</div>
+          </div>
+        )}
+        <div style={{ marginTop: 14, textAlign: "right" }}>
+          <button onClick={onClose} style={{ background: "#7c3aed", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 12, fontWeight: 800, cursor: "pointer" }}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── SM trial: nominate an AM, or record their application to reclassify ─────
+// Two doors into the same trial. A NOMINATION comes from ops and stays a
+// judgement call — the eligibility read-out is shown but doesn't block, since
+// ops may have good reason. An APPLICATION is the AM asking, so it must clear
+// the bar HR/national ops set: minimum service plus every classification
+// criterion. AMs have no portal login, so HR records the application here on
+// their behalf.
+function SmTrialPanel({ f, cfg, openRec, cooldown, tenure, onStart, onClose }) {
+  const [mode, setMode] = React.useState("");            // "" | "nominate" | "apply"
+  const [startDate, setStartDate] = React.useState(ymdStr(new Date()));
+  const [note, setNote] = React.useState("");
+  const [checks, setChecks] = React.useState({});
+  const [busy, setBusy] = React.useState(false);
+  const items = cfg.classification.items || [];
+  const allChecked = items.length > 0 && items.every(it => checks[it.k]);
+  const canApply = tenure.ok && allChecked;
+  const name = ((f.firstName || "") + " " + (f.surname || "")).trim() || f.name || "this manager";
+
+  if (openRec) {
+    const applied = openRec.status === "applied";
+    return (
+      <div style={{ background: "#f1f5f9", border: "1px solid #cbd5e1", borderRadius: 9, padding: "10px 12px", fontSize: 11, color: "#475569", lineHeight: 1.45 }}>
+        ⭐ <strong>{applied ? "Application recorded" : "Already on SM trial"}</strong> — {applied
+          ? "waiting for HR to start the 3-month trial."
+          : "view progress, evaluations and warnings in the SM Trials tab."}
+      </div>
+    );
+  }
+  if (cooldown) {
+    return (
+      <div style={{ background: "#f9fafb", border: "1px solid #e5e7eb", borderRadius: 9, padding: "10px 12px", fontSize: 11, color: "#6b7280", lineHeight: 1.5 }}>
+        ⏳ <strong>Not eligible yet</strong> — an SM trial ended without promotion on {smFmt(cooldown.failedAt)}.
+        {" "}{name} may be considered again from <strong>{smFmt(cooldown.eligibleFrom)}</strong> ({cooldown.months}-month period),
+        giving them time to work through the feedback report.
+      </div>
+    );
+  }
+
+  const inp = { padding: "7px 9px", border: "1px solid #FED7AA", borderRadius: 7, fontSize: 12, fontFamily: "inherit", background: "#fff", boxSizing: "border-box" };
+  const submit = async (asApplication) => {
+    setBusy(true);
+    const ok = await onStart(f.ec, startDate, note, {
+      asApplication,
+      origin: asApplication ? "application" : "nominated",
+      criteriaChecks: asApplication ? checks : undefined,
+      applicationNote: asApplication ? note : ""
+    });
+    if (ok) {
+      alert(asApplication
+        ? "📥 Application recorded. Start the trial from People → SM Trials when ops are ready."
+        : "⭐ SM trial started. Track it in People → SM Trials.");
+      onClose();
+    } else setBusy(false);
+  };
+
+  return (
+    <div style={{ background: "#FFF7ED", border: "1px solid #FED7AA", borderRadius: 9, padding: "10px 12px" }}>
+      <div style={{ fontSize: 11, color: "#9A3412", lineHeight: 1.45 }}>
+        <strong>⭐ Store Manager trial</strong><br />
+        3-month trial with a scored evaluation each month from the region's ROM. HR and Ops decide the outcome together.
+      </div>
+
+      {/* Eligibility read-out — shown for both doors, enforced only for applications. */}
+      <div style={{ marginTop: 8, fontSize: 11, color: tenure.known ? (tenure.ok ? "#15803d" : "#b45309") : "#b45309", fontWeight: 600 }}>
+        {tenure.known
+          ? (tenure.ok ? "✓ " : "⚠️ ") + tenure.months + " months' service (minimum " + tenure.min + ")"
+          : "⚠️ No start date on record — service can't be verified"}
+      </div>
+
+      {!mode && (
+        <div style={{ marginTop: 9, display: "flex", gap: 7, flexWrap: "wrap" }}>
+          <button type="button" onClick={() => setMode("nominate")}
+            style={{ padding: "7px 14px", borderRadius: 8, border: "none", background: "#EA580C", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700 }}>⭐ Start SM Trial</button>
+          <button type="button" onClick={() => setMode("apply")}
+            style={{ padding: "7px 14px", borderRadius: 8, border: "1px solid #FED7AA", background: "#fff", color: "#9A3412", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700 }}>📥 Record their application</button>
+        </div>
+      )}
+
+      {mode === "apply" && (
+        <div style={{ marginTop: 10, borderTop: "1px solid #FED7AA", paddingTop: 10 }}>
+          <div style={{ fontSize: 10.5, color: "#9A3412", lineHeight: 1.5, marginBottom: 8 }}>
+            {name} has asked to be considered for reclassification. Confirm they meet the SM classification criteria — every box must be ticked, and service must be at least {tenure.min} months.
+          </div>
+          {!tenure.ok && (
+            <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 7, padding: "8px 10px", fontSize: 11, color: "#991b1b", marginBottom: 8, lineHeight: 1.5 }}>
+              {tenure.known
+                ? "Only " + tenure.months + " months' service — " + tenure.min + " are required before an application can be accepted."
+                : "This manager has no start date on record, so service can't be verified. Add the start date above, save, then record the application."}
+            </div>
+          )}
+          {items.map(it => (
+            <label key={it.k} style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "5px 0", cursor: "pointer" }}>
+              <input type="checkbox" checked={!!checks[it.k]} onChange={e => setChecks(p => ({ ...p, [it.k]: e.target.checked }))} style={{ marginTop: 2 }} />
+              <span>
+                <span style={{ fontSize: 11.5, fontWeight: 700, color: "#7c2d12" }}>{it.label}</span>
+                {it.desc && <span style={{ display: "block", fontSize: 10.5, color: "#9A3412", lineHeight: 1.4 }}>{it.desc}</span>}
+              </span>
+            </label>
+          ))}
+          <label style={{ display: "block", fontSize: 9.5, fontWeight: 800, color: "#9A3412", margin: "8px 0 3px", textTransform: "uppercase", letterSpacing: "0.05em" }}>Note (who they spoke to, anything relevant)</label>
+          <input value={note} onChange={e => setNote(e.target.value)} placeholder="e.g. Raised with their ROM on 2 Aug" style={{ ...inp, width: "100%" }} />
+          <div style={{ marginTop: 10, display: "flex", gap: 7, justifyContent: "flex-end" }}>
+            <button type="button" onClick={() => setMode("")} disabled={busy} style={{ background: "#fff", color: "#6b7280", border: "1px solid #e5e7eb", borderRadius: 7, padding: "6px 12px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Cancel</button>
+            <button type="button" onClick={() => submit(true)} disabled={busy || !canApply}
+              title={canApply ? "" : (!tenure.ok ? "Minimum service not met" : "Tick every criterion first")}
+              style={{ background: (busy || !canApply) ? "#e5e7eb" : "#EA580C", color: (busy || !canApply) ? "#9ca3af" : "#fff", border: "none", borderRadius: 7, padding: "6px 13px", fontSize: 11, fontWeight: 800, cursor: (busy || !canApply) ? "not-allowed" : "pointer" }}>
+              {busy ? "Saving…" : "Record application"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {mode === "nominate" && (
+        <div style={{ marginTop: 10, borderTop: "1px solid #FED7AA", paddingTop: 10 }}>
+          {!tenure.ok && (
+            <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 7, padding: "8px 10px", fontSize: 11, color: "#92400e", marginBottom: 8, lineHeight: 1.5 }}>
+              {tenure.known
+                ? "Heads up: only " + tenure.months + " months' service, below the " + tenure.min + "-month guideline. An ops nomination can still proceed."
+                : "Heads up: no start date on record, so service can't be verified. An ops nomination can still proceed."}
+            </div>
+          )}
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+            <div>
+              <label style={{ display: "block", fontSize: 9.5, fontWeight: 800, color: "#9A3412", marginBottom: 3, textTransform: "uppercase", letterSpacing: "0.05em" }}>Trial start date</label>
+              <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} style={{ ...inp, width: 155 }} />
+            </div>
+            <div style={{ flex: "1 1 180px", minWidth: 160 }}>
+              <label style={{ display: "block", fontSize: 9.5, fontWeight: 800, color: "#9A3412", marginBottom: 3, textTransform: "uppercase", letterSpacing: "0.05em" }}>Note (optional)</label>
+              <input value={note} onChange={e => setNote(e.target.value)} placeholder="e.g. Nominated by National Ops" style={{ ...inp, width: "100%" }} />
+            </div>
+          </div>
+          <div style={{ fontSize: 10, color: "#9A3412", marginTop: 7, lineHeight: 1.45 }}>
+            Evaluations fall due at {(cfg.trial.checkpoints || []).map(c => "day " + c.dueOffset).join(", ")} from this date.
+          </div>
+          <div style={{ marginTop: 10, display: "flex", gap: 7, justifyContent: "flex-end" }}>
+            <button type="button" onClick={() => setMode("")} disabled={busy} style={{ background: "#fff", color: "#6b7280", border: "1px solid #e5e7eb", borderRadius: 7, padding: "6px 12px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Cancel</button>
+            <button type="button" onClick={() => submit(false)} disabled={busy || !startDate}
+              style={{ background: (busy || !startDate) ? "#e5e7eb" : "#EA580C", color: (busy || !startDate) ? "#9ca3af" : "#fff", border: "none", borderRadius: 7, padding: "6px 13px", fontSize: 11, fontWeight: 800, cursor: (busy || !startDate) ? "not-allowed" : "pointer" }}>
+              {busy ? "Saving…" : "Start trial"}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── SM trial: log a warning against the trial ───────────────────────────────
+// Scoped to the trial record on purpose — this is evidence for one promotion
+// decision, not a company-wide disciplinary register.
+function SmWarningForm({ today, onAdd, onCancel }) {
+  const [date, setDate] = React.useState(today);
+  const [type, setType] = React.useState("verbal");
+  const [note, setNote] = React.useState("");
+  const inp = { padding: "7px 9px", border: "1px solid #e5e7eb", borderRadius: 7, fontSize: 12, fontFamily: "inherit", background: "#fff", boxSizing: "border-box" };
+  return (
+    <div style={{ marginTop: 8, background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 9, padding: "10px 12px" }}>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+        <div>
+          <label style={{ display: "block", fontSize: 9.5, fontWeight: 800, color: "#92400e", marginBottom: 3, textTransform: "uppercase", letterSpacing: "0.05em" }}>Date</label>
+          <input type="date" value={date} onChange={e => setDate(e.target.value)} style={{ ...inp, width: 150 }} />
+        </div>
+        <div>
+          <label style={{ display: "block", fontSize: 9.5, fontWeight: 800, color: "#92400e", marginBottom: 3, textTransform: "uppercase", letterSpacing: "0.05em" }}>Type</label>
+          <select value={type} onChange={e => setType(e.target.value)} style={{ ...inp, width: 130 }}>
+            <option value="verbal">Verbal</option>
+            <option value="written">Written</option>
+            <option value="final">Final</option>
+          </select>
+        </div>
+        <div style={{ flex: "1 1 200px", minWidth: 180 }}>
+          <label style={{ display: "block", fontSize: 9.5, fontWeight: 800, color: "#92400e", marginBottom: 3, textTransform: "uppercase", letterSpacing: "0.05em" }}>What it was for</label>
+          <input value={note} onChange={e => setNote(e.target.value)} placeholder="Short description" style={{ ...inp, width: "100%" }} />
+        </div>
+      </div>
+      <div style={{ marginTop: 9, display: "flex", gap: 7, justifyContent: "flex-end" }}>
+        <button onClick={onCancel} style={{ background: "#fff", color: "#6b7280", border: "1px solid #e5e7eb", borderRadius: 7, padding: "6px 12px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Cancel</button>
+        <button onClick={() => { if (!String(note).trim()) { alert("Add a short description of what the warning was for."); return; } onAdd({ date, type, note }); }}
+          style={{ background: "#b45309", color: "#fff", border: "none", borderRadius: 7, padding: "6px 13px", fontSize: 11, fontWeight: 800, cursor: "pointer" }}>Log warning</button>
+      </div>
+    </div>
+  );
+}
+
+// ── SM trial: outcome decision ──────────────────────────────────────────────
+// Shows the evidence, then asks a human. There is no computed verdict here on
+// purpose: the outcome is agreed between HR and Ops, and a failing candidate
+// must leave with a written feedback report they can actually work from.
+function SmDecisionModal({ rec, cfg, summary, irs, onClose, onPass, onFail }) {
+  const [mode, setMode] = React.useState("");            // "" | "pass" | "fail"
+  const [note, setNote] = React.useState("");
+  const [fb, setFb] = React.useState({});
+  const [overall, setOverall] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+  const sections = (cfg.evalForm.sections || []);
+  const cooldownMonths = cfg.trial.cooldownMonths;
+  const eligibleFrom = addMonthsYmd(ymdStr(new Date()), cooldownMonths);
+  const chip = (bg, fg) => ({ background: bg, color: fg, borderRadius: 999, padding: "3px 10px", fontSize: 10.5, fontWeight: 800 });
+  const canFail = String(overall).trim().length > 0;
+  const reportText = () => {
+    const lines = ["SM TRIAL FEEDBACK — " + rec.name + " (" + rec.ec + ")",
+      "Trial " + smFmt(rec.startDate) + " – " + smFmt(summary.endYmd), ""];
+    sections.forEach(s => { const t = String(fb[s.title] || "").trim(); if (t) { lines.push(s.title.toUpperCase()); lines.push(t); lines.push(""); } });
+    lines.push("OVERALL"); lines.push(String(overall).trim());
+    lines.push(""); lines.push("You may be considered again from " + smFmt(eligibleFrom) + ".");
+    return lines.join("\n");
+  };
+  return (
+    <div onClick={busy ? undefined : onClose} style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.55)", zIndex: 100001, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "40px 16px", overflowY: "auto" }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, maxWidth: 640, width: "100%", padding: "20px 22px", boxShadow: "0 24px 70px rgba(0,0,0,0.35)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+          <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 20, fontWeight: 700, color: "#7c3aed" }}>⚖️ Review & decide — {rec.name}</div>
+          <button onClick={onClose} disabled={busy} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af", fontSize: 20, lineHeight: 1, padding: 0 }}>✕</button>
+        </div>
+
+        <div style={{ fontSize: 11.5, color: "#6b7280", margin: "6px 0 12px", lineHeight: 1.5 }}>
+          Everything below is evidence, not a verdict — the outcome is a joint <b>HR + Ops</b> decision.
+        </div>
+
+        {/* Evidence */}
+        <div style={{ background: "#faf5ff", border: "1px solid #ede9fe", borderRadius: 11, padding: "12px 14px" }}>
+          <div style={{ fontSize: 10.5, fontWeight: 800, color: "#6b21a8", letterSpacing: "0.07em", textTransform: "uppercase", marginBottom: 8 }}>Evaluations</div>
+          {summary.checkpoints.map(c => (
+            <div key={c.key} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12, padding: "4px 0", flexWrap: "wrap" }}>
+              <span style={{ color: "#374151", fontWeight: 600 }}>{c.total === 0 ? "⚠️ " : "✅ "}{c.label}</span>
+              <span style={{ color: c.total === 0 ? "#b45309" : "#111827", fontWeight: 700 }}>
+                {c.total === 0 ? "no evaluation submitted"
+                  : (c.scored ? c.best + "/" + cfg.evalForm.max + " best · " + c.passed + "/" + c.scored + " passing" : c.total + " recorded (unscored)")}
+                {c.total > 1 ? " · " + c.total + " evaluators" : ""}
+              </span>
+            </div>
+          ))}
+          {summary.heldTotal > 0 && (
+            <div style={{ marginTop: 6, fontSize: 11.5, color: "#92400e" }}>⏸ {summary.heldTotal} evaluation{summary.heldTotal === 1 ? "" : "s"} came in below the pass mark and {summary.heldTotal === 1 ? "was" : "were"} held for HR.</div>
+          )}
+
+          <div style={{ fontSize: 10.5, fontWeight: 800, color: "#6b21a8", letterSpacing: "0.07em", textTransform: "uppercase", margin: "12px 0 6px" }}>Warnings during trial</div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {summary.warningsTotal === 0
+              ? <span style={{ fontSize: 12, color: "#15803d", fontWeight: 600 }}>None logged</span>
+              : <>
+                {summary.warningsByType.verbal > 0 && <span style={chip("#fef9c3", "#854d0e")}>{summary.warningsByType.verbal} verbal</span>}
+                {summary.warningsByType.written > 0 && <span style={chip("#ffedd5", "#9a3412")}>{summary.warningsByType.written} written</span>}
+                {summary.warningsByType.final > 0 && <span style={chip("#fee2e2", "#991b1b")}>{summary.warningsByType.final} final</span>}
+              </>}
+          </div>
+
+          <div style={{ fontSize: 10.5, fontWeight: 800, color: "#6b21a8", letterSpacing: "0.07em", textTransform: "uppercase", margin: "12px 0 6px" }}>Incident reports in the trial window</div>
+          {summary.irTotal === 0
+            ? <div style={{ fontSize: 12, color: "#15803d", fontWeight: 600 }}>None tagged to this employee</div>
+            : <>
+              <div style={{ fontSize: 12, color: "#374151", fontWeight: 600 }}>{summary.irTotal} tagged report{summary.irTotal === 1 ? "" : "s"}</div>
+              {summary.irClustered && (
+                <div style={{ marginTop: 6, background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8, padding: "8px 10px", fontSize: 11.5, color: "#92400e", lineHeight: 1.5 }}>
+                  ⚠️ {summary.irLateFiled} of these were <b>filed in the last 14 days</b> of the trial. That may mean issues finally being reported, or a batch arriving at a convenient moment — worth understanding which before this weighs on the outcome.
+                </div>
+              )}
+              <SmIrTimeline irs={irs} startYmd={rec.startDate} days={rec.trialDays} checkpoints={rec.checkpoints} cfg={cfg} />
+            </>}
+        </div>
+
+        {/* Decision */}
+        {!mode && (
+          <div style={{ marginTop: 16, display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+            <button onClick={onClose} style={{ background: "#fff", color: "#6b7280", border: "1px solid #e5e7eb", borderRadius: 8, padding: "9px 15px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Not yet</button>
+            <button onClick={() => setMode("fail")} style={{ background: "#fff", color: "#374151", border: "1px solid #d1d5db", borderRadius: 8, padding: "9px 15px", fontSize: 12, fontWeight: 800, cursor: "pointer" }}>Did not pass — stays AM</button>
+            <button onClick={() => setMode("pass")} style={{ background: "#16a34a", color: "#fff", border: "none", borderRadius: 8, padding: "9px 16px", fontSize: 12, fontWeight: 800, cursor: "pointer" }}>👑 Passed — promote to SM</button>
+          </div>
+        )}
+
+        {mode === "pass" && (
+          <div style={{ marginTop: 14, background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 11, padding: "12px 14px" }}>
+            <div style={{ fontSize: 12.5, fontWeight: 800, color: "#15803d" }}>Promote {rec.name} to Store Manager</div>
+            <div style={{ fontSize: 11.5, color: "#166534", marginTop: 4, lineHeight: 1.5 }}>Their manager record changes from AM → SM and the trial is archived as passed.</div>
+            <label style={{ display: "block", fontSize: 10.5, fontWeight: 800, color: "#166534", margin: "10px 0 4px", letterSpacing: "0.05em", textTransform: "uppercase" }}>Decision note (who agreed, anything to record)</label>
+            <textarea value={note} onChange={e => setNote(e.target.value)} rows={2} placeholder="e.g. Agreed with National Ops on 12 Aug — consistent scores, no outstanding IRs." style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", border: "1px solid #bbf7d0", borderRadius: 8, fontSize: 12.5, fontFamily: "inherit", resize: "vertical" }} />
+            <div style={{ marginTop: 10, display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button onClick={() => setMode("")} disabled={busy} style={{ background: "#fff", color: "#6b7280", border: "1px solid #e5e7eb", borderRadius: 8, padding: "8px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Back</button>
+              <button onClick={async () => { setBusy(true); const ok = await onPass({ note }); if (!ok) setBusy(false); }} disabled={busy}
+                style={{ background: busy ? "#86efac" : "#16a34a", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 12, fontWeight: 800, cursor: busy ? "default" : "pointer" }}>{busy ? "Saving…" : "Confirm promotion"}</button>
+            </div>
+          </div>
+        )}
+
+        {mode === "fail" && (
+          <div style={{ marginTop: 14, background: "#f9fafb", border: "1px solid #e5e7eb", borderRadius: 11, padding: "12px 14px" }}>
+            <div style={{ fontSize: 12.5, fontWeight: 800, color: "#374151" }}>{rec.name} stays an AM</div>
+            <div style={{ fontSize: 11.5, color: "#6b7280", marginTop: 4, lineHeight: 1.5 }}>
+              A feedback report is required — they need to know what to work on. They may be considered again from <b>{smFmt(eligibleFrom)}</b> ({cooldownMonths} months).
+            </div>
+            {sections.map(s => (
+              <div key={s.title} style={{ marginTop: 10 }}>
+                <label style={{ display: "block", fontSize: 10.5, fontWeight: 800, color: "#6b21a8", marginBottom: 4 }}>{s.title} — what to work on</label>
+                <textarea value={fb[s.title] || ""} onChange={e => setFb(p => ({ ...p, [s.title]: e.target.value }))} rows={2} placeholder="Leave blank if this area was not a concern" style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 12.5, fontFamily: "inherit", resize: "vertical" }} />
+              </div>
+            ))}
+            <label style={{ display: "block", fontSize: 10.5, fontWeight: 800, color: "#374151", margin: "12px 0 4px" }}>Overall summary <span style={{ color: "#dc2626" }}>*</span></label>
+            <textarea value={overall} onChange={e => setOverall(e.target.value)} rows={3} placeholder="The headline: what stood in the way, and what would need to be true next time." style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", border: "1px solid " + (canFail ? "#e5e7eb" : "#fecaca"), borderRadius: 8, fontSize: 12.5, fontFamily: "inherit", resize: "vertical" }} />
+            <label style={{ display: "block", fontSize: 10.5, fontWeight: 800, color: "#374151", margin: "10px 0 4px" }}>Internal decision note (not in the report)</label>
+            <textarea value={note} onChange={e => setNote(e.target.value)} rows={2} placeholder="e.g. HR + Ops agreed 12 Aug not to promote." style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 12.5, fontFamily: "inherit", resize: "vertical" }} />
+            <div style={{ marginTop: 10, display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
+              <button onClick={() => setMode("")} disabled={busy} style={{ background: "#fff", color: "#6b7280", border: "1px solid #e5e7eb", borderRadius: 8, padding: "8px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Back</button>
+              <button onClick={() => { try { navigator.clipboard.writeText(reportText()); alert("Feedback report copied."); } catch (e) { alert("Could not copy — select the text manually."); } }} disabled={!canFail}
+                style={{ background: "#fff", color: canFail ? "#6b21a8" : "#d1d5db", border: "1px solid " + (canFail ? "#ddd6fe" : "#e5e7eb"), borderRadius: 8, padding: "8px 14px", fontSize: 12, fontWeight: 800, cursor: canFail ? "pointer" : "not-allowed" }}>Copy report text</button>
+              <button onClick={async () => { setBusy(true); const ok = await onFail({ note, sections: sections.map(s => ({ heading: s.title, text: String(fb[s.title] || "").trim() })).filter(s => s.text), overall: overall.trim(), text: reportText(), cooldownMonths, eligibleFrom }); if (!ok) setBusy(false); }}
+                disabled={busy || !canFail}
+                title={canFail ? "" : "An overall summary is required"}
+                style={{ background: (busy || !canFail) ? "#e5e7eb" : "#374151", color: (busy || !canFail) ? "#9ca3af" : "#fff", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 12, fontWeight: 800, cursor: (busy || !canFail) ? "not-allowed" : "pointer" }}>{busy ? "Saving…" : "Confirm — did not pass"}</button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // opts: { title, subtitle, columns:[{key, label, sub}], rows:[{label, sub, cells:{[key]:{code,text}}}],
 //         legend:[{code,label}], totals:[{key,value}], filenameBase, codeStyles:{[code]:{bg,fg}} }
 function exportScheduleCsv(opts) {
@@ -3259,7 +3989,7 @@ function TransferModal({ s, onClose, onConfirm, onCancelTransfer }) {
 }
 
 // ─── MANAGER MODAL ────────────────────────────────────────────────────────────────
-function ManagerModal({ m, pin, onClose, onSave, onDelete, smTrialActive, onStartSmTrial }) {
+function ManagerModal({ m, pin, onClose, onSave, onDelete, smTrialActive, smTrialOpenRec, smCooldown, smTenure, smCfg, onStartSmTrial }) {
   const parseName = (t) => {
     if (!t) return { firstName: "", surname: "" };
     const i = t.indexOf(" ");
@@ -3318,35 +4048,21 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete, smTrialActive, onStar
             </div>
           </div>
 
-          {/* SM trial tagger — visible for existing AMs (to start a trial) or
-              for anyone who's already on an active trial (to surface the
-              hint). This lets HR see and correct stale records where the
+          {/* SM trial — visible for existing AMs (to nominate them or record
+              their application) or for anyone with an open trial (to surface
+              the hint). This lets HR see and correct stale records where the
               manager was marked SM directly without going through the trial.
               Hidden for brand-new records (no _id yet). */}
-          {!isNew && (f.role === "AM" || smTrialActive) && typeof onStartSmTrial === "function" && (
-            <div style={{ background: smTrialActive ? "#f1f5f9" : "#FFF7ED", border: "1px solid " + (smTrialActive ? "#cbd5e1" : "#FED7AA"), borderRadius: 9, padding: "10px 12px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-              <div style={{ fontSize: 11, color: smTrialActive ? "#475569" : "#9A3412", lineHeight: 1.4 }}>
-                {smTrialActive
-                  ? <>⭐ <strong>Already on SM trial</strong> — view progress and evaluations in the SM Trials tab.</>
-                  : <><strong>⭐ Store Manager trial</strong><br /><span style={{ color: "#9A3412" }}>3-month trial with mid + final evaluations. Outcome auto-promotes to SM.</span></>}
-              </div>
-              {!smTrialActive && (
-                <button type="button"
-                  onClick={async () => {
-                    const _today = (() => { const d = new Date(); const p = n => String(n).padStart(2, "0"); return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()); })();
-                    const sd = prompt("Start the 3-month SM trial for " + (f.firstName || "") + " " + (f.surname || "") + ".\n\nTrial start date (YYYY-MM-DD):", _today);
-                    if (sd === null) return;
-                    const trimmed = (sd || "").trim();
-                    if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) { alert("Please enter the date as YYYY-MM-DD."); return; }
-                    const ok = await onStartSmTrial(f.ec, trimmed);
-                    if (ok) {
-                      alert("⭐ SM trial started. View it in People → SM Trials.");
-                      onClose();
-                    }
-                  }}
-                  style={{ padding: "7px 14px", borderRadius: 8, border: "none", background: "#EA580C", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>⭐ Start SM Trial</button>
-              )}
-            </div>
+          {!isNew && (f.role === "AM" || smTrialActive || smTrialOpenRec) && typeof onStartSmTrial === "function" && (
+            <SmTrialPanel
+              f={f}
+              cfg={smCfg || SM_CRITERIA_DEFAULT}
+              openRec={smTrialOpenRec}
+              cooldown={smCooldown}
+              tenure={smTenure || { known: false, months: 0, min: 0, ok: false }}
+              onStart={onStartSmTrial}
+              onClose={onClose}
+            />
           )}
           <div><label style={lbl}>Notes</label>
             <input style={inp} value={f.notes || ""} onChange={e => set("notes", e.target.value)} placeholder="e.g. Transfer from Sandown, Pregnant..." /></div>
@@ -9638,7 +10354,198 @@ function AccessPanel({ title, blurb, cfg, onSave, users, roleOpts, accent, accen
   );
 }
 
-function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFreshaCfgSave, overtimeCfg, onOvertimeCfgSave, cashupReviewCfg, onCashupReviewCfgSave, leaveOpsCfg, onLeaveOpsCfgSave, leavePayrollCfg, onLeavePayrollCfgSave, leaveBalancesCfg, onLeaveBalancesCfgSave, officeStaffCfg, onOfficeStaffCfgSave, officeHoursCfg, onOfficeHoursCfgSave }) {
+// ── Settings: SM classification criteria, evaluation form & trial policy ────
+// National ops / HR define what "ready to be an SM" means. Everything here is
+// read by the SM trial flow at run time, so an edit changes the next
+// application and the next evaluation — never a past one (submitted
+// evaluations carry their own snapshot of the form they were scored against).
+function SmCriteriaPanel({ cfg, onSave }) {
+  const [draft, setDraft] = React.useState(() => smCriteriaMerged(cfg));
+  const [busy, setBusy] = React.useState(false);
+  const [result, setResult] = React.useState(null);
+  const [open, setOpen] = React.useState("classification");
+  React.useEffect(() => { setDraft(smCriteriaMerged(cfg)); }, [cfg]);
+
+  const A = { ink: "#5b21b6", accent: "#7c3aed", soft: "#ddd6fe", bg: "#faf5ff" };
+  const inp = { width: "100%", padding: "7px 9px", fontSize: 13, border: "1px solid " + A.soft, borderRadius: 7, fontFamily: "inherit", color: "#374151", boxSizing: "border-box" };
+  const lbl = { display: "block", fontSize: 10, fontWeight: 800, color: A.ink, letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 4 };
+  const secBtn = (k, label) => (
+    <button key={k} onClick={() => setOpen(open === k ? "" : k)}
+      style={{ border: "1px solid " + (open === k ? A.accent : A.soft), background: open === k ? A.accent : "#fff", color: open === k ? "#fff" : A.ink, borderRadius: 8, padding: "6px 12px", fontSize: 11.5, fontWeight: 800, fontFamily: "inherit", cursor: "pointer" }}>{label}</button>
+  );
+
+  const evalMax = formMaxOf(draft.evalForm.sections);
+  const slug = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40) || ("k" + Math.random().toString(36).slice(2, 6));
+
+  const setClass = (patch) => setDraft(d => ({ ...d, classification: { ...d.classification, ...patch } }));
+  const setTrial = (patch) => setDraft(d => ({ ...d, trial: { ...d.trial, ...patch } }));
+  const setForm = (patch) => setDraft(d => ({ ...d, evalForm: { ...d.evalForm, ...patch } }));
+  const setSection = (i, patch) => setForm({ sections: draft.evalForm.sections.map((s, idx) => idx === i ? { ...s, ...patch } : s) });
+  const setItem = (si, ii, patch) => setSection(si, { items: draft.evalForm.sections[si].items.map((it, idx) => idx === ii ? { ...it, ...patch } : it) });
+
+  const save = async () => {
+    if (busy) return;
+    const max = formMaxOf(draft.evalForm.sections);
+    if (!max) { setResult({ ok: false, msg: "The evaluation form needs at least one criterion." }); return; }
+    const pass = Number(draft.evalForm.pass) || 0;
+    if (pass > max) { setResult({ ok: false, msg: "Pass mark (" + pass + ") is higher than the form's maximum (" + max + ")." }); return; }
+    if (!(draft.classification.items || []).length) { setResult({ ok: false, msg: "Add at least one classification criterion." }); return; }
+    setBusy(true); setResult(null);
+    const clean = smCriteriaMerged({
+      ...draft,
+      evalForm: {
+        ...draft.evalForm,
+        max,
+        sections: draft.evalForm.sections.map(s => ({
+          title: s.title,
+          max: (s.items || []).length * 5,
+          items: (s.items || []).map(it => ({ k: it.k || slug(it.label), label: it.label, key: !!it.key, desc: it.desc || "" }))
+        }))
+      },
+      updatedAt: new Date().toISOString()
+    });
+    try {
+      await onSave(clean);
+      setDraft(clean);
+      setResult({ ok: true, msg: "Saved — applies to the next application and the next evaluation submitted." });
+    } catch (e) { setResult({ ok: false, msg: "Could not save: " + ((e && e.message) || e) }); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div style={{ background: "#fff", border: "1px solid " + A.soft, borderRadius: 14, padding: "16px 18px", marginBottom: 16 }}>
+      <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 18, color: A.ink, fontWeight: 700 }}>⭐ SM Trial &amp; Classification</div>
+      <div style={{ fontSize: 12, color: "#6b7280", margin: "5px 0 12px", lineHeight: 1.55 }}>
+        What an AM must show before applying to become a Store Manager, the form ROMs score them on each month, and how long a knocked-back candidate waits before being considered again. Owned by HR and national ops.
+      </div>
+      <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginBottom: 14 }}>
+        {secBtn("classification", "Classification criteria")}
+        {secBtn("form", "Evaluation form (" + evalMax + " marks)")}
+        {secBtn("policy", "Trial policy")}
+      </div>
+
+      {open === "classification" && (
+        <div style={{ background: A.bg, border: "1px solid #ede9fe", borderRadius: 11, padding: "12px 14px" }}>
+          <div style={{ maxWidth: 260, marginBottom: 12 }}>
+            <label style={lbl}>Minimum service before applying</label>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <input type="number" min="0" max="60" value={draft.classification.minTenureMonths}
+                onChange={e => setClass({ minTenureMonths: Math.max(0, Number(e.target.value) || 0) })} style={{ ...inp, width: 90 }} />
+              <span style={{ fontSize: 12, color: "#6b7280" }}>months with the company</span>
+            </div>
+          </div>
+          <label style={lbl}>Criteria an AM must meet</label>
+          {(draft.classification.items || []).map((it, i) => (
+            <div key={i} style={{ background: "#fff", border: "1px solid " + A.soft, borderRadius: 9, padding: "9px 11px", marginBottom: 7 }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <input value={it.label} onChange={e => setClass({ items: draft.classification.items.map((x, idx) => idx === i ? { ...x, label: e.target.value, k: x.k || slug(e.target.value) } : x) })}
+                  placeholder="Criterion" style={{ ...inp, fontWeight: 700 }} />
+                <button onClick={() => setClass({ items: draft.classification.items.filter((_x, idx) => idx !== i) })}
+                  style={{ border: "1px solid #fecaca", background: "#fff", color: "#991b1b", borderRadius: 7, padding: "6px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Remove</button>
+              </div>
+              <input value={it.desc || ""} onChange={e => setClass({ items: draft.classification.items.map((x, idx) => idx === i ? { ...x, desc: e.target.value } : x) })}
+                placeholder="What good looks like (shown to HR when they record an application)" style={{ ...inp, marginTop: 6, fontSize: 12 }} />
+            </div>
+          ))}
+          <button onClick={() => setClass({ items: [...(draft.classification.items || []), { k: slug("new criterion " + Date.now()), label: "", desc: "" }] })}
+            style={{ border: "1px dashed " + A.soft, background: "#fff", color: A.ink, borderRadius: 8, padding: "7px 13px", fontSize: 11.5, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>＋ Add criterion</button>
+        </div>
+      )}
+
+      {open === "form" && (
+        <div style={{ background: A.bg, border: "1px solid #ede9fe", borderRadius: 11, padding: "12px 14px" }}>
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
+            <div>
+              <label style={lbl}>Pass mark</label>
+              <input type="number" min="0" value={draft.evalForm.pass} onChange={e => setForm({ pass: Math.max(0, Number(e.target.value) || 0) })} style={{ ...inp, width: 100 }} />
+              <div style={{ fontSize: 10.5, color: "#6b7280", marginTop: 3 }}>out of {evalMax} ({evalMax ? Math.round((draft.evalForm.pass / evalMax) * 100) : 0}%)</div>
+            </div>
+            <div>
+              <label style={lbl}>Key indicator minimum</label>
+              <input type="number" min="1" max="5" value={draft.evalForm.keyMin} onChange={e => setForm({ keyMin: Math.min(5, Math.max(1, Number(e.target.value) || 1)) })} style={{ ...inp, width: 100 }} />
+              <div style={{ fontSize: 10.5, color: "#6b7280", marginTop: 3 }}>each Key criterion must score at least this</div>
+            </div>
+          </div>
+          <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 10, lineHeight: 1.5 }}>
+            Every criterion is scored 1–5, so each one adds 5 to the maximum. Evaluations already submitted keep the form they were scored against.
+          </div>
+          {draft.evalForm.sections.map((sec, si) => (
+            <div key={si} style={{ background: "#fff", border: "1px solid " + A.soft, borderRadius: 10, padding: "10px 12px", marginBottom: 9 }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <input value={sec.title} onChange={e => setSection(si, { title: e.target.value })} placeholder="Section title" style={{ ...inp, fontWeight: 800, color: A.ink }} />
+                <span style={{ fontSize: 11, color: "#9ca3af", whiteSpace: "nowrap" }}>{(sec.items || []).length * 5} marks</span>
+                <button onClick={() => { if (confirm("Remove the whole \"" + sec.title + "\" section?")) setForm({ sections: draft.evalForm.sections.filter((_s, idx) => idx !== si) }); }}
+                  style={{ border: "1px solid #fecaca", background: "#fff", color: "#991b1b", borderRadius: 7, padding: "6px 9px", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>✕</button>
+              </div>
+              {(sec.items || []).map((it, ii) => (
+                <div key={ii} style={{ display: "flex", gap: 7, alignItems: "center", marginTop: 6, paddingTop: 6, borderTop: "1px solid #f5f3ff" }}>
+                  <input value={it.label} onChange={e => setItem(si, ii, { label: e.target.value, k: it.k || slug(e.target.value) })} placeholder="Criterion" style={{ ...inp, fontSize: 12.5 }} />
+                  <label title="Key Indicator — must meet the minimum score" style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 700, color: it.key ? "#92400e" : "#9ca3af", cursor: "pointer", whiteSpace: "nowrap" }}>
+                    <input type="checkbox" checked={!!it.key} onChange={e => setItem(si, ii, { key: e.target.checked })} />Key
+                  </label>
+                  <button onClick={() => setSection(si, { items: sec.items.filter((_x, idx) => idx !== ii) })}
+                    style={{ border: "none", background: "transparent", color: "#d1d5db", fontSize: 14, cursor: "pointer", padding: "0 4px" }}>✕</button>
+                </div>
+              ))}
+              <button onClick={() => setSection(si, { items: [...(sec.items || []), { k: slug("item " + Date.now()), label: "", key: false, desc: "" }] })}
+                style={{ marginTop: 8, border: "1px dashed " + A.soft, background: "#fff", color: A.ink, borderRadius: 7, padding: "5px 11px", fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>＋ Add criterion</button>
+            </div>
+          ))}
+          <button onClick={() => setForm({ sections: [...draft.evalForm.sections, { title: "New section", max: 0, items: [] }] })}
+            style={{ border: "1px dashed " + A.soft, background: "#fff", color: A.ink, borderRadius: 8, padding: "7px 13px", fontSize: 11.5, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>＋ Add section</button>
+        </div>
+      )}
+
+      {open === "policy" && (
+        <div style={{ background: A.bg, border: "1px solid #ede9fe", borderRadius: 11, padding: "12px 14px" }}>
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+            <div>
+              <label style={lbl}>Trial length (days)</label>
+              <input type="number" min="30" max="365" value={draft.trial.trialDays}
+                onChange={e => setTrial({ trialDays: Math.max(30, Number(e.target.value) || 90) })} style={{ ...inp, width: 110 }} />
+            </div>
+            <div>
+              <label style={lbl}>Re-apply after a fail</label>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input type="number" min="3" max="6" value={draft.trial.cooldownMonths}
+                  onChange={e => setTrial({ cooldownMonths: Math.min(6, Math.max(3, Number(e.target.value) || 6)) })} style={{ ...inp, width: 90 }} />
+                <span style={{ fontSize: 12, color: "#6b7280" }}>months (3–6)</span>
+              </div>
+            </div>
+          </div>
+          <div style={{ fontSize: 11, color: "#6b7280", margin: "10px 0 8px", lineHeight: 1.5 }}>
+            The cooldown is stamped onto a record when the trial is failed, so changing it here never moves an existing candidate's date.
+          </div>
+          <label style={lbl}>Evaluation checkpoints</label>
+          {draft.trial.checkpoints.map((c, i) => (
+            <div key={c.key} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
+              <input value={c.label} onChange={e => setTrial({ checkpoints: draft.trial.checkpoints.map((x, idx) => idx === i ? { ...x, label: e.target.value } : x) })}
+                style={{ ...inp, fontSize: 12.5 }} />
+              <span style={{ fontSize: 11, color: "#6b7280", whiteSpace: "nowrap" }}>due day</span>
+              <input type="number" min="1" max={draft.trial.trialDays} value={c.dueOffset}
+                onChange={e => setTrial({ checkpoints: draft.trial.checkpoints.map((x, idx) => idx === i ? { ...x, dueOffset: Math.min(draft.trial.trialDays, Math.max(1, Number(e.target.value) || 1)) } : x) })}
+                style={{ ...inp, width: 80 }} />
+            </div>
+          ))}
+          <div style={{ fontSize: 10.5, color: "#9ca3af", lineHeight: 1.5 }}>
+            Checkpoints are fixed at three (one a month). Trials already running keep the checkpoints they started with.
+          </div>
+        </div>
+      )}
+
+      <div style={{ marginTop: 14, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <button onClick={save} disabled={busy}
+          style={{ border: "none", background: busy ? "#c4b5fd" : A.accent, color: "#fff", borderRadius: 9, padding: "9px 18px", fontSize: 12.5, fontWeight: 800, cursor: busy ? "default" : "pointer", fontFamily: "inherit" }}>
+          {busy ? "Saving…" : "Save criteria"}
+        </button>
+        {draft.updatedAt && <span style={{ fontSize: 11, color: "#9ca3af" }}>Last saved {smFmt(String(draft.updatedAt).slice(0, 10))}{draft.updatedBy ? " by " + draft.updatedBy : ""}</span>}
+        {result && <span style={{ fontSize: 12, fontWeight: 700, color: result.ok ? "#15803d" : "#991b1b" }}>{result.msg}</span>}
+      </div>
+    </div>
+  );
+}
+
+function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFreshaCfgSave, overtimeCfg, onOvertimeCfgSave, cashupReviewCfg, onCashupReviewCfgSave, leaveOpsCfg, onLeaveOpsCfgSave, leavePayrollCfg, onLeavePayrollCfgSave, leaveBalancesCfg, onLeaveBalancesCfgSave, officeStaffCfg, onOfficeStaffCfgSave, officeHoursCfg, onOfficeHoursCfgSave, smCriteriaCfg, onSmCriteriaSave }) {
   const users = appUsers || {};
   const [editing, setEditing] = useState(null);   // {pin, isNew, name, role, demo, isOwner, perms, originalPin}
   const [busy, setBusy] = useState(false);
@@ -10042,6 +10949,7 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFres
           accent="#b45309" accentBg="#fffbeb" border="#fde68a"
         />
       )}
+      {onSmCriteriaSave && <SmCriteriaPanel cfg={smCriteriaCfg} onSave={onSmCriteriaSave} />}
 
       {/* ── Add / edit modal ── */}
       {editing && (
@@ -10993,7 +11901,7 @@ function IncidentQR({ url, size }) {
   return <div ref={ref} />;
 }
 
-function IncidentReportsTab({ reports, setReports, currentUser, mode }) {
+function IncidentReportsTab({ reports, setReports, currentUser, mode, people }) {
   // Same component, two inboxes: the default view hides the auto-filed leave-
   // expiry alerts so genuine staff reports aren't buried; mode="leaveExpiry"
   // shows ONLY those. Everything else (status/store filters, review actions,
@@ -11008,6 +11916,27 @@ function IncidentReportsTab({ reports, setReports, currentUser, mode }) {
   const [showQR, setShowQR] = useState(false);            // QR is tucked away by default
   const [resolvingId, setResolvingId] = useState(null);   // report awaiting a resolution note
   const [resolveText, setResolveText] = useState("");
+  const [tagOpenId, setTagOpenId] = useState(null);       // report whose employee-tag picker is open
+  const [tagDraft, setTagDraft] = useState([]);
+  const [tagQuery, setTagQuery] = useState("");
+
+  const roster = Array.isArray(people) ? people : [];
+  const nameForEc = (ec) => {
+    const hit = roster.find(p => p.ec === ec);
+    return hit ? hit.name : "";
+  };
+  // Attributing a report to a person is what lets it surface on their SM trial
+  // review, so it is an explicit HR action with an audit note, never inferred
+  // from the reporter's free-text "people involved".
+  const saveTags = async (r, ecs) => {
+    setBusy(true);
+    try {
+      await window.BOA_DB.setIncidentTags(r.id, ecs, currentUser.name || currentUser.pin || "");
+      patchLocal(r.id, { tagged_ecs: ecs.length ? ecs : null });
+      setTagOpenId(null);
+    } catch (e) { alert("Could not save employee tags: " + (e.message || e)); }
+    setBusy(false);
+  };
 
   // Where the QR points: the "My BOA" staff site. window.BOA_STAFF_URL is the
   // address of the dedicated My BOA deploy (its root serves the hub). If unset,
@@ -11178,6 +12107,93 @@ function IncidentReportsTab({ reports, setReports, currentUser, mode }) {
                     ? <>{r.reporter_name}{r.reporter_contact ? <span style={{ color: "#6b7280" }}> · {r.reporter_contact}</span> : null}</>
                     : <em style={{ color: "#9ca3af" }}>Anonymous</em>}</span>
                 </div>
+
+                {/* Employee tags — the only link between a report and a person.
+                    "People involved" above is whatever the reporter typed; this
+                    is HR saying who it is actually about, which is what the SM
+                    trial review and any future per-employee view read. */}
+                {!leaveMode && (() => {
+                  const tags = Array.isArray(r.tagged_ecs) ? r.tagged_ecs : [];
+                  const picking = tagOpenId === r.id;
+                  const q = tagQuery.trim().toLowerCase();
+                  const matches = q
+                    ? roster.filter(p => p.name.toLowerCase().includes(q) || p.ec.toLowerCase().includes(q) || (p.branch || "").toLowerCase().includes(q)).slice(0, 40)
+                    : roster.filter(p => p.branch && r.store && p.branch === r.store).slice(0, 40);
+                  return (
+                    <div style={{ background: "#faf5ff", border: "1px solid #ede9fe", borderRadius: 11, padding: "11px 13px", marginBottom: 14 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                        <div style={{ fontSize: 12, fontWeight: 800, color: "#6b21a8" }}>🏷 Tagged employees</div>
+                        <button disabled={busy}
+                          onClick={() => { setTagOpenId(picking ? null : r.id); setTagDraft(tags.slice()); setTagQuery(""); }}
+                          style={{ border: "1px solid #ddd6fe", background: "#fff", color: "#6b21a8", borderRadius: 8, padding: "5px 11px", fontWeight: 700, fontSize: 11.5, fontFamily: "inherit", cursor: "pointer" }}>
+                          {picking ? "Cancel" : tags.length ? "Edit tags" : "Tag employees"}
+                        </button>
+                      </div>
+
+                      {!picking && (
+                        tags.length ? (
+                          <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                            {tags.map(ec => (
+                              <span key={ec} style={{ background: "#ede9fe", color: "#5b21b6", borderRadius: 999, padding: "3px 10px", fontSize: 11.5, fontWeight: 700 }}>
+                                {nameForEc(ec) || "Unknown"} <span style={{ opacity: 0.65 }}>· {ec}</span>
+                              </span>
+                            ))}
+                          </div>
+                        ) : (
+                          <div style={{ marginTop: 6, fontSize: 11.5, color: r.status === "reviewing" ? "#92400e" : "#8b7095", lineHeight: 1.5 }}>
+                            {r.status === "reviewing"
+                              ? "⚠️ Nobody tagged yet. Tag the people this report is about so it shows up on their record — including any Store Manager trial review."
+                              : "Nobody tagged yet. Reported as involved: " + (r.people_involved || "—")}
+                          </div>
+                        )
+                      )}
+
+                      {picking && (
+                        <div style={{ marginTop: 9 }}>
+                          <input value={tagQuery} onChange={e => setTagQuery(e.target.value)}
+                            placeholder={"Search by name, code or store" + (r.store ? " — showing " + r.store + " by default" : "")}
+                            style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", border: "1px solid #ddd6fe", borderRadius: 8, fontSize: 13, fontFamily: "inherit" }} />
+                          {tagDraft.length > 0 && (
+                            <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                              {tagDraft.map(ec => (
+                                <button key={ec} onClick={() => setTagDraft(d => d.filter(x => x !== ec))}
+                                  style={{ background: "#6b21a8", color: "#fff", border: "none", borderRadius: 999, padding: "3px 10px", fontSize: 11.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                                  {nameForEc(ec) || ec} ✕
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                          <div style={{ marginTop: 8, maxHeight: 210, overflowY: "auto", border: "1px solid #ede9fe", borderRadius: 8, background: "#fff" }}>
+                            {matches.length === 0 ? (
+                              <div style={{ padding: "12px 11px", fontSize: 12, color: "#9ca3af" }}>
+                                {q ? "Nobody matches that." : "Type a name or code to search."}
+                              </div>
+                            ) : matches.map(p => {
+                              const on = tagDraft.indexOf(p.ec) !== -1;
+                              return (
+                                <button key={p.ec} onClick={() => setTagDraft(d => on ? d.filter(x => x !== p.ec) : [...d, p.ec])}
+                                  style={{ display: "flex", width: "100%", justifyContent: "space-between", gap: 8, alignItems: "center", textAlign: "left", padding: "7px 11px", border: "none", borderBottom: "1px solid #f5f3ff", background: on ? "#f5f3ff" : "#fff", cursor: "pointer", fontFamily: "inherit" }}>
+                                  <span style={{ fontSize: 12.5, color: "#374151", fontWeight: on ? 700 : 500 }}>
+                                    {on ? "✓ " : ""}{p.name} <span style={{ color: "#9ca3af" }}>· {p.ec}</span>
+                                  </span>
+                                  <span style={{ fontSize: 11, color: "#9ca3af" }}>{p.branch || "—"}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                          <div style={{ marginTop: 9, display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                            <button disabled={busy} onClick={() => setTagOpenId(null)}
+                              style={{ border: "1px solid #e5e7eb", background: "#fff", color: "#6b7280", borderRadius: 8, padding: "7px 13px", fontWeight: 700, fontSize: 12, fontFamily: "inherit", cursor: "pointer" }}>Cancel</button>
+                            <button disabled={busy} onClick={() => saveTags(r, tagDraft)}
+                              style={{ border: "none", background: busy ? "#c4b5fd" : "#7c3aed", color: "#fff", borderRadius: 8, padding: "7px 15px", fontWeight: 800, fontSize: 12, fontFamily: "inherit", cursor: busy ? "default" : "pointer" }}>
+                              {busy ? "Saving…" : "Save tags"}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
 
                 {r.photo_b64 && (
                   <img src={r.photo_b64} alt="attachment" onClick={() => setPhotoZoom(r.photo_b64)}
@@ -19860,6 +20876,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     try { if (window.BOA_DB.saveOfficeHoursAccess) await window.BOA_DB.saveOfficeHoursAccess(next); }
     catch (e) { window.alert("Could not save office hours access: " + (e.message || e)); }
   };
+  const saveSmCriteriaCfg = async (next) => {
+    const stamped = { ...next, updatedBy: (currentUser && currentUser.name) || "" };
+    if (!window.BOA_DB.saveSmCriteriaConfig) throw new Error("This build can't save SM criteria yet.");
+    await window.BOA_DB.saveSmCriteriaConfig(stamped);
+    setSmCriteriaCfg(smCriteriaMerged(stamped));
+    logActivity("Updated SM trial criteria", "", "Classification criteria / evaluation form / trial policy", "Admin");
+  };
   // Declared after officeHoursCfg — referencing it earlier is a TDZ crash.
   const canSeeOfficeHours = accessAllows(currentUser, officeHoursCfg);
   // Manager minus-hours alert audience: National Ops + whoever sees the payroll
@@ -19976,6 +20999,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [hrTasks, setHrTasks] = useState([]);         // HR Tasks (mocked for now)
   const [offList, setOffList] = useState([]);         // leaver records
   const [smTrialList, setSmTrialList] = useState([]); // AMs on 3-month Store Manager trial
+  // SM classification criteria, monthly evaluation form and trial policy —
+  // owned by HR / national ops via Settings, not hardcoded.
+  const [smCriteriaCfg, setSmCriteriaCfg] = useState(SM_CRITERIA_DEFAULT);
+  const [smEvalModal, setSmEvalModal] = useState(null);   // {recId, cpKey} — submitting an evaluation
+  const [smEvalView, setSmEvalView] = useState(null);     // {recId, cpKey, evalId} — reading one back
+  const [smDecisionId, setSmDecisionId] = useState(null); // trial _id being decided
+  const [smWarnOpen, setSmWarnOpen] = useState(null);     // trial _id with the "log warning" form open
   // Controlled value for the "Mark a staff member as off-boarded" StaffPicker;
   // submitOff() now reads this state instead of an uncontrolled <select> DOM
   // node so the searchable picker can drive it cleanly.
@@ -21541,8 +22571,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       (window.BOA_DB.loadExtraDayRequests && _needRequests) ? window.BOA_DB.loadExtraDayRequests() : Promise.resolve([]),
       window.BOA_DB.loadFreshaExtraOpenings ? window.BOA_DB.loadFreshaExtraOpenings() : Promise.resolve({}),
       window.BOA_DB.loadFreshaBlocks ? window.BOA_DB.loadFreshaBlocks() : Promise.resolve({}),
-      window.BOA_DB.loadInterviews ? window.BOA_DB.loadInterviews() : Promise.resolve([])
-    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess, offStaffAccess, offHoursAccess, cuReviewAccess, lvOpsAccess, lvPayrollAccess, lvBalancesAccess, incidents, leaveReqs, extraReqs, freshaExtraOpenMap, freshaBlocksMap, interviews]) => {
+      window.BOA_DB.loadInterviews ? window.BOA_DB.loadInterviews() : Promise.resolve([]),
+      window.BOA_DB.loadSmCriteriaConfig ? window.BOA_DB.loadSmCriteriaConfig() : Promise.resolve(null)
+    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess, offStaffAccess, offHoursAccess, cuReviewAccess, lvOpsAccess, lvPayrollAccess, lvBalancesAccess, incidents, leaveReqs, extraReqs, freshaExtraOpenMap, freshaBlocksMap, interviews, smCriteria]) => {
       // Register Head Office employee codes BEFORE any state update so
       // isManagerEc() never mis-classifies an HO person (e.g. a -M code) as a
       // salon manager. Rebuilt each load; empty when no HO staff exist.
@@ -21629,7 +22660,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setHrTasks(Array.isArray(tasks) ? tasks : []);
       setTrialList(Array.isArray(trial) ? trial : []);
       setInterviewList(Array.isArray(interviews) ? interviews : []);
-      setSmTrialList(Array.isArray(smTrial) ? smTrial : []);
+      // Config first — normalising a trial record needs the checkpoint set.
+      const _smCfg = smCriteriaMerged(smCriteria);
+      setSmCriteriaCfg(_smCfg);
+      setSmTrialList(Array.isArray(smTrial) ? smTrial.map(r => normalizeSmTrialRec(r, _smCfg)) : []);
       setOvertimeReqs(Array.isArray(ot) ? ot : []);
       setFreshaAccess(freshaAcc && typeof freshaAcc === "object" ? freshaAcc : {});
       setOvertimeAccess(otAccess && typeof otAccess === "object" ? otAccess : {});
@@ -23095,6 +24129,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     });
   }, [managers, findMatRec, offboardedMap, smTrialList]);
 
+  // Everyone an incident report can be tagged against — techs and managers in
+  // one searchable roster, keyed on the employee code used across the stack.
+  const taggablePeople = useMemo(() => {
+    const nameOf = p => (p.name || ((p.firstName || "") + " " + (p.surname || "")).trim() || "").trim();
+    const seen = new Set();
+    const out = [];
+    [...(staff || []), ...(managers || [])].forEach(p => {
+      const ec = String((p && p.ec) || "").trim();
+      if (!ec || seen.has(ec)) return;
+      seen.add(ec);
+      out.push({ ec, name: nameOf(p) || ec, branch: p.branch || "" });
+    });
+    return out.sort((a, b) => a.name.localeCompare(b.name));
+  }, [staff, managers]);
+
   // ── Manager Planner mirror ────────────────────────────────────────────
   // The planner is a sandbox keyed off plannerMgrs. Without this effect, it
   // got seeded once on first open and went stale: managers added via
@@ -23790,44 +24839,111 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       if (rec) logActivity("Deleted maternity record", rec.name || rec.ec, rec.matStatus || "", "Maternity");
     } catch (e) { alert("Could not delete: " + (e.message || e)); }
   }
-  // Start a new 3-month SM trial for the given AM. Called from the Manager
-  // modal's "Start SM Trial" button and from the SM Trials tab's picker.
+  // ── SM trial helpers (shared by the Manager modal and the SM Trials tab) ──
+  const smPersist = async (next) => {
+    setSmTrialList(next);
+    try { await window.BOA_DB.saveSmTrial(next); return true; }
+    catch (e) { alert("Could not save SM trial: " + (e.message || e)); return false; }
+  };
+  // Every trial/application this EC has ever had, newest first.
+  const smHistoryFor = (ec) => {
+    const k = String(ec || "").trim();
+    if (!k) return [];
+    return (smTrialList || [])
+      .filter(r => r && String(r.ec || "").trim() === k)
+      .slice()
+      .sort((a, b) => String(b.addedAt || b.startDate || "").localeCompare(String(a.addedAt || a.startDate || "")));
+  };
+  // A failed trial locks the candidate out for the configured cooldown so a
+  // knocked-back AM gets real time to work on the feedback, not an immediate
+  // re-nomination. Returns null when they're free to be considered.
+  const smCooldownFor = (ec) => {
+    const failed = smHistoryFor(ec).filter(r => r.status === "failed");
+    if (!failed.length) return null;
+    const latest = failed.slice().sort((a, b) => String(b.outcomeAt || "").localeCompare(String(a.outcomeAt || "")))[0];
+    const from = (latest.cooldown && latest.cooldown.eligibleFrom)
+      || addMonthsYmd((latest.outcomeAt || "").slice(0, 10), smCriteriaCfg.trial.cooldownMonths);
+    if (!from) return null;
+    const today = ymdStr(new Date());
+    return from > today
+      ? { eligibleFrom: from, failedAt: (latest.outcomeAt || "").slice(0, 10), months: (latest.cooldown && latest.cooldown.months) || smCriteriaCfg.trial.cooldownMonths, rec: latest }
+      : null;
+  };
+  // Tenure check for the reclassification path. A missing/garbage start date is
+  // "unverifiable", NOT "0 months" — plenty of older records have no start_date
+  // and HR must see that rather than a silent fail.
+  const smTenureFor = (mgr) => {
+    const sd = normYmd(mgr && mgr.startDate);
+    const min = Number(smCriteriaCfg.classification.minTenureMonths) || 0;
+    if (!sd || isNaN(new Date(sd + "T00:00:00").getTime())) {
+      return { known: false, months: 0, min, ok: false };
+    }
+    const months = monthsBetween(sd, ymdStr(new Date()));
+    return { known: true, months, min, ok: months >= min, startDate: sd };
+  };
+
+  // Start a 3-month SM trial, or record an AM's application to reclassify.
+  // Called from the Manager modal's SM trial panel and from the SM Trials tab.
+  // opts: { origin:"nominated"|"application", criteriaChecks, applicationNote, asApplication }
   // Returns true on success.
-  async function startSmTrialFor(ec, startDate, notes) {
+  async function startSmTrialFor(ec, startDate, notes, opts) {
     if (!ec) return false;
+    opts = opts || {};
     const mgr = (managers || []).find(m => m && m.ec === ec);
     if (!mgr) { alert("Manager not found."); return false; }
-    if ((smTrialList || []).some(r => r.ec === ec && r.status === "active")) {
-      alert(mgr.name + " is already on an active SM trial.");
+    if ((smTrialList || []).some(r => r.ec === ec && (r.status === "active" || r.status === "applied"))) {
+      alert(mgr.name + " already has an open SM trial or application.");
       return false;
     }
-    const sd = startDate || (() => {
-      const d = new Date();
-      const p = n => String(n).padStart(2, "0");
-      return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
-    })();
+    const cool = smCooldownFor(ec);
+    if (cool) {
+      alert(mgr.name + " failed an SM trial on " + cool.failedAt + " and is not eligible again until "
+        + cool.eligibleFrom + " (" + cool.months + "-month re-application period).");
+      return false;
+    }
+    const sd = startDate || ymdStr(new Date());
+    const asApplication = !!opts.asApplication;
+    const tenure = smTenureFor(mgr);
     const rec = {
       _id: Date.now(),
+      rev: 2,
       ec: mgr.ec,
       name: mgr.name || ((mgr.firstName || "") + " " + (mgr.surname || "")).trim(),
       branch: mgr.branch || "",
+      origin: opts.origin || (asApplication ? "application" : "nominated"),
       startDate: sd,
-      trialDays: 90,
-      // Mid + Final evaluations (per HR choice). Mid at ~6 weeks, final at the
-      // end of the 3-month trial.
-      evaluations: [
-        { key: "mid", dueOffset: 45, doneAt: null, notes: "" },
-        { key: "final", dueOffset: 90, doneAt: null, notes: "" }
-      ],
-      status: "active",
+      trialDays: smCriteriaCfg.trial.trialDays,
+      // One evaluation per month of the trial. Each holds MANY submissions —
+      // the region's ROM plus any other ROM who observed the candidate.
+      checkpoints: smCriteriaCfg.trial.checkpoints.map(c => ({
+        key: c.key, label: c.label, dueOffset: c.dueOffset, evals: []
+      })),
+      warnings: [],
+      // "applied" keeps them out of the AM→SM role flip (every consumer keys
+      // on "active") until HR actually starts the trial.
+      status: asApplication ? "applied" : "active",
       notes: notes || "",
       addedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
+    if (opts.origin === "application" || asApplication) {
+      rec.application = {
+        recordedAt: new Date().toISOString(),
+        recordedBy: (currentUser && currentUser.name) || "",
+        tenureMonthsAtApplication: tenure.known ? tenure.months : null,
+        criteriaChecks: opts.criteriaChecks || {},
+        note: opts.applicationNote || ""
+      };
+    }
     const next = [...(smTrialList || []), rec];
     setSmTrialList(next);
     try { await window.BOA_DB.saveSmTrial(next); }
     catch (e) { alert("Could not save SM trial: " + (e.message || e)); return false; }
+    if (asApplication) {
+      logActivity("Recorded SM application", rec.name + " (" + rec.ec + ")",
+        "Applied to reclassify · tenure " + (tenure.known ? tenure.months + " months" : "unknown"));
+      return true;
+    }
     logActivity("Started SM trial", rec.name + " (" + rec.ec + ")", "3-month trial from " + sd);
     return true;
   }
@@ -24340,7 +25456,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               return ds <= 31;
             }).length;
             const activeTrialCount = trialList.filter(r => r.status !== "passed" && !trialIsGone(r) && r.status !== "hired").length;
-            const activeSmTrialCount = (smTrialList || []).filter(r => r.status === "active").length;
+            // Applications waiting to be started count too — an unanswered
+            // application is exactly the thing that shouldn't sit unseen.
+            const activeSmTrialCount = (smTrialList || []).filter(r => r.status === "active" || r.status === "applied").length;
             const trialLbl = "🧪 Trial Period" + (activeTrialCount > 0 ? " (" + activeTrialCount + ")" : "");
             const smTrialLbl = "⭐ SM Trials" + (activeSmTrialCount > 0 ? " (" + activeSmTrialCount + ")" : "");
             const onboardLbl = "🌱 Onboarding" + (obCount > 0 ? " (" + obCount + ")" : "");
@@ -29186,7 +30304,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         {/* ── INCIDENT REPORTS TAB ── */}
         {tab === "incidents" && canSeeIncidents(currentUser) && (
-          <IncidentReportsTab reports={incidentReports} setReports={setIncidentReports} currentUser={currentUser} />
+          <IncidentReportsTab reports={incidentReports} setReports={setIncidentReports} currentUser={currentUser} people={taggablePeople} />
         )}
 
         {/* ── LEAVE EXPIRY REPORTS TAB (same component, expiry-only slice) ── */}
@@ -29945,54 +31063,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         ];
         const EVAL_MAX = 130, EVAL_PASS = 91, EVAL_KEY_MIN = 3;
 
-        // ── Assistant-Manager evaluation (BOA Manager Evaluation Form) ──
-        // 27 criteria across 5 sections, scored 1–5 (max 135). Pass = 70%
-        // (95/135) AND every Key Indicator ≥4 (per the form's extension rule).
-        const AM_EVAL_SECTIONS = [
-          {
-            title: "Customer Service Excellence", max: 50, items: [
-              { k: "greeting_ssco", label: "Client Greeting – SSCO", key: true, desc: "Greets all clients warmly using Stand–Smile–Confirm–Offer." },
-              { k: "booking_conf", label: "Booking Confirmation", desc: "Confirms booking and treatment details before the appointment time." },
-              { k: "proactive", label: "Proactive Service", desc: "Anticipates client needs and ensures comfort." },
-              { k: "recovery", label: "Service Recovery", desc: "Handles complaints effectively, maintains calmness." },
-              { k: "presentation", label: "Professional Presentation", key: true, desc: "Displays neat grooming and welcoming demeanor. Wears full BOA uniform." },
-              { k: "wait_mgmt", label: "Wait Management", desc: "Informs clients of delays courteously." },
-              { k: "product_know", label: "Product Knowledge", desc: "Explains services and retail confidently." },
-              { k: "feedback", label: "Feedback Collection", desc: "Encourages positive Google Reviews." },
-              { k: "upsell", label: "Upselling & Retail", desc: "Suggests appropriate upgrades and aftercare." },
-              { k: "brand_rep", label: "Brand Representation", desc: "Creates a calm, elegant atmosphere in line with BOA." }]
-          },
-          {
-            title: "Leadership & Team Management", max: 25, items: [
-              { k: "team_comm", label: "Team Communication", desc: "Holds regular briefings and maintains professionalism." },
-              { k: "fairness", label: "Fairness & Discipline", desc: "Applies HR policies consistently and fairly." },
-              { k: "motivation", label: "Motivation & Recognition", desc: "Supports and recognizes team effort." },
-              { k: "scheduling", label: "Scheduling", key: true, desc: "Manages shifts, off-days, and attendance accurately." },
-              { k: "conflict", label: "Conflict Resolution", desc: "Resolves disputes respectfully and promptly." }]
-          },
-          {
-            title: "Cleanliness & Hygiene Compliance", max: 20, items: [
-              { k: "tool_san", label: "Tool Sanitation Checks", desc: "Verifies clean tools and sends photo proof on Basket Check Day before 10 a.m." },
-              { k: "salon_appear", label: "Salon Appearance", key: true, desc: "Maintains spotless and inviting salon atmosphere." },
-              { k: "product_mgmt", label: "Product Management", desc: "Prevents waste, monitors stock use." },
-              { k: "staff_hygiene", label: "Staff Hygiene", desc: "Ensures uniforms and grooming standards are met." }]
-          },
-          {
-            title: "Operational & Policy Adherence", max: 25, items: [
-              { k: "hr_policy", label: "HR Policy Compliance", key: true, desc: "Enforces attendance, cellphone and language rules." },
-              { k: "cash_digital", label: "Cash & Digital Handling", key: true, desc: "Enforces only accepted payment methods." },
-              { k: "report_sub", label: "Report Submission", desc: "Submits accurate End-Day-Reports." },
-              { k: "fresha_usage", label: "Fresha Usage", key: true, desc: "Uses Fresha accurately and efficiently." },
-              { k: "stock_takes", label: "Stock Takes", key: true, desc: "Conducts accurate stock takes and places orders timely." }]
-          },
-          {
-            title: "Brand Ambassadorship & Professionalism", max: 15, items: [
-              { k: "brand_image", label: "Brand Image", key: true, desc: "Acts as the face of BOA in demeanor and attitude." },
-              { k: "community", label: "Community Presence", desc: "Promotes BOA positively in local and online spaces." },
-              { k: "ethical", label: "Ethical Leadership", desc: "Displays honesty, fairness, and discretion." }]
-          }
-        ];
-        const AM_EVAL_MAX = 135, AM_EVAL_PASS = 95, AM_EVAL_KEY_MIN = 4;
+        // The Assistant-Manager form (AM_EVAL_SECTIONS + its pass marks) lives
+        // at module scope — the SM trial seeds its own editable copy from it.
         // Resolve the right evaluation form for a role, and score a set of marks.
         const evalFormFor = (role) => (String(role || "nt").toLowerCase() === "am")
           ? { sections: AM_EVAL_SECTIONS, max: AM_EVAL_MAX, pass: AM_EVAL_PASS, keyMin: AM_EVAL_KEY_MIN }
@@ -31184,278 +32256,632 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           Final). Overdue evals turn red so HR can see who needs a sit-down.
           Persisted via window.BOA_DB.saveSmTrial. */}
       {tab === "smTrial" && (() => {
-        const now = new Date();
-        const t0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        const today = t0;
-        const _p2 = n => String(n).padStart(2, "0");
-        const _ymd = d => d.getFullYear() + "-" + _p2(d.getMonth() + 1) + "-" + _p2(d.getDate());
-        const _addDays = (d, n) => { const x = new Date(d.getTime()); x.setDate(x.getDate() + n); return x; };
-        const _fmtShort = d => d ? new Date(d + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }) : "—";
+        const cfg = smCriteriaCfg;
+        const today = ymdStr(new Date());
+        const daysBetween = (fromYmd, toYmd) =>
+          Math.round((new Date(normYmd(toYmd) + "T00:00:00") - new Date(normYmd(fromYmd) + "T00:00:00")) / 86400000);
 
-        // HR-chosen cadence: a mid-trial check-in around the 6-week mark and
-        // a final evaluation at the 3-month mark. Existing records with the
-        // older m1/m2/final keys still render via the fallback in the eval
-        // loop below (it uses each eval's own dueOffset and falls back to
-        // the def label only when matched).
-        const EVAL_DEFS = [
-          { key: "mid", label: "Mid-Trial Check-in", dueOffset: 45 },
-          { key: "final", label: "Final Evaluation", dueOffset: 90 }
-        ];
-        const TRIAL_DAYS = 90;
+        // Who may submit a monthly evaluation. Primarily the ROMs — the brief
+        // is that the region's ROM evaluates, and a second ROM who has been in
+        // the store may add their own. HR/national/owner can also record one
+        // (e.g. capturing a paper form).
+        const canEvaluate = (() => {
+          const u = currentUser;
+          if (!u) return false;
+          if (u.isOwner) return true;
+          const r = String(u.role || "").toLowerCase();
+          return isRomRole(u.role) || r === "master admin" || r.includes("hr") || r.includes("human res") || r.includes("national");
+        })();
+        // Only HR / national ops / owner close a trial out.
+        const canDecide = (() => {
+          const u = currentUser;
+          if (!u) return false;
+          if (u.isOwner) return true;
+          const r = String(u.role || "").toLowerCase();
+          return r === "master admin" || r.includes("hr") || r.includes("human res") || r.includes("national");
+        })();
+        const myStores = (currentUser && Array.isArray(currentUser.stores)) ? currentUser.stores : [];
 
-        const persistSmTrial = async (next) => {
-          setSmTrialList(next);
-          try { await window.BOA_DB.saveSmTrial(next); }
-          catch (e) { alert("Could not save SM trial: " + (e.message || e)); }
+        // Keep only sections/labels in the snapshot — the guidance text is long
+        // and identical on every eval, and the read-back view doesn't use it.
+        const snapSections = (secs) => (secs || []).map(s => ({
+          title: s.title,
+          items: (s.items || []).map(i => ({ k: i.k, label: i.label, key: !!i.key }))
+        }));
+
+        const submitSmEval = async (recId, cpKey, payload) => {
+          const rec = (smTrialList || []).find(r => r._id === recId);
+          if (!rec) return;
+          const cp = (rec.checkpoints || []).find(c => c.key === cpKey);
+          const form = cfg.evalForm;
+          const s = scoreForm(payload.scores, form);
+          if (!s.complete) { alert("Please score every criterion — " + s.answered + " of " + s.count + " done."); return; }
+          const mine = (cp && (cp.evals || []).filter(e => e.submittedBy && e.submittedBy.pin && currentUser && e.submittedBy.pin === currentUser.pin)) || [];
+          if (mine.length && !confirm("You've already submitted an evaluation for " + smCheckpointLabel(cp, cfg) + ".\n\nAdd another one?")) return;
+          const ev = {
+            id: smUid("ev"),
+            submittedAt: new Date().toISOString(),
+            submittedBy: {
+              name: payload.by || (currentUser && currentUser.name) || "",
+              pin: (currentUser && currentUser.pin) || "",
+              role: (currentUser && currentUser.role) || ""
+            },
+            scores: payload.scores,
+            total: s.total, max: s.max, pass: s.pass, keyOk: s.keyOk,
+            // Below the pass mark is never an automatic fail — it's flagged and
+            // fed into the final HR + Ops decision, same as the AM pipeline.
+            heldForHr: !s.pass,
+            notes: payload.notes || "",
+            outsideRegion: !!(rec.branch && myStores.length && myStores.indexOf(rec.branch) === -1),
+            formSnapshot: { sections: snapSections(form.sections), max: form.max, pass: form.pass, keyMin: form.keyMin }
+          };
+          // Two ROMs can submit minutes apart and the entire trial list is a
+          // single JSON blob — re-read first so the later write doesn't drop
+          // the earlier evaluation.
+          let base = smTrialList || [];
+          try {
+            const fresh = await window.BOA_DB.loadSmTrial();
+            if (Array.isArray(fresh) && fresh.length) base = fresh.map(r => normalizeSmTrialRec(r, cfg));
+          } catch (e) { console.warn("[sm trial] re-read before eval append failed, using local list:", e); }
+          const next = base.map(r => r._id === recId ? {
+            ...r,
+            checkpoints: (r.checkpoints || []).map(c => c.key === cpKey ? { ...c, evals: [...(c.evals || []), ev] } : c),
+            updatedAt: new Date().toISOString()
+          } : r);
+          const ok = await smPersist(next);
+          if (ok) {
+            setSmEvalModal(null);
+            logActivity("SM trial evaluation submitted", rec.name + " (" + rec.ec + ")",
+              smCheckpointLabel(cp, cfg) + " · " + s.total + "/" + s.max + (s.pass ? " · pass" : " · below pass, held for HR"));
+          }
         };
 
-        const markEvalDone = (id, evalKey, doneNotes) => {
-          persistSmTrial((smTrialList || []).map(r =>
-            r._id === id
-              ? {
-                ...r,
-                evaluations: (r.evaluations || []).map(e =>
-                  e.key === evalKey
-                    ? { ...e, doneAt: new Date().toISOString(), notes: doneNotes || e.notes || "" }
-                    : e
-                ),
-                updatedAt: new Date().toISOString()
-              }
-              : r
-          ));
+        const addWarning = async (recId, w) => {
+          const rec = (smTrialList || []).find(r => r._id === recId);
+          if (!rec) return;
+          const entry = {
+            id: smUid("wn"), date: w.date || today, type: w.type || "verbal",
+            note: (w.note || "").trim(),
+            loggedBy: (currentUser && currentUser.name) || "", loggedAt: new Date().toISOString()
+          };
+          const ok = await smPersist((smTrialList || []).map(r => r._id === recId
+            ? { ...r, warnings: [...(r.warnings || []), entry], updatedAt: new Date().toISOString() } : r));
+          if (ok) {
+            setSmWarnOpen(null);
+            logActivity("SM trial warning logged", rec.name + " (" + rec.ec + ")", entry.type + " · " + smFmt(entry.date));
+          }
         };
-        const reopenEval = (id, evalKey) => {
-          if (!confirm("Re-open this evaluation? It'll be marked as not done again.")) return;
-          persistSmTrial((smTrialList || []).map(r =>
-            r._id === id
-              ? {
-                ...r,
-                evaluations: (r.evaluations || []).map(e =>
-                  e.key === evalKey ? { ...e, doneAt: null } : e
-                ),
-                updatedAt: new Date().toISOString()
-              }
-              : r
-          ));
+        const removeWarning = (recId, wid) => {
+          if (!confirm("Remove this warning from the trial record?")) return;
+          smPersist((smTrialList || []).map(r => r._id === recId
+            ? { ...r, warnings: (r.warnings || []).filter(w => w.id !== wid), updatedAt: new Date().toISOString() } : r));
         };
 
-        const promoteToSM = async (id) => {
-          const r = (smTrialList || []).find(x => x._id === id);
-          if (!r) return;
-          if (!confirm("Promote " + r.name + " to Store Manager (SM)?\n\nTheir role on the manager record will change from AM → SM and the trial will be archived as passed.")) return;
-          // Flip the underlying manager's role to SM.
-          const mgr = (managers || []).find(m => m && m.ec === r.ec);
+        const beginTrial = async (recId) => {
+          const rec = (smTrialList || []).find(r => r._id === recId);
+          if (!rec) return;
+          const sd = prompt("Start " + rec.name + "'s 3-month SM trial on which date?\n\n(YYYY-MM-DD)", today);
+          if (sd === null) return;
+          const clean = normYmd(sd.trim());
+          if (!clean || isNaN(new Date(clean + "T00:00:00").getTime())) { alert("That date isn't valid — use YYYY-MM-DD."); return; }
+          const ok = await smPersist((smTrialList || []).map(r => r._id === recId ? {
+            ...r, status: "active", startDate: clean,
+            checkpoints: cfg.trial.checkpoints.map(c => {
+              const had = (r.checkpoints || []).find(x => x.key === c.key);
+              return { key: c.key, label: c.label, dueOffset: c.dueOffset, evals: (had && had.evals) || [] };
+            }),
+            trialDays: cfg.trial.trialDays, updatedAt: new Date().toISOString()
+          } : r));
+          if (ok) logActivity("Started SM trial", rec.name + " (" + rec.ec + ")", "3-month trial from " + clean + " · from application");
+        };
+
+        const decidePass = async (recId, d) => {
+          const rec = (smTrialList || []).find(x => x._id === recId);
+          if (!rec) return false;
+          const mgr = (managers || []).find(m => m && m.ec === rec.ec);
           if (mgr) {
             try {
               const saved = await window.BOA_DB.saveManager({ ...mgr, role: "SM" });
               setManagers(p => p.map(x => x._id === mgr._id ? { ...x, ...saved } : x));
-            } catch (e) { alert("Could not update manager role: " + (e.message || e)); return; }
+            } catch (e) { alert("Could not update manager role: " + (e.message || e)); return false; }
           }
-          persistSmTrial((smTrialList || []).map(x =>
-            x._id === id ? { ...x, status: "passed", outcomeAt: new Date().toISOString(), updatedAt: new Date().toISOString() } : x
-          ));
-          logActivity("Promoted to SM", r.name + " (" + r.ec + ")", "Trial passed · started " + r.startDate);
+          const ok = await smPersist((smTrialList || []).map(x => x._id === recId ? {
+            ...x, status: "passed", outcomeAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+            // Remember what they were before the flip so undoing a promotion
+            // puts back the actual role, not an assumed "AM".
+            priorRole: (mgr && mgr.role) || x.priorRole || "AM",
+            decision: { decidedAt: new Date().toISOString(), decidedBy: (currentUser && currentUser.name) || "", note: (d.note || "").trim() }
+          } : x));
+          if (ok) { setSmDecisionId(null); logActivity("Promoted to SM", rec.name + " (" + rec.ec + ")", "Trial passed · started " + rec.startDate); }
+          return ok;
         };
-        const revertToAM = (id) => {
-          const r = (smTrialList || []).find(x => x._id === id);
+        const decideFail = async (recId, d) => {
+          const rec = (smTrialList || []).find(x => x._id === recId);
+          if (!rec) return false;
+          const ok = await smPersist((smTrialList || []).map(x => x._id === recId ? {
+            ...x, status: "failed", outcomeAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+            decision: {
+              decidedAt: new Date().toISOString(), decidedBy: (currentUser && currentUser.name) || "", note: (d.note || "").trim(),
+              feedbackReport: {
+                sections: d.sections, overall: d.overall, text: d.text,
+                composedAt: new Date().toISOString(), composedBy: (currentUser && currentUser.name) || ""
+              }
+            },
+            // Stamped now, not derived later — a change to the policy in
+            // Settings must not retroactively move someone's eligibility date.
+            cooldown: { months: d.cooldownMonths, eligibleFrom: d.eligibleFrom }
+          } : x));
+          if (ok) {
+            setSmDecisionId(null);
+            logActivity("SM trial not passed", rec.name + " (" + rec.ec + ")",
+              "Stays AM · feedback report issued · re-eligible " + d.eligibleFrom);
+          }
+          return ok;
+        };
+        // Put a closed trial back into the normal flow. Covers the promotion
+        // that shouldn't have happened (role goes back, trial reopens, HR then
+        // records the real outcome) and the mis-clicked fail — that one matters
+        // because a fail stamps a months-long re-application block the person
+        // would otherwise be stuck behind. The previous outcome is kept as
+        // history rather than erased.
+        const reopenTrial = async (recId) => {
+          const r = (smTrialList || []).find(x => x._id === recId);
           if (!r) return;
-          if (!confirm("End " + r.name + "'s SM trial without promotion?\n\nThey'll stay as AM and the trial will be archived as failed.")) return;
-          persistSmTrial((smTrialList || []).map(x =>
-            x._id === id ? { ...x, status: "failed", outcomeAt: new Date().toISOString(), updatedAt: new Date().toISOString() } : x
-          ));
-          logActivity("Ended SM trial (no promotion)", r.name + " (" + r.ec + ")", "Stays as AM · started " + r.startDate);
+          const wasPassed = r.status === "passed";
+          const backTo = r.priorRole || "AM";
+          if ((smTrialList || []).some(x => x._id !== recId && x.ec === r.ec && (x.status === "active" || x.status === "applied"))) {
+            alert(r.name + " already has another open trial or application. Close that one first.");
+            return;
+          }
+          const msg = wasPassed
+            ? "Undo " + r.name + "'s promotion?\n\nTheir manager record goes back to " + backTo
+              + " and the trial reopens as active, so you can record the correct outcome (including ending it as a fail).\n\nEvaluations, warnings and notes are all kept."
+            : "Reopen " + r.name + "'s trial?\n\nIt goes back to active so the outcome can be redone."
+              + (r.cooldown ? "\n\nThe re-application period ending " + smFmt(r.cooldown.eligibleFrom) + " will be cleared." : "")
+              + "\n\nEvaluations, warnings and notes are all kept.";
+          if (!confirm(msg)) return;
+
+          if (wasPassed) {
+            const mgr = (managers || []).find(m => m && m.ec === r.ec);
+            if (mgr) {
+              try {
+                const saved = await window.BOA_DB.saveManager({ ...mgr, role: backTo });
+                setManagers(p => p.map(x => x._id === mgr._id ? { ...x, ...saved } : x));
+              } catch (e) { alert("Could not change the manager role back: " + (e.message || e)); return; }
+            }
+          }
+          const ok = await smPersist((smTrialList || []).map(x => x._id === recId ? {
+            ...x,
+            status: "active",
+            outcomeAt: null,
+            decision: null,
+            cooldown: null,
+            reversals: [...(x.reversals || []), {
+              at: new Date().toISOString(),
+              by: (currentUser && currentUser.name) || "",
+              from: r.status,
+              priorDecision: x.decision || null,
+              priorCooldown: x.cooldown || null
+            }],
+            updatedAt: new Date().toISOString()
+          } : x));
+          if (ok) {
+            logActivity(wasPassed ? "Undid SM promotion" : "Reopened SM trial", r.name + " (" + r.ec + ")",
+              wasPassed ? ("Role reverted SM → " + backTo + " · trial active again") : "Trial active again · re-application period cleared");
+          }
         };
-        const withdrawTrial = (id) => {
-          const r = (smTrialList || []).find(x => x._id === id);
+        const withdrawTrial = (recId) => {
+          const r = (smTrialList || []).find(x => x._id === recId);
           if (!r) return;
-          if (!confirm("Withdraw " + r.name + "'s SM trial?\n\nUse this if the trial was started by mistake or paused. The record will be removed entirely (not archived).")) return;
-          persistSmTrial((smTrialList || []).filter(x => x._id !== id));
-          logActivity("Withdrew SM trial", r.name + " (" + r.ec + ")", "Trial removed");
+          if (!confirm("Withdraw " + r.name + "'s " + (r.status === "applied" ? "application" : "SM trial") + "?\n\nUse this if it was started by mistake or has been paused. It moves to the withdrawn list — nothing is deleted, and no feedback report or cooldown is issued.")) return;
+          smPersist((smTrialList || []).map(x => x._id === recId
+            ? { ...x, status: "withdrawn", outcomeAt: new Date().toISOString(), updatedAt: new Date().toISOString() } : x));
+          logActivity("Withdrew SM trial", r.name + " (" + r.ec + ")", "Moved to withdrawn");
+        };
+        const deleteTrial = (recId) => {
+          const r = (smTrialList || []).find(x => x._id === recId);
+          if (!r) return;
+          if (!confirm("Permanently delete " + r.name + "'s record?\n\nEvaluations, warnings and any feedback report go with it. This cannot be undone.")) return;
+          if (!confirm("Really delete? Withdrawing keeps the history — deleting does not.")) return;
+          smPersist((smTrialList || []).filter(x => x._id !== recId));
+          logActivity("Deleted SM trial record", r.name + " (" + r.ec + ")", "Permanent delete");
         };
 
-        const activeTrials = (smTrialList || []).filter(r => r.status === "active");
-        const passedTrials = (smTrialList || []).filter(r => r.status === "passed").sort((a, b) => (b.outcomeAt || "").localeCompare(a.outcomeAt || ""));
-        const failedTrials = (smTrialList || []).filter(r => r.status === "failed").sort((a, b) => (b.outcomeAt || "").localeCompare(a.outcomeAt || ""));
+        const byRecent = (a, b) => String(b.outcomeAt || b.addedAt || "").localeCompare(String(a.outcomeAt || a.addedAt || ""));
+        const applications = (smTrialList || []).filter(r => r.status === "applied").sort(byRecent);
+        const activeTrials = (smTrialList || []).filter(r => r.status === "active")
+          .slice().sort((a, b) => String(a.startDate || "").localeCompare(String(b.startDate || "")));
+        const passedTrials = (smTrialList || []).filter(r => r.status === "passed").sort(byRecent);
+        const failedTrials = (smTrialList || []).filter(r => r.status === "failed").sort(byRecent);
+        const withdrawnTrials = (smTrialList || []).filter(r => r.status === "withdrawn").sort(byRecent);
 
-        const inp = { padding: "8px 10px", border: "1px solid #FBCFE8", borderRadius: 8, fontSize: 13, fontFamily: "inherit", background: "#fff", width: "100%", boxSizing: "border-box" };
-        const lbl = { display: "block", fontSize: 10, fontWeight: 700, color: "#BE185D", letterSpacing: "0.08em", marginBottom: 4, textTransform: "uppercase" };
+        const chip = (bg, fg) => ({ background: bg, color: fg, borderRadius: 999, padding: "2px 8px", fontSize: 10, fontWeight: 800 });
+        const WARN_STYLE = {
+          verbal: { bg: "#fef9c3", fg: "#854d0e", label: "Verbal" },
+          written: { bg: "#ffedd5", fg: "#9a3412", label: "Written" },
+          final: { bg: "#fee2e2", fg: "#991b1b", label: "Final" }
+        };
 
-        const renderTrialCard = (r, opts) => {
-          opts = opts || {};
-          const start = new Date(r.startDate + "T00:00:00");
-          const endDate = _addDays(start, r.trialDays || TRIAL_DAYS);
-          const daysIn = Math.floor((today - start) / 86400000);
-          const daysLeft = Math.ceil((endDate - today) / 86400000);
+        const renderTrialCard = (r) => {
           const isActive = r.status === "active";
+          const isApplied = r.status === "applied";
+          const start = normYmd(r.startDate);
+          const trialDays = Number(r.trialDays) || cfg.trial.trialDays;
+          const endYmd = ymdAddDays(start, trialDays);
+          const daysIn = start ? daysBetween(start, today) : 0;
+          const daysLeft = endYmd ? daysBetween(today, endYmd) : 0;
           const endingSoon = isActive && daysLeft >= 0 && daysLeft <= 14;
           const overdueEnd = isActive && daysLeft < 0;
+          const irs = canSeeIncidents(currentUser) ? smIrsForTrial(r, incidentReports) : [];
+          const summary = smTrialSummary(r, cfg, irs);
+          const warnings = r.warnings || [];
+          const cool = r.cooldown || null;
+          const reEligible = cool && cool.eligibleFrom && cool.eligibleFrom <= today;
+
           return (
             <div key={r._id} style={{
               background: "#fff",
               border: "1px solid " + (overdueEnd ? "#fecaca" : endingSoon ? "#fde68a" : "#FBCFE8"),
-              borderLeft: "4px solid " + (r.status === "passed" ? "#16a34a" : r.status === "failed" ? "#9ca3af" : overdueEnd ? "#dc2626" : endingSoon ? "#d97706" : "#7c3aed"),
-              borderRadius: 12,
-              padding: "14px 16px",
-              marginBottom: 10
+              borderLeft: "4px solid " + (r.status === "passed" ? "#16a34a" : r.status === "failed" ? "#9ca3af" : r.status === "withdrawn" ? "#d1d5db" : isApplied ? "#0ea5e9" : overdueEnd ? "#dc2626" : endingSoon ? "#d97706" : "#7c3aed"),
+              borderRadius: 12, padding: "14px 16px", marginBottom: 10
             }}>
+              {/* Header */}
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
                 <div style={{ minWidth: 0, flex: "1 1 280px" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                     <div style={{ fontSize: 15, fontWeight: 700, color: "#111827" }}>⭐ {r.name}</div>
-                    <span style={{ fontSize: 10, fontWeight: 700, background: "#FCE7F3", color: "#831843", padding: "2px 8px", borderRadius: 999 }}>{r.ec}</span>
+                    <span style={chip("#FCE7F3", "#831843")}>{r.ec}</span>
                     <span style={{ fontSize: 10, fontWeight: 600, color: "#6b7280" }}>{r.branch || "—"}</span>
+                    {r.origin === "application" && <span style={chip("#e0f2fe", "#075985")}>APPLIED</span>}
                   </div>
                   <div style={{ marginTop: 6, fontSize: 11, color: "#374151", display: "flex", gap: 12, flexWrap: "wrap" }}>
-                    <span>Started <strong>{_fmtShort(r.startDate)}</strong></span>
-                    <span>Ends <strong>{_fmtShort(_ymd(endDate))}</strong></span>
-                    {isActive && (
-                      <span style={{ fontWeight: 700, color: overdueEnd ? "#dc2626" : endingSoon ? "#92400e" : "#065f46" }}>
-                        {overdueEnd ? (Math.abs(daysLeft) + "d OVERDUE") : (daysLeft + "d left")}
-                      </span>
-                    )}
-                    {!isActive && r.outcomeAt && (
-                      <span style={{ fontWeight: 600, color: "#6b7280" }}>
-                        {r.status === "passed" ? "Promoted " : "Ended "} {_fmtShort(r.outcomeAt.slice(0, 10))}
-                      </span>
+                    {isApplied ? (
+                      <span>Application recorded <strong>{smFmt(String(r.addedAt || "").slice(0, 10))}</strong>{r.application && r.application.recordedBy ? " by " + r.application.recordedBy : ""}</span>
+                    ) : (
+                      <>
+                        <span>Started <strong>{smFmt(start)}</strong></span>
+                        <span>Ends <strong>{smFmt(endYmd)}</strong></span>
+                        {isActive && (
+                          <span style={{ fontWeight: 700, color: overdueEnd ? "#dc2626" : endingSoon ? "#92400e" : "#065f46" }}>
+                            {overdueEnd ? (Math.abs(daysLeft) + "d OVERDUE") : (daysLeft + "d left")}
+                          </span>
+                        )}
+                        {!isActive && r.outcomeAt && (
+                          <span style={{ fontWeight: 600, color: "#6b7280" }}>
+                            {r.status === "passed" ? "Promoted " : r.status === "failed" ? "Ended " : "Withdrawn "}{smFmt(String(r.outcomeAt).slice(0, 10))}
+                          </span>
+                        )}
+                      </>
                     )}
                   </div>
                 </div>
-                {isActive && (
-                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                    <button onClick={() => promoteToSM(r._id)}
-                      style={{ padding: "6px 12px", borderRadius: 7, border: "none", background: "#16a34a", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }}>👑 Promote to SM</button>
-                    <button onClick={() => revertToAM(r._id)}
-                      style={{ padding: "6px 12px", borderRadius: 7, border: "1px solid #d1d5db", background: "#fff", color: "#374151", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }}>End — stay AM</button>
-                    <button onClick={() => withdrawTrial(r._id)}
-                      title="Remove this trial entirely (use if started by mistake)"
-                      style={{ padding: "6px 10px", borderRadius: 7, border: "1px solid #fecaca", background: "#fff", color: "#991b1b", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }}>Withdraw</button>
-                  </div>
-                )}
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {isApplied && canDecide && (
+                    <button onClick={() => beginTrial(r._id)}
+                      style={{ padding: "6px 12px", borderRadius: 7, border: "none", background: "#7c3aed", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }}>▶ Start 3-month trial</button>
+                  )}
+                  {isActive && canDecide && (
+                    <button onClick={() => setSmDecisionId(r._id)}
+                      style={{ padding: "6px 12px", borderRadius: 7, border: "none", background: (summary.missingCheckpoints === 0 || daysLeft <= 10) ? "#16a34a" : "#e9d5ff", color: (summary.missingCheckpoints === 0 || daysLeft <= 10) ? "#fff" : "#6b21a8", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }}>⚖️ Review &amp; decide</button>
+                  )}
+                  {(isActive || isApplied) && canDecide && (
+                    <button onClick={() => withdrawTrial(r._id)} title="Move to the withdrawn list — keeps the history"
+                      style={{ padding: "6px 10px", borderRadius: 7, border: "1px solid #e5e7eb", background: "#fff", color: "#6b7280", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }}>Withdraw</button>
+                  )}
+                  {(r.status === "passed" || r.status === "failed" || r.status === "withdrawn") && canDecide && (
+                    <button onClick={() => reopenTrial(r._id)}
+                      title={r.status === "passed"
+                        ? "Promoted by mistake? Put the role back and reopen the trial so you can record the right outcome."
+                        : "Reopen this trial as active so the outcome can be redone."}
+                      style={{ padding: "6px 12px", borderRadius: 7, border: "1px solid #c4b5fd", background: "#fff", color: "#6b21a8", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }}>
+                      {r.status === "passed" ? "↩ Undo promotion" : "↩ Reopen trial"}
+                    </button>
+                  )}
+                  {r.status === "withdrawn" && canDecide && (
+                    <button onClick={() => deleteTrial(r._id)}
+                      style={{ padding: "6px 10px", borderRadius: 7, border: "1px solid #fecaca", background: "#fff", color: "#991b1b", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }}>Delete permanently</button>
+                  )}
+                </div>
               </div>
 
-              {/* Progress bar */}
+              {/* Progress */}
               {isActive && (
-                <div style={{ marginTop: 12, height: 8, background: "#f3f4f6", borderRadius: 4, overflow: "hidden", position: "relative" }}>
-                  <div style={{
-                    width: Math.max(0, Math.min(100, (daysIn / (r.trialDays || TRIAL_DAYS)) * 100)) + "%",
-                    height: "100%",
-                    background: overdueEnd ? "#dc2626" : endingSoon ? "#d97706" : "#7c3aed",
-                    transition: "width 0.3s"
-                  }} />
+                <div style={{ marginTop: 12, height: 8, background: "#f3f4f6", borderRadius: 4, overflow: "hidden" }}>
+                  <div style={{ width: Math.max(0, Math.min(100, (daysIn / trialDays) * 100)) + "%", height: "100%", background: overdueEnd ? "#dc2626" : endingSoon ? "#d97706" : "#7c3aed", transition: "width 0.3s" }} />
                 </div>
               )}
 
-              {/* Evaluations */}
-              <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8 }}>
-                {(r.evaluations || []).map(e => {
-                  const LEGACY_LBL = { m1: "Month 1 Check-in", m2: "Month 2 Check-in" };
-                  const def = EVAL_DEFS.find(x => x.key === e.key) || { label: LEGACY_LBL[e.key] || e.key, dueOffset: e.dueOffset };
-                  const dueDate = _addDays(start, e.dueOffset || def.dueOffset);
-                  const dueYmd = _ymd(dueDate);
-                  const isDone = !!e.doneAt;
-                  const dDue = Math.ceil((dueDate - today) / 86400000);
-                  const overdue = !isDone && dDue < 0;
-                  const dueSoon = !isDone && dDue >= 0 && dDue <= 7;
-                  const bg = isDone ? "#f0fdf4" : overdue ? "#fef2f2" : dueSoon ? "#fffbeb" : "#f9fafb";
-                  const bd = isDone ? "#86efac" : overdue ? "#fecaca" : dueSoon ? "#fde68a" : "#e5e7eb";
-                  const fg = isDone ? "#15803d" : overdue ? "#991b1b" : dueSoon ? "#92400e" : "#374151";
-                  return (
-                    <div key={e.key} style={{ background: bg, border: "1px solid " + bd, borderRadius: 9, padding: "10px 12px" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
-                        <div style={{ fontSize: 11, fontWeight: 700, color: fg }}>
-                          {isDone ? "✅ " : overdue ? "⚠️ " : dueSoon ? "⏰ " : "📅 "}{def.label}
+              {/* Application eligibility snapshot */}
+              {r.application && (
+                <div style={{ marginTop: 12, background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: 9, padding: "10px 12px" }}>
+                  <div style={{ fontSize: 10, fontWeight: 800, color: "#075985", letterSpacing: "0.07em", textTransform: "uppercase", marginBottom: 6 }}>Application — eligibility at the time</div>
+                  <div style={{ fontSize: 11.5, color: "#0c4a6e" }}>
+                    Tenure: <b>{r.application.tenureMonthsAtApplication == null ? "not on record" : r.application.tenureMonthsAtApplication + " months"}</b>
+                    <span style={{ color: "#0369a1" }}> (minimum {cfg.classification.minTenureMonths})</span>
+                  </div>
+                  <div style={{ marginTop: 6, display: "flex", gap: 5, flexWrap: "wrap" }}>
+                    {(cfg.classification.items || []).map(it => {
+                      const on = !!(r.application.criteriaChecks || {})[it.k];
+                      return <span key={it.k} style={chip(on ? "#dcfce7" : "#f3f4f6", on ? "#15803d" : "#9ca3af")}>{on ? "✓" : "○"} {it.label}</span>;
+                    })}
+                  </div>
+                  {r.application.note && <div style={{ marginTop: 7, fontSize: 11.5, color: "#0c4a6e", fontStyle: "italic", whiteSpace: "pre-wrap" }}>{r.application.note}</div>}
+                </div>
+              )}
+
+              {/* Monthly evaluations */}
+              {!isApplied && (
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ fontSize: 10, fontWeight: 800, color: "#831843", letterSpacing: "0.07em", textTransform: "uppercase", marginBottom: 6 }}>Monthly evaluations</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 8 }}>
+                    {(r.checkpoints || []).map(cp => {
+                      const evals = cp.evals || [];
+                      const dueYmd = ymdAddDays(start, Number(cp.dueOffset) || 0);
+                      const dDue = dueYmd ? daysBetween(today, dueYmd) : 0;
+                      const done = evals.length > 0;
+                      const overdue = isActive && !done && dDue < 0;
+                      const dueSoon = isActive && !done && dDue >= 0 && dDue <= 7;
+                      const bg = done ? "#f0fdf4" : overdue ? "#fef2f2" : dueSoon ? "#fffbeb" : "#f9fafb";
+                      const bd = done ? "#86efac" : overdue ? "#fecaca" : dueSoon ? "#fde68a" : "#e5e7eb";
+                      const fg = done ? "#15803d" : overdue ? "#991b1b" : dueSoon ? "#92400e" : "#374151";
+                      return (
+                        <div key={cp.key} style={{ background: bg, border: "1px solid " + bd, borderRadius: 9, padding: "10px 12px" }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: fg }}>
+                            {done ? "✅ " : overdue ? "⚠️ " : dueSoon ? "⏰ " : "📅 "}{smCheckpointLabel(cp, cfg)}
+                          </div>
+                          <div style={{ fontSize: 10, color: "#6b7280", marginTop: 3 }}>
+                            Due <strong>{smFmt(dueYmd)}</strong>
+                            {isActive && !done && (overdue
+                              ? <> · <span style={{ color: "#991b1b", fontWeight: 700 }}>{Math.abs(dDue)}d overdue</span></>
+                              : dDue === 0 ? <> · <span style={{ color: "#92400e", fontWeight: 700 }}>due today</span></>
+                                : <> · in <strong>{dDue}d</strong></>)}
+                          </div>
+                          {evals.map(ev => (
+                            <button key={ev.id || ev.submittedAt} onClick={() => setSmEvalView({ recId: r._id, cpKey: cp.key, evalId: ev.id })}
+                              style={{ display: "block", width: "100%", textAlign: "left", marginTop: 7, background: "#fff", border: "1px solid " + (ev.legacy ? "#e5e7eb" : ev.pass ? "#bbf7d0" : "#fde68a"), borderRadius: 7, padding: "6px 8px", cursor: "pointer", fontFamily: "inherit" }}>
+                              <div style={{ display: "flex", justifyContent: "space-between", gap: 6, alignItems: "center" }}>
+                                <span style={{ fontSize: 11, fontWeight: 800, color: ev.legacy ? "#6b7280" : ev.pass ? "#15803d" : "#b45309" }}>
+                                  {ev.legacy ? "recorded" : ev.total + "/" + ev.max}
+                                </span>
+                                {!ev.legacy && <span style={chip(ev.pass ? "#dcfce7" : "#fef3c7", ev.pass ? "#15803d" : "#92400e")}>{ev.pass ? "PASS" : "HELD FOR HR"}</span>}
+                              </div>
+                              <div style={{ fontSize: 10, color: "#6b7280", marginTop: 2 }}>
+                                {(ev.submittedBy && ev.submittedBy.name) || "—"}
+                                {ev.submittedBy && ev.submittedBy.role ? " · " + ev.submittedBy.role : ""}
+                                {" · " + smFmt(String(ev.submittedAt || "").slice(0, 10))}
+                              </div>
+                              {ev.outsideRegion && <div style={{ fontSize: 9.5, color: "#6b21a8", marginTop: 2, fontWeight: 700 }}>observed from outside their region</div>}
+                            </button>
+                          ))}
+                          {isActive && canEvaluate && (
+                            <button onClick={() => setSmEvalModal({ recId: r._id, cpKey: cp.key })}
+                              style={{ marginTop: 8, padding: "5px 10px", borderRadius: 6, border: "none", background: "#7c3aed", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 10, fontWeight: 700 }}>
+                              {evals.length ? "+ Add another evaluation" : "＋ Submit evaluation"}
+                            </button>
+                          )}
                         </div>
-                        {isActive && isDone && (
-                          <button onClick={() => reopenEval(r._id, e.key)} style={{ background: "transparent", border: "none", color: "#6b7280", fontSize: 10, cursor: "pointer", padding: 0 }} title="Re-open this evaluation">undo</button>
-                        )}
-                      </div>
-                      <div style={{ fontSize: 10, color: "#6b7280", marginTop: 3 }}>
-                        Due <strong>{_fmtShort(dueYmd)}</strong>
-                        {isDone
-                          ? <> · done {_fmtShort(e.doneAt.slice(0, 10))}</>
-                          : overdue
-                            ? <> · <span style={{ color: "#991b1b", fontWeight: 700 }}>{Math.abs(dDue)}d overdue</span></>
-                            : dDue === 0
-                              ? <> · <span style={{ color: "#92400e", fontWeight: 700 }}>due today</span></>
-                              : <> · in <strong>{dDue}d</strong></>}
-                      </div>
-                      {e.notes && (
-                        <div style={{ fontSize: 11, color: "#374151", marginTop: 6, fontStyle: "italic", whiteSpace: "pre-wrap" }}>{e.notes}</div>
-                      )}
-                      {isActive && !isDone && (
-                        <button onClick={() => {
-                          const noteText = prompt(def.label + " — notes (optional):", "");
-                          if (noteText === null) return;
-                          markEvalDone(r._id, e.key, noteText);
-                        }}
-                          style={{ marginTop: 8, padding: "5px 10px", borderRadius: 6, border: "none", background: "#7c3aed", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 10, fontWeight: 700 }}>✓ Mark done</button>
-                      )}
+                      );
+                    })}
+                  </div>
+                  {isActive && (
+                    <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 6, lineHeight: 1.5 }}>
+                      More than one ROM may evaluate the same month — a second view of the same person is a feature, not a duplicate.
                     </div>
-                  );
-                })}
-              </div>
+                  )}
+                </div>
+              )}
+
+              {/* Warnings */}
+              {!isApplied && (
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                    <div style={{ fontSize: 10, fontWeight: 800, color: "#831843", letterSpacing: "0.07em", textTransform: "uppercase" }}>
+                      Warnings during trial {warnings.length > 0 && <span style={{ color: "#b45309" }}>({warnings.length})</span>}
+                    </div>
+                    {isActive && canDecide && (
+                      <button onClick={() => setSmWarnOpen(smWarnOpen === r._id ? null : r._id)}
+                        style={{ padding: "4px 9px", borderRadius: 6, border: "1px solid #e5e7eb", background: "#fff", color: "#374151", cursor: "pointer", fontFamily: "inherit", fontSize: 10, fontWeight: 700 }}>
+                        {smWarnOpen === r._id ? "Cancel" : "＋ Log warning"}
+                      </button>
+                    )}
+                  </div>
+                  {warnings.length === 0
+                    ? <div style={{ fontSize: 11, color: "#9ca3af" }}>None logged.</div>
+                    : warnings.slice().sort((a, b) => String(a.date).localeCompare(String(b.date))).map(w => {
+                      const st = WARN_STYLE[w.type] || WARN_STYLE.verbal;
+                      return (
+                        <div key={w.id} style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "5px 0", borderTop: "1px solid #f9fafb" }}>
+                          <span style={chip(st.bg, st.fg)}>{st.label}</span>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 11, color: "#374151" }}>{smFmt(w.date)}{w.note ? " — " + w.note : ""}</div>
+                            {w.loggedBy && <div style={{ fontSize: 9.5, color: "#9ca3af" }}>logged by {w.loggedBy}</div>}
+                          </div>
+                          {isActive && canDecide && (
+                            <button onClick={() => removeWarning(r._id, w.id)} title="Remove" style={{ background: "none", border: "none", color: "#d1d5db", cursor: "pointer", fontSize: 12, padding: 0 }}>✕</button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  {smWarnOpen === r._id && (
+                    <SmWarningForm today={today} onCancel={() => setSmWarnOpen(null)} onAdd={(w) => addWarning(r._id, w)} />
+                  )}
+                </div>
+              )}
+
+              {/* Incident reports */}
+              {!isApplied && canSeeIncidents(currentUser) && (
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ fontSize: 10, fontWeight: 800, color: "#831843", letterSpacing: "0.07em", textTransform: "uppercase", marginBottom: 6 }}>
+                    Incident reports in the trial window {irs.length > 0 && <span style={{ color: "#b45309" }}>({irs.length})</span>}
+                  </div>
+                  {irs.length === 0 ? (
+                    <div style={{ fontSize: 11, color: "#9ca3af", lineHeight: 1.5 }}>
+                      None tagged to this employee. Reports only appear here once someone tags the people involved on the Incidents tab.
+                    </div>
+                  ) : (
+                    <div style={{ background: "#fff7ed", border: "1px solid #fed7aa", borderRadius: 9, padding: "10px 12px" }}>
+                      {summary.irClustered && (
+                        <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 7, padding: "7px 9px", fontSize: 11, color: "#92400e", marginBottom: 8, lineHeight: 1.5 }}>
+                          ⚠️ {summary.irLateFiled} report{summary.irLateFiled === 1 ? " was" : "s were"} filed in the final 14 days of the trial.
+                        </div>
+                      )}
+                      <SmIrTimeline irs={irs} startYmd={start} days={trialDays} checkpoints={r.checkpoints} cfg={cfg} />
+                      <div style={{ marginTop: 10 }}>
+                        {irs.map(ir => {
+                          const inc = normYmd(ir.incident_date) || String(ir.created_at || "").slice(0, 10);
+                          const filed = String(ir.created_at || "").slice(0, 10);
+                          const lag = (inc && filed) ? daysBetween(inc, filed) : 0;
+                          return (
+                            <div key={ir.id} style={{ padding: "6px 0", borderTop: "1px solid #ffedd5", fontSize: 11, color: "#7c2d12" }}>
+                              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                                <span style={{ fontWeight: 800 }}>{ir.ref_code}</span>
+                                <span style={chip("#ffedd5", "#9a3412")}>{ir.category || "Other"}</span>
+                                {ir.urgent && <span style={chip("#fee2e2", "#991b1b")}>URGENT</span>}
+                                <span style={chip(ir.status === "resolved" ? "#dcfce7" : ir.status === "reviewing" ? "#e0f2fe" : "#f3f4f6", ir.status === "resolved" ? "#15803d" : ir.status === "reviewing" ? "#075985" : "#6b7280")}>{ir.status || "new"}</span>
+                              </div>
+                              <div style={{ fontSize: 10.5, color: "#9a3412", marginTop: 2 }}>
+                                Incident {smFmt(inc)} · filed {smFmt(filed)}{lag >= 3 ? " (" + lag + " days later)" : ""}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <button onClick={() => setTab("incidents")}
+                        style={{ marginTop: 8, padding: "5px 10px", borderRadius: 6, border: "1px solid #fed7aa", background: "#fff", color: "#9a3412", cursor: "pointer", fontFamily: "inherit", fontSize: 10, fontWeight: 700 }}>Open Incidents tab →</button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Outcome / feedback report / cooldown */}
+              {r.decision && (
+                <div style={{ marginTop: 12, background: r.status === "passed" ? "#f0fdf4" : "#f9fafb", border: "1px solid " + (r.status === "passed" ? "#bbf7d0" : "#e5e7eb"), borderRadius: 9, padding: "10px 12px" }}>
+                  <div style={{ fontSize: 10, fontWeight: 800, color: r.status === "passed" ? "#15803d" : "#374151", letterSpacing: "0.07em", textTransform: "uppercase" }}>
+                    {r.status === "passed" ? "Promoted" : "Outcome"} · decided by {r.decision.decidedBy || "—"}
+                  </div>
+                  {r.decision.note && <div style={{ fontSize: 11.5, color: "#374151", marginTop: 5, whiteSpace: "pre-wrap" }}>{r.decision.note}</div>}
+                  {r.decision.feedbackReport && (
+                    <details style={{ marginTop: 8 }}>
+                      <summary style={{ cursor: "pointer", fontSize: 11, fontWeight: 800, color: "#6b21a8" }}>📄 Feedback report</summary>
+                      <div style={{ marginTop: 7, fontSize: 11.5, color: "#374151", background: "#fff", border: "1px solid #f3f4f6", borderRadius: 7, padding: "9px 11px", whiteSpace: "pre-wrap", lineHeight: 1.55 }}>
+                        {r.decision.feedbackReport.text || r.decision.feedbackReport.overall}
+                      </div>
+                      <button onClick={() => { try { navigator.clipboard.writeText(r.decision.feedbackReport.text || ""); alert("Feedback report copied."); } catch (e) { alert("Could not copy — select the text manually."); } }}
+                        style={{ marginTop: 7, padding: "5px 10px", borderRadius: 6, border: "1px solid #ddd6fe", background: "#fff", color: "#6b21a8", cursor: "pointer", fontFamily: "inherit", fontSize: 10, fontWeight: 700 }}>Copy report text</button>
+                    </details>
+                  )}
+                  {cool && cool.eligibleFrom && (
+                    <div style={{ marginTop: 8, fontSize: 11.5, fontWeight: 700, color: reEligible ? "#15803d" : "#92400e" }}>
+                      {reEligible
+                        ? "✅ Re-eligible since " + smFmt(cool.eligibleFrom) + " — may be considered again."
+                        : "⏳ Re-eligible from " + smFmt(cool.eligibleFrom) + " (" + cool.months + "-month period)"}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* A reversed outcome stays on the record — the correction is
+                  part of the story, not something to quietly overwrite. */}
+              {(r.reversals || []).length > 0 && (
+                <div style={{ marginTop: 10, background: "#faf5ff", border: "1px solid #ede9fe", borderRadius: 8, padding: "8px 11px" }}>
+                  {(r.reversals || []).map((rv, i) => (
+                    <div key={i} style={{ fontSize: 10.5, color: "#6b21a8", lineHeight: 1.5 }}>
+                      ↩ {rv.from === "passed" ? "Promotion undone" : "Reopened from " + rv.from} on {smFmt(String(rv.at || "").slice(0, 10))}
+                      {rv.by ? " by " + rv.by : ""}
+                      {rv.priorDecision && rv.priorDecision.decidedBy ? " · original decision by " + rv.priorDecision.decidedBy : ""}
+                    </div>
+                  ))}
+                </div>
+              )}
 
               {r.notes && (
-                <div style={{ marginTop: 10, fontSize: 11, color: "#6b7280", background: "#f9fafb", border: "1px dashed #e5e7eb", borderRadius: 7, padding: "8px 10px", fontStyle: "italic", whiteSpace: "pre-wrap" }}>
-                  📝 {r.notes}
-                </div>
+                <div style={{ marginTop: 10, fontSize: 11, color: "#6b7280", background: "#f9fafb", border: "1px dashed #e5e7eb", borderRadius: 7, padding: "8px 10px", fontStyle: "italic", whiteSpace: "pre-wrap" }}>📝 {r.notes}</div>
               )}
             </div>
           );
         };
+
+        const section = (title, colour, list, empty) => (
+          <div style={{ marginBottom: 22 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: colour, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 10 }}>
+              {title} ({list.length})
+            </div>
+            {list.length === 0
+              ? (empty ? <div style={{ background: "#f9fafb", border: "1px dashed #e5e7eb", borderRadius: 10, padding: "20px 16px", textAlign: "center", color: "#6b7280", fontSize: 12 }}>{empty}</div> : null)
+              : list.map(r => renderTrialCard(r))}
+          </div>
+        );
+
+        // Modal targets, resolved from the live list so they survive a save.
+        const evalTarget = smEvalModal && (smTrialList || []).find(r => r._id === smEvalModal.recId);
+        const evalTargetCp = evalTarget && (evalTarget.checkpoints || []).find(c => c.key === smEvalModal.cpKey);
+        const viewRec = smEvalView && (smTrialList || []).find(r => r._id === smEvalView.recId);
+        const viewCp = viewRec && (viewRec.checkpoints || []).find(c => c.key === smEvalView.cpKey);
+        const viewEv = viewCp && (viewCp.evals || []).find(e => e.id === smEvalView.evalId);
+        const decisionRec = smDecisionId && (smTrialList || []).find(r => r._id === smDecisionId);
 
         return (
           <div style={{ padding: 24, maxWidth: 1100, margin: "0 auto" }}>
             <div style={{ marginBottom: 18 }}>
               <h1 style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 30, color: "#111827", margin: 0 }}>⭐ Store Manager Trials</h1>
               <div style={{ fontSize: 13, color: "#6b7280", marginTop: 4 }}>
-                AMs on a 3-month trial to become Store Managers. Mark each monthly evaluation as done; on the final check, promote them to SM or end the trial.
+                AMs on a 3-month trial to become Store Managers. Each month the region's ROM submits a scored evaluation — a second ROM who has been in the store may add their own. At the end, HR and Ops decide together.
               </div>
             </div>
 
-            {/* How-to banner — trials are started from the Manager card now,
-                so this tab is a tracker only. Keeps a single source of truth
-                for who tags whom. */}
-            <div style={{ background: "#FCE7F3", border: "1px solid #FBCFE8", borderRadius: 14, padding: "12px 16px", marginBottom: 18, fontSize: 12, color: "#831843", display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{ background: "#FCE7F3", border: "1px solid #FBCFE8", borderRadius: 14, padding: "12px 16px", marginBottom: 18, fontSize: 12, color: "#831843", display: "flex", alignItems: "flex-start", gap: 8, lineHeight: 1.55 }}>
               <span>💡</span>
-              <span>To put an AM on trial, open their Manager card from Locations and click <strong>⭐ Start SM Trial</strong>. They'll appear here with their countdown and evaluation reminders.</span>
+              <span>
+                Open an AM's Manager card from <strong>Locations</strong> to nominate them for a trial or record an application to reclassify.
+                An application needs <strong>{cfg.classification.minTenureMonths} months' service</strong> and the SM classification criteria met;
+                HR and national ops set both in <strong>Settings → SM Trial &amp; Classification</strong>.
+              </span>
             </div>
 
-            {/* Active trials */}
-            <div style={{ marginBottom: 24 }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: "#831843", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 10 }}>
-                Active Trials ({activeTrials.length})
-              </div>
-              {activeTrials.length === 0 ? (
-                <div style={{ background: "#f9fafb", border: "1px dashed #e5e7eb", borderRadius: 10, padding: "20px 16px", textAlign: "center", color: "#6b7280", fontSize: 12 }}>
-                  No active SM trials. Start one above to begin tracking.
-                </div>
-              ) : (
-                activeTrials
-                  .slice()
-                  .sort((a, b) => (a.startDate || "").localeCompare(b.startDate || ""))
-                  .map(r => renderTrialCard(r))
-              )}
-            </div>
-
-            {/* Passed history */}
-            {passedTrials.length > 0 && (
-              <div style={{ marginBottom: 18 }}>
-                <div style={{ fontSize: 12, fontWeight: 700, color: "#065f46", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 10 }}>
-                  ✅ Promoted to SM ({passedTrials.length})
-                </div>
-                {passedTrials.map(r => renderTrialCard(r))}
-              </div>
+            {applications.length > 0 && section("📥 Applications awaiting a trial", "#075985", applications)}
+            {section("Active Trials", "#831843", activeTrials, "No active SM trials. Start one from a Manager card in Locations.")}
+            {passedTrials.length > 0 && section("✅ Promoted to SM", "#065f46", passedTrials)}
+            {failedTrials.length > 0 && section("⏹ Did not pass — stayed AM", "#6b7280", failedTrials)}
+            {withdrawnTrials.length > 0 && (
+              <details style={{ marginBottom: 18 }}>
+                <summary style={{ cursor: "pointer", fontSize: 12, fontWeight: 700, color: "#9ca3af", letterSpacing: "0.08em", textTransform: "uppercase" }}>
+                  Withdrawn ({withdrawnTrials.length})
+                </summary>
+                <div style={{ marginTop: 10 }}>{withdrawnTrials.map(r => renderTrialCard(r))}</div>
+              </details>
             )}
 
-            {/* Failed history */}
-            {failedTrials.length > 0 && (
-              <div style={{ marginBottom: 18 }}>
-                <div style={{ fontSize: 12, fontWeight: 700, color: "#6b7280", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 10 }}>
-                  ⏹ Ended — stayed AM ({failedTrials.length})
-                </div>
-                {failedTrials.map(r => renderTrialCard(r))}
-              </div>
+            {evalTarget && evalTargetCp && (
+              <TrialEvalModal
+                name={evalTarget.name}
+                title={smCheckpointLabel(evalTargetCp, cfg)}
+                subtitle={"Submitting as " + ((currentUser && currentUser.name) || "—") + ((currentUser && currentUser.role) ? " · " + currentUser.role : "")
+                  + (evalTarget.branch && myStores.length && myStores.indexOf(evalTarget.branch) === -1
+                    ? " — note: " + evalTarget.branch + " is outside your allocated stores, which is fine if you observed them there."
+                    : "")}
+                sections={cfg.evalForm.sections}
+                max={cfg.evalForm.max}
+                pass={cfg.evalForm.pass}
+                keyMin={cfg.evalForm.keyMin}
+                initialBy={(currentUser && currentUser.name) || ""}
+                lockBy={!!(currentUser && currentUser.name)}
+                onClose={() => setSmEvalModal(null)}
+                onSubmit={(payload) => submitSmEval(evalTarget._id, evalTargetCp.key, payload)}
+              />
+            )}
+            {viewRec && viewCp && viewEv && (
+              <SmEvalViewModal rec={viewRec} cp={viewCp} ev={viewEv} cfg={cfg} onClose={() => setSmEvalView(null)} />
+            )}
+            {decisionRec && (
+              <SmDecisionModal
+                rec={decisionRec}
+                cfg={cfg}
+                irs={canSeeIncidents(currentUser) ? smIrsForTrial(decisionRec, incidentReports) : []}
+                summary={smTrialSummary(decisionRec, cfg, canSeeIncidents(currentUser) ? smIrsForTrial(decisionRec, incidentReports) : [])}
+                onClose={() => setSmDecisionId(null)}
+                onPass={(d) => decidePass(decisionRec._id, d)}
+                onFail={(d) => decideFail(decisionRec._id, d)}
+              />
             )}
           </div>
         );
@@ -43795,6 +45221,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           onLeavePayrollCfgSave={saveLeavePayrollCfg}
           leaveBalancesCfg={leaveBalancesCfg}
           onLeaveBalancesCfgSave={saveLeaveBalancesCfg}
+          smCriteriaCfg={smCriteriaCfg}
+          onSmCriteriaSave={saveSmCriteriaCfg}
         /></div>
       )}
 
@@ -44900,7 +46328,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       )}
 
       {staffModal && <StaffModal s={(() => { const mr = (matRecs || []).find(r => r && r.ec && staffModal.ec && r.ec.trim() === staffModal.ec.trim()); return mr ? { ...staffModal, matStatus: staffModal.matStatus || mr.matStatus, matStart: staffModal.matStart || mr.matStart, matEnd: staffModal.matEnd || mr.matEnd, matReturn: staffModal.matReturn || mr.returnDate, matNotes: staffModal.matNotes || mr.notes } : staffModal; })()} onClose={() => setStaffModal(null)} onSave={saveStaff} onTransfer={(s) => setTransferModal(s)} allStaff={staff} isOwner={!!currentUser?.isOwner} onHardDelete={hardDeleteStaff} />}
-      {mgrModal && <ManagerModal m={(() => { const mr = (matRecs || []).find(r => r && r.ec && mgrModal.ec && r.ec.trim() === mgrModal.ec.trim()); return mr ? { ...mgrModal, matStatus: mgrModal.matStatus || mr.matStatus, matStart: mgrModal.matStart || mr.matStart, matEnd: mgrModal.matEnd || mr.matEnd, matReturn: mgrModal.matReturn || mr.returnDate, matNotes: mgrModal.matNotes || mr.notes } : mgrModal; })()} pin={mgrPins[mgrModal.ec] || ""} onClose={() => setMgrModal(null)} onSave={saveMgr} onDelete={delMgr} smTrialActive={!!(smTrialList || []).find(r => r.ec === mgrModal.ec && r.status === "active")} onStartSmTrial={startSmTrialFor} />}
+      {mgrModal && <ManagerModal m={(() => { const mr = (matRecs || []).find(r => r && r.ec && mgrModal.ec && r.ec.trim() === mgrModal.ec.trim()); return mr ? { ...mgrModal, matStatus: mgrModal.matStatus || mr.matStatus, matStart: mgrModal.matStart || mr.matStart, matEnd: mgrModal.matEnd || mr.matEnd, matReturn: mgrModal.matReturn || mr.returnDate, matNotes: mgrModal.matNotes || mr.notes } : mgrModal; })()} pin={mgrPins[mgrModal.ec] || ""} onClose={() => setMgrModal(null)} onSave={saveMgr} onDelete={delMgr}
+        smTrialActive={!!(smTrialList || []).find(r => r.ec === mgrModal.ec && r.status === "active")}
+        smTrialOpenRec={(smTrialList || []).find(r => r.ec === mgrModal.ec && (r.status === "active" || r.status === "applied")) || null}
+        smCooldown={smCooldownFor(mgrModal.ec)}
+        smTenure={smTenureFor(mgrModal)}
+        smCfg={smCriteriaCfg}
+        onStartSmTrial={startSmTrialFor} />}
       {officeModal && <OfficeStaffModal s={(() => { const mr = (matRecs || []).find(r => r && r.ec && officeModal.ec && r.ec.trim() === officeModal.ec.trim()); return mr ? { ...officeModal, matStatus: officeModal.matStatus || mr.matStatus, matStart: officeModal.matStart || mr.matStart, matEnd: officeModal.matEnd || mr.matEnd, matReturn: officeModal.matReturn || mr.returnDate, matNotes: officeModal.matNotes || mr.notes } : officeModal; })()} pin={mgrPins[officeModal.ec] || ""} dept={officeModal._dept} onClose={() => setOfficeModal(null)} onSave={saveOfficeStaff} onDelete={delOfficeStaff} />}
       {officeOffboardModal && (() => {
         const person = officeOffboardModal.person;
