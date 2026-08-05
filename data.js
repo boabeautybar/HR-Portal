@@ -1065,17 +1065,33 @@
   // ---------- SM (Store Manager) trial (boa_sm_trial_v1) ----------
   // Existing AMs put on a 3-month trial to become Store Managers. Lives in
   // its own list so the manager record stays clean (and a tagged AM can
-  // still be edited / moved exactly like any other manager). Each record:
+  // still be edited / moved exactly like any other manager).
+  //
+  // Records are normalised to rev 2 on read (normalizeSmTrialRec in app.jsx);
+  // older shapes written before that — evaluations:[{key,dueOffset,doneAt}]
+  // with either mid/final @45/90 or m1/m2/final @30/60/90 — still exist in
+  // this blob and are upgraded in memory, then persisted on next save.
   // {
-  //   _id, ec, name, branch,
+  //   _id, ec, name, branch, rev: 2,
+  //   origin: "nominated" | "application",
+  //   application: {                         // set when HR records an AM's own application
+  //     recordedAt, recordedBy, tenureMonthsAtApplication, criteriaChecks:{}, note
+  //   },
   //   startDate (YYYY-MM-DD),                // when the trial began
   //   trialDays (default 90),                // total trial length
-  //   evaluations: [                         // 3 evaluation checkpoints
-  //     {key:"m1", dueOffset:30, doneAt:null, notes:""},
-  //     {key:"m2", dueOffset:60, doneAt:null, notes:""},
-  //     {key:"final", dueOffset:90, doneAt:null, notes:""}
+  //   checkpoints: [                         // 3 monthly evaluation checkpoints
+  //     {key:"m1", dueOffset:30, evals:[ ... ]},   // MANY evals per checkpoint:
+  //     {key:"m2", dueOffset:60, evals:[]},        // the region's ROM plus any
+  //     {key:"m3", dueOffset:90, evals:[]}         // other ROM who observed
   //   ],
-  //   status: "active" | "passed" | "failed" | "withdrawn",
+  //   // each eval: {id, submittedAt, submittedBy:{name,pin,role}, scores, total,
+  //   //             max, pass, keyOk, heldForHr, notes, formSnapshot}
+  //   warnings: [{id, date, type:"verbal"|"written"|"final", note, loggedBy, loggedAt}],
+  //   status: "applied" | "active" | "passed" | "failed" | "withdrawn",
+  //   //   NOTE: "active" is load-bearing — every effectiveRole consumer (portal,
+  //   //   kiosk, My BOA) flips AM→SM on exactly status==="active" && ec.
+  //   decision: {decidedAt, decidedBy, note, feedbackReport:{...}},  // manual HR+Ops call
+  //   cooldown: {months, eligibleFrom},      // stamped on fail; gates re-application
   //   outcomeAt, notes, addedAt, updatedAt
   // }
   async function loadSmTrial() {
@@ -1088,6 +1104,25 @@
     var res = await sb.from("app_state").upsert({ key: "boa_sm_trial_v1", value: records || [] });
     if (res.error) throw res.error;
     return records;
+  }
+
+  // ---------- SM trial criteria & policy config (boa_sm_criteria_v1) ----------
+  // HR / national ops own the SM classification criteria, the monthly
+  // evaluation form and the trial policy (length, checkpoints, re-apply
+  // cooldown). Kept as one editable blob rather than hardcoded so ops can
+  // change what "ready to be an SM" means without a code change.
+  // { version, evalForm:{sections,max,pass,keyMin}, classification:{minTenureMonths,items},
+  //   trial:{trialDays,checkpoints,cooldownMonths}, updatedAt, updatedBy }
+  async function loadSmCriteriaConfig() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_sm_criteria_v1").maybeSingle();
+    if (res.error) { console.error("loadSmCriteriaConfig:", res.error); return null; }
+    var v = res.data && res.data.value;
+    return v && typeof v === "object" ? v : null;
+  }
+  async function saveSmCriteriaConfig(cfg) {
+    var res = await sb.from("app_state").upsert({ key: "boa_sm_criteria_v1", value: cfg || {} });
+    if (res.error) { console.error("saveSmCriteriaConfig:", res.error); throw res.error; }
+    return cfg;
   }
 
   // ---------- Manager clock-ins viewer ----------
@@ -2894,6 +2929,8 @@
     saveOffboarding: saveOffboarding,
     loadSmTrial:   loadSmTrial,
     saveSmTrial:   saveSmTrial,
+    loadSmCriteriaConfig: loadSmCriteriaConfig,
+    saveSmCriteriaConfig: saveSmCriteriaConfig,
 
     // Attendance
     loadAttendance: loadAttendance,
@@ -3034,6 +3071,7 @@
     setIncidentStatus: setIncidentStatus,
     markIncidentReviewed: markIncidentReviewed,
     addIncidentNote: addIncidentNote,
+    setIncidentTags: setIncidentTags,
 
     // Staff leave requests (from /leave.html) — same key-gated RPC pattern.
     loadLeaveRequests: loadLeaveRequests,
@@ -3109,6 +3147,25 @@
   async function addIncidentNote(id, note, author) {
     var res = await sb.rpc("add_incident_note", { p_key: incidentKey(), p_id: id, p_note: note, p_author: author || "" });
     if (res.error) { console.error("addIncidentNote:", res.error); throw res.error; }
+    return true;
+  }
+  // Attribute a report to specific employees (full replacement list, [] clears).
+  // Lets the SM trial review pull "IRs filed against this EC during the trial"
+  // instead of guessing from the free-text people_involved field.
+  async function setIncidentTags(id, ecs, actor) {
+    var clean = Array.isArray(ecs) ? ecs.filter(function (e) { return e; }) : [];
+    var res = await sb.rpc("set_incident_tags", {
+      p_key: incidentKey(), p_id: id,
+      p_ecs: clean.length ? clean : null,
+      p_actor: actor || ""
+    });
+    if (res.error) {
+      console.error("setIncidentTags:", res.error);
+      if (/function .*set_incident_tags|does not exist|schema cache/i.test(res.error.message || "")) {
+        throw new Error("Employee tagging isn't set up yet — run sql/incident_tagged_employees.sql in the Supabase SQL editor.");
+      }
+      throw res.error;
+    }
     return true;
   }
 
