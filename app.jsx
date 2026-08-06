@@ -20924,6 +20924,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // person ticked for the operational gate). Previously this only used
   // canSeeIncidents, so granting leave-ops access alone didn't reveal the tab.
   const canSeeLeaveRequests = canSeeIncidents(currentUser) || accessAllows(currentUser, leaveOpsCfg) || accessAllows(currentUser, leavePayrollCfg);
+  // Who can see the Leave Expiry Reports tab (People): the confidential-incident
+  // audience PLUS the payroll / balance-check team, since those auto-filed
+  // "leave expiring" notices are administrative — the people who action leave
+  // balances need them. This deliberately does NOT reveal the genuine Incident
+  // Reports tab (still canSeeIncidents-only). leavePayrollCfg defaults to the
+  // Payroll roles, so a payroll officer matches on the first render.
+  const canSeeLeaveExpiry = canSeeIncidents(currentUser) || accessAllows(currentUser, leavePayrollCfg);
   const saveLeaveOpsCfg = async (next) => {
     setLeaveOpsAccess(next);
     try { if (window.BOA_DB.saveLeaveOpsAccess) await window.BOA_DB.saveLeaveOpsAccess(next); }
@@ -22566,7 +22573,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       window.BOA_DB.loadLeaveOpsAccess ? window.BOA_DB.loadLeaveOpsAccess() : Promise.resolve({}),
       window.BOA_DB.loadLeavePayrollAccess ? window.BOA_DB.loadLeavePayrollAccess() : Promise.resolve({}),
       window.BOA_DB.loadLeaveBalancesAccess ? window.BOA_DB.loadLeaveBalancesAccess() : Promise.resolve({}),
-      (window.BOA_DB.loadIncidentReports && canSeeIncidents(currentUser)) ? window.BOA_DB.loadIncidentReports() : Promise.resolve([]),
+      (window.BOA_DB.loadIncidentReports && canSeeLeaveExpiry) ? window.BOA_DB.loadIncidentReports() : Promise.resolve([]),
       (window.BOA_DB.loadLeaveRequests && _needRequests) ? window.BOA_DB.loadLeaveRequests() : Promise.resolve([]),
       (window.BOA_DB.loadExtraDayRequests && _needRequests) ? window.BOA_DB.loadExtraDayRequests() : Promise.resolve([]),
       window.BOA_DB.loadFreshaExtraOpenings ? window.BOA_DB.loadFreshaExtraOpenings() : Promise.resolve({}),
@@ -22673,7 +22680,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setLeaveOpsAccess(lvOpsAccess && typeof lvOpsAccess === "object" ? lvOpsAccess : {});
       setLeavePayrollAccess(lvPayrollAccess && typeof lvPayrollAccess === "object" ? lvPayrollAccess : {});
       setLeaveBalancesAccess(lvBalancesAccess && typeof lvBalancesAccess === "object" ? lvBalancesAccess : {});
-      setIncidentReports(Array.isArray(incidents) ? incidents : []);
+      // A payroll / balance-check user can see Leave Expiry Reports but NOT the
+      // confidential Incident Reports tab. They only need the auto-filed expiry
+      // notices, so drop genuine incidents before they ever enter session state.
+      const _incidents = Array.isArray(incidents) ? incidents : [];
+      setIncidentReports(canSeeIncidents(currentUser) ? _incidents : _incidents.filter(isLeaveExpiryReport));
       setLeaveRequests(Array.isArray(leaveReqs) ? leaveReqs : []);
       setExtraDayRequests(Array.isArray(extraReqs) ? extraReqs : []);
       setFreshaExtraOpen(freshaExtraOpenMap && typeof freshaExtraOpenMap === "object" ? freshaExtraOpenMap : {});
@@ -25493,7 +25504,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     const unread = incidentReports.filter(r => !r.reviewed && !isLeaveExpiryReport(r)).length;
                     return { t: "incidents", l: "🛡️ Incident Reports" + (unread ? "  (" + unread + ")" : "") };
                   })()] : []),
-                  ...(canSeeIncidents(currentUser) ? [(() => {
+                  ...(canSeeLeaveExpiry ? [(() => {
                     const unread = incidentReports.filter(r => !r.reviewed && isLeaveExpiryReport(r)).length;
                     return { t: "leaveExpiry", l: "⏳ Leave Expiry Reports" + (unread ? "  (" + unread + ")" : "") };
                   })()] : [])
@@ -30308,7 +30319,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         )}
 
         {/* ── LEAVE EXPIRY REPORTS TAB (same component, expiry-only slice) ── */}
-        {tab === "leaveExpiry" && canSeeIncidents(currentUser) && (
+        {tab === "leaveExpiry" && canSeeLeaveExpiry && (
           <IncidentReportsTab reports={incidentReports} setReports={setIncidentReports} currentUser={currentUser} mode="leaveExpiry" />
         )}
 
