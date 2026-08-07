@@ -10107,6 +10107,120 @@ function AppGate() {
   return <App currentUser={currentUser} onSignOut={signOut} appUsers={appUsers} onUsersUpdate={onUsersUpdate} />;
 }
 
+// ─── DASHBOARD ALERT REGISTRY ───────────────────────────────────────────────
+// The dashboard used to be a wall of banners: every alert stacked full-width
+// above the stat tiles, each with its own hand-rolled card. They're now
+// grouped into a handful of collapsible department cards. The machinery lives
+// here; the alerts themselves are registered inside the dashboard block
+// (search for "DASHBOARD ALERT ENTRIES").
+//
+//   ▸ TO ADD A NEW DASHBOARD ALERT — one call, no layout code:
+//
+//       dashAlert("myAlert", "people", "warning", <your permission gate> && (() => {
+//         ...work out what to show...
+//         if (!rows.length) return null;        // nothing to say → nothing renders
+//         return (<div style={{ ...your existing card JSX... }} />);
+//       })());
+//
+//     Grouping, the severity pills, the collapse toggle and its per-user
+//     persistence, ordering (worst first) and the empty / all-clear states are
+//     all handled for you. Let the gate be false — or return null — and the
+//     alert, plus its whole card if it was the last one, simply doesn't appear.
+//
+//     Severity can also be decided at runtime: return
+//     { severity: "critical", node: (<div>…</div>) } instead of a bare node.
+//
+//     Give your JSX a bottom margin (18–22px, like every other alert) — that
+//     margin is what spaces the alerts inside a card.
+
+const DASH_SEVERITY = {
+  // The same three-step scale the Insights → Alerts tab uses, so a "warning"
+  // looks identical wherever in the portal it surfaces.
+  critical: { icon: "🚨", bg: "#fee2e2", bdr: "#fca5a5", ink: "#7f1d1d", btn: "#dc2626", rank: 0 },
+  warning: { icon: "⚠️", bg: "#fff7ed", bdr: "#fed7aa", ink: "#9a3412", btn: "#f97316", rank: 1 },
+  info: { icon: "🔜", bg: "#d1fae5", bdr: "#6ee7b7", ink: "#065f46", btn: "#059669", rank: 2 }
+};
+
+// Department cards, in the order they appear on the dashboard. The tones are
+// the existing nav-category colours, so a card reads as "the People tab's
+// pink" rather than introducing a new palette.
+const DASH_GROUPS = [
+  { id: "people", label: "People & HR", icon: "🌸", bg: "#FDEEF5", bdr: "#FBCFE8", ink: "#831843" },
+  { id: "scheduling", label: "Scheduling", icon: "📅", bg: "#E0F2FE", bdr: "#BAE6FD", ink: "#075985" },
+  { id: "payroll", label: "Payroll & Leave", icon: "💚", bg: "#DCFCE7", bdr: "#BBF7D0", ink: "#14532d" },
+  { id: "operations", label: "Operations", icon: "🏪", bg: "#EDE9FE", bdr: "#DDD6FE", ink: "#5B21B6" },
+  { id: "security", label: "Security & Admin", icon: "🛡️", bg: "#FEF3C7", bdr: "#FDE68A", ink: "#92400e" }
+];
+
+// Severity count pill for a group header — "🚨 2".
+function DashSevPill({ sev, n }) {
+  const s = DASH_SEVERITY[sev] || DASH_SEVERITY.info;
+  return (
+    <span style={{ background: s.bg, border: "1px solid " + s.bdr, color: s.ink, borderRadius: 999, padding: "2px 9px", fontSize: 11, fontWeight: 800, whiteSpace: "nowrap", lineHeight: 1.6 }}>
+      {s.icon} {n}
+    </span>
+  );
+}
+
+// One department card: a header that stays readable while collapsed (icon,
+// name, how many alerts and how bad) over the group's alerts, worst first.
+function DashGroupCard({ group, entries, open, onToggle, isMobile }) {
+  const counts = { critical: 0, warning: 0, info: 0 };
+  entries.forEach(e => { counts[e.severity] = (counts[e.severity] || 0) + 1; });
+  // A card holding a critical alert wears the critical border, so "something
+  // is on fire in here" survives the card being collapsed.
+  const bdr = counts.critical > 0 ? DASH_SEVERITY.critical.bdr : group.bdr;
+  return (
+    <div style={{ background: "#FFFFFF", border: "1px solid " + bdr, borderLeft: "4px solid " + bdr, borderRadius: 16, boxShadow: "0 1px 6px rgba(190,24,93,0.04)", marginBottom: 12, overflow: "hidden", fontFamily: "'Outfit',system-ui,sans-serif" }}>
+      <div
+        onClick={onToggle}
+        title={(open ? "Collapse" : "Expand") + " " + group.label}
+        style={{ display: "flex", alignItems: "center", gap: 12, padding: isMobile ? "12px 13px" : "13px 16px", cursor: "pointer", userSelect: "none" }}>
+        <span style={{ width: 34, height: 34, flexShrink: 0, borderRadius: 10, background: group.bg, border: "1px solid " + group.bdr, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 17 }}>{group.icon}</span>
+        <span style={{ fontSize: 14, fontWeight: 700, color: group.ink, letterSpacing: "0.01em" }}>{group.label}</span>
+        <span style={{ flex: 1, display: "flex", gap: 6, justifyContent: "flex-end", flexWrap: "wrap", alignItems: "center" }}>
+          {["critical", "warning", "info"].map(sev => counts[sev] > 0 ? <DashSevPill key={sev} sev={sev} n={counts[sev]} /> : null)}
+          {!isMobile && (
+            <span style={{ background: group.bg, border: "1px solid " + group.bdr, color: group.ink, borderRadius: 999, padding: "2px 9px", fontSize: 11, fontWeight: 800, whiteSpace: "nowrap", lineHeight: 1.6 }}>
+              {entries.length} alert{entries.length === 1 ? "" : "s"}
+            </span>
+          )}
+        </span>
+        <span style={{ color: group.ink, fontSize: 12, width: 14, textAlign: "center", flexShrink: 0 }}>{open ? "▾" : "▸"}</span>
+      </div>
+      {/* Each alert keeps its own familiar card and its own bottom margin —
+          that margin is the spacing between them and the card's bottom pad. */}
+      {open && (
+        <div style={{ padding: isMobile ? "0 11px" : "0 14px" }}>
+          {entries.map(e => <React.Fragment key={e.id}>{e.node}</React.Fragment>)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Renders the whole grouped alert stack. `openMap` holds only the groups the
+// user has explicitly toggled; anything untouched falls back to "open if it
+// holds a critical alert", so urgent things are never hidden behind a click.
+function renderDashAlertGroups(entries, openMap, onToggle, isMobile) {
+  if (!entries.length) {
+    return (
+      <div style={{ background: "#FFFFFF", border: "1px solid #FBCFE8", borderRadius: 16, padding: "14px 18px", marginBottom: 12, boxShadow: "0 1px 6px rgba(190,24,93,0.04)", display: "flex", alignItems: "center", gap: 10, fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 13, fontWeight: 700, color: "#831843" }}>
+        <span style={{ fontSize: 17 }}>✅</span> All clear — nothing needs your attention today.
+      </div>
+    );
+  }
+  return DASH_GROUPS.map(g => {
+    const mine = entries
+      .filter(e => e.group === g.id)
+      .sort((a, b) => ((DASH_SEVERITY[a.severity] || DASH_SEVERITY.info).rank) - ((DASH_SEVERITY[b.severity] || DASH_SEVERITY.info).rank));
+    if (!mine.length) return null;   // a department with nothing to say renders nothing
+    const hasCritical = mine.some(e => e.severity === "critical");
+    const open = Object.prototype.hasOwnProperty.call(openMap || {}, g.id) ? !!openMap[g.id] : hasCritical;
+    return <DashGroupCard key={g.id} group={g} entries={mine} open={open} onToggle={() => onToggle(g.id, open)} isMobile={isMobile} />;
+  });
+}
+
 // ─── SETTINGS / USER ADMIN ──────────────────────────────────────────────────
 // Owner-only screen for managing PIN logins. Lists every user, lets the
 // owner add new ones, edit permissions, reset PINs and delete accounts.
@@ -10118,6 +10232,10 @@ const SETTINGS_TABS = [
   { t: "dashMgrAbsences", l: "Manager Absences (Action required)", cat: "Home/Dashboard", icon: "📌" },
   { t: "dashCalledInSick", l: "Called in Sick / Absent (today & tomorrow)", cat: "Home/Dashboard", icon: "🤒" },
   { t: "dashAbscond", l: "Abscond / Absence Warnings", cat: "Home/Dashboard", icon: "🚨" },
+  // These two gates were already checked on the dashboard but never listed
+  // here, so there was no way to actually turn them off for a user.
+  { t: "dashEdRequests", l: "Extra-Day Offers (review)", cat: "Home/Dashboard", icon: "✨" },
+  { t: "dashNews", l: "Daily Updates (kiosk feed)", cat: "Home/Dashboard", icon: "📰" },
   { t: "trialAmCheckinAlert", l: "AM Trial · missing check-in (trainers)", cat: "Home/Dashboard", icon: "⚠️" },
   // Tab KEY stays "staff" — it's persisted in every user's hideTabs /
   // showTabs / readOnlyTabs and in NAV_TAB_TO_CATEGORY, so renaming the key
@@ -19211,6 +19329,28 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const isMobile = useIsMobile();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [dashCollapsed, setDashCollapsed] = useState({}); // collapsible dashboard sections
+
+  // Dashboard alert-group collapse. Only groups the user has EXPLICITLY
+  // toggled are stored — anything untouched falls back to "open if it holds a
+  // critical alert" (see renderDashAlertGroups), so a fresh sign-in still
+  // opens on whatever is on fire. Kept per PIN so two people sharing a
+  // machine don't inherit each other's collapsed cards.
+  const dashGroupKey = "boaDashGroups:" + (currentUser?.pin || "anon");
+  const [dashGroupOpen, setDashGroupOpen] = useState({});
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(dashGroupKey);
+      const parsed = raw ? JSON.parse(raw) : {};
+      setDashGroupOpen(parsed && typeof parsed === "object" ? parsed : {});
+    } catch (_) { setDashGroupOpen({}); }
+  }, [dashGroupKey]);
+  const toggleDashGroup = (gid, isOpen) => {
+    setDashGroupOpen(prev => {
+      const next = { ...prev, [gid]: !isOpen };
+      try { window.localStorage.setItem(dashGroupKey, JSON.stringify(next)); } catch (_) { }
+      return next;
+    });
+  };
 
   // Load tech loans on mount and re-pull on tab changes (so navigating to
   // Today's Movements or the Attendance sheet picks up loans a kiosk created
