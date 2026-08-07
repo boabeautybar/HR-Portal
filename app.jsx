@@ -26307,15 +26307,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   return (
                     <div style={{ background: "linear-gradient(180deg,#FFF7FB,#ffffff)", border: "1px solid #FBCFE8", borderRadius: 14, padding: "16px", marginBottom: 18, boxShadow: "0 1px 4px rgba(190,24,93,0.06)" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }} onClick={() => setDashCollapsed(p => ({ ...p, edReq: !p.edReq }))}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                           <span style={{ fontSize: 20 }}>✨</span>
                           <div>
                             <div style={{ fontSize: 10, fontWeight: 800, color: "#BE185D", letterSpacing: "0.16em", textTransform: "uppercase" }}>Extra-Day Offers</div>
-                            <div style={{ fontSize: 16, fontWeight: 700, color: "#831843", fontFamily: "'Outfit',system-ui,sans-serif" }}>Review · {headLbl} {dashCollapsed.edReq ? "▸" : "▾"}</div>
+                            <div style={{ fontSize: 16, fontWeight: 700, color: "#831843", fontFamily: "'Outfit',system-ui,sans-serif" }}>Review · {headLbl}</div>
                           </div>
                         </div>
                       </div>
-                      <div style={{ display: dashCollapsed.edReq ? "none" : "flex", flexDirection: "column", gap: 12 }}>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                         {rows.map(({ offer, reqs }) => (
                           <div key={offer.id} style={{ border: "1px solid #FCE7F3", borderRadius: 12, padding: "12px 14px", background: "#fff" }}>
                             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, flexWrap: "wrap" }}>
@@ -26831,12 +26831,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   node: (
                   <div style={{ background: "#fef2f2", border: "2px solid #fecaca", borderRadius: 16, padding: "16px 18px", marginBottom: 22, boxShadow: "0 4px 16px rgba(220,38,38,0.10)" }}>
                     <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 6 }}>
-                      <div onClick={() => setDashCollapsed(p => ({ ...p, abscond: !p.abscond }))} style={{ fontSize: 15, fontWeight: 800, color: "#991b1b", letterSpacing: "0.04em", textTransform: "uppercase", cursor: "pointer" }}>🚨 Abscond / Absence Warnings <span style={{ fontSize: 12, opacity: 0.6 }}>{dashCollapsed.abscond ? "▸" : "▾"}</span></div>
+                      <div style={{ fontSize: 15, fontWeight: 800, color: "#991b1b", letterSpacing: "0.04em", textTransform: "uppercase" }}>🚨 Abscond / Absence Warnings</div>
                       <div style={{ fontSize: 12, color: "#b91c1c", fontWeight: 700 }}>
                         {active.length} staff with 2+ days missed in a row{abscondCount > 0 ? ` · ${abscondCount} possible abscondment` : ""}
                       </div>
                     </div>
-                    <div style={{ display: dashCollapsed.abscond ? "none" : "block" }}>
+                    <div style={{ display: "block" }}>
                       <div style={{ fontSize: 11, color: "#b91c1c", marginBottom: 8, fontStyle: "italic" }}>
                         These people have been no-show or absent 2+ days in a row and <strong>haven't returned to work yet</strong>. Consecutive no-shows likely mean abscondment — investigate, set up a disciplinary, and plan a replacement for the store.
                       </div>
@@ -26949,8 +26949,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <div style={{ background: palette.bg, border: "2px solid " + palette.border, borderRadius: 16, padding: "16px 18px", marginBottom: 22, boxShadow: urgent ? "0 6px 22px rgba(127,29,29,0.18)" : "0 4px 16px rgba(146,64,14,0.12)" }}>
                     <style>{`@keyframes _romAbsBlink { 0%,49%{opacity:1} 50%,100%{opacity:0.35} }`}</style>
                     <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
-                      <div onClick={() => setDashCollapsed(p => ({ ...p, mgrAbsences: !p.mgrAbsences }))} style={{ fontSize: 15, fontWeight: 800, color: palette.text, letterSpacing: "0.04em", textTransform: "uppercase", animation: urgent ? "_romAbsBlink 1s infinite" : "none", cursor: "pointer" }}>
-                        {urgent ? "🚨" : "📌"} Manager absences · action required <span style={{ fontSize: 12, opacity: 0.6 }}>{dashCollapsed.mgrAbsences ? "▸" : "▾"}</span>
+                      <div style={{ fontSize: 15, fontWeight: 800, color: palette.text, letterSpacing: "0.04em", textTransform: "uppercase", animation: urgent ? "_romAbsBlink 1s infinite" : "none" }}>
+                        {urgent ? "🚨" : "📌"} Manager absences · action required
                       </div>
                       <div style={{ fontSize: 12, color: palette.text, fontWeight: 700 }}>
                         {pending.length} manager{pending.length === 1 ? "" : "s"} scheduled but no clock-in &amp; no reason yet
@@ -26963,7 +26963,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         Open Manager Check-ins →
                       </button>
                     </div>
-                    <div style={{ display: dashCollapsed.mgrAbsences ? "none" : "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 8 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 8 }}>
                       {branchKeys.map(b => (
                         <div key={b} style={{ background: palette.chip, border: "1px solid " + palette.chipBorder, borderRadius: 9, padding: "8px 10px" }}>
                           <div style={{ fontSize: 11, fontWeight: 800, color: palette.text, letterSpacing: "0.04em", marginBottom: 4 }}>📍 {b}</div>
@@ -27166,16 +27166,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   return (
                     <div style={{ background: "linear-gradient(180deg,#FFF7FB,#ffffff)", border: "1px solid #FBCFE8", borderRadius: 14, padding: "16px", marginBottom: 18, boxShadow: "0 1px 4px rgba(190,24,93,0.06)" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 10 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", minWidth: 0 }} onClick={() => setDashCollapsed(p => ({ ...p, news: !p.news }))}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
                           <span style={{ fontSize: 20 }}>📰</span>
                           <div>
                             <div style={{ fontSize: 10, fontWeight: 800, color: "#BE185D", letterSpacing: "0.16em", textTransform: "uppercase" }}>Daily Updates</div>
-                            <div style={{ fontSize: 16, fontWeight: 700, color: "#831843", fontFamily: "'Outfit',system-ui,sans-serif" }}>{posts.length} post{posts.length === 1 ? "" : "s"} in the feed {dashCollapsed.news ? "▸" : "▾"}</div>
+                            <div style={{ fontSize: 16, fontWeight: 700, color: "#831843", fontFamily: "'Outfit',system-ui,sans-serif" }}>{posts.length} post{posts.length === 1 ? "" : "s"} in the feed</div>
                           </div>
                         </div>
                         <button onClick={clearAllNews} style={{ background: "#fff", color: "#B91C1C", border: "1px solid #FECACA", borderRadius: 9, padding: "7px 13px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap", flexShrink: 0 }}>Clear all</button>
                       </div>
-                      <div style={{ display: dashCollapsed.news ? "none" : "flex", flexDirection: "column", gap: 8 }}>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                         {posts.map((n, i) => (
                           <div key={(n.ts || "") + "_" + i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "9px 12px", background: "#fff", border: "1px solid #FCE7F3", borderRadius: 10 }}>
                             <div style={{ minWidth: 0 }}>
@@ -27196,11 +27196,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               !(new Set(currentUser?.hideTabs || []).has("dashSecurityAlerts")) && securityLogs && securityLogs.length > 0 && (
                 <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 14, padding: "16px", marginBottom: 18, boxShadow: "0 1px 4px rgba(220,38,38,0.06)" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }} onClick={() => setDashCollapsed(p => ({ ...p, security: !p.security }))}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                       <span style={{ fontSize: 20 }}>🚨</span>
                       <div>
                         <div style={{ fontSize: 10, fontWeight: 800, color: "#b91c1c", letterSpacing: "0.18em", textTransform: "uppercase", fontFamily: "'Outfit',system-ui,sans-serif" }}>Security Alerts</div>
-                        <div style={{ fontSize: 16, fontWeight: 700, color: "#7f1d1d", fontFamily: "'Outfit',system-ui,sans-serif" }}>Blocked Kiosk Attempts <span style={{ fontSize: 12, opacity: 0.6 }}>{dashCollapsed.security ? "▸" : "▾"}</span></div>
+                        <div style={{ fontSize: 16, fontWeight: 700, color: "#7f1d1d", fontFamily: "'Outfit',system-ui,sans-serif" }}>Blocked Kiosk Attempts</div>
                       </div>
                     </div>
                     {securityLogs.filter(l => l.status !== "dismissed").length > 0 && (
@@ -27220,7 +27220,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       </label>
                     )}
                   </div>
-                  <div style={{ display: dashCollapsed.security ? "none" : "flex", flexDirection: "column", gap: 8, maxHeight: 300, overflowY: "auto", paddingRight: 4 }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 300, overflowY: "auto", paddingRight: 4 }}>
                     {securityLogs.filter(l => l.status !== "dismissed").map((log, idx) => (
                       <div key={idx} style={{ background: "#fff", padding: "10px", borderRadius: 8, fontSize: 12, border: "1px solid #fee2e2" }}>
                         <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 4, alignItems: "center" }}>
