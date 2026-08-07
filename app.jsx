@@ -10107,6 +10107,120 @@ function AppGate() {
   return <App currentUser={currentUser} onSignOut={signOut} appUsers={appUsers} onUsersUpdate={onUsersUpdate} />;
 }
 
+// ─── DASHBOARD ALERT REGISTRY ───────────────────────────────────────────────
+// The dashboard used to be a wall of banners: every alert stacked full-width
+// above the stat tiles, each with its own hand-rolled card. They're now
+// grouped into a handful of collapsible department cards. The machinery lives
+// here; the alerts themselves are registered inside the dashboard block
+// (search for "DASHBOARD ALERT ENTRIES").
+//
+//   ▸ TO ADD A NEW DASHBOARD ALERT — one call, no layout code:
+//
+//       dashAlert("myAlert", "people", "warning", <your permission gate> && (() => {
+//         ...work out what to show...
+//         if (!rows.length) return null;        // nothing to say → nothing renders
+//         return (<div style={{ ...your existing card JSX... }} />);
+//       })());
+//
+//     Grouping, the severity pills, the collapse toggle and its per-user
+//     persistence, ordering (worst first) and the empty / all-clear states are
+//     all handled for you. Let the gate be false — or return null — and the
+//     alert, plus its whole card if it was the last one, simply doesn't appear.
+//
+//     Severity can also be decided at runtime: return
+//     { severity: "critical", node: (<div>…</div>) } instead of a bare node.
+//
+//     Give your JSX a bottom margin (18–22px, like every other alert) — that
+//     margin is what spaces the alerts inside a card.
+
+const DASH_SEVERITY = {
+  // The same three-step scale the Insights → Alerts tab uses, so a "warning"
+  // looks identical wherever in the portal it surfaces.
+  critical: { icon: "🚨", bg: "#fee2e2", bdr: "#fca5a5", ink: "#7f1d1d", btn: "#dc2626", rank: 0 },
+  warning: { icon: "⚠️", bg: "#fff7ed", bdr: "#fed7aa", ink: "#9a3412", btn: "#f97316", rank: 1 },
+  info: { icon: "🔜", bg: "#d1fae5", bdr: "#6ee7b7", ink: "#065f46", btn: "#059669", rank: 2 }
+};
+
+// Department cards, in the order they appear on the dashboard. The tones are
+// the existing nav-category colours, so a card reads as "the People tab's
+// pink" rather than introducing a new palette.
+const DASH_GROUPS = [
+  { id: "people", label: "People & HR", icon: "🌸", bg: "#FDEEF5", bdr: "#FBCFE8", ink: "#831843" },
+  { id: "scheduling", label: "Scheduling", icon: "📅", bg: "#E0F2FE", bdr: "#BAE6FD", ink: "#075985" },
+  { id: "payroll", label: "Payroll & Leave", icon: "💚", bg: "#DCFCE7", bdr: "#BBF7D0", ink: "#14532d" },
+  { id: "operations", label: "Operations", icon: "🏪", bg: "#EDE9FE", bdr: "#DDD6FE", ink: "#5B21B6" },
+  { id: "security", label: "Security & Admin", icon: "🛡️", bg: "#FEF3C7", bdr: "#FDE68A", ink: "#92400e" }
+];
+
+// Severity count pill for a group header — "🚨 2".
+function DashSevPill({ sev, n }) {
+  const s = DASH_SEVERITY[sev] || DASH_SEVERITY.info;
+  return (
+    <span style={{ background: s.bg, border: "1px solid " + s.bdr, color: s.ink, borderRadius: 999, padding: "2px 9px", fontSize: 11, fontWeight: 800, whiteSpace: "nowrap", lineHeight: 1.6 }}>
+      {s.icon} {n}
+    </span>
+  );
+}
+
+// One department card: a header that stays readable while collapsed (icon,
+// name, how many alerts and how bad) over the group's alerts, worst first.
+function DashGroupCard({ group, entries, open, onToggle, isMobile }) {
+  const counts = { critical: 0, warning: 0, info: 0 };
+  entries.forEach(e => { counts[e.severity] = (counts[e.severity] || 0) + 1; });
+  // A card holding a critical alert wears the critical border, so "something
+  // is on fire in here" survives the card being collapsed.
+  const bdr = counts.critical > 0 ? DASH_SEVERITY.critical.bdr : group.bdr;
+  return (
+    <div style={{ background: "#FFFFFF", border: "1px solid " + bdr, borderLeft: "4px solid " + bdr, borderRadius: 16, boxShadow: "0 1px 6px rgba(190,24,93,0.04)", marginBottom: 12, overflow: "hidden", fontFamily: "'Outfit',system-ui,sans-serif" }}>
+      <div
+        onClick={onToggle}
+        title={(open ? "Collapse" : "Expand") + " " + group.label}
+        style={{ display: "flex", alignItems: "center", gap: 12, padding: isMobile ? "12px 13px" : "13px 16px", cursor: "pointer", userSelect: "none" }}>
+        <span style={{ width: 34, height: 34, flexShrink: 0, borderRadius: 10, background: group.bg, border: "1px solid " + group.bdr, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 17 }}>{group.icon}</span>
+        <span style={{ fontSize: 14, fontWeight: 700, color: group.ink, letterSpacing: "0.01em" }}>{group.label}</span>
+        <span style={{ flex: 1, display: "flex", gap: 6, justifyContent: "flex-end", flexWrap: "wrap", alignItems: "center" }}>
+          {["critical", "warning", "info"].map(sev => counts[sev] > 0 ? <DashSevPill key={sev} sev={sev} n={counts[sev]} /> : null)}
+          {!isMobile && (
+            <span style={{ background: group.bg, border: "1px solid " + group.bdr, color: group.ink, borderRadius: 999, padding: "2px 9px", fontSize: 11, fontWeight: 800, whiteSpace: "nowrap", lineHeight: 1.6 }}>
+              {entries.length} alert{entries.length === 1 ? "" : "s"}
+            </span>
+          )}
+        </span>
+        <span style={{ color: group.ink, fontSize: 12, width: 14, textAlign: "center", flexShrink: 0 }}>{open ? "▾" : "▸"}</span>
+      </div>
+      {/* Each alert keeps its own familiar card and its own bottom margin —
+          that margin is the spacing between them and the card's bottom pad. */}
+      {open && (
+        <div style={{ padding: isMobile ? "0 11px" : "0 14px" }}>
+          {entries.map(e => <React.Fragment key={e.id}>{e.node}</React.Fragment>)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Renders the whole grouped alert stack. `openMap` holds only the groups the
+// user has explicitly toggled; anything untouched falls back to "open if it
+// holds a critical alert", so urgent things are never hidden behind a click.
+function renderDashAlertGroups(entries, openMap, onToggle, isMobile) {
+  if (!entries.length) {
+    return (
+      <div style={{ background: "#FFFFFF", border: "1px solid #FBCFE8", borderRadius: 16, padding: "14px 18px", marginBottom: 12, boxShadow: "0 1px 6px rgba(190,24,93,0.04)", display: "flex", alignItems: "center", gap: 10, fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 13, fontWeight: 700, color: "#831843" }}>
+        <span style={{ fontSize: 17 }}>✅</span> All clear — nothing needs your attention today.
+      </div>
+    );
+  }
+  return DASH_GROUPS.map(g => {
+    const mine = entries
+      .filter(e => e.group === g.id)
+      .sort((a, b) => ((DASH_SEVERITY[a.severity] || DASH_SEVERITY.info).rank) - ((DASH_SEVERITY[b.severity] || DASH_SEVERITY.info).rank));
+    if (!mine.length) return null;   // a department with nothing to say renders nothing
+    const hasCritical = mine.some(e => e.severity === "critical");
+    const open = Object.prototype.hasOwnProperty.call(openMap || {}, g.id) ? !!openMap[g.id] : hasCritical;
+    return <DashGroupCard key={g.id} group={g} entries={mine} open={open} onToggle={() => onToggle(g.id, open)} isMobile={isMobile} />;
+  });
+}
+
 // ─── SETTINGS / USER ADMIN ──────────────────────────────────────────────────
 // Owner-only screen for managing PIN logins. Lists every user, lets the
 // owner add new ones, edit permissions, reset PINs and delete accounts.
@@ -10118,6 +10232,10 @@ const SETTINGS_TABS = [
   { t: "dashMgrAbsences", l: "Manager Absences (Action required)", cat: "Home/Dashboard", icon: "📌" },
   { t: "dashCalledInSick", l: "Called in Sick / Absent (today & tomorrow)", cat: "Home/Dashboard", icon: "🤒" },
   { t: "dashAbscond", l: "Abscond / Absence Warnings", cat: "Home/Dashboard", icon: "🚨" },
+  // These two gates were already checked on the dashboard but never listed
+  // here, so there was no way to actually turn them off for a user.
+  { t: "dashEdRequests", l: "Extra-Day Offers (review)", cat: "Home/Dashboard", icon: "✨" },
+  { t: "dashNews", l: "Daily Updates (kiosk feed)", cat: "Home/Dashboard", icon: "📰" },
   { t: "trialAmCheckinAlert", l: "AM Trial · missing check-in (trainers)", cat: "Home/Dashboard", icon: "⚠️" },
   // Tab KEY stays "staff" — it's persisted in every user's hideTabs /
   // showTabs / readOnlyTabs and in NAV_TAB_TO_CATEGORY, so renaming the key
@@ -19212,6 +19330,28 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [dashCollapsed, setDashCollapsed] = useState({}); // collapsible dashboard sections
 
+  // Dashboard alert-group collapse. Only groups the user has EXPLICITLY
+  // toggled are stored — anything untouched falls back to "open if it holds a
+  // critical alert" (see renderDashAlertGroups), so a fresh sign-in still
+  // opens on whatever is on fire. Kept per PIN so two people sharing a
+  // machine don't inherit each other's collapsed cards.
+  const dashGroupKey = "boaDashGroups:" + (currentUser?.pin || "anon");
+  const [dashGroupOpen, setDashGroupOpen] = useState({});
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(dashGroupKey);
+      const parsed = raw ? JSON.parse(raw) : {};
+      setDashGroupOpen(parsed && typeof parsed === "object" ? parsed : {});
+    } catch (_) { setDashGroupOpen({}); }
+  }, [dashGroupKey]);
+  const toggleDashGroup = (gid, isOpen) => {
+    setDashGroupOpen(prev => {
+      const next = { ...prev, [gid]: !isOpen };
+      try { window.localStorage.setItem(dashGroupKey, JSON.stringify(next)); } catch (_) { }
+      return next;
+    });
+  };
+
   // Load tech loans on mount and re-pull on tab changes (so navigating to
   // Today's Movements or the Attendance sheet picks up loans a kiosk created
   // after the portal loaded) and whenever loansTick is bumped by a refresh.
@@ -26120,139 +26260,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             { lbl: "Alerts", icon: "🔔", to: "alerts" }
           ];
 
-          return (
-            <div style={{ fontFamily: "'Outfit',system-ui,sans-serif" }}>
-              {/* ── HERO ── greeting + role + date/time ── */}
-              <div style={{ background: `linear-gradient(135deg,${PINK.softer} 0%,#FFFFFF 65%)`, border: `1px solid ${PINK.soft}`, borderRadius: 20, padding: isMobile ? "18px 16px" : "26px 30px", marginBottom: 20, boxShadow: "0 4px 18px rgba(190,24,93,0.07)", display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 18, fontFamily: "'Outfit',system-ui,sans-serif" }}>
-                <div>
-                  <div style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 11, fontWeight: 700, color: PINK.accent, letterSpacing: "0.22em", textTransform: "uppercase" }}>BOA HR · Dashboard</div>
-                  <div style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 34, color: PINK.ink, fontWeight: 700, lineHeight: 1.1, marginTop: 6, letterSpacing: "-0.01em" }}>Good {partOfDay}, {(currentUser.name || "").trim().split(/\s+/)[0]}</div>
-                  <div style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 12.5, color: PINK.accent, marginTop: 8, fontWeight: 500, letterSpacing: "0.02em" }}>{dateLbl}</div>
-                </div>
-                <div style={{ textAlign: "right" }}>
-                  <div style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 32, fontWeight: 600, color: PINK.ink, letterSpacing: "0.02em", lineHeight: 1 }}>{timeLbl}</div>
-                  <div style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 11, color: PINK.deep, marginTop: 6, fontWeight: 500, letterSpacing: "0.04em" }}>Signed in as <span style={{ color: PINK.accent, fontWeight: 700 }}>{currentUser.role}</span></div>
-                </div>
-              </div>
 
-              {/* Shared scope toggle (My / Other / All). Renders nothing
-                  when the user has no store scope. Same control is wired
-                  to the Check-ins tabs and Store Openings — flipping it
-                  here also affects those views. */}
-              {renderScopeBar({ marginBottom: 18 })}
+          // ── DASHBOARD ALERT ENTRIES ──────────────────────────────
+          // Every alert on the dashboard, registered into a department card.
+          // See the DASH_ALERTS registry notes at the top of this file for how
+          // to add one — it is a single dashAlert(...) call, no layout code.
+          // A falsy gate or a null return means the alert (and its card, if it
+          // was the last one) simply doesn't render.
+          const dashAlertEntries = [];
+          const dashAlert = (id, group, severity, res) => {
+            if (!res) return;                       // gate false, or nothing to report
+            const node = res.node !== undefined ? res.node : res;
+            if (!node) return;
+            dashAlertEntries.push({ id, group, severity: res.severity || severity, node });
+          };
 
-              {/* ── SECTION: TODAY'S TO-DOS ── personal task list. Renders
-                  only when the signed-in user has at least one task for
-                  today (one-off dated today OR a weekly task whose
-                  repeatDow includes today). Wrapped in a loud pink panel
-                  so it pops near the top of the dashboard; each card has
-                  a coloured side-bar that flips green on Done. */}
-              {myTodayTasks.length > 0 && (() => {
-                const openCount = myTodayTasks.filter(t => !isTaskDoneOn(t, todayYmdStr)).length;
-                const allDone = openCount === 0;
-                // ROM dashboards lean on Stores Open / Mgr Check-ins
-                // first; tone the to-dos panel down so it doesn't draw
-                // the eye away from those headline tiles.
-                const muted = _hasStoreScope;
-                return (
-                  <div style={muted ? {
-                    background: "#fff",
-                    border: "1px solid " + (allDone ? "#bbf7d0" : "#FBCFE8"),
-                    borderRadius: 14,
-                    padding: "12px 16px",
-                    marginBottom: 18,
-                    boxShadow: "0 1px 4px rgba(190,24,93,0.06)"
-                  } : {
-                    background: allDone ? "linear-gradient(135deg,#dcfce7 0%,#FFFFFF 70%)" : "linear-gradient(135deg,#FCE7F3 0%,#FFFFFF 65%)",
-                    border: "2px solid " + (allDone ? "#86efac" : "#F472B6"),
-                    borderRadius: 18,
-                    padding: "18px 22px",
-                    marginBottom: 22,
-                    boxShadow: allDone ? "0 4px 18px rgba(34,197,94,0.10)" : "0 4px 22px rgba(244,114,182,0.22)"
-                  }}>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: muted ? 10 : 14 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: muted ? 8 : 10 }}>
-                        <span style={{ fontSize: muted ? 18 : 28 }}>📋</span>
-                        <div>
-                          <div style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontSize: muted ? 10 : 11, fontWeight: 800, color: allDone ? "#15803d" : "#BE185D", letterSpacing: "0.18em", textTransform: "uppercase" }}>
-                            Today's To-Dos
-                          </div>
-                          <div style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontSize: muted ? 14 : 22, fontWeight: muted ? 700 : 800, color: "#831843", lineHeight: 1.15, marginTop: 2 }}>
-                            {allDone
-                              ? "All done — nice one!"
-                              : openCount + " task" + (openCount === 1 ? "" : "s") + " to tick off today"}
-                          </div>
-                        </div>
-                      </div>
-                      <div style={{
-                        background: allDone ? "#16a34a" : "#BE185D",
-                        color: "#fff",
-                        padding: muted ? "3px 10px" : "6px 14px",
-                        borderRadius: 999,
-                        fontSize: muted ? 11 : 13,
-                        fontWeight: 800,
-                        letterSpacing: "0.04em",
-                        boxShadow: muted ? "none" : (allDone ? "0 0 0 3px rgba(22,163,74,0.18)" : "0 0 0 3px rgba(190,24,93,0.18)")
-                      }}>
-                        {myTodayTasks.length - openCount} / {myTodayTasks.length} done
-                      </div>
-                    </div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                      {myTodayTasks.map(t => {
-                        const done = isTaskDoneOn(t, todayYmdStr);
-                        const weekly = t.kind === "weekly";
-                        const bar = done ? "#16a34a" : "#BE185D";
-                        return (
-                          <div key={t._id} style={{
-                            background: "#fff",
-                            border: "1px solid " + (done ? "#bbf7d0" : "#FBCFE8"),
-                            borderLeft: "6px solid " + bar,
-                            borderRadius: 12,
-                            padding: "14px 18px",
-                            display: "flex",
-                            justifyContent: "space-between",
-                            alignItems: "center",
-                            gap: 12,
-                            opacity: done ? 0.78 : 1,
-                            boxShadow: done ? "none" : "0 1px 4px rgba(190,24,93,0.08)"
-                          }}>
-                            <div style={{ minWidth: 0, flex: 1 }}>
-                              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 4 }}>
-                                <span style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 17, fontWeight: 800, color: "#831843", textDecoration: done ? "line-through" : "none" }}>{t.title}</span>
-                                {weekly && (
-                                  <span style={{ background: "#ede9fe", color: "#5b21b6", border: "1px solid #ddd6fe", padding: "2px 8px", borderRadius: 6, fontSize: 10, fontWeight: 800, letterSpacing: "0.06em" }}>
-                                    WEEKLY · {DOW_LABEL[todayDowNum].toUpperCase()}
-                                  </span>
-                                )}
-                              </div>
-                              {t.description && <div style={{ fontSize: 13, color: "#4b5563", whiteSpace: "pre-wrap", lineHeight: 1.4 }}>{t.description}</div>}
-                              {done && (
-                                <div style={{ fontSize: 11, color: "#15803d", fontWeight: 700, marginTop: 5 }}>
-                                  ✓ Done {weekly
-                                    ? (t.doneByDate[todayYmdStr] && t.doneByDate[todayYmdStr].by ? "· by " + t.doneByDate[todayYmdStr].by : "")
-                                    : (t.doneBy ? "· by " + t.doneBy : "")}
-                                </div>
-                              )}
-                            </div>
-                            {done ? (
-                              <button onClick={() => markTaskUndone(t._id)}
-                                style={{ background: "#fff", color: "#374151", border: "1px solid #d1d5db", borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "inherit", whiteSpace: "nowrap" }}>Undo</button>
-                            ) : (
-                              <button onClick={() => markTaskDone(t._id)}
-                                style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 10, padding: "12px 22px", cursor: "pointer", fontSize: 14, fontWeight: 800, fontFamily: "inherit", whiteSpace: "nowrap", boxShadow: "0 2px 6px rgba(190,24,93,0.35)" }}>
-                                ✓ Mark done
-                              </button>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                );
-              })()}
-
-              {/* ── SECTION: EXTRA-DAY REQUESTS (Owner + National Ops) ── */}
-              {(currentUser?.isOwner || (currentUser?.role || "").toLowerCase().includes("national"))
+              /* ── SECTION: EXTRA-DAY REQUESTS (Owner + National Ops) ── */
+              dashAlert("edOffers", "people", "info",
+              (currentUser?.isOwner || (currentUser?.role || "").toLowerCase().includes("national"))
                 && !(new Set(currentUser?.hideTabs || []).has("dashEdRequests"))
                 && (() => {
                   const openOffers = (edOffers || []).filter(o => o && o.status === "open");
@@ -26282,15 +26307,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   return (
                     <div style={{ background: "linear-gradient(180deg,#FFF7FB,#ffffff)", border: "1px solid #FBCFE8", borderRadius: 14, padding: "16px", marginBottom: 18, boxShadow: "0 1px 4px rgba(190,24,93,0.06)" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }} onClick={() => setDashCollapsed(p => ({ ...p, edReq: !p.edReq }))}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                           <span style={{ fontSize: 20 }}>✨</span>
                           <div>
                             <div style={{ fontSize: 10, fontWeight: 800, color: "#BE185D", letterSpacing: "0.16em", textTransform: "uppercase" }}>Extra-Day Offers</div>
-                            <div style={{ fontSize: 16, fontWeight: 700, color: "#831843", fontFamily: "'Outfit',system-ui,sans-serif" }}>Review · {headLbl} {dashCollapsed.edReq ? "▸" : "▾"}</div>
+                            <div style={{ fontSize: 16, fontWeight: 700, color: "#831843", fontFamily: "'Outfit',system-ui,sans-serif" }}>Review · {headLbl}</div>
                           </div>
                         </div>
                       </div>
-                      <div style={{ display: dashCollapsed.edReq ? "none" : "flex", flexDirection: "column", gap: 12 }}>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                         {rows.map(({ offer, reqs }) => (
                           <div key={offer.id} style={{ border: "1px solid #FCE7F3", borderRadius: 12, padding: "12px 14px", background: "#fff" }}>
                             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, flexWrap: "wrap" }}>
@@ -26365,15 +26390,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       </div>
                     </div>
                   );
-                })()}
+                })());
 
-              {/* ── SECTION: SCHEDULE CHANGES AWAITING PUBLISH ──
+              /* ── SECTION: SCHEDULE CHANGES AWAITING PUBLISH ──
                   Owner + National Ops only. A passive run of the "Publish
                   current cycle" scan: any draft edit this cycle (leave, extra
                   day, loan, day-off swap…) that hasn't been published yet.
                   Staff / kiosk / My BOA keep showing the OLD version until
-                  someone reviews + publishes — this is the nudge to do it. */}
-              {(currentUser?.isOwner || accessAllows(currentUser, leaveBalancesCfg)) && balAnchorAlert && balAnchorAlert.stale && (
+                  someone reviews + publishes — this is the nudge to do it. */
+              dashAlert("sageReanchor", "payroll", "warning",
+              (currentUser?.isOwner || accessAllows(currentUser, leaveBalancesCfg)) && balAnchorAlert && balAnchorAlert.stale && (
                 <div style={{ background: "#f5f3ff", border: "1px solid #c4b5fd", borderRadius: 16, padding: "16px 20px", marginBottom: 20, boxShadow: "0 4px 14px rgba(109,40,217,0.10)", display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
                   <div style={{ flex: 1, minWidth: 280 }}>
                     <div style={{ fontSize: 15, fontWeight: 800, color: "#5b21b6", letterSpacing: "0.04em", textTransform: "uppercase" }}>🧾 Sage leave balances need re-anchoring</div>
@@ -26390,13 +26416,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     Upload balances →
                   </button>
                 </div>
-              )}
-              {/* Office hours — the payroll officer's landing alert. Two separate
+              ));
+              /* Office hours — the payroll officer's landing alert. Two separate
                   things on purpose: who is missing RIGHT NOW (self-clearing, so
                   it's actionable today), and how many days are waiting to be
                   reviewed. Both derive from officeFindings — the same source the
-                  tab and the nav badge read. */}
-              {canSeeOfficeHours && (officeLiveLate.length > 0 || officeOpenFindings.length > 0) && (
+                  tab and the nav badge read. */
+              dashAlert("officeHours", "people", "info",
+              canSeeOfficeHours && (officeLiveLate.length > 0 || officeOpenFindings.length > 0) && (
                 <div style={{ background: "#fffbeb", border: "1px solid #fcd34d", borderRadius: 16, padding: "16px 20px", marginBottom: 20, boxShadow: "0 4px 14px rgba(180,83,9,0.10)", display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
                   <div style={{ flex: 1, minWidth: 280 }}>
                     <div style={{ fontSize: 15, fontWeight: 800, color: "#92400e", letterSpacing: "0.04em", textTransform: "uppercase" }}>⏰ Office hours need a look</div>
@@ -26420,15 +26447,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     Review hours →
                   </button>
                 </div>
-              )}
-              {/* Manager minus-hours — the payroll-error early-warning. Fires the
+              ));
+              /* Manager minus-hours — the payroll-error early-warning. Fires the
                   day after a shift when an SM/AM was docked hours, and classifies
                   each: a "mislabel" is charged against a shift the clock-in shows
                   they never worked (fixable by pinning the correct shift — the
                   exact bug behind the June −1h queries); a "genuine early leave"
                   stands. National Ops + payroll see it so it's caught live, not
-                  a cycle later. Self-clears as each day is pinned/corrected. */}
-              {canSeeMgrHours && mgrEarlyAlert && mgrEarlyAlert.findings.length > 0 && (
+                  a cycle later. Self-clears as each day is pinned/corrected. */
+              dashAlert("mgrHoursDocked", "payroll", "warning",
+              canSeeMgrHours && mgrEarlyAlert && mgrEarlyAlert.findings.length > 0 && (
                 <div style={{ background: "#fff1f2", border: "1px solid #fda4af", borderRadius: 16, padding: "16px 20px", marginBottom: 20, boxShadow: "0 4px 14px rgba(190,18,60,0.10)", display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
                   <div style={{ flex: 1, minWidth: 280 }}>
                     <div style={{ fontSize: 15, fontWeight: 800, color: "#9f1239", letterSpacing: "0.04em", textTransform: "uppercase" }}>⏱ Manager hours docked — investigate</div>
@@ -26463,16 +26491,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     Check &amp; fix →
                   </button>
                 </div>
-              )}
-              {/* Manager didn't clock out — the replacement for kiosk auto-out.
+              ));
+              /* Manager didn't clock out — the replacement for kiosk auto-out.
                   A manager who clocked in on a scheduled work day but never
                   clocked out is no longer auto-stamped at the scheduled end (which
                   masked early leavers). It's surfaced here for National Ops /
                   payroll to review and close at the REAL time: "Clock out"
                   defaults to the scheduled end (one tap = a genuine forget, paid
                   full) but the time is editable, so a real early leave gets the
-                  correct deduction. Self-clears the moment the shift is closed. */}
-              {canSeeMgrHours && mgrEarlyAlert && mgrEarlyAlert.noClockOut.length > 0 && (() => {
+                  correct deduction. Self-clears the moment the shift is closed. */
+              dashAlert("mgrNoClockOut", "operations", "warning",
+              canSeeMgrHours && mgrEarlyAlert && mgrEarlyAlert.noClockOut.length > 0 && (() => {
                 const _hm = (mn) => mn == null ? null : String(Math.floor(mn / 60)).padStart(2, "0") + ":" + String(mn % 60).padStart(2, "0");
                 const _rows = mgrEarlyAlert.noClockOut;
                 const _shown = _rows.slice(0, 12);
@@ -26513,11 +26542,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     </div>
                   </div>
                 );
-              })()}
-              {/* Use-it-or-lose-it: people whose annual leave is ≤3 months from
+              })());
+              /* Use-it-or-lose-it: people whose annual leave is ≤3 months from
                   forfeiting. HR + National Ops audience; an incident is also
-                  filed automatically (once per person per deadline). */}
-              {canSeeIncidents(currentUser) && expiryRadar && expiryRadar.red.length > 0 && (
+                  filed automatically (once per person per deadline). */
+              dashAlert("leaveExpiry", "payroll", "warning",
+              canSeeIncidents(currentUser) && expiryRadar && expiryRadar.red.length > 0 && (
                 <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: 16, padding: "16px 20px", marginBottom: 20, boxShadow: "0 4px 14px rgba(185,28,28,0.10)", display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
                   <div style={{ flex: 1, minWidth: 280 }}>
                     <div style={{ fontSize: 15, fontWeight: 800, color: "#b91c1c", letterSpacing: "0.04em", textTransform: "uppercase" }}>⏳ Annual leave about to expire</div>
@@ -26534,8 +26564,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     See expiring leave →
                   </button>
                 </div>
-              )}
-              {(currentUser?.isOwner || (currentUser?.role || "").toLowerCase().includes("national")) && pubCycleAlert && pubCycleAlert.count > 0 && (() => {
+              ));
+              dashAlert("unpublishedSched", "scheduling", "warning",
+              (currentUser?.isOwner || (currentUser?.role || "").toLowerCase().includes("national")) && pubCycleAlert && pubCycleAlert.count > 0 && (() => {
                 const a = pubCycleAlert;
                 const kindsTxt = Object.keys(a.kinds)
                   .sort((x, y) => a.kinds[y] - a.kinds[x])
@@ -26558,15 +26589,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     </button>
                   </div>
                 );
-              })()}
+              })());
 
-              {/* ── SECTION: FRESHA — DUE SOON (< 3 days) ──
+              /* ── SECTION: FRESHA — DUE SOON (< 3 days) ──
                   The full Fresha open/close checklist now lives on the Fresha
                   To-Do tab. Here we only surface the URGENT ones as a warning:
                   a tech who needs opening (approved extra day / trial start) or
                   closing (called in sick / absent) where that day is less than
-                  3 days away and still not done. Links through to the tab. */}
-              {canSeeIncidents(currentUser) && (() => {
+                  3 days away and still not done. Links through to the tab. */
+              dashAlert("freshaDue", "scheduling", "warning",
+              canSeeIncidents(currentUser) && (() => {
                 const _now0 = new Date(); _now0.setHours(0, 0, 0, 0);
                 const daysUntil = (ymd) => ymd ? Math.ceil((new Date(ymd + "T00:00:00") - _now0) / 86400000) : null;
                 const isTech = (ec) => !isManagerEc(ec);
@@ -26643,17 +26675,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     {urgentProfiles.map(o => row("up-" + o._id, o.name, "🆕 Create Fresha profile — new " + (o.position || "manager") + (o.startDate ? " · starts " + fmtIncidentDate(o.startDate) : "") + (o.branch ? " · 📍 " + o.branch : ""), "create " + dl(Math.max(0, o._d ?? 0))))}
                   </div>
                 );
-              })()}
+              })());
 
-              {/* ── SECTION: TRIAL AUTOMATION · HR ACTIONS ──
+              /* ── SECTION: TRIAL AUTOMATION · HR ACTIONS ──
                   Everything in the nail-tech trial that needs a human at HR:
                   documents to collect (from the moment the in-store trial
                   starts), techs to open on Fresha (as soon as a start date is
                   set), evaluations that scored below the pass mark and are held
                   for an HR decision, and techs who passed and are waiting to be
                   onboarded. The trial itself runs automatically from the kiosk;
-                  this card is the short list of things only HR can do. */}
-              {canSeeIncidents(currentUser) && (() => {
+                  this card is the short list of things only HR can do. */
+              dashAlert("trialHrActions", "people", "warning",
+              canSeeIncidents(currentUser) && (() => {
                 const _nt = (c) => c && String(c.role || "nt").toLowerCase() === "nt";
                 const _trial = (c) => c && ["nt", "am"].includes(String(c.role || "nt").toLowerCase());
                 const _active = (c) => ["trial_w1", "trial_w2", "pending_mid_review", "pending_final_review"].includes(c.status);
@@ -26699,16 +26732,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     {onboard.map(c => row("to-" + c._id, c.name, "🎓 Passed — complete onboarding" + (c.branch ? " · 📍 " + c.branch : ""), linkBtn("Onboard →", () => tryChangeTab("trialPeriod"))))}
                   </div>
                 );
-              })()}
+              })());
 
-              {/* ── SECTION: ABSCOND / ABSENCE WARNINGS ──
+              /* ── SECTION: ABSCOND / ABSENCE WARNINGS ──
                   Flags any nail tech or manager with 2+ CONSECUTIVE no-show /
                   absent days in the current pay cycle. Consecutive NO-SHOWS =
                   likely absconding → red, for HR to investigate, set up a
                   disciplinary, and plan a replacement. HR-sensitive: gated by
                   the "Abscond / Absence Warnings" permission (owner-only by
-                  default; grant others in Settings). */}
-              {!(new Set(currentUser?.hideTabs || []).has("dashAbscond")) && (() => {
+                  default; grant others in Settings). */
+              dashAlert("abscond", "people", "critical",
+              !(new Set(currentUser?.hideTabs || []).has("dashAbscond")) && (() => {
                 // What counts toward an abscond streak: NO SHOW and ABSENT.
                 const MISSED = { no: 1, absent: 1 };
                 // A day they actually WORKED — counts as a return to work and
@@ -26790,15 +26824,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 active.sort((a, b) => (Number(b.allNo) - Number(a.allNo)) || (b.run - a.run) || (b.noShows - a.noShows));
                 const abscondCount = active.filter(w => w.allNo).length;
                 const _fmtD = ymd => { try { return new Date(ymd + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }); } catch (_) { return ymd; } };
-                return (
+                // Consecutive no-shows read as an abscondment and are critical;
+                // a mixed absent/no-show run is a follow-up, not an emergency.
+                return {
+                  severity: abscondCount > 0 ? "critical" : "warning",
+                  node: (
                   <div style={{ background: "#fef2f2", border: "2px solid #fecaca", borderRadius: 16, padding: "16px 18px", marginBottom: 22, boxShadow: "0 4px 16px rgba(220,38,38,0.10)" }}>
                     <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 6 }}>
-                      <div onClick={() => setDashCollapsed(p => ({ ...p, abscond: !p.abscond }))} style={{ fontSize: 15, fontWeight: 800, color: "#991b1b", letterSpacing: "0.04em", textTransform: "uppercase", cursor: "pointer" }}>🚨 Abscond / Absence Warnings <span style={{ fontSize: 12, opacity: 0.6 }}>{dashCollapsed.abscond ? "▸" : "▾"}</span></div>
+                      <div style={{ fontSize: 15, fontWeight: 800, color: "#991b1b", letterSpacing: "0.04em", textTransform: "uppercase" }}>🚨 Abscond / Absence Warnings</div>
                       <div style={{ fontSize: 12, color: "#b91c1c", fontWeight: 700 }}>
                         {active.length} staff with 2+ days missed in a row{abscondCount > 0 ? ` · ${abscondCount} possible abscondment` : ""}
                       </div>
                     </div>
-                    <div style={{ display: dashCollapsed.abscond ? "none" : "block" }}>
+                    <div style={{ display: "block" }}>
                       <div style={{ fontSize: 11, color: "#b91c1c", marginBottom: 8, fontStyle: "italic" }}>
                         These people have been no-show or absent 2+ days in a row and <strong>haven't returned to work yet</strong>. Consecutive no-shows likely mean abscondment — investigate, set up a disciplinary, and plan a replacement for the store.
                       </div>
@@ -26834,10 +26872,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       })}
                     </div>
                   </div>
-                );
-              })()}
+                  )
+                };
+              })());
 
-              {/* ── SECTION: MANAGER ABSENCES — ROM ACTION REQUIRED ──
+              /* ── SECTION: MANAGER ABSENCES — ROM ACTION REQUIRED ──
                   Lifted to the very top of the dashboard (above Upcoming
                   Openings) so a ROM sees the action item first thing on
                   sign-in. To-do list of managers scheduled to work today
@@ -26849,8 +26888,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   Gated by the "Manager Absences (Action required)"
                   Home/Dashboard permission — visible by default for
                   owners and ROMs; admins can grant it to other roles in
-                  Settings → Users → Edit. */}
-              {!(new Set(currentUser?.hideTabs || []).has("dashMgrAbsences")) && (() => {
+                  Settings → Users → Edit. */
+              dashAlert("mgrAbsences", "people", "warning",
+              !(new Set(currentUser?.hideTabs || []).has("dashMgrAbsences")) && (() => {
                 const _t = new Date();
                 const _todayYmd = _t.getFullYear() + "-" + String(_t.getMonth() + 1).padStart(2, "0") + "-" + String(_t.getDate()).padStart(2, "0");
                 if (dashTodayMgrClockinEcs == null) return null;     // still loading
@@ -26881,11 +26921,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 if (pending.length === 0) {
                   const anyScheduled = Object.values(dashSchedMgrsByBranch || {}).some(arr => (arr || []).length > 0);
                   if (!anyScheduled) return null;
-                  return (
-                    <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 13, padding: "12px 16px", marginBottom: 18, color: "#14532d", fontSize: 13, fontWeight: 700 }}>
-                      ✅ All manager absences explained for today.
-                    </div>
-                  );
+                  // Nothing to chase — this is reassurance, not a warning, so
+                  // it must not put a ⚠️ pill on the People card.
+                  return {
+                    severity: "info",
+                    node: (
+                      <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 13, padding: "12px 16px", marginBottom: 18, color: "#14532d", fontSize: 13, fontWeight: 700 }}>
+                        ✅ All manager absences explained for today.
+                      </div>
+                    )
+                  };
                 }
                 pending.sort((a, b) => (a.branch || "").localeCompare(b.branch || "") || (a.name || "").localeCompare(b.name || ""));
                 const byBranch = {};
@@ -26896,12 +26941,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 const palette = urgent
                   ? { bg: "#fee2e2", border: "#fca5a5", text: "#7f1d1d", chip: "#fff", chipBorder: "#fca5a5" }
                   : { bg: "#fef3c7", border: "#fcd34d", text: "#92400e", chip: "#fff", chipBorder: "#fcd34d" };
-                return (
+                // Past 11:30 with managers still untagged is the point this
+                // stops being a to-do — same threshold that makes it blink.
+                return {
+                  severity: urgent ? "critical" : "warning",
+                  node: (
                   <div style={{ background: palette.bg, border: "2px solid " + palette.border, borderRadius: 16, padding: "16px 18px", marginBottom: 22, boxShadow: urgent ? "0 6px 22px rgba(127,29,29,0.18)" : "0 4px 16px rgba(146,64,14,0.12)" }}>
                     <style>{`@keyframes _romAbsBlink { 0%,49%{opacity:1} 50%,100%{opacity:0.35} }`}</style>
                     <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
-                      <div onClick={() => setDashCollapsed(p => ({ ...p, mgrAbsences: !p.mgrAbsences }))} style={{ fontSize: 15, fontWeight: 800, color: palette.text, letterSpacing: "0.04em", textTransform: "uppercase", animation: urgent ? "_romAbsBlink 1s infinite" : "none", cursor: "pointer" }}>
-                        {urgent ? "🚨" : "📌"} Manager absences · action required <span style={{ fontSize: 12, opacity: 0.6 }}>{dashCollapsed.mgrAbsences ? "▸" : "▾"}</span>
+                      <div style={{ fontSize: 15, fontWeight: 800, color: palette.text, letterSpacing: "0.04em", textTransform: "uppercase", animation: urgent ? "_romAbsBlink 1s infinite" : "none" }}>
+                        {urgent ? "🚨" : "📌"} Manager absences · action required
                       </div>
                       <div style={{ fontSize: 12, color: palette.text, fontWeight: 700 }}>
                         {pending.length} manager{pending.length === 1 ? "" : "s"} scheduled but no clock-in &amp; no reason yet
@@ -26914,7 +26963,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         Open Manager Check-ins →
                       </button>
                     </div>
-                    <div style={{ display: dashCollapsed.mgrAbsences ? "none" : "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 8 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 8 }}>
                       {branchKeys.map(b => (
                         <div key={b} style={{ background: palette.chip, border: "1px solid " + palette.chipBorder, borderRadius: 9, padding: "8px 10px" }}>
                           <div style={{ fontSize: 11, fontWeight: 800, color: palette.text, letterSpacing: "0.04em", marginBottom: 4 }}>📍 {b}</div>
@@ -26933,16 +26982,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       ))}
                     </div>
                   </div>
-                );
-              })()}
+                  )
+                };
+              })());
 
-              {/* ── SECTION: MANAGER CALLED IN SICK / ABSENT · ROM ACTION ──
+              /* ── SECTION: MANAGER CALLED IN SICK / ABSENT · ROM ACTION ──
                   A manager who called in via My BOA isn't an annual-leave
                   request — the ROM must mark them absent (and attach their sick
                   note) on Manager Check-ins / Coverage. Shown here with the
                   action and a "Mark done" so it can be cleared off the dashboard.
-                  Scoped to the ROM's own stores. */}
-              {!(new Set(currentUser?.hideTabs || []).has("dashCalledInSick")) && canSeeIncidents(currentUser) && (() => {
+                  Scoped to the ROM's own stores. */
+              dashAlert("mgrSick", "people", "info",
+              !(new Set(currentUser?.hideTabs || []).has("dashCalledInSick")) && canSeeIncidents(currentUser) && (() => {
                 const { today, tomorrow, list } = calledInSickWindow(leaveRequests);
                 const isMgrEc = (ec) => isManagerEc(ec);
                 const mgrSick = list.filter(r => isMgrEc(r.ec) && !r.reviewed
@@ -26998,13 +27049,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     </div>
                   </div>
                 );
-              })()}
+              })());
 
-              {/* ── SECTION: CALLED IN SICK / ABSENT (today & tomorrow) ──
+              /* ── SECTION: CALLED IN SICK / ABSENT (today & tomorrow) ──
                   Overview of NAIL TECHS who called in via My BOA. Read-only
                   summary; click through to the Called in Sick tab for details.
-                  (Managers are handled by the ROM-action card above.) */}
-              {!(new Set(currentUser?.hideTabs || []).has("dashCalledInSick")) && canSeeIncidents(currentUser) && (() => {
+                  (Managers are handled by the ROM-action card above.) */
+              dashAlert("techSick", "people", "info",
+              !(new Set(currentUser?.hideTabs || []).has("dashCalledInSick")) && canSeeIncidents(currentUser) && (() => {
                 const { today, tomorrow, list: _list } = calledInSickWindow(leaveRequests);
                 const list = _list.filter(r => !isManagerEc(r.ec));
                 if (!list.length) return null;
@@ -27049,12 +27101,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     </div>
                   </div>
                 );
-              })()}
+              })());
 
-              {/* ── SECTION: UPCOMING STORE OPENINGS ──
+              /* ── SECTION: UPCOMING STORE OPENINGS ──
                   Only renders when at least one SALON has an openingDate
-                  that is still in the future. Sorted soonest first. */}
-              {(() => {
+                  that is still in the future. Sorted soonest first. */
+              dashAlert("storeOpenings", "operations", "info",
+              (() => {
                 const today = new Date();
                 const t0 = new Date(today.getFullYear(), today.getMonth(), today.getDate());
                 const upcoming = SALONS
@@ -27098,13 +27151,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     </div>
                   </div>
                 );
-              })()}
+              })());
 
-              {/* ── SECTION: DAILY UPDATES (kiosk news feed) — Owner + National Ops ──
+              /* ── SECTION: DAILY UPDATES (kiosk news feed) — Owner + National Ops ──
                   The kiosk "Daily Updates" feed (boa_news_v1) is auto-posted by
                   extra-day events. Most ED posts self-expire, but legacy/untagged
-                  ones linger — this card lets an owner prune or clear them. */}
-              {(currentUser?.isOwner || (currentUser?.role || "").toLowerCase().includes("national"))
+                  ones linger — this card lets an owner prune or clear them. */
+              dashAlert("dailyUpdates", "operations", "info",
+              (currentUser?.isOwner || (currentUser?.role || "").toLowerCase().includes("national"))
                 && !(new Set(currentUser?.hideTabs || []).has("dashNews"))
                 && Array.isArray(newsPosts) && newsPosts.length > 0 && (() => {
                   const fmtWhen = (iso) => { try { return new Date(iso).toLocaleString(undefined, { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }); } catch (_) { return ""; } };
@@ -27112,16 +27166,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   return (
                     <div style={{ background: "linear-gradient(180deg,#FFF7FB,#ffffff)", border: "1px solid #FBCFE8", borderRadius: 14, padding: "16px", marginBottom: 18, boxShadow: "0 1px 4px rgba(190,24,93,0.06)" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 10 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", minWidth: 0 }} onClick={() => setDashCollapsed(p => ({ ...p, news: !p.news }))}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
                           <span style={{ fontSize: 20 }}>📰</span>
                           <div>
                             <div style={{ fontSize: 10, fontWeight: 800, color: "#BE185D", letterSpacing: "0.16em", textTransform: "uppercase" }}>Daily Updates</div>
-                            <div style={{ fontSize: 16, fontWeight: 700, color: "#831843", fontFamily: "'Outfit',system-ui,sans-serif" }}>{posts.length} post{posts.length === 1 ? "" : "s"} in the feed {dashCollapsed.news ? "▸" : "▾"}</div>
+                            <div style={{ fontSize: 16, fontWeight: 700, color: "#831843", fontFamily: "'Outfit',system-ui,sans-serif" }}>{posts.length} post{posts.length === 1 ? "" : "s"} in the feed</div>
                           </div>
                         </div>
                         <button onClick={clearAllNews} style={{ background: "#fff", color: "#B91C1C", border: "1px solid #FECACA", borderRadius: 9, padding: "7px 13px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap", flexShrink: 0 }}>Clear all</button>
                       </div>
-                      <div style={{ display: dashCollapsed.news ? "none" : "flex", flexDirection: "column", gap: 8 }}>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                         {posts.map((n, i) => (
                           <div key={(n.ts || "") + "_" + i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "9px 12px", background: "#fff", border: "1px solid #FCE7F3", borderRadius: 10 }}>
                             <div style={{ minWidth: 0 }}>
@@ -27134,18 +27188,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       </div>
                     </div>
                   );
-                })()}
+                })());
 
-              {/* ── SECTION: SECURITY ALERTS ── */}
-              {/* Only visible to users who have the dashSecurityAlerts permission (not in hideTabs) */}
-              {!(new Set(currentUser?.hideTabs || []).has("dashSecurityAlerts")) && securityLogs && securityLogs.length > 0 && (
+              /* ── SECTION: SECURITY ALERTS ── */
+              /* Only visible to users who have the dashSecurityAlerts permission (not in hideTabs) */
+              dashAlert("securityAlerts", "security", "critical",
+              !(new Set(currentUser?.hideTabs || []).has("dashSecurityAlerts")) && securityLogs && securityLogs.length > 0 && (
                 <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 14, padding: "16px", marginBottom: 18, boxShadow: "0 1px 4px rgba(220,38,38,0.06)" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }} onClick={() => setDashCollapsed(p => ({ ...p, security: !p.security }))}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                       <span style={{ fontSize: 20 }}>🚨</span>
                       <div>
                         <div style={{ fontSize: 10, fontWeight: 800, color: "#b91c1c", letterSpacing: "0.18em", textTransform: "uppercase", fontFamily: "'Outfit',system-ui,sans-serif" }}>Security Alerts</div>
-                        <div style={{ fontSize: 16, fontWeight: 700, color: "#7f1d1d", fontFamily: "'Outfit',system-ui,sans-serif" }}>Blocked Kiosk Attempts <span style={{ fontSize: 12, opacity: 0.6 }}>{dashCollapsed.security ? "▸" : "▾"}</span></div>
+                        <div style={{ fontSize: 16, fontWeight: 700, color: "#7f1d1d", fontFamily: "'Outfit',system-ui,sans-serif" }}>Blocked Kiosk Attempts</div>
                       </div>
                     </div>
                     {securityLogs.filter(l => l.status !== "dismissed").length > 0 && (
@@ -27165,7 +27220,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       </label>
                     )}
                   </div>
-                  <div style={{ display: dashCollapsed.security ? "none" : "flex", flexDirection: "column", gap: 8, maxHeight: 300, overflowY: "auto", paddingRight: 4 }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 300, overflowY: "auto", paddingRight: 4 }}>
                     {securityLogs.filter(l => l.status !== "dismissed").map((log, idx) => (
                       <div key={idx} style={{ background: "#fff", padding: "10px", borderRadius: 8, fontSize: 12, border: "1px solid #fee2e2" }}>
                         <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 4, alignItems: "center" }}>
@@ -27254,7 +27309,91 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     </div>
                   )}
                 </div>
-              )}
+              ));
+
+              /* ── SECTION: HR TASKS (Mocked Phase 3) ── hidden for ROM
+                  users — onboarding trial-review actions are HR's job,
+                  not something a Regional Ops Manager would action.
+                  Also gated by the dashHrActions permission. */
+              dashAlert("hrActions", "people", "warning",
+              !_hasStoreScope && !(new Set(currentUser?.hideTabs || []).has("dashHrActions")) && (() => {
+                const pendingTasks = obList.filter(o =>
+                  o.status === "Pending Trainer Review" ||
+                  o.status === "Pending Trial 1 Review" ||
+                  o.status === "Pending Trial 2 Review"
+                ).map(o => {
+                  let title = "";
+                  let type = "";
+                  if (o.status === "Pending Trainer Review") { title = "Review Trainer Week & Sign Trial Contract"; type = "trainer"; }
+                  if (o.status === "Pending Trial 1 Review") { title = "Review Trial Week 1"; type = "trial1"; }
+                  if (o.status === "Pending Trial 2 Review") { title = "Review Trial Week 2 & Sign Permanent Contract"; type = "trial2"; }
+                  return {
+                    id: o._id,
+                    title: title,
+                    type: type,
+                    employeeName: o.name,
+                    employeeEc: o.ec,
+                    dueDate: o.startDate
+                  };
+                });
+
+                // Nothing pending → no alert. The grouped view has its own
+                // all-clear state, so the old "All caught up ☕" panel would
+                // just be a card that exists to say nothing.
+                if (pendingTasks.length === 0) return null;
+
+                return (
+                  <>
+                    <div style={sectionTitle}>
+                      <span>📝 HR Actions & Tasks</span>
+                      <span style={sectionRule} />
+                    </div>
+                    <div style={{ marginBottom: 24 }}>
+                      {(
+                        <div style={{ display: "grid", gap: 10 }}>
+                          {pendingTasks.map(task => (
+                            <div key={task.id} style={{ ...card, display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 18px", borderLeft: `4px solid #dc2626`, background: "#fef2f2", animation: "urgentPulse 2s infinite" }}>
+                              <div>
+                                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
+                                  <span style={{ fontSize: 14 }}>🚨</span>
+                                  <div style={{ fontSize: 14, fontWeight: 800, color: "#991b1b" }}>{task.title}</div>
+                                </div>
+                                <div style={{ fontSize: 12, color: "#7f1d1d" }}>
+                                  {task.employeeName} {task.employeeEc && `(${task.employeeEc})`} · Started: {new Date(task.dueDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" })}
+                                </div>
+                              </div>
+                              <button onClick={() => setHrTaskModal({ task, scores: { lateness: 5, reliability: 5, performance: 5 }, docs: [] })} style={{ background: "#dc2626", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, boxShadow: "0 2px 4px rgba(220,38,38,0.3)" }}>
+                                Action
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </>
+                );
+              })());
+
+          return (
+            <div style={{ fontFamily: "'Outfit',system-ui,sans-serif" }}>
+              {/* ── HERO ── greeting + role + date/time ── */}
+              <div style={{ background: `linear-gradient(135deg,${PINK.softer} 0%,#FFFFFF 65%)`, border: `1px solid ${PINK.soft}`, borderRadius: 20, padding: isMobile ? "18px 16px" : "26px 30px", marginBottom: 20, boxShadow: "0 4px 18px rgba(190,24,93,0.07)", display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 18, fontFamily: "'Outfit',system-ui,sans-serif" }}>
+                <div>
+                  <div style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 11, fontWeight: 700, color: PINK.accent, letterSpacing: "0.22em", textTransform: "uppercase" }}>BOA HR · Dashboard</div>
+                  <div style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 34, color: PINK.ink, fontWeight: 700, lineHeight: 1.1, marginTop: 6, letterSpacing: "-0.01em" }}>Good {partOfDay}, {(currentUser.name || "").trim().split(/\s+/)[0]}</div>
+                  <div style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 12.5, color: PINK.accent, marginTop: 8, fontWeight: 500, letterSpacing: "0.02em" }}>{dateLbl}</div>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 32, fontWeight: 600, color: PINK.ink, letterSpacing: "0.02em", lineHeight: 1 }}>{timeLbl}</div>
+                  <div style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 11, color: PINK.deep, marginTop: 6, fontWeight: 500, letterSpacing: "0.04em" }}>Signed in as <span style={{ color: PINK.accent, fontWeight: 700 }}>{currentUser.role}</span></div>
+                </div>
+              </div>
+
+              {/* Shared scope toggle (My / Other / All). Renders nothing
+                  when the user has no store scope. Same control is wired
+                  to the Check-ins tabs and Store Openings — flipping it
+                  here also affects those views. */}
+              {renderScopeBar({ marginBottom: 18 })}
 
               {/* ── SECTION: TODAY ── */}
               <div style={sectionTitle}>
@@ -27413,80 +27552,144 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     : ["storesOpen", "techsToday", "techsCheckedIn", "techsAbsent", "mgrCheckin", "mgrAbsent", "mgrAbsentReason", "scheduledToday", "activeStaff", "onMaternity", "vacancies"];
                   return order.map(k => tiles[k]);
                 })().map(c => (
-                  <div key={c.l} onClick={c.click} style={{ background: c.bg, borderRadius: 16, padding: "16px 18px", cursor: c.click ? "pointer" : "default", border: "1px solid rgba(255,255,255,0.6)" }}>
-                    <div style={{ fontSize: 24 }}>{c.i}</div>
-                    <div style={{ fontSize: 32, fontWeight: 800, color: c.c, lineHeight: 1.05, marginTop: 4 }}>{c.v}</div>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: c.c, letterSpacing: "0.1em", textTransform: "uppercase", marginTop: 6 }}>{c.l}</div>
-                    <div
-                      onClick={c.subClick ? (e) => { e.stopPropagation(); c.subClick(); } : undefined}
-                      style={{ fontSize: 10, color: c.c, opacity: c.subClick ? 0.95 : 0.6, marginTop: 2, ...(c.subClick ? { cursor: "pointer", textDecoration: "underline", fontWeight: 700 } : {}) }}
-                    >{c.sub}</div>
+                  // The tile keeps its status colour, but on a white card with
+                  // the status tint pulled back into the icon chip — so a row
+                  // of tiles reads as one set instead of a block of colour.
+                  <div key={c.l} onClick={c.click} style={{ background: "#FFFFFF", borderRadius: 16, padding: "15px 17px", cursor: c.click ? "pointer" : "default", border: `1px solid ${PINK.soft}`, boxShadow: "0 1px 6px rgba(190,24,93,0.04)", display: "flex", flexDirection: "column", gap: 9 }}>
+                    <div style={{ width: 34, height: 34, borderRadius: 10, background: c.bg, border: "1px solid rgba(255,255,255,0.75)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>{c.i}</div>
+                    <div>
+                      <div style={{ fontSize: 30, fontWeight: 800, color: c.c, lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>{c.v}</div>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: PINK.deep, letterSpacing: "0.1em", textTransform: "uppercase", marginTop: 7, opacity: 0.85 }}>{c.l}</div>
+                      <div
+                        onClick={c.subClick ? (e) => { e.stopPropagation(); c.subClick(); } : undefined}
+                        style={{ fontSize: 10.5, color: c.subClick ? PINK.accent : "#9D7387", marginTop: 3, ...(c.subClick ? { cursor: "pointer", textDecoration: "underline", fontWeight: 700 } : {}) }}
+                      >{c.sub}</div>
+                    </div>
                   </div>
                 ))}
               </div>
 
-              {/* ── SECTION: HR TASKS (Mocked Phase 3) ── hidden for ROM
-                  users — onboarding trial-review actions are HR's job,
-                  not something a Regional Ops Manager would action.
-                  Also gated by the dashHrActions permission. */}
-              {!_hasStoreScope && !(new Set(currentUser?.hideTabs || []).has("dashHrActions")) && (() => {
-                const pendingTasks = obList.filter(o =>
-                  o.status === "Pending Trainer Review" ||
-                  o.status === "Pending Trial 1 Review" ||
-                  o.status === "Pending Trial 2 Review"
-                ).map(o => {
-                  let title = "";
-                  let type = "";
-                  if (o.status === "Pending Trainer Review") { title = "Review Trainer Week & Sign Trial Contract"; type = "trainer"; }
-                  if (o.status === "Pending Trial 1 Review") { title = "Review Trial Week 1"; type = "trial1"; }
-                  if (o.status === "Pending Trial 2 Review") { title = "Review Trial Week 2 & Sign Permanent Contract"; type = "trial2"; }
-                  return {
-                    id: o._id,
-                    title: title,
-                    type: type,
-                    employeeName: o.name,
-                    employeeEc: o.ec,
-                    dueDate: o.startDate
-                  };
-                });
-
+              {/* ── SECTION: TODAY'S TO-DOS ── personal task list. Renders
+                  only when the signed-in user has at least one task for
+                  today (one-off dated today OR a weekly task whose
+                  repeatDow includes today). Wrapped in a loud pink panel
+                  so it pops near the top of the dashboard; each card has
+                  a coloured side-bar that flips green on Done. */}
+              {myTodayTasks.length > 0 && (() => {
+                const openCount = myTodayTasks.filter(t => !isTaskDoneOn(t, todayYmdStr)).length;
+                const allDone = openCount === 0;
+                // ROM dashboards lean on Stores Open / Mgr Check-ins
+                // first; tone the to-dos panel down so it doesn't draw
+                // the eye away from those headline tiles.
+                const muted = _hasStoreScope;
                 return (
-                  <>
-                    <div style={sectionTitle}>
-                      <span>📝 HR Actions & Tasks</span>
-                      <span style={sectionRule} />
-                    </div>
-                    <div style={{ marginBottom: 24 }}>
-                      {pendingTasks.length === 0 ? (
-                        <div style={{ background: "#f9fafb", borderRadius: 16, border: "1px dashed #e5e7eb", padding: "24px", textAlign: "center" }}>
-                          <div style={{ fontSize: 28, marginBottom: 8 }}>☕</div>
-                          <div style={{ fontSize: 14, fontWeight: 700, color: "#374151" }}>All caught up!</div>
-                          <div style={{ fontSize: 12, color: "#6b7280", marginTop: 4 }}>No pending HR tasks right now.</div>
+                  <div style={muted ? {
+                    background: "#fff",
+                    border: "1px solid " + (allDone ? "#bbf7d0" : "#FBCFE8"),
+                    borderRadius: 14,
+                    padding: "12px 16px",
+                    marginBottom: 18,
+                    boxShadow: "0 1px 4px rgba(190,24,93,0.06)"
+                  } : {
+                    background: allDone ? "linear-gradient(135deg,#dcfce7 0%,#FFFFFF 70%)" : "linear-gradient(135deg,#FCE7F3 0%,#FFFFFF 65%)",
+                    border: "2px solid " + (allDone ? "#86efac" : "#F472B6"),
+                    borderRadius: 18,
+                    padding: "18px 22px",
+                    marginBottom: 22,
+                    boxShadow: allDone ? "0 4px 18px rgba(34,197,94,0.10)" : "0 4px 22px rgba(244,114,182,0.22)"
+                  }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: muted ? 10 : 14 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: muted ? 8 : 10 }}>
+                        <span style={{ fontSize: muted ? 18 : 28 }}>📋</span>
+                        <div>
+                          <div style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontSize: muted ? 10 : 11, fontWeight: 800, color: allDone ? "#15803d" : "#BE185D", letterSpacing: "0.18em", textTransform: "uppercase" }}>
+                            Today's To-Dos
+                          </div>
+                          <div style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontSize: muted ? 14 : 22, fontWeight: muted ? 700 : 800, color: "#831843", lineHeight: 1.15, marginTop: 2 }}>
+                            {allDone
+                              ? "All done — nice one!"
+                              : openCount + " task" + (openCount === 1 ? "" : "s") + " to tick off today"}
+                          </div>
                         </div>
-                      ) : (
-                        <div style={{ display: "grid", gap: 10 }}>
-                          {pendingTasks.map(task => (
-                            <div key={task.id} style={{ ...card, display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 18px", borderLeft: `4px solid #dc2626`, background: "#fef2f2", animation: "urgentPulse 2s infinite" }}>
-                              <div>
-                                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
-                                  <span style={{ fontSize: 14 }}>🚨</span>
-                                  <div style={{ fontSize: 14, fontWeight: 800, color: "#991b1b" }}>{task.title}</div>
-                                </div>
-                                <div style={{ fontSize: 12, color: "#7f1d1d" }}>
-                                  {task.employeeName} {task.employeeEc && `(${task.employeeEc})`} · Started: {new Date(task.dueDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" })}
-                                </div>
+                      </div>
+                      <div style={{
+                        background: allDone ? "#16a34a" : "#BE185D",
+                        color: "#fff",
+                        padding: muted ? "3px 10px" : "6px 14px",
+                        borderRadius: 999,
+                        fontSize: muted ? 11 : 13,
+                        fontWeight: 800,
+                        letterSpacing: "0.04em",
+                        boxShadow: muted ? "none" : (allDone ? "0 0 0 3px rgba(22,163,74,0.18)" : "0 0 0 3px rgba(190,24,93,0.18)")
+                      }}>
+                        {myTodayTasks.length - openCount} / {myTodayTasks.length} done
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                      {myTodayTasks.map(t => {
+                        const done = isTaskDoneOn(t, todayYmdStr);
+                        const weekly = t.kind === "weekly";
+                        const bar = done ? "#16a34a" : "#BE185D";
+                        return (
+                          <div key={t._id} style={{
+                            background: "#fff",
+                            border: "1px solid " + (done ? "#bbf7d0" : "#FBCFE8"),
+                            borderLeft: "6px solid " + bar,
+                            borderRadius: 12,
+                            padding: "14px 18px",
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                            gap: 12,
+                            opacity: done ? 0.78 : 1,
+                            boxShadow: done ? "none" : "0 1px 4px rgba(190,24,93,0.08)"
+                          }}>
+                            <div style={{ minWidth: 0, flex: 1 }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 4 }}>
+                                <span style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 17, fontWeight: 800, color: "#831843", textDecoration: done ? "line-through" : "none" }}>{t.title}</span>
+                                {weekly && (
+                                  <span style={{ background: "#ede9fe", color: "#5b21b6", border: "1px solid #ddd6fe", padding: "2px 8px", borderRadius: 6, fontSize: 10, fontWeight: 800, letterSpacing: "0.06em" }}>
+                                    WEEKLY · {DOW_LABEL[todayDowNum].toUpperCase()}
+                                  </span>
+                                )}
                               </div>
-                              <button onClick={() => setHrTaskModal({ task, scores: { lateness: 5, reliability: 5, performance: 5 }, docs: [] })} style={{ background: "#dc2626", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, boxShadow: "0 2px 4px rgba(220,38,38,0.3)" }}>
-                                Action
-                              </button>
+                              {t.description && <div style={{ fontSize: 13, color: "#4b5563", whiteSpace: "pre-wrap", lineHeight: 1.4 }}>{t.description}</div>}
+                              {done && (
+                                <div style={{ fontSize: 11, color: "#15803d", fontWeight: 700, marginTop: 5 }}>
+                                  ✓ Done {weekly
+                                    ? (t.doneByDate[todayYmdStr] && t.doneByDate[todayYmdStr].by ? "· by " + t.doneByDate[todayYmdStr].by : "")
+                                    : (t.doneBy ? "· by " + t.doneBy : "")}
+                                </div>
+                              )}
                             </div>
-                          ))}
-                        </div>
-                      )}
+                            {done ? (
+                              <button onClick={() => markTaskUndone(t._id)}
+                                style={{ background: "#fff", color: "#374151", border: "1px solid #d1d5db", borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "inherit", whiteSpace: "nowrap" }}>Undo</button>
+                            ) : (
+                              <button onClick={() => markTaskDone(t._id)}
+                                style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 10, padding: "12px 22px", cursor: "pointer", fontSize: 14, fontWeight: 800, fontFamily: "inherit", whiteSpace: "nowrap", boxShadow: "0 2px 6px rgba(190,24,93,0.35)" }}>
+                                ✓ Mark done
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
-                  </>
+                  </div>
                 );
               })()}
+
+
+              {/* ── SECTION: ALERTS BY DEPARTMENT ── every alert, grouped
+                  into collapsible department cards. Order, severity pills,
+                  collapse and the all-clear state come from the registry. */}
+              <div style={sectionTitle}>
+                <span>🔔 Alerts by department</span>
+                <span style={sectionRule} />
+              </div>
+              <div style={{ marginBottom: 12 }}>
+                {renderDashAlertGroups(dashAlertEntries, dashGroupOpen, toggleDashGroup, isMobile)}
+              </div>
 
               {/* ── SECTION: SCHEDULE PROGRESS ── one unified panel with two
                   inner cards (nail tech + manager). Counts both schedule
