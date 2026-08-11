@@ -1106,6 +1106,27 @@
     return records;
   }
 
+  // ---------- Retired employee codes (boa_retired_ecs_v1) ----------
+  // An employee_code is never reused, even when the staff row it belonged to is
+  // deleted. That happens when an onboarding is reversed — the person turned out
+  // not to be ready, so they stop being an employee — but traces of the code can
+  // survive in attendance grids, Fresha and published schedules. Handing the
+  // same code to the next hire would silently graft those traces onto a
+  // stranger, so retired codes are parked here and skipped by both the next-EC
+  // generator and the onboarding duplicate guard.
+  // [{ ec, name, retiredAt, retiredBy, reason }]
+  async function loadRetiredEcs() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_retired_ecs_v1").maybeSingle();
+    if (res.error) { console.error("loadRetiredEcs:", res.error); return []; }
+    var v = res.data && res.data.value;
+    return Array.isArray(v) ? v : [];
+  }
+  async function saveRetiredEcs(list) {
+    var res = await sb.from("app_state").upsert({ key: "boa_retired_ecs_v1", value: Array.isArray(list) ? list : [] });
+    if (res.error) { console.error("saveRetiredEcs:", res.error); throw res.error; }
+    return list;
+  }
+
   // ---------- SM trial criteria & policy config (boa_sm_criteria_v1) ----------
   // HR / national ops own the SM classification criteria, the monthly
   // evaluation form and the trial policy (length, checkpoints, re-apply
@@ -2931,6 +2952,8 @@
     saveSmTrial:   saveSmTrial,
     loadSmCriteriaConfig: loadSmCriteriaConfig,
     saveSmCriteriaConfig: saveSmCriteriaConfig,
+    loadRetiredEcs: loadRetiredEcs,
+    saveRetiredEcs: saveRetiredEcs,
 
     // Attendance
     loadAttendance: loadAttendance,
