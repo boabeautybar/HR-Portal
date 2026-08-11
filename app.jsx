@@ -21143,12 +21143,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [evalForm, setEvalForm] = useState(null);                         // { rec, which } — fillable AM evaluation modal (portal)
   const [trialStartDraft, setTrialStartDraft] = useState(null); // { id, date } while HR is setting an in-store trial start date
   const [notOnbDraft, setNotOnbDraft] = useState(null);         // { id, reason, note } while HR is recording why a passed trial isn't joining
+  const [extDraft, setExtDraft] = useState(null);               // { id, reason } while HR is granting a one-week trial extension
   const [hrTasks, setHrTasks] = useState([]);         // HR Tasks (mocked for now)
   const [offList, setOffList] = useState([]);         // leaver records
   const [smTrialList, setSmTrialList] = useState([]); // AMs on 3-month Store Manager trial
   // SM classification criteria, monthly evaluation form and trial policy —
   // owned by HR / national ops via Settings, not hardcoded.
   const [smCriteriaCfg, setSmCriteriaCfg] = useState(SM_CRITERIA_DEFAULT);
+  // Employee codes freed by a reversed onboarding. Never reissued — see
+  // loadRetiredEcs in data.js for why.
+  const [retiredEcs, setRetiredEcs] = useState([]);
   const [smEvalModal, setSmEvalModal] = useState(null);   // {recId, cpKey} — submitting an evaluation
   const [smEvalView, setSmEvalView] = useState(null);     // {recId, cpKey, evalId} — reading one back
   const [smDecisionId, setSmDecisionId] = useState(null); // trial _id being decided
@@ -22719,8 +22723,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       window.BOA_DB.loadFreshaExtraOpenings ? window.BOA_DB.loadFreshaExtraOpenings() : Promise.resolve({}),
       window.BOA_DB.loadFreshaBlocks ? window.BOA_DB.loadFreshaBlocks() : Promise.resolve({}),
       window.BOA_DB.loadInterviews ? window.BOA_DB.loadInterviews() : Promise.resolve([]),
-      window.BOA_DB.loadSmCriteriaConfig ? window.BOA_DB.loadSmCriteriaConfig() : Promise.resolve(null)
-    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess, offStaffAccess, offHoursAccess, cuReviewAccess, lvOpsAccess, lvPayrollAccess, lvBalancesAccess, incidents, leaveReqs, extraReqs, freshaExtraOpenMap, freshaBlocksMap, interviews, smCriteria]) => {
+      window.BOA_DB.loadSmCriteriaConfig ? window.BOA_DB.loadSmCriteriaConfig() : Promise.resolve(null),
+      window.BOA_DB.loadRetiredEcs ? window.BOA_DB.loadRetiredEcs() : Promise.resolve([])
+    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess, offStaffAccess, offHoursAccess, cuReviewAccess, lvOpsAccess, lvPayrollAccess, lvBalancesAccess, incidents, leaveReqs, extraReqs, freshaExtraOpenMap, freshaBlocksMap, interviews, smCriteria, retiredEcList]) => {
       // Register Head Office employee codes BEFORE any state update so
       // isManagerEc() never mis-classifies an HO person (e.g. a -M code) as a
       // salon manager. Rebuilt each load; empty when no HO staff exist.
@@ -22807,6 +22812,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setHrTasks(Array.isArray(tasks) ? tasks : []);
       setTrialList(Array.isArray(trial) ? trial : []);
       setInterviewList(Array.isArray(interviews) ? interviews : []);
+      setRetiredEcs(Array.isArray(retiredEcList) ? retiredEcList : []);
       // Config first — normalising a trial record needs the checkpoint set.
       const _smCfg = smCriteriaMerged(smCriteria);
       setSmCriteriaCfg(_smCfg);
@@ -31564,13 +31570,30 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             ? rec.name + " scored " + r.total + "/" + r.max + " — PASS.\n\nSubmit and advance to the next stage?"
             : rec.name + " scored " + r.total + "/" + r.max + (r.keyOk ? "" : " (a Key Indicator is below " + r.keyMin + ")") + " — below the pass mark.\n\nSubmit and send to HR to review? They will NOT be auto-failed.";
           if (!confirm(msg)) return;
-          const evalKey = which === "final" ? "finalEval" : "midEval";
           const evalObj = {
             submittedAt: new Date().toISOString(), submittedBy: String(by).trim(),
-            which: which === "final" ? "final" : "mid", scores: { ...scores },
+            which: which === "final" ? "final" : which === "ext" ? "ext" : "mid", scores: { ...scores },
             total: r.total, max: r.max, keyOk: r.keyOk, pass: r.pass,
             heldForHr: !r.pass, notes: String(notes || "").trim()
           };
+          // An extension review lands on the extension it belongs to, not on
+          // the original mid/final evaluations — those stay as the record of
+          // how the trial proper went.
+          if (which === "ext") {
+            const exts = Array.isArray(rec.extensions) ? rec.extensions : [];
+            if (!exts.length) { alert("No extension to review."); return; }
+            persistTrial(trialList.map(x => x._id === rec._id ? {
+              ...x,
+              extensions: exts.map((e, i) => i === exts.length - 1 ? { ...e, eval: evalObj } : e),
+              // A pass ends the extension cleanly; below-pass holds for HR,
+              // who can then pass, extend again, or fail.
+              ...(r.pass ? { status: "passed" } : {}),
+              updatedAt: new Date().toISOString()
+            } : x));
+            setEvalForm(null);
+            return;
+          }
+          const evalKey = which === "final" ? "finalEval" : "midEval";
           const newStatus = r.pass ? (which === "final" ? "passed" : "trial_w2") : null;
           persistTrial(trialList.map(x => x._id === rec._id
             ? { ...x, [evalKey]: evalObj, ...(newStatus ? { status: newStatus } : {}), updatedAt: new Date().toISOString() }
@@ -31583,6 +31606,75 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           persistTrial(trialList.map(r => r._id === id
             ? { ...r, status: "failed", updatedAt: new Date().toISOString() }
             : r));
+        };
+
+        // ── Trial extension ────────────────────────────────────────────────
+        // "Not ready, but not a no" needed somewhere to live. Before this the
+        // only options at the final review were pass or fail, so a borderline
+        // candidate got passed and onboarded — turned into an employee with a
+        // code, a staff row and a schedule — when what was actually meant was
+        // "give her another week". An extension adds one week and REQUIRES a
+        // fresh evaluation before the next decision, which can again be pass,
+        // extend, or fail. Nothing else about the trial is reset.
+        const EXT_DAYS = 7;
+        const grantExtension = (id, reason) => {
+          const rec = (trialList || []).find(x => x._id === id);
+          if (!rec) return;
+          const exts = Array.isArray(rec.extensions) ? rec.extensions : [];
+          const startsOn = ymdStr(new Date());
+          const entry = {
+            n: exts.length + 1,
+            grantedAt: new Date().toISOString(),
+            grantedBy: (currentUser && currentUser.name) || "",
+            reason: String(reason || "").trim(),
+            startsOn,
+            endsOn: ymdAddDays(startsOn, EXT_DAYS),
+            eval: null
+          };
+          persistTrial(trialList.map(x => x._id === id ? {
+            ...x,
+            status: "extended",
+            // A previously-passed candidate is no longer passed — clear the
+            // promote path so they can't be onboarded mid-extension.
+            notOnboarding: null,
+            extensions: [...exts, entry],
+            updatedAt: new Date().toISOString()
+          } : x));
+          setExtDraft(null);
+          if (typeof logActivity === "function") {
+            try {
+              logActivity("Trial extended one week", (rec.name || "") + (rec.branch ? " · " + rec.branch : ""),
+                "Extension " + entry.n + " · to " + entry.endsOn + (entry.reason ? " — " + entry.reason : ""), "People");
+            } catch (_e) { }
+          }
+        };
+        // Decide the outcome once an extension's review is in.
+        const decideExtension = (id, outcome) => {
+          const rec = (trialList || []).find(x => x._id === id);
+          if (!rec) return;
+          const exts = Array.isArray(rec.extensions) ? rec.extensions : [];
+          const last = exts[exts.length - 1];
+          if (outcome === "pass") {
+            if (!confirm("Pass " + (rec.name || "this candidate") + " after their extension week?\n\nThey move to Passed and can be promoted to onboarding.")) return;
+            persistTrial(trialList.map(x => x._id === id ? {
+              ...x, status: "passed",
+              extensions: exts.map((e, i) => i === exts.length - 1 ? { ...e, outcome: "pass", decidedAt: new Date().toISOString(), decidedBy: (currentUser && currentUser.name) || "" } : e),
+              updatedAt: new Date().toISOString()
+            } : x));
+            if (typeof logActivity === "function") {
+              try { logActivity("Trial passed after extension", (rec.name || ""), "Extension " + (last ? last.n : "") + " passed", "People"); } catch (_e) { }
+            }
+          } else {
+            if (!confirm("Fail " + (rec.name || "this candidate") + " after their extension week?\n\nThey move to the Failed column. The extension history stays on the record.")) return;
+            persistTrial(trialList.map(x => x._id === id ? {
+              ...x, status: "failed",
+              extensions: exts.map((e, i) => i === exts.length - 1 ? { ...e, outcome: "fail", decidedAt: new Date().toISOString(), decidedBy: (currentUser && currentUser.name) || "" } : e),
+              updatedAt: new Date().toISOString()
+            } : x));
+            if (typeof logActivity === "function") {
+              try { logActivity("Trial failed after extension", (rec.name || ""), "Extension " + (last ? last.n : "") + " failed", "People"); } catch (_e) { }
+            }
+          }
         };
         // Passed the trial, then never joined. NOT a fail — the pass, both
         // evaluations and the worked-day count all stay on the record (payroll
@@ -31649,7 +31741,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // Include Head Office codes — they're in neither staff nor managers
           // state, so without this the max-B scan under-shoots and could mint an
           // EC that collides with an HO person's code.
-          const allEcs = [...staff.map(s => s.ec), ...managers.map(m => m.ec), ...obList.map(o => o.ec), ...HEAD_OFFICE_ECS].filter(Boolean);
+          // Retired codes are included too: a reversed onboarding deletes the
+          // staff row, so without them the scan would hand the freed code
+          // straight to the next hire — exactly what "never reused" forbids.
+          const allEcs = [...staff.map(s => s.ec), ...managers.map(m => m.ec), ...obList.map(o => o.ec), ...HEAD_OFFICE_ECS, ...(retiredEcs || []).map(x => x && x.ec)].filter(Boolean);
           const maxNum = allEcs.reduce((max, ec) => {
             const m = /B[- ]?(\d+)/i.exec(ec || "");
             return m ? Math.max(max, parseInt(m[1], 10)) : max;
@@ -31835,10 +31930,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 and the final review as a portal fallback. */}
             {evalForm && (() => {
               const f = evalFormFor(evalForm.rec && evalForm.rec.role);
+              // An extension review uses the same form as the final review —
+              // the bar doesn't move because they were given more time.
+              const _exts = (evalForm.rec && Array.isArray(evalForm.rec.extensions)) ? evalForm.rec.extensions : [];
+              const _extN = _exts.length;
               return (
                 <TrialEvalModal
                   name={(evalForm.rec && evalForm.rec.name) || "candidate"}
                   which={evalForm.which}
+                  title={evalForm.which === "ext" ? "Extension " + _extN + " review" : undefined}
+                  subtitle={evalForm.which === "ext"
+                    ? "Extension week " + _extN + (_exts[_extN - 1] ? " · " + _exts[_extN - 1].startsOn + " → " + _exts[_extN - 1].endsOn : "")
+                      + ". Same standard as the final review."
+                    : undefined}
                   sections={f.sections} max={f.max} keyMin={f.keyMin} pass={f.pass}
                   onClose={() => setEvalForm(null)}
                   onSubmit={({ scores, by, notes }) => submitTrialEval(evalForm.rec, evalForm.which, scores, by, notes)}
@@ -32085,7 +32189,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             {currentList.some(r => r.status !== "hired") && (() => {
               // Sort buckets: in-progress → passed → not onboarding → failed.
               const grp = (s) => s === "passed" ? 1 : s === "not_onboarding" ? 2 : s === "failed" ? 3 : 0;
-              const prog = { trial_w2: 3, pending_final_review: 3, trial_w1: 2, pending_mid_review: 2, induction: 1 };
+              // "extended" is the furthest-along in-progress state — past the
+              // final review and waiting on a decision, so it sorts to the top.
+              const prog = { extended: 4, trial_w2: 3, pending_final_review: 3, trial_w1: 2, pending_mid_review: 2, induction: 1 };
               const rows = currentList.filter(r => r.status !== "hired").slice().sort((a, b) =>
                 grp(a.status) - grp(b.status)
                 || (prog[b.status] || 0) - (prog[a.status] || 0)
@@ -32143,6 +32249,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       if (st === "induction") cur = "induction";
                       else if (st === "trial_w1") cur = worked >= 5 ? "wk1eval" : "w1";
                       else if (st === "trial_w2") cur = worked >= 10 ? "finaleval" : "w2";
+                      else if (st === "extended") cur = "finaleval";     // an extra week of the same final stage
                       else if (didPass) cur = "passed";
                       const inductionDone = st !== "induction";
                       const evNode = (ev, due, pendingSub) => {
@@ -32214,6 +32321,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             const btn = (bg, color, border) => ({ padding: "6px 12px", borderRadius: 8, border: border || "none", background: bg, color, cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700 });
                             const heldMid = r.midEval && r.midEval.heldForHr;
                             const heldFinal = r.finalEval && r.finalEval.heldForHr;
+                            // Extension state: on an extension week, whether its
+                            // review is in, and whether that review is below pass.
+                            const _exts = Array.isArray(r.extensions) ? r.extensions : [];
+                            const _lastExt = _exts.length ? _exts[_exts.length - 1] : null;
+                            const onExt = st === "extended";
+                            const extEvalDue = onExt && _lastExt && !(_lastExt.eval && _lastExt.eval.submittedAt);
+                            const heldExt = onExt && _lastExt && _lastExt.eval && _lastExt.eval.heldForHr;
+                            // Where an extension can be granted from: a below-pass
+                            // final held for HR, a pass that hasn't been onboarded
+                            // yet, or the end of a previous extension.
+                            const canExtend = !failed && st !== "induction" && st !== "hired"
+                              && (heldFinal || st === "passed" || heldExt);
                             return (
                               <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10, alignItems: "center" }}>
                                 {/* Induction → in-store trial: the first step of the
@@ -32242,6 +32361,60 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                   <button onClick={() => resolveHeldEval(r._id, "final", "pass")} style={btn("#15803d", "#fff")}>✅ Pass final</button>
                                   <button onClick={() => resolveHeldEval(r._id, "final", "fail")} style={btn("#fff", "#991b1b", "1px solid #fca5a5")}>❌ Fail</button>
                                 </>)}
+
+                                {/* ── Extension: one more week rather than a
+                                    premature pass or fail. ── */}
+                                {_exts.length > 0 && (
+                                  <div style={{ width: "100%", background: onExt ? "#fffbeb" : "#f9fafb", border: "1px solid " + (onExt ? "#fde68a" : "#e5e7eb"), borderRadius: 10, padding: "9px 12px" }}>
+                                    <div style={{ fontSize: 11, fontWeight: 800, color: onExt ? "#92400e" : "#6b7280", letterSpacing: "0.05em", textTransform: "uppercase", marginBottom: 5 }}>
+                                      ⏭ Trial extended · {_exts.length} week{_exts.length === 1 ? "" : "s"}
+                                    </div>
+                                    {_exts.map(e => (
+                                      <div key={e.n} style={{ fontSize: 11.5, color: "#374151", padding: "3px 0", lineHeight: 1.5 }}>
+                                        <b>Week {e.n}</b> · {e.startsOn} → {e.endsOn}
+                                        {e.reason ? " — " + e.reason : ""}
+                                        {e.grantedBy ? <span style={{ color: "#9ca3af" }}> · granted by {e.grantedBy}</span> : null}
+                                        {e.eval && e.eval.submittedAt
+                                          ? <button onClick={() => setEvalFullView({ ev: e.eval, label: "Extension " + e.n + " review", name: r.name, role: r.role })}
+                                            style={{ marginLeft: 6, background: "none", border: "none", padding: 0, cursor: "pointer", fontWeight: 800, fontSize: 11.5, color: e.eval.pass ? "#15803d" : "#b45309", fontFamily: "inherit" }}>
+                                            · {e.eval.total}/{e.eval.max} {e.eval.pass ? "PASS" : "held"}
+                                          </button>
+                                          : <span style={{ color: "#b45309", fontWeight: 700 }}> · review outstanding</span>}
+                                        {e.outcome ? <span style={{ marginLeft: 6, fontWeight: 800, color: e.outcome === "pass" ? "#15803d" : "#991b1b" }}>→ {e.outcome === "pass" ? "passed" : "failed"}</span> : null}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                                {extEvalDue && (
+                                  <button onClick={() => setEvalForm({ rec: r, which: "ext" })} style={btn("#b45309", "#fff")}>📋 Complete extension {_exts.length} review</button>
+                                )}
+                                {heldExt && (<>
+                                  <button onClick={() => decideExtension(r._id, "pass")} style={btn("#15803d", "#fff")}>✅ Pass after extension</button>
+                                  <button onClick={() => decideExtension(r._id, "fail")} style={btn("#fff", "#991b1b", "1px solid #fca5a5")}>❌ Fail</button>
+                                </>)}
+                                {canExtend && (
+                                  <button onClick={() => setExtDraft({ id: r._id, reason: "" })}
+                                    title="Give them one more week and re-evaluate, instead of passing or failing now"
+                                    style={btn("#fff", "#92400e", "1px solid #fcd34d")}>⏭ Extend 1 week</button>
+                                )}
+                                {extDraft && extDraft.id === r._id && (
+                                  <div style={{ width: "100%", background: "#fffbeb", border: "1px solid #fcd34d", borderRadius: 10, padding: "10px 12px", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                                    <span style={{ fontSize: 12, fontWeight: 800, color: "#92400e" }}>
+                                      ⏭ Extend {(r.name || "").split(" ")[0] || "this candidate"} by one week — what needs to improve?
+                                    </span>
+                                    <input type="text" value={extDraft.reason} maxLength={200} autoFocus
+                                      placeholder="e.g. Speed on gel applications; recheck next Friday"
+                                      onChange={e => setExtDraft(d => ({ ...d, reason: e.target.value }))}
+                                      style={{ flex: "1 1 220px", minWidth: 180, padding: "6px 8px", borderRadius: 8, border: "1px solid " + (extDraft.reason.trim() ? "#fcd34d" : "#f87171"), fontSize: 12, fontFamily: "inherit" }} />
+                                    <button disabled={!extDraft.reason.trim()}
+                                      onClick={() => grantExtension(r._id, extDraft.reason)}
+                                      title={extDraft.reason.trim() ? "Grant the extension" : "Say what needs to improve first"}
+                                      style={{ ...btn(extDraft.reason.trim() ? "#92400e" : "#e5e7eb", extDraft.reason.trim() ? "#fff" : "#9ca3af"), cursor: extDraft.reason.trim() ? "pointer" : "not-allowed" }}>
+                                      Extend to {ymdAddDays(ymdStr(new Date()), 7)}
+                                    </button>
+                                    <button onClick={() => setExtDraft(null)} style={btn("#fff", "#6b7280", "1px solid #e5e7eb")}>✕</button>
+                                  </div>
+                                )}
                                 {/* Assistant-Manager trials are evaluation-driven, same
                                     as nail techs. The Week-1 review is completed here by
                                     the trainers; the final review is completed by the
@@ -32442,7 +32615,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <div style={{ fontSize: 11, color: "#9ca3af", marginBottom: 10, fontStyle: "italic" }}>Completed candidates moved off the board. Nothing is deleted — Restore brings one back to its original state.</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   {archivedList.slice().sort((a, b) => Date.parse(b.archivedAt || 0) - Date.parse(a.archivedAt || 0)).map(r => {
-                    const _statusLbl = r.status === "hired" ? "🎉 Hired" : r.status === "failed" ? "❌ Failed" : r.status === "not_onboarding" ? "🚫 Not onboarding" : r.status === "passed" ? "✅ Passed" : r.status;
+                    const _statusLbl = r.status === "hired" ? "🎉 Hired" : r.status === "failed" ? "❌ Failed" : r.status === "not_onboarding" ? "🚫 Not onboarding" : r.status === "passed" ? "✅ Passed" : r.status === "extended" ? "⏭ Extended" : r.status;
                     const _arLbl = r.archivedAt ? new Date(r.archivedAt).toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }) : "";
                     return (
                       <div key={r._id} style={{ background: "#fff", borderRadius: 10, border: "1px solid #ede9fe", padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
@@ -33257,6 +33430,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             setObSubmitting(false);
             return;
           }
+          // A code freed by a reversed onboarding is retired, not available.
+          // Attendance, Fresha and published schedules may still carry it, so
+          // reissuing it would attach a stranger's history to this hire.
+          const _retired = (retiredEcs || []).find(x => x && String(x.ec || "").trim().toUpperCase() === _obEcU);
+          if (_retired) {
+            alert("🚫 EC " + ec + " is retired — it was used by " + (_retired.name || "a previous record")
+              + " before that onboarding was reversed on " + String(_retired.retiredAt || "").slice(0, 10)
+              + ".\n\nEmployee codes are never reused. Use a different code.");
+            setObSubmitting(false);
+            return;
+          }
 
           let driveFolderId = null;
           if (obForm.files && obForm.files.length > 0) {
@@ -33596,6 +33780,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             bankName: obForm.bankName, branchCode: obForm.branchCode, accNumber: obForm.accNumber,
             nextOfKinName: obForm.nextOfKinName, nextOfKinPhone: obForm.nextOfKinPhone,
             driveFolderId: driveFolderId,
+            // Keep the link back to the trial so a reversal can restore the
+            // exact record rather than guessing by name.
+            fromTrialId: obForm._fromTrialId || null,
             status: "Hired", addedAt: new Date().toISOString()
           };
           persistOb([...obList, obRecord]);
@@ -33621,6 +33808,144 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const tgt = obList.find(r => r._id === id);
           persistOb(obList.filter(r => r._id !== id));
           if (tgt) logActivity("Removed onboarding history", (tgt.name || "") + (tgt.ec ? " (" + tgt.ec + ")" : ""), tgt.branch || "");
+        };
+
+        // ── Reverse an onboarding ──────────────────────────────────────────
+        // Onboarding is not one write: it mints an employee code, creates the
+        // staff row, closes the trial as hired, copies trial days into
+        // attendance and can roster the person. So "she isn't ready after all"
+        // cannot be fixed by deleting the history row — that would leave a live
+        // employee behind with no record of where they came from. This unwinds
+        // the whole thing and puts the trial back on the board, where HR can
+        // then extend it or fail it properly.
+        //
+        // Attendance is deliberately NOT touched: those trial days were worked
+        // and are paid, and erasing them would be a payroll error.
+        const _ymShift = (ym, n) => {
+          const p = String(ym || "").split("-").map(Number);
+          if (p.length < 2 || !p[0]) return null;
+          const d = new Date(p[0], p[1] - 1 + n, 1);
+          return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
+        };
+        const stripScheduleRows = async (branch, ec, isMgr) => {
+          const hit = [];
+          if (!branch || !ec || isHeadOfficeBranch(branch)) return hit;
+          if (!window.BOA_DB.currentSchedYm || !window.BOA_DB.loadSchedule || !window.BOA_DB.saveSchedule) return hit;
+          const base = window.BOA_DB.currentSchedYm();
+          // Manager grids are keyed by the cycle's START month, tech grids by
+          // the END month — cover the neighbouring cycle either way.
+          const yms = isMgr ? [_ymShift(base, -1), base] : [base, _ymShift(base, 1)];
+          for (const ym of yms.filter(Boolean)) {
+            try {
+              const sched = await window.BOA_DB.loadSchedule(branch, ym, isMgr);
+              const grid = (sched && sched.grid) || {};
+              const key = Object.keys(grid).find(k => String(k).trim().toUpperCase() === String(ec).trim().toUpperCase());
+              if (key) {
+                delete grid[key];
+                await window.BOA_DB.saveSchedule(branch, ym, grid, isMgr);
+                hit.push(ym);
+              }
+            } catch (e) { console.warn("[reverse onboarding] draft schedule strip failed " + ym + ":", e); }
+            // The published snapshot is what My BOA and the kiosk actually read,
+            // so a row left there keeps them rostered for staff even though the
+            // draft is clean.
+            try {
+              await patchApprovedSnapshotGrid(branch, ym, isMgr, (grid) => {
+                const key = Object.keys(grid).find(k => String(k).trim().toUpperCase() === String(ec).trim().toUpperCase());
+                if (!key) return false;
+                delete grid[key];
+                return true;
+              });
+            } catch (e) { console.warn("[reverse onboarding] snapshot strip failed " + ym + ":", e); }
+          }
+          return hit;
+        };
+
+        const reverseOnboarding = async (id) => {
+          const rec = obList.find(r => r._id === id);
+          if (!rec) return;
+          const ec = String(rec.ec || "").trim();
+          const isMgr = ["SSM", "SM", "AM"].includes(rec.position) || /M$/i.test(ec);
+          const staffRow = (staff || []).find(s => s && String(s.ec || "").trim().toUpperCase() === ec.toUpperCase());
+          const mgrRow = (managers || []).find(m => m && String(m.ec || "").trim().toUpperCase() === ec.toUpperCase());
+          const row = mgrRow || staffRow;
+          // Prefer the recorded link; fall back to a name match for records
+          // onboarded before fromTrialId was stored.
+          const trialRec = (trialList || []).find(t => t && (
+            (rec.fromTrialId && t._id === rec.fromTrialId) ||
+            (!rec.fromTrialId && String(t.name || "").trim().toLowerCase() === String(rec.name || "").trim().toLowerCase()
+              && (t.status === "hired" || t.promotedToOnboarding))
+          ));
+
+          const lines = [
+            "Reverse " + (rec.name || "this onboarding") + "?",
+            "",
+            "This undoes the hire completely:",
+            row ? "• Delete their staff record (" + ec + ") — they stop being an employee" : "• No staff record found for " + ec + " (nothing to delete)",
+            "• Retire employee code " + ec + " — it will never be issued to anyone else",
+            "• Remove this onboarding record",
+            trialRec ? "• Put their trial back on the board as PASSED, so you can extend or fail it" : "• No linked trial record found to restore",
+            "• Clear any shifts they were rostered for",
+            "",
+            "Their trial days stay on the attendance sheet — those were worked and are paid.",
+            "",
+            "Continue?"
+          ];
+          if (!confirm(lines.join("\n"))) return;
+
+          // 1. Staff row. Managers and techs share the `staff` table but have
+          //    separate delete paths and separate local state.
+          if (row) {
+            try {
+              if (mgrRow) {
+                await window.BOA_DB.deleteManager(mgrRow._id);
+                setManagers(p => (p || []).filter(x => x._id !== mgrRow._id));
+              } else {
+                await window.BOA_DB.deleteStaff(staffRow._id);
+                setStaff(p => (p || []).filter(x => x._id !== staffRow._id));
+              }
+            } catch (e) { alert("Could not delete the staff record: " + (e.message || e) + "\n\nNothing else was changed."); return; }
+          }
+
+          // 2. Retire the code before anything can mint it again.
+          if (ec) {
+            const nextRetired = [...(retiredEcs || []).filter(x => x && String(x.ec).toUpperCase() !== ec.toUpperCase()), {
+              ec, name: rec.name || "", retiredAt: new Date().toISOString(),
+              retiredBy: (currentUser && currentUser.name) || "", reason: "Onboarding reversed"
+            }];
+            setRetiredEcs(nextRetired);
+            try { if (window.BOA_DB.saveRetiredEcs) await window.BOA_DB.saveRetiredEcs(nextRetired); }
+            catch (e) { console.warn("[reverse onboarding] could not persist retired EC:", e); }
+          }
+
+          // 3. Onboarding record.
+          persistOb(obList.filter(r => r._id !== id));
+
+          // 4. Trial record back to PASSED and promotable again.
+          if (trialRec) {
+            const nextTrials = (trialList || []).map(t => t._id === trialRec._id ? {
+              ...t, status: "passed", promotedToOnboarding: false, promotedAt: null,
+              onboardingReversals: [...(t.onboardingReversals || []), {
+                at: new Date().toISOString(),
+                by: (currentUser && currentUser.name) || "",
+                ec, branch: rec.branch || "", startDate: rec.startDate || ""
+              }],
+              updatedAt: new Date().toISOString()
+            } : t);
+            setTrialList(nextTrials);
+            try { await window.BOA_DB.saveTrialPeriod(nextTrials); }
+            catch (e) { console.warn("[reverse onboarding] could not persist trial revert:", e); }
+          }
+
+          // 5. Shifts.
+          const stripped = await stripScheduleRows(rec.branch, ec, isMgr);
+
+          logActivity("Reversed onboarding", (rec.name || "") + " (" + ec + ")",
+            "Staff record deleted · code retired" + (trialRec ? " · trial back to passed" : "") + (stripped.length ? " · shifts cleared (" + stripped.join(", ") + ")" : ""));
+          alert("↩ Onboarding reversed.\n\n" + (rec.name || "They") + " is no longer an employee and "
+            + (trialRec ? "their trial is back on the Trial Period board as PASSED — use “⏭ Extend 1 week” there to give them more time."
+              : "no linked trial record was found, so add them back to the Trial Period board manually if needed.")
+            + "\n\nCode " + ec + " is retired and won't be reissued.");
         };
 
         const inp = { padding: "10px 12px", border: "1px solid #FBCFE8", borderRadius: 8, fontSize: 14, fontFamily: "inherit", background: "#fff" };
@@ -33840,7 +34165,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               <div style={{ display: "flex", gap: 4 }}>
                                 {r._orphanStarter
                                   ? <span title="On the staff list but has no onboarding record" style={{ fontSize: 9, fontWeight: 800, padding: "3px 8px", borderRadius: 6, background: "#fef3c7", color: "#92400e", letterSpacing: "0.02em" }}>NO ONBOARDING RECORD</span>
-                                  : <button onClick={() => delOb(r._id)} title="Remove from view" style={{ background: "none", border: "1px solid #fca5a5", borderRadius: 6, padding: "4px 8px", cursor: "pointer", fontSize: 11, color: "#991b1b" }}>✕ Remove</button>}
+                                  : <>
+                                    {/* Undoing a hire is a different act from tidying
+                                        the history list — Remove only hides the row and
+                                        would strand a live employee behind it. */}
+                                    <button onClick={() => reverseOnboarding(r._id)}
+                                      title="They shouldn't have been onboarded — delete the staff record, retire the code and put the trial back"
+                                      style={{ background: "none", border: "1px solid #c4b5fd", borderRadius: 6, padding: "4px 8px", cursor: "pointer", fontSize: 11, color: "#6b21a8", fontFamily: "inherit", fontWeight: 700 }}>↩ Reverse</button>
+                                    <button onClick={() => delOb(r._id)} title="Remove this row from the history view only — the staff record stays" style={{ background: "none", border: "1px solid #fca5a5", borderRadius: 6, padding: "4px 8px", cursor: "pointer", fontSize: 11, color: "#991b1b" }}>✕ Remove</button>
+                                  </>}
                               </div>
                             </div>
                             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginTop: 8 }}>
