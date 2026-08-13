@@ -3089,6 +3089,60 @@ const COMPLIANCE = {
   z_na: { label: "Z/NA – No Valid Permit", icon: "🚨", color: "#831843", bg: "#fee2e2", border: "#fca5a5" },
 };
 
+// ── VFS APPLICATION OVERLAY ──────────────────────────────────────────────
+// VFS Global (vfsglobal.com/southafrica) is the centre Home Affairs
+// outsources visa / permit submissions to. Lodging there is a STEP, not a
+// classification: the person keeps whatever COMPLIANCE status they actually
+// hold (Z/NA, asylum, expiring work permit…) and carries this marker ON TOP
+// until the outcome comes back. So it deliberately does NOT live in
+// COMPLIANCE — a 🛂 badge rides alongside the permit icon on the Locations
+// cards, the staff / manager / office lists and the Compliance tab, and the
+// person stays in every non-compliant count until their permit is real.
+//
+// Stored per-EC in boa_compliance_actions_v1 alongside the work-permit
+// request fields (vfsAppliedAt / vfsRef / vfsType / vfsOutcomeDate /
+// vfsLoggedBy / vfsNotes). That record is keyed by employee_code, so one
+// storage path covers techs AND managers AND office staff with no column
+// migration on the staff / managers tables.
+const VFS = { label: "VFS Application Submitted", short: "VFS", icon: "🛂", color: "#3730a3", bg: "#e0e7ff", border: "#a5b4fc" };
+// Sentinel used by the list filters, so "🛂 VFS application" can sit in the
+// same dropdown as the real COMPLIANCE keys without polluting the registry.
+const VFS_FILTER_KEY = "__vfs";
+const VFS_TYPES = ["Work visa", "Asylum renewal", "Permanent residence", "Critical skills visa", "Spousal / relative visa", "Appeal / review", "Other"];
+const VFS_URL = "https://www.vfsglobal.com/southafrica/";
+// A compliance-action record carries a VFS application once a submission
+// date is on it — that date is the marker's existence key everywhere.
+function hasVfs(act) { return !!(act && act.vfsAppliedAt); }
+// Ageing for a logged application: how long since submission, and how the
+// expected-outcome date is tracking. Returns null when nothing is logged.
+function vfsStatus(act, todayYmd) {
+  if (!hasVfs(act)) return null;
+  const t0 = new Date((todayYmd || new Date().toISOString().slice(0, 10)) + "T00:00:00");
+  const days = (iso) => { if (!iso) return null; const d = new Date(iso + "T00:00:00"); return isNaN(d) ? null : Math.round((d - t0) / 86400000); };
+  const sinceRaw = days(act.vfsAppliedAt);
+  const dueIn = days(act.vfsOutcomeDate);
+  return {
+    daysSince: sinceRaw === null ? null : Math.max(0, -sinceRaw),
+    dueIn,
+    overdue: dueIn !== null && dueIn < 0,
+    dueSoon: dueIn !== null && dueIn >= 0 && dueIn <= 14,
+    ref: act.vfsRef || "",
+    type: act.vfsType || "",
+  };
+}
+// One-line tooltip / summary shared by every 🛂 badge so the same facts read
+// the same way on the Locations card, the lists and the Compliance tab.
+function vfsTitle(act) {
+  const st = vfsStatus(act);
+  if (!st) return "";
+  const bits = [VFS.label];
+  if (st.type) bits.push(st.type);
+  if (act.vfsAppliedAt) bits.push("submitted " + act.vfsAppliedAt + (st.daysSince !== null ? " (" + st.daysSince + "d ago)" : ""));
+  if (st.ref) bits.push("ref " + st.ref);
+  if (act.vfsOutcomeDate) bits.push("outcome due " + act.vfsOutcomeDate + (st.overdue ? " — OVERDUE" : ""));
+  return bits.join(" · ");
+}
+
 // matStatus values:
 //   "on_mat"    = currently ON maternity leave → EXCLUDED from store count, greyed out
 //   "pregnant"  = still working, just pregnant → COUNTED IN store, shown with 🤰 badge
@@ -3527,6 +3581,24 @@ function Chip({ bg, color, border, children }) {
   return <span style={{ background: bg, color, border: `1px solid ${border}`, borderRadius: 20, padding: "3px 10px", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap", display: "inline-flex", alignItems: "center", gap: 4 }}>{children}</span>;
 }
 const CompBadge = ({ permit }) => { const c = COMPLIANCE[permit] || COMPLIANCE.z_na; return <Chip bg={c.bg} color={c.color} border={c.border}>{c.icon} {c.label}</Chip>; };
+// 🛂 marker for a lodged VFS application. Rides NEXT TO the compliance chip
+// rather than replacing it — see the VFS block above. `compact` renders the
+// bare icon (tight rows: Locations cards), otherwise a chip with the
+// submission date. Renders nothing when no application is logged.
+const VfsBadge = ({ act, compact }) => {
+  const st = vfsStatus(act);
+  if (!st) return null;
+  const title = vfsTitle(act);
+  const fg = st.overdue ? "#7f1d1d" : VFS.color;
+  const bg = st.overdue ? "#fee2e2" : VFS.bg;
+  const bd = st.overdue ? "#fca5a5" : VFS.border;
+  if (compact) return <span title={title} style={{ fontSize: 12 }}>{VFS.icon}</span>;
+  return (
+    <span title={title} style={{ display: "inline-block", background: bg, color: fg, border: `1px solid ${bd}`, fontSize: 10, fontWeight: 800, padding: "3px 8px", borderRadius: 99, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>
+      {VFS.icon} {VFS.short}{st.daysSince !== null ? " · " + st.daysSince + "d" : ""}{st.overdue ? " ⚠" : ""}
+    </span>
+  );
+};
 const LevelBadge = ({ level }) => {
   if (!level) return <span style={{ color: "#d1d5db", fontSize: 11 }}>—</span>;
   const m = { One: ["#e0e7ff", "#3730a3"], Two: ["#ede9fe", "#5b21b6"], Three: ["#cffafe", "#155e75"] };
@@ -19242,9 +19314,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
   // Compliance follow-up actions per EC. Shape:
   // { [ec]: { workPermitRequestedAt, workPermitRequestedBy,
-  //           workPermitDeadline, workPermitNotes, clearedAt, clearedBy } }
+  //           workPermitDeadline, workPermitNotes, clearedAt, clearedBy,
+  //           vfsAppliedAt, vfsRef, vfsType, vfsOutcomeDate, vfsLoggedBy,
+  //           vfsNotes } }
+  // The vfs* fields are the 🛂 VFS-application overlay (see the VFS const) —
+  // independent of the work-permit request fields, so a person can carry one,
+  // the other, or both.
   const [complianceActions, setComplianceActions] = useState({});
   const [complianceModal, setComplianceModal] = useState(null); // null | { ec, name, branch, ... }
+  // VFS application logger. null | { ec, name, branch, role, vfs* fields,
+  // _edit } — an entry with no `ec` opens in person-picker mode so an
+  // application can be logged against anyone, not just the people who
+  // happen to appear in the non-compliant follow-up list.
+  const [vfsModal, setVfsModal] = useState(null);
   // Compliance directory filters (used in the bottom section of the
   // Compliance tab so the user can search + slice by role / branch).
   const [compSearch, setCompSearch] = useState("");
@@ -19266,8 +19348,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const next = { ...complianceActions };
     const cur = next[ec] || {};
     next[ec] = { ...cur, ...patch };
-    // Drop the row entirely if every field cleared, so no orphan keys.
-    if (!next[ec].workPermitRequestedAt && !next[ec].clearedAt && !next[ec].workPermitDeadline && !next[ec].workPermitRequestedBy && !next[ec].workPermitNotes) {
+    // Drop the row entirely if every field cleared, so no orphan keys. The
+    // vfs* fields count here too — otherwise a record holding ONLY a VFS
+    // application would be pruned the moment it was saved.
+    const r = next[ec];
+    if (!r.workPermitRequestedAt && !r.clearedAt && !r.workPermitDeadline && !r.workPermitRequestedBy && !r.workPermitNotes
+      && !r.vfsAppliedAt && !r.vfsRef && !r.vfsType && !r.vfsOutcomeDate && !r.vfsLoggedBy && !r.vfsNotes) {
       delete next[ec];
     }
     try {
@@ -19275,8 +19361,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setComplianceActions(next);
       if (window.BOA_LOG_ACTIVITY) {
         const action = patch.clearedAt ? "Cleared compliance follow-up"
-          : patch.workPermitRequestedAt ? "Marked work permit request sent"
-            : "Updated compliance follow-up";
+          : patch.vfsAppliedAt ? "Logged VFS application"
+            : ("vfsAppliedAt" in patch && !patch.vfsAppliedAt) ? "Cleared VFS application"
+              : patch.workPermitRequestedAt ? "Marked work permit request sent"
+                : "Updated compliance follow-up";
         window.BOA_LOG_ACTIVITY(action, ec, JSON.stringify(patch), "Compliance");
       }
     } catch (e) { alert("Could not save compliance action: " + (e.message || e)); }
@@ -24671,7 +24759,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       if (fShow === "on_mat" && !s.onMat) return false;
       if (fShow === "active_only" && s.onMat) return false;
       if (fBranch !== "All" && s.branch !== fBranch) return false;
-      if (fPermit !== "All" && s.permit !== fPermit) return false;
+      // The permit dropdown carries one non-COMPLIANCE entry: the 🛂 VFS
+      // overlay, which slices on the logged application rather than the
+      // stored `permit` value.
+      if (fPermit === VFS_FILTER_KEY) { if (!hasVfs(complianceActions[s.ec])) return false; }
+      else if (fPermit !== "All" && s.permit !== fPermit) return false;
       if (fContract !== "All" && s.contract !== fContract) return false;
       // Role filter: techs are dropped from the visible list for any role
       // value other than 'All' or 'Tech'. The manager-side filter below
@@ -24687,7 +24779,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       if (ad !== bd) return ad - bd;          // active first, departed last
       return ecSort(a, b);
     });
-  }, [enriched, fShow, fBranch, fPermit, fContract, fRole, search]);
+  }, [enriched, fShow, fBranch, fPermit, fContract, fRole, search, complianceActions]);
 
   // Office Staff List roster — the same status/compliance/contract semantics as
   // the salon list above, but filtered on department + office role instead of
@@ -24705,7 +24797,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       if (oDept === "CC" && !isCallCentreStaff(s)) return false;
       if (oDept === "HO" && isCallCentreStaff(s)) return false;
       if (oRole !== "All" && String(s.role || "").trim().toUpperCase() !== oRole) return false;
-      if (oPermit !== "All" && s.permit !== oPermit) return false;
+      if (oPermit === VFS_FILTER_KEY) { if (!hasVfs(complianceActions[s.ec])) return false; }
+      else if (oPermit !== "All" && s.permit !== oPermit) return false;
       if (oContract !== "All" && s.contract !== oContract) return false;
       if (q && !String(s.name || "").toLowerCase().includes(q) && !String(s.ec || "").toLowerCase().includes(q)) return false;
       return true;
@@ -24717,7 +24810,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       if (ad !== bd) return ad - bd;          // active first, departed last
       return ecSort(a, b);
     });
-  }, [enrichedOffice, oShow, oDept, oRole, oPermit, oContract, oSearch]);
+  }, [enrichedOffice, oShow, oDept, oRole, oPermit, oContract, oSearch, complianceActions]);
   // CC tested FIRST — CC&S people remain in the Head Office population, so an
   // ho-first split would swallow them.
   const officeCc = useMemo(() => officeFiltered.filter(isCallCentreStaff), [officeFiltered]);
@@ -24753,7 +24846,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       // Compliance filter is a permit field; managers may not have one — skip
       // filtering if user picked a specific permit AND the manager has none,
       // otherwise compare.
-      if (fPermit !== "All") {
+      if (fPermit === VFS_FILTER_KEY) {
+        // 🛂 overlay slice — independent of whether a permit is on file.
+        if (!hasVfs(complianceActions[m.ec])) return false;
+      } else if (fPermit !== "All") {
         if (!m.permit) return false;
         if (m.permit !== fPermit) return false;
       }
@@ -24771,7 +24867,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       if (rd !== 0) return rd;                                       // SSM → SM → AM
       return (a.name || "").localeCompare(b.name || "");
     });
-  }, [enrichedManagers, fShow, fBranch, fPermit, fContract, fRole, search]);
+  }, [enrichedManagers, fShow, fBranch, fPermit, fContract, fRole, search, complianceActions]);
 
   // Pool for the Maternity modal lookup: every active tech + every manager,
   // minus anyone who already has a maternity record (no double-up). Role
@@ -28315,7 +28411,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </optgroup>
               </select>
               <select value={oPermit} onChange={e => setOPermit(e.target.value)} style={{ padding: "7px 11px", borderRadius: 7, border: `1px solid ${bdr}`, fontFamily: "inherit", fontSize: 13, background: cream }}>
-                <option value="All">All Compliance</option>{Object.entries(COMPLIANCE).map(([k, c]) => <option key={k} value={k}>{c.icon} {c.label}</option>)}
+                <option value="All">All Compliance</option>{Object.entries(COMPLIANCE).map(([k, c]) => <option key={k} value={k}>{c.icon} {c.label}</option>)}<option value={VFS_FILTER_KEY}>{VFS.icon} {VFS.label}</option>
               </select>
               <select value={oContract} onChange={e => setOContract(e.target.value)} style={{ padding: "7px 11px", borderRadius: 7, border: `1px solid ${bdr}`, fontFamily: "inherit", fontSize: 13, background: cream }}>
                 <option value="All">All Contracts</option>{["Permanent", "Fixed Term", "3 Month", "NO CONTRACT"].map(c => <option key={c}>{c}</option>)}
@@ -28393,7 +28489,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                     style={{ marginLeft: 6, fontSize: 9, background: "#FED7AA", color: "#9A3412", border: "1px solid #FDBA74", borderRadius: 4, padding: "1px 6px", fontWeight: 800, letterSpacing: "0.04em" }}>⚠ DEPT MISMATCH</span>
                                 )}
                               </td>
-                              <td style={{ padding: "10px 12px" }}>{p.permit ? <Chip {...(COMPLIANCE[p.permit] || { icon: "❔", color: "#6b7280", bg: "#f3f4f6", border: "#d1d5db", label: p.permit })}>{(COMPLIANCE[p.permit] || {}).label || p.permit}</Chip> : <span style={{ color: "#9ca3af" }}>—</span>}</td>
+                              <td style={{ padding: "10px 12px" }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
+                                  {p.permit ? <Chip {...(COMPLIANCE[p.permit] || { icon: "❔", color: "#6b7280", bg: "#f3f4f6", border: "#d1d5db", label: p.permit })}>{(COMPLIANCE[p.permit] || {}).label || p.permit}</Chip> : <span style={{ color: "#9ca3af" }}>—</span>}
+                                  <VfsBadge act={complianceActions[p.ec]} />
+                                </div>
+                              </td>
                               <td style={{ padding: "10px 12px", fontSize: 11, color: "#831843", fontWeight: 600, whiteSpace: "nowrap" }}>{p.startDate ? _fmt(p.startDate) : <span style={{ color: "#d1d5db" }}>—</span>}</td>
                               <td style={{ padding: "10px 12px" }}>
                                 {departed
@@ -28454,7 +28555,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <option value="All">All Branches</option>{SALONS.map(s => <option key={s.name}>{s.name}</option>)}
               </select>
               <select value={fPermit} onChange={e => setFPermit(e.target.value)} style={{ padding: "7px 11px", borderRadius: 7, border: `1px solid ${bdr}`, fontFamily: "inherit", fontSize: 13, background: cream }}>
-                <option value="All">All Compliance</option>{Object.entries(COMPLIANCE).map(([k, c]) => <option key={k} value={k}>{c.icon} {c.label}</option>)}
+                <option value="All">All Compliance</option>{Object.entries(COMPLIANCE).map(([k, c]) => <option key={k} value={k}>{c.icon} {c.label}</option>)}<option value={VFS_FILTER_KEY}>{VFS.icon} {VFS.label}</option>
               </select>
               <select value={fContract} onChange={e => setFContract(e.target.value)} style={{ padding: "7px 11px", borderRadius: 7, border: `1px solid ${bdr}`, fontFamily: "inherit", fontSize: 13, background: cream }}>
                 <option value="All">All Contracts</option>{["Permanent", "Fixed Term", "NO CONTRACT", "2 Weeks", "Induction"].map(c => <option key={c}>{c}</option>)}
@@ -28533,7 +28634,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 style={{ marginLeft: 6, fontSize: 9, background: "#FED7AA", color: "#9A3412", border: "1px solid #FDBA74", borderRadius: 4, padding: "1px 6px", fontWeight: 800, letterSpacing: "0.04em" }}>⭐ SM TRIAL</span>
                             )}
                           </td>
-                          <td style={{ padding: "10px 12px" }}>{m.permit ? <Chip {...(COMPLIANCE[m.permit] || { icon: "❔", color: "#6b7280", bg: "#f3f4f6", border: "#d1d5db", label: m.permit })}>{(COMPLIANCE[m.permit] || {}).label || m.permit}</Chip> : <span style={{ color: "#9ca3af" }}>—</span>}</td>
+                          <td style={{ padding: "10px 12px" }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
+                              {m.permit ? <Chip {...(COMPLIANCE[m.permit] || { icon: "❔", color: "#6b7280", bg: "#f3f4f6", border: "#d1d5db", label: m.permit })}>{(COMPLIANCE[m.permit] || {}).label || m.permit}</Chip> : <span style={{ color: "#9ca3af" }}>—</span>}
+                              <VfsBadge act={complianceActions[m.ec]} />
+                            </div>
+                          </td>
                           <td style={{ padding: "10px 12px", fontSize: 11, color: "#831843", fontWeight: 600, whiteSpace: "nowrap" }}>{m.startDate ? new Date(m.startDate.replace(/\//g, "-") + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }) : <span style={{ color: "#d1d5db" }}>—</span>}</td>
                           <td style={{ padding: "10px 12px" }}>
                             {mgrDeparted
@@ -28578,7 +28684,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           <td style={{ padding: "10px 12px", fontSize: 11, color: "#831843", whiteSpace: "nowrap" }}>📍 {s.branch}</td>
                           <td style={{ padding: "10px 12px" }}><LevelBadge level={s.level} /></td>
                           <td style={{ padding: "10px 12px", fontSize: 11, fontWeight: 600 }}>{s.role || s.roleType || "Nail Tech"}</td>
-                          <td style={{ padding: "10px 12px" }}><CompBadge permit={s.permit} /></td>
+                          <td style={{ padding: "10px 12px" }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
+                              <CompBadge permit={s.permit} />
+                              <VfsBadge act={complianceActions[s.ec]} />
+                            </div>
+                          </td>
                           <td style={{ padding: "10px 12px", fontSize: 11, whiteSpace: "nowrap" }}>
                             {s.startDate ? (() => {
                               const d = new Date(s.startDate.replace(/\//g, "-") + "T00:00:00");
@@ -29299,6 +29410,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               {m.isShadow && <span style={{ fontSize: 9, marginLeft: 4, color: "#BE185D" }}>from {m.transferFrom} {m.transferDate ? new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>}
                             </span>
                             {m.level && <LevelBadge level={m.level} />}
+                            <VfsBadge act={complianceActions[m.ec]} compact />
                             <span title={(COMPLIANCE[m.permit] || COMPLIANCE.z_na).label} style={{ fontSize: 13 }}>{(COMPLIANCE[m.permit] || COMPLIANCE.z_na).icon}</span>
                           </div>
                         ))}
@@ -30322,7 +30434,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const totalCompliant = byPermit.sa_citizen.length + byPermit.work_permit.length + byPermit.verified_dha.length;
           const nonCompliant = [...byPermit.z_na, ...byPermit.unset]
             .sort((a, b) => (a.branch || "").localeCompare(b.branch || "") || (a.name || "").localeCompare(b.name || ""));
-
           // Helpers for the action panel.
           const today = new Date();
           const ymd0 = today.toISOString().slice(0, 10);
@@ -30337,13 +30448,86 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             return Math.ceil((d - t0) / 86400000);
           };
 
+          // 🛂 VFS overlay. Deliberately NOT a bucket: a lodged application
+          // never moves anyone between compliant / non-compliant, it just
+          // says "this one is already in flight, don't chase it twice".
+          //
+          // Widened past `pool` with office staff, because the logger can be
+          // pointed at anyone with an employee code. Without this an office
+          // employee could be logged but never seen or cleared here. The
+          // by-location table below stays on `pool` — it is explicitly a
+          // per-STORE breakdown, and Head Office is not a store.
+          const vfsCandidates = [
+            ...pool,
+            ...(enrichedOffice || [])
+              .filter(s => s && s.ec && !pool.some(p => p.ec === s.ec))
+              .filter(s => !s.offboarded || (s.offDaysSinceLeft != null && s.offDaysSinceLeft < 0))
+              .map(s => ({ ec: s.ec, name: s.name, branch: effBranch(s), permit: s.permit, role: String(s.role || "HO"), onMat: !!s.onMat }))
+          ];
+          const vfsPool = vfsCandidates.filter(p => hasVfs(complianceActions[p.ec]));
+          const vfsOverdue = vfsPool.filter(p => (vfsStatus(complianceActions[p.ec], ymd0) || {}).overdue).length;
+
           const STATS = [
             { l: "🇿🇦 SA Citizens", v: byPermit.sa_citizen.length, c: "#14532d", bg: "#dcfce7" },
             { l: "📋 Asylum on file", v: byPermit.asylum.length, c: "#4c1d95", bg: "#ede9fe" },
             { l: "✅ Valid Work Permit", v: byPermit.work_permit.length, c: "#8E5570", bg: "#dbeafe" },
             { l: "🔵 Verified by DHA", v: byPermit.verified_dha.length, c: "#0c4a6e", bg: "#e0f2fe" },
             { l: "⚠ Not compliant", v: nonCompliant.length, c: "#7f1d1d", bg: "#fee2e2" },
+            // Informational overlay — these people are ALSO counted in the
+            // tiles above under their real status, so this one does not add
+            // up with the rest and is labelled "in progress" to say so.
+            { l: "🛂 VFS in progress", v: vfsPool.length, c: VFS.color, bg: VFS.bg },
           ];
+
+          // Opens the 🛂 logger pre-filled from whatever is already stored for
+          // this person. Called with no argument from the panel header, which
+          // puts the modal into person-picker mode so an application can be
+          // logged against anyone — not only the people who happen to show up
+          // in the non-compliant follow-up or expiring-soon lists.
+          const openVfs = (person) => {
+            const act = (person && complianceActions[person.ec]) || {};
+            setVfsModal({
+              ec: (person && person.ec) || "",
+              name: (person && person.name) || "",
+              branch: (person && person.branch) || "",
+              role: (person && person.role) || "",
+              vfsAppliedAt: act.vfsAppliedAt || ymd0,
+              vfsType: act.vfsType || "",
+              vfsRef: act.vfsRef || "",
+              vfsOutcomeDate: act.vfsOutcomeDate || "",
+              vfsLoggedBy: act.vfsLoggedBy || (currentUser && currentUser.name) || "",
+              vfsNotes: act.vfsNotes || "",
+              _edit: hasVfs(act),
+              _pick: !person
+            });
+          };
+          // Shared 🛂 cell for the follow-up + expiring tables below.
+          const vfsCell = (p) => {
+            const act = complianceActions[p.ec] || {};
+            const st = vfsStatus(act, ymd0);
+            if (!st) return <span style={{ color: "#9ca3af", fontStyle: "italic" }}>No VFS application</span>;
+            return (
+              <div>
+                <div style={{ fontWeight: 700, color: VFS.color }}>🛂 {st.type || VFS.short} · {fmtDate(act.vfsAppliedAt)}</div>
+                <div style={{ fontSize: 10, color: "#6b7280" }}>{st.ref ? "Ref " + st.ref + " · " : ""}{st.daysSince !== null ? st.daysSince + "d ago" : ""}{act.vfsLoggedBy ? " · by " + act.vfsLoggedBy : ""}</div>
+                {act.vfsOutcomeDate && (
+                  <div style={{ fontSize: 10, fontWeight: 700, marginTop: 2, color: st.overdue ? "#7f1d1d" : st.dueSoon ? "#92400e" : "#374151" }}>
+                    Outcome {fmtDate(act.vfsOutcomeDate)} · {st.overdue ? Math.abs(st.dueIn) + "d overdue" : st.dueIn === 0 ? "TODAY" : "in " + st.dueIn + "d"}
+                  </div>
+                )}
+              </div>
+            );
+          };
+          // Shared 🛂 log / update button for the follow-up + expiring tables.
+          const vfsBtn = (p) => {
+            const on = hasVfs(complianceActions[p.ec]);
+            return (
+              <button onClick={() => openVfs(p)}
+                title={on ? "Update the VFS application" : "Log a VFS application for " + (p.name || p.ec)}
+                style={{ background: on ? "#fff" : VFS.bg, color: VFS.color, border: `1px solid ${VFS.border}`, borderRadius: 7, padding: "6px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700, marginRight: 6 }}
+              >🛂 {on ? "VFS ✓" : "VFS"}</button>
+            );
+          };
 
           return (
             <div style={{ padding: "0 24px" }}>
@@ -30383,7 +30567,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   const red = inBr.filter(isNonCompliant).length;
                   const sa = inBr.filter(p => p.permit === "sa_citizen").length;
                   const docs = inBr.filter(p => p.permit === "asylum" || p.permit === "work_permit" || p.permit === "verified_dha").length;
-                  return { brName: brName || "(no branch set)", total: inBr.length, red, sa, docs };
+                  // 🛂 cuts across the other three columns, so this row does
+                  // not add up to `total` — it is an overlay, not a bucket.
+                  const vfs = inBr.filter(p => hasVfs(complianceActions[p.ec])).length;
+                  return { brName: brName || "(no branch set)", total: inBr.length, red, sa, docs, vfs };
                 }).sort((a, b) => b.red - a.red || b.total - a.total || a.brName.localeCompare(b.brName));
                 const th = { padding: "9px 12px", fontSize: 10, fontWeight: 800, letterSpacing: "0.07em", textTransform: "uppercase", color: "#9d6a82", textAlign: "center", whiteSpace: "nowrap" };
                 const td = { padding: "9px 12px", fontSize: 14.5, textAlign: "center", fontWeight: 700 };
@@ -30391,7 +30578,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 return (
                   <div style={{ marginBottom: 24 }}>
                     <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 20, fontWeight: 700, color: "#831843" }}>🚦 By location — biggest issues first</div>
-                    <div style={{ fontSize: 12, color: "#6b7280", margin: "2px 0 12px" }}>Per store: 🚨 red-alarm (no valid permit), 🇿🇦 South Africans, and 📄 asylum / work-permit / DHA-verified. Stores with the most no-permit people are listed at the top.</div>
+                    <div style={{ fontSize: 12, color: "#6b7280", margin: "2px 0 12px" }}>Per store: 🚨 red-alarm (no valid permit), 🇿🇦 South Africans, and 📄 asylum / work-permit / DHA-verified. 🛂 counts people with a VFS application already lodged — it overlaps the other columns rather than adding to them. Stores with the most no-permit people are listed at the top.</div>
                     <div style={{ overflowX: "auto", border: "1px solid #FBCFE8", borderRadius: 14 }}>
                       <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 480, background: "#fff" }}>
                         <thead>
@@ -30400,6 +30587,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             <th style={{ ...th, color: "#7f1d1d" }}>🚨 No permit</th>
                             <th style={th}>🇿🇦 SA</th>
                             <th style={th}>📄 Asylum / Permit</th>
+                            <th style={{ ...th, color: VFS.color }}>🛂 VFS lodged</th>
                             <th style={th}>Total</th>
                           </tr>
                         </thead>
@@ -30410,6 +30598,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               <td style={{ ...td, color: r.red > 0 ? "#b91c1c" : "#9ca3af" }}>{r.red > 0 ? "🚨 " + r.red : "0"}</td>
                               <td style={{ ...td, color: "#14532d" }}>{r.sa}</td>
                               <td style={{ ...td, color: "#4c1d95" }}>{r.docs}</td>
+                              <td style={{ ...td, color: r.vfs > 0 ? VFS.color : "#9ca3af" }}>{r.vfs > 0 ? "🛂 " + r.vfs : "0"}</td>
                               <td style={{ ...td, color: "#6b7280", fontWeight: 600 }}>{r.total}</td>
                             </tr>
                           ))}
@@ -30418,10 +30607,124 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             <td style={{ ...td, color: "#7f1d1d" }}>{sum("red")}</td>
                             <td style={{ ...td, color: "#14532d" }}>{sum("sa")}</td>
                             <td style={{ ...td, color: "#4c1d95" }}>{sum("docs")}</td>
+                            <td style={{ ...td, color: VFS.color }}>{sum("vfs")}</td>
                             <td style={{ ...td, color: "#6b7280" }}>{sum("total")}</td>
                           </tr>
                         </tbody>
                       </table>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* ── VFS APPLICATIONS ── everyone with an application lodged at
+                  VFS Global, grouped by store. These people are STILL counted
+                  under their real permit status everywhere else (including the
+                  "Not compliant" tile and the dashboard Z/NA alert) — this
+                  panel exists so you can see the chase is already under way and
+                  not duplicate it. The header button opens the logger in
+                  person-picker mode so any employee can be logged, not just the
+                  ones listed in the panels below. */}
+              {(() => {
+                const rows = vfsPool
+                  .map(p => ({ ...p, _act: complianceActions[p.ec] || {}, _st: vfsStatus(complianceActions[p.ec], ymd0) }))
+                  .sort((a, b) => {
+                    // Overdue outcomes first, then soonest-due, then oldest submission.
+                    const ao = a._st.overdue ? 0 : 1, bo = b._st.overdue ? 0 : 1;
+                    if (ao !== bo) return ao - bo;
+                    if (a._st.dueIn !== null && b._st.dueIn !== null && a._st.dueIn !== b._st.dueIn) return a._st.dueIn - b._st.dueIn;
+                    if (a._st.dueIn === null && b._st.dueIn !== null) return 1;
+                    if (a._st.dueIn !== null && b._st.dueIn === null) return -1;
+                    return (b._st.daysSince || 0) - (a._st.daysSince || 0);
+                  });
+                const logBtn = (
+                  <button onClick={() => openVfs(null)}
+                    style={{ background: VFS.color, color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}
+                  >🛂 Log a VFS application</button>
+                );
+                const header = (
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, flexWrap: "wrap", gap: 10 }}>
+                    <div>
+                      <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 20, fontWeight: 700, color: VFS.color }}>🛂 VFS applications in progress</div>
+                      <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>
+                        Applications lodged at <a href={VFS_URL} target="_blank" rel="noreferrer" style={{ color: VFS.color, fontWeight: 700 }}>VFS Global</a>. Everyone here still counts under their real permit status — this is a "already being handled" marker, not a clearance.
+                        {vfsOverdue > 0 && <b style={{ color: "#7f1d1d" }}> {vfsOverdue} past their expected outcome date.</b>}
+                      </div>
+                    </div>
+                    {logBtn}
+                  </div>
+                );
+                if (rows.length === 0) {
+                  return (
+                    <div style={{ marginBottom: 22 }}>
+                      {header}
+                      <div style={{ background: "#fff", border: `1px dashed ${VFS.border}`, borderRadius: 14, padding: "26px 20px", textAlign: "center", color: VFS.color, fontSize: 13 }}>
+                        No VFS applications logged yet. Use <b>🛂 Log a VFS application</b> above, or the 🛂 button on any row below.
+                      </div>
+                    </div>
+                  );
+                }
+                const branchesPresent = SALONS.map(s => s.name).filter(name => rows.some(p => p.branch === name));
+                const orphanBranches = [...new Set(rows.map(p => p.branch).filter(b => b && !SALONS.some(s => s.name === b)))];
+                const allBranches = [...branchesPresent, ...orphanBranches];
+                const hasBlank = rows.some(p => !p.branch);
+                const vfsRow = (p) => {
+                  const st = p._st;
+                  const roleIcon = p.role === "SSM" ? "💎" : p.role === "SM" ? "👑" : p.role === "AM" ? "⭐" : p.role === "NT" ? "💅" : "🧑‍💼";
+                  const chip = COMPLIANCE[p.permit] || { icon: "❔", color: "#6b7280", bg: "#f3f4f6", border: "#d1d5db", label: "Not set" };
+                  return (
+                    <tr key={"vfs-" + p.ec} style={{ borderTop: `1px solid ${VFS.bg}` }}>
+                      <td style={{ padding: "8px 14px", fontFamily: "monospace", fontSize: 11, color: "#9ca3af", width: 60 }}>{p.ec}</td>
+                      <td style={{ padding: "8px 14px", fontWeight: 600, color: "#111827" }}>{roleIcon} {p.name || "(no name)"}{p.onMat && <span style={{ marginLeft: 6, fontSize: 10, background: "#FBCFE8", color: "#8E5570", padding: "1px 6px", borderRadius: 99, fontWeight: 700 }}>🤱 mat.</span>}</td>
+                      <td style={{ padding: "8px 14px" }}>
+                        <span style={{ display: "inline-block", background: chip.bg, color: chip.color, border: `1px solid ${chip.border}`, fontSize: 10, fontWeight: 800, padding: "3px 9px", borderRadius: 99, letterSpacing: "0.04em" }}>{chip.icon} {chip.label}</span>
+                      </td>
+                      <td style={{ padding: "8px 14px", fontSize: 11 }}>{vfsCell(p)}</td>
+                      <td style={{ padding: "8px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
+                        <button onClick={() => openVfs(p)}
+                          style={{ background: "#fff", color: VFS.color, border: `1px solid ${VFS.border}`, borderRadius: 7, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}
+                        >Update</button>
+                      </td>
+                    </tr>
+                  );
+                };
+                const branchCard = (brName, inBr) => {
+                  const mgrsIn = inBr.filter(p => p.role !== "NT");
+                  const techsIn = inBr.filter(p => p.role === "NT");
+                  // Office employees land in the non-tech group too, so only
+                  // call it "Managers" when that is genuinely all it holds.
+                  const mgrLabel = mgrsIn.every(p => p.role === "SSM" || p.role === "SM" || p.role === "AM")
+                    ? "👑 Managers" : "🧑‍💼 Managers & office";
+                  return (
+                    <div key={"vfs-br-" + brName} style={{ background: "#fff", border: `1px solid ${VFS.border}`, borderRadius: 14, overflow: "hidden" }}>
+                      <div style={{ background: VFS.bg, padding: "10px 16px", display: "flex", alignItems: "center", gap: 10, fontFamily: "'Playfair Display',serif", fontSize: 16, fontWeight: 700, color: VFS.color }}>
+                        📍 {brName || "(no branch set)"}
+                        <span style={{ marginLeft: "auto", fontSize: 11, fontWeight: 600 }}>{inBr.length} in progress</span>
+                      </div>
+                      {mgrsIn.length > 0 && (
+                        <div style={{ borderTop: `1px solid ${VFS.bg}` }}>
+                          <div style={{ background: "#F5F3FF", padding: "7px 16px", fontSize: 11, fontWeight: 800, color: "#5b21b6", letterSpacing: "0.06em", textTransform: "uppercase" }}>{mgrLabel} · {mgrsIn.length}</div>
+                          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}><tbody>{mgrsIn.map(vfsRow)}</tbody></table>
+                        </div>
+                      )}
+                      {techsIn.length > 0 && (
+                        <div style={{ borderTop: `1px solid ${VFS.bg}` }}>
+                          <div style={{ background: "#FDEEF5", padding: "7px 16px", fontSize: 11, fontWeight: 800, color: "#831843", letterSpacing: "0.06em", textTransform: "uppercase" }}>💅 Nail Techs · {techsIn.length}</div>
+                          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}><tbody>{techsIn.map(vfsRow)}</tbody></table>
+                        </div>
+                      )}
+                    </div>
+                  );
+                };
+                return (
+                  <div style={{ marginBottom: 22 }}>
+                    {header}
+                    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                      {allBranches.map(brName => {
+                        const inBr = rows.filter(p => p.branch === brName);
+                        return inBr.length === 0 ? null : branchCard(brName, inBr);
+                      })}
+                      {hasBlank && branchCard("", rows.filter(p => !p.branch))}
                     </div>
                   </div>
                 );
@@ -30480,8 +30783,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       <td style={{ padding: "8px 14px", fontWeight: 600, color: "#111827" }}>{roleIcon} {p.name || "(no name)"}{p.onMat && <span style={{ marginLeft: 6, fontSize: 10, background: "#FBCFE8", color: "#8E5570", padding: "1px 6px", borderRadius: 99, fontWeight: 700 }}>🤱 mat.</span>}</td>
                       <td style={{ padding: "8px 14px" }}><span style={{ fontSize: 10, fontWeight: 800, padding: "3px 9px", borderRadius: 99, background: permitChip.bg, color: permitChip.fg, letterSpacing: "0.04em" }}>{permitChip.lbl}</span></td>
                       <td style={{ padding: "8px 14px", fontSize: 12, color: "#374151" }}><b>{fmtExp(p.permitExpiry)}</b></td>
-                      <td style={{ padding: "8px 14px" }}><span style={{ fontSize: 10, fontWeight: 800, padding: "3px 9px", borderRadius: 99, background: pillBg, color: pillFg, letterSpacing: "0.04em" }}>{pillTxt}</span></td>
-                      <td style={{ padding: "8px 14px", textAlign: "right" }}>
+                      <td style={{ padding: "8px 14px" }}>
+                        <span style={{ fontSize: 10, fontWeight: 800, padding: "3px 9px", borderRadius: 99, background: pillBg, color: pillFg, letterSpacing: "0.04em" }}>{pillTxt}</span>
+                        {/* A renewal lodged at VFS is the usual answer to an
+                            expiring document, so surface it right here. */}
+                        {hasVfs(complianceActions[p.ec]) && <div style={{ marginTop: 4 }}><VfsBadge act={complianceActions[p.ec]} /></div>}
+                      </td>
+                      <td style={{ padding: "8px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
+                        {vfsBtn(p)}
                         <button onClick={() => p.role === "NT"
                           ? setStaffModal((staff || []).find(s => s._id === p._id) || null)
                           : setMgrModal((managers || []).find(m => m._id === p._id) || null)}
@@ -30678,6 +30987,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                                   )}
                                                 </div>
                                               ) : <span style={{ color: "#9ca3af", fontStyle: "italic" }}>No request logged</span>}
+                                              {/* 🛂 rides under the request, not instead of it — a
+                                                  person can have a letter out AND a VFS submission. */}
+                                              {hasVfs(act) && <div style={{ marginTop: hasReq ? 5 : 0, paddingTop: hasReq ? 5 : 0, borderTop: hasReq ? "1px dashed #e5e7eb" : "none" }}>{vfsCell(p)}</div>}
                                             </td>
                                             <td style={{ padding: "8px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
                                               <select value={p.permit || ""} onChange={e => updatePermit(p, e.target.value || null)}
@@ -30686,6 +30998,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                                 <option value="">Not set</option>
                                                 {Object.entries(COMPLIANCE).map(([k, c]) => <option key={k} value={k}>{c.icon} {c.label}</option>)}
                                               </select>
+                                              {vfsBtn(p)}
                                               {hasReq ? (
                                                 <button onClick={() => setComplianceModal({ ...p, ...act, _edit: true })}
                                                   style={{ background: "#fff", color: "#7c2d12", border: "1px solid #fed7aa", borderRadius: 7, padding: "6px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}
@@ -30734,6 +31047,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                                   )}
                                                 </div>
                                               ) : <span style={{ color: "#9ca3af", fontStyle: "italic" }}>No request logged</span>}
+                                              {/* 🛂 rides under the request, not instead of it — a
+                                                  person can have a letter out AND a VFS submission. */}
+                                              {hasVfs(act) && <div style={{ marginTop: hasReq ? 5 : 0, paddingTop: hasReq ? 5 : 0, borderTop: hasReq ? "1px dashed #e5e7eb" : "none" }}>{vfsCell(p)}</div>}
                                             </td>
                                             <td style={{ padding: "8px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
                                               <select value={p.permit || ""} onChange={e => updatePermit(p, e.target.value || null)}
@@ -30742,6 +31058,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                                 <option value="">Not set</option>
                                                 {Object.entries(COMPLIANCE).map(([k, c]) => <option key={k} value={k}>{c.icon} {c.label}</option>)}
                                               </select>
+                                              {vfsBtn(p)}
                                               {hasReq ? (
                                                 <button onClick={() => setComplianceModal({ ...p, ...act, _edit: true })}
                                                   style={{ background: "#fff", color: "#7c2d12", border: "1px solid #fed7aa", borderRadius: 7, padding: "6px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}
@@ -30824,6 +31141,154 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     }}
                       style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 8, padding: "9px 18px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}
                     >{m._edit ? "Save changes" : "Log request sent"}</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* ── VFS APPLICATION MODAL ── log / edit an application lodged at
+            VFS Global. Writes the vfs* fields on boa_compliance_actions_v1,
+            which is keyed by EC — so the same modal serves techs, managers
+            and office staff without touching the staff / managers tables.
+            Opened with no `ec` (the panel header button) it starts in
+            person-picker mode so anyone can be logged, not just the people
+            who happen to be listed in a compliance panel. */}
+        {vfsModal && (() => {
+          const m = vfsModal;
+          const set = (k, v) => setVfsModal({ ...m, [k]: v });
+          const lbl = { display: "block", fontSize: 11, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 };
+          const fld = { width: "100%", padding: "9px 11px", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 14, fontFamily: "inherit", marginBottom: 12, background: "#fff" };
+          // Picker pool — every tech, manager and office employee still on
+          // the books. Off-boarded people who have already left are dropped;
+          // logging a VFS application against a leaver is never right.
+          const pickPool = [
+            ...(enriched || [])
+              .filter(s => s && s.ec && (!s.offboarded || (s.offDaysSinceLeft != null && s.offDaysSinceLeft < 0)))
+              .map(s => ({ ec: s.ec, name: s.name, branch: s.branch || "", role: "NT", permit: s.permit })),
+            ...(managers || [])
+              .filter(x => x && x.ec)
+              .map(x => ({ ec: x.ec, name: x.name, branch: x.branch || "", role: x.role || "AM", permit: x.permit })),
+            ...(enrichedOffice || [])
+              .filter(s => s && s.ec && (!s.offboarded || (s.offDaysSinceLeft != null && s.offDaysSinceLeft < 0)))
+              .map(s => ({ ec: s.ec, name: s.name, branch: s.branch || "", role: String(s.role || "HO"), permit: s.permit }))
+          ];
+          const pq = (m._q || "").trim().toLowerCase();
+          const pickHits = pq.length < 2 ? [] : pickPool
+            .filter(p => String(p.name || "").toLowerCase().includes(pq) || String(p.ec || "").toLowerCase().includes(pq))
+            .slice(0, 30);
+          const needsPerson = !m.ec;
+          return (
+            <div onClick={() => setVfsModal(null)} style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 120 }}>
+              <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "22px 26px", width: "min(520px, 92vw)", maxHeight: "90vh", overflowY: "auto", boxShadow: "0 10px 40px rgba(0,0,0,0.25)" }}>
+                <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 20, fontWeight: 700, color: VFS.color, marginBottom: 4 }}>🛂 VFS application</div>
+                <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 14 }}>
+                  {needsPerson
+                    ? <>Lodged at <a href={VFS_URL} target="_blank" rel="noreferrer" style={{ color: VFS.color, fontWeight: 700 }}>vfsglobal.com/southafrica</a>. Pick the employee first.</>
+                    : <><b>{m.name}</b> · 📍 {m.branch || "—"} · <span style={{ fontFamily: "monospace" }}>{m.ec}</span></>}
+                </div>
+
+                {/* Person picker — only when opened without a person. */}
+                {needsPerson ? (
+                  <div>
+                    <label style={lbl}>Employee *</label>
+                    <input type="search" autoFocus value={m._q || ""} onChange={e => set("_q", e.target.value)} placeholder="🔍  Search by name or EC…" style={fld} />
+                    {pq.length >= 2 && (
+                      <div style={{ maxHeight: 260, overflowY: "auto", border: "1px solid #e5e7eb", borderRadius: 10, marginBottom: 12 }}>
+                        {pickHits.length === 0 && <div style={{ padding: "14px 12px", fontSize: 12, color: "#9ca3af", textAlign: "center" }}>No one matches “{m._q}”.</div>}
+                        {pickHits.map(p => {
+                          const act = complianceActions[p.ec] || {};
+                          const c = COMPLIANCE[p.permit] || { icon: "❔", label: "Not set" };
+                          return (
+                            <button key={p.ec} onClick={() => setVfsModal({
+                              ...m,
+                              ec: p.ec, name: p.name, branch: p.branch, role: p.role, _q: "",
+                              // Pull in anything already stored for them, so
+                              // picking someone who is already logged edits
+                              // that record instead of silently blanking it.
+                              vfsAppliedAt: act.vfsAppliedAt || m.vfsAppliedAt,
+                              vfsType: act.vfsType || m.vfsType,
+                              vfsRef: act.vfsRef || m.vfsRef,
+                              vfsOutcomeDate: act.vfsOutcomeDate || m.vfsOutcomeDate,
+                              vfsLoggedBy: act.vfsLoggedBy || m.vfsLoggedBy,
+                              vfsNotes: act.vfsNotes || m.vfsNotes,
+                              _edit: hasVfs(act)
+                            })}
+                              style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left", padding: "8px 12px", border: "none", borderBottom: "1px solid #f3f4f6", background: "#fff", cursor: "pointer", fontFamily: "inherit" }}>
+                              <span style={{ fontFamily: "monospace", fontSize: 11, color: "#9ca3af", minWidth: 48 }}>{p.ec}</span>
+                              <span style={{ flex: 1, fontSize: 13, fontWeight: 600, color: "#111827" }}>{p.name}</span>
+                              <span style={{ fontSize: 11, color: "#6b7280" }}>{p.branch || "—"}</span>
+                              <span title={c.label} style={{ fontSize: 13 }}>{c.icon}</span>
+                              {hasVfs(act) && <span title="Already has a VFS application logged" style={{ fontSize: 13 }}>🛂</span>}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                ) : null}
+
+                {!needsPerson && (
+                  <>
+                    <label style={lbl}>Date submitted at VFS *</label>
+                    <input type="date" value={m.vfsAppliedAt || ""} onChange={e => set("vfsAppliedAt", e.target.value)} style={fld} />
+
+                    <label style={lbl}>Application type</label>
+                    <select value={m.vfsType || ""} onChange={e => set("vfsType", e.target.value)} style={{ ...fld, cursor: "pointer" }}>
+                      <option value="">— Not specified —</option>
+                      {VFS_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                    </select>
+
+                    <label style={lbl}>VFS reference number</label>
+                    <input type="text" value={m.vfsRef || ""} onChange={e => set("vfsRef", e.target.value)} placeholder="Receipt / tracking number from VFS" style={fld} />
+
+                    <label style={lbl}>Expected outcome date</label>
+                    <input type="date" value={m.vfsOutcomeDate || ""} onChange={e => set("vfsOutcomeDate", e.target.value)} style={fld} />
+
+                    <label style={lbl}>Logged by</label>
+                    <input type="text" value={m.vfsLoggedBy || ""} onChange={e => set("vfsLoggedBy", e.target.value)} placeholder="e.g. Theresa" style={fld} />
+
+                    <label style={lbl}>Notes</label>
+                    <textarea rows={3} value={m.vfsNotes || ""} onChange={e => set("vfsNotes", e.target.value)} placeholder="e.g. Biometrics done, awaiting adjudication…"
+                      style={{ ...fld, fontSize: 13, marginBottom: 14, resize: "vertical" }} />
+
+                    <div style={{ background: VFS.bg, border: `1px solid ${VFS.border}`, borderRadius: 10, padding: "10px 12px", fontSize: 11.5, color: VFS.color, marginBottom: 14 }}>
+                      Logging this does <b>not</b> change {m.name || "their"} compliance status — they stay counted under their current permit until the real document lands. Update the permit itself once the outcome comes back, then clear this.
+                    </div>
+                  </>
+                )}
+
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  {m._edit && !needsPerson && (
+                    <button onClick={() => {
+                      if (!window.confirm("Clear the VFS application for " + (m.name || m.ec) + "?\n\nDo this once the outcome has come back and you have updated their permit.")) return;
+                      saveComplianceAction(m.ec, { vfsAppliedAt: null, vfsType: null, vfsRef: null, vfsOutcomeDate: null, vfsLoggedBy: null, vfsNotes: null });
+                      setVfsModal(null);
+                    }}
+                      style={{ background: "#fff", color: "#b91c1c", border: "1px solid #fecaca", borderRadius: 8, padding: "9px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}
+                    >Clear application</button>
+                  )}
+                  <div style={{ display: "flex", gap: 8, marginLeft: "auto" }}>
+                    <button onClick={() => setVfsModal(null)}
+                      style={{ background: "#f3f4f6", color: "#374151", border: "none", borderRadius: 8, padding: "9px 16px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}
+                    >Cancel</button>
+                    <button disabled={needsPerson} onClick={() => {
+                      if (!m.ec) { alert("Pick the employee first."); return; }
+                      if (!m.vfsAppliedAt) { alert("Pick the date the application was submitted at VFS."); return; }
+                      if (m.vfsOutcomeDate && m.vfsOutcomeDate < m.vfsAppliedAt) { alert("The expected outcome date can't be before the submission date."); return; }
+                      saveComplianceAction(m.ec, {
+                        vfsAppliedAt: m.vfsAppliedAt,
+                        vfsType: (m.vfsType || "").trim() || null,
+                        vfsRef: (m.vfsRef || "").trim() || null,
+                        vfsOutcomeDate: m.vfsOutcomeDate || null,
+                        vfsLoggedBy: (m.vfsLoggedBy || "").trim() || null,
+                        vfsNotes: (m.vfsNotes || "").trim() || null
+                      });
+                      setVfsModal(null);
+                    }}
+                      style={{ background: needsPerson ? "#c7d2fe" : VFS.color, color: "#fff", border: "none", borderRadius: 8, padding: "9px 18px", cursor: needsPerson ? "not-allowed" : "pointer", fontSize: 12, fontWeight: 700 }}
+                    >{m._edit ? "Save changes" : "Log VFS application"}</button>
                   </div>
                 </div>
               </div>
