@@ -2264,6 +2264,27 @@
     return map || {};
   }
 
+  // ---------- Office hours clock CORRECTIONS (boa_office_hours_fixes_v1) ----------
+  // A non-destructive override layer for one person-day's clock times. Payroll
+  // enters the real clock-in / clock-out when the kiosk record is missing or
+  // wrong (a forgotten clock-out, a day worked but never badged); the Office
+  // Hours engine applies these instead of the raw clockins and RE-DERIVES the
+  // verdict, so a corrected day can resolve to fine, short (deductable), etc.
+  // The raw clockins rows are never touched (the Check-ins tabs keep showing the
+  // real device record), and removing a correction reverts to the raw times.
+  //
+  // Shape: { "<EC>|<YYYY-MM-DD>": { inTs, outTs, by, at } }  (inTs/outTs ISO or null)
+  async function loadOfficeHoursFixes() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_office_hours_fixes_v1").maybeSingle();
+    if (res.error) { console.error("loadOfficeHoursFixes:", res.error); return {}; }
+    return (res.data && res.data.value) || {};
+  }
+  async function saveOfficeHoursFixes(map) {
+    var res = await sb.from("app_state").upsert({ key: "boa_office_hours_fixes_v1", value: map || {} });
+    if (res.error) { console.error("saveOfficeHoursFixes:", res.error); throw res.error; }
+    return map || {};
+  }
+
   // ---------- Cash-up review access (boa_cashup_review_access_v1) ----------
   // Who is allowed to review ("tick off") a store's daily cash-up. Shape:
   //   { roles: ["regional"], pins: ["1234"] }
@@ -3050,6 +3071,8 @@
     saveOfficeHoursAccess: saveOfficeHoursAccess,
     loadOfficeHoursReview: loadOfficeHoursReview,
     saveOfficeHoursReview: saveOfficeHoursReview,
+    loadOfficeHoursFixes: loadOfficeHoursFixes,
+    saveOfficeHoursFixes: saveOfficeHoursFixes,
     loadCashupReviewAccess: loadCashupReviewAccess,
     saveCashupReviewAccess: saveCashupReviewAccess,
     loadLeaveOpsAccess: loadLeaveOpsAccess,
