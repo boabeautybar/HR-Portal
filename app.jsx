@@ -13855,6 +13855,23 @@ function officeFmtMinOfDay(min) {
 // Ledger key for one person-day's review state. EC is globally unique and a ymd
 // is unambiguous, so this survives a branch/department move.
 function officeReviewKey(ec, ymd) { return String(ec || "").trim().toUpperCase() + "|" + ymd; }
+// The cycle LABEL (start-month ym) a given date belongs to. The office/att cycle
+// runs the 25th → 24th and is labelled by its START month, so cycle "Y-M" spans
+// Y-M-25 … Y-(M+1)-24 (e.g. "2026-07" = 25 Jul → 24 Aug), and boa_early_* is
+// keyed by that start-month ym. Therefore a day ON/AFTER the 25th belongs to the
+// cycle STARTING that month (label = its own month); a day before the 25th
+// belongs to the cycle that started the PREVIOUS month. Used to route a
+// deduction to the right sidecar from its finding date alone — so Deduct works
+// identically whether fired from the Office Hours tab or the Attendance sheet
+// (whose selected month may differ). For an in-cycle Office-Hours finding this
+// returns exactly officeHoursYm.
+function officeCycleYm(ymd) {
+  const p = String(ymd || "").split("-").map(Number);
+  const y = p[0], m = p[1], d = p[2];
+  if (!y || !m || !d) return "";
+  if (d >= 25) return y + "-" + String(m).padStart(2, "0");                 // starts this month
+  return m === 1 ? (y - 1) + "-12" : y + "-" + String(m - 1).padStart(2, "0"); // started last month
+}
 // The kinds payroll is expected to action, and therefore the only ones the nav
 // badge counts.
 //
@@ -13934,6 +13951,69 @@ function OfficeFixTimeModal({ f, busy, onClose, onSave, onRemove }) {
             <button onClick={onClose} style={{ padding: "9px 16px", borderRadius: 9, border: "1px solid #fde68a", background: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 13 }}>Cancel</button>
             <button disabled={busy || badOrder || empty || inMissing} onClick={() => onSave(inIso, outIso)} style={{ padding: "9px 20px", borderRadius: 9, border: "none", background: (busy || badOrder || empty || inMissing) ? "#d6d3d1" : "#b45309", color: "#fff", cursor: (busy || badOrder || empty || inMissing) ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 }}>Save &amp; re-check</button>
           </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// The Office Hours review actions, surfaced on an Attendance-sheet cell so a
+// HO/CC discrepancy can be resolved from the grid the same way it is on the
+// Office Hours tab. Every action writes the SAME boa_office_hours_review_v1 /
+// boa_office_hours_fixes_v1 ledgers (single source of truth) so both surfaces
+// stay in lockstep — a Clear/Deduct/Fix here clears the ⚠ on the Office Hours
+// tab too, and vice-versa. Deduct is offered only for a genuine SHORT day; a
+// missed day / no-clock-out has no defensible number to dock.
+function OfficeCellReviewModal({ f, review, missed, busy, onDeduct, onClear, onFix, onUndo, onClose }) {
+  const KLBL = {
+    short: { lbl: "SHORT", bg: "#fee2e2", fg: "#991b1b" },
+    no_out: { lbl: "NO CLOCK-OUT", bg: "#fef3c7", fg: "#92400e" },
+    early_out: { lbl: "BEFORE 4PM", bg: "#ffedd5", fg: "#9a3412" },
+    absent: { lbl: "NO CLOCK-IN", bg: "#ede9fe", fg: "#5b21b6" }
+  };
+  const k = missed ? { lbl: "MISSED DAY", bg: "#fee2e2", fg: "#7f1d1d" } : (KLBL[f.kind] || KLBL.short);
+  const dayLbl = (() => { try { return new Date(f.ymd + "T12:00:00").toLocaleDateString("en-ZA", { weekday: "long", day: "2-digit", month: "short" }); } catch (_) { return f.ymd; } })();
+  const canDeduct = f.kind === "short" && f.shortHours > 0;
+  const btn = (bg, disabled) => ({ padding: "9px 16px", borderRadius: 9, border: "none", background: disabled ? "#d6d3d1" : bg, color: "#fff", cursor: disabled ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 });
+  const row = { display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "5px 0", borderBottom: "1px solid #fef3c7" };
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(120,53,15,0.4)", zIndex: 9300, display: "flex", alignItems: "center", justifyContent: "center", padding: "30px 20px", overflow: "auto" }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "22px 24px", width: "min(460px,100%)", border: "1px solid #fde68a", boxShadow: "0 20px 50px rgba(120,53,15,0.25)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ background: k.bg, color: k.fg, fontWeight: 800, fontSize: 10, padding: "4px 9px", borderRadius: 6, letterSpacing: "0.04em" }}>{k.lbl}</span>
+            {f.fixed ? <span title="Clock time manually corrected by payroll" style={{ background: "#e0f2fe", color: "#075985", fontWeight: 800, fontSize: 9, padding: "3px 7px", borderRadius: 5, letterSpacing: "0.04em" }}>✎ FIXED</span> : null}
+          </div>
+          <button onClick={onClose} style={{ background: "transparent", border: "none", fontSize: 22, cursor: "pointer", color: "#92400e", lineHeight: 1 }}>×</button>
+        </div>
+        <div style={{ fontSize: 15, fontWeight: 700, color: "#92400e", marginTop: 8 }}>{f.name}</div>
+        <div style={{ fontSize: 11.5, color: "#a16207", marginBottom: 12 }}>{f.ec} · {OFFICE_ROLE_LABEL[f.role] || f.role || "—"}{f.isCc ? " · CC&S" : ""} · {dayLbl}</div>
+        <div style={{ marginBottom: 14 }}>
+          <div style={row}><span style={{ color: "#a16207" }}>Scheduled</span><span style={{ fontWeight: 700 }}>{officeFmtMinOfDay(f.schedStart)}–{officeFmtMinOfDay(f.schedEnd)} <span style={{ color: "#a16207", fontWeight: 400 }}>({officeFmtMin(f.expMin)})</span></span></div>
+          <div style={row}><span style={{ color: "#a16207" }}>Clock in</span><span style={{ fontWeight: 700 }}>{f.inTs ? officeFmtTime(f.inTs) : "—"}{f.lateMin > 0 ? <span style={{ color: "#b45309", fontWeight: 700 }}> +{officeFmtMin(f.lateMin)}</span> : null}</span></div>
+          <div style={row}><span style={{ color: "#a16207" }}>Clock out</span><span style={{ fontWeight: 700 }}>{f.outTs ? officeFmtTime(f.outTs) : "—"}{f.kind === "early_out" ? <span style={{ color: "#c2410c", fontWeight: 700 }}> · {officeFmtMin(f.earlyMin)} before 16:00</span> : null}</span></div>
+          <div style={row}><span style={{ color: "#a16207" }}>Worked</span><span style={{ fontWeight: 700 }}>{f.workedMin != null ? officeFmtMin(f.workedMin) : "unverified"}{f.shortMin > 0 ? <span style={{ color: "#b91c1c" }}> · short {officeFmtMin(f.shortMin)}</span> : null}</span></div>
+        </div>
+        {review ? (
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+            <span style={{ fontSize: 12.5, fontWeight: 700, color: review.status === "deducted" ? "#b91c1c" : "#15803d" }}>
+              {review.status === "deducted" ? "− " + review.hours + "h deducted" : "✓ cleared"}
+              {review.by ? <span style={{ color: "#a16207", fontWeight: 500 }}> · {review.by}</span> : null}
+            </span>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button disabled={busy} onClick={onFix} style={btn("#b45309", busy)}>✎ Fix time</button>
+              <button disabled={busy} onClick={onUndo} style={btn("#78716c", busy)}>Undo</button>
+            </div>
+          </div>
+        ) : (
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", flexWrap: "wrap" }}>
+            {canDeduct && <button disabled={busy} onClick={onDeduct} title={"Record " + f.shortHours + "h unpaid — shows in this sheet's UNPAID column."} style={btn("#b91c1c", busy)}>Deduct {f.shortHours}h</button>}
+            <button disabled={busy} onClick={onFix} style={btn("#b45309", busy)}>✎ Fix time</button>
+            <button disabled={busy} onClick={onClear} title="Nothing owed — clear it from both this sheet and the Office Hours queue." style={btn("#15803d", busy)}>Clear</button>
+          </div>
+        )}
+        <div style={{ fontSize: 10.5, color: "#9ca3af", marginTop: 14, lineHeight: 1.5 }}>
+          This is the same review as the ⏰ Office Hours tab — resolving it here clears it there too.{canDeduct ? "" : " (Deduct is only offered for a short day; a missed day or no-clock-out has no hours to dock — Fix the time first if the clock was wrong.)"}
         </div>
       </div>
     </div>
@@ -20591,6 +20671,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [officeHoursFixes, setOfficeHoursFixes] = useState({});     // durable clock corrections (EC|ymd → {inTs,outTs})
   const [officeHoursBusy, setOfficeHoursBusy] = useState("");       // key of the row mid-write
   const [officeFixModal, setOfficeFixModal] = useState(null);       // { f } — manual clock-time correction modal
+  // Published office schedule for the ATTENDANCE sheet's own branch+cycle, so the
+  // HO/CC grid can mirror the Office Hours findings for the month it's showing
+  // (the Office Hours tab's own cycle may be a different month). { branch, grid }.
+  const [attOfficeSched, setAttOfficeSched] = useState(null);
+  const [officeCellModal, setOfficeCellModal] = useState(null);     // { f, review, missed } — resolve an office finding from an attendance cell
 
   // ── Manager Clock-ins viewer state ─────────────────────────────────
   const [mgrClockinRows, setMgrClockinRows] = useState([]);
@@ -23602,6 +23687,66 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   ), [officeFindings, officeHoursReview, officeMissedEcs]);
   const officeLiveLate = useMemo(() => officeFindings.filter(f => f.kind === "pending"), [officeFindings]);
 
+  // ── Attendance-sheet office mirror ─────────────────────────────────────────
+  // Surface the SAME Office Hours findings on the HO/CC attendance grid, so a
+  // short day / missed day / no-clock-out reads as a ⚠ instead of a clean "On
+  // Time", and can be resolved (Deduct/Clear/Fix) straight from the cell. These
+  // are computed for the ATTENDANCE sheet's OWN month+branch (the Office Hours
+  // tab may be showing a different cycle), against the clock feed already loaded
+  // for this tab (hoClockinRows) and the published office schedule. The review +
+  // fix ledgers are shared component state, so both surfaces read/write ONE
+  // source of truth — resolving here clears the Office Hours queue too.
+  const attOfficeCycle = useMemo(() => {
+    const p = String(attYM).split("-").map(Number);
+    const y = p[0], m = p[1];
+    const start = new Date(y, m - 1, 25), end = new Date(y, m, 24);
+    const days = [];
+    for (let cur = new Date(start); cur <= end; cur.setDate(cur.getDate() + 1)) days.push({ d: cur.getDate(), dow: cur.getDay(), ymd: ymdStr(cur) });
+    const holidays = {};
+    Array.from(new Set(days.map(dd => parseInt(dd.ymd.slice(0, 4), 10)))).forEach(yr => Object.assign(holidays, saHolidays(yr)));
+    const techYm = (m === 12 ? (y + 1) + "-01" : y + "-" + String(m + 1).padStart(2, "0"));
+    return { days, holidays, techYm, startYmd: ymdStr(start), endYmd: ymdStr(end) };
+  }, [attYM]);
+
+  const attOfficeFindings = useMemo(() => {
+    const isHo = attBranch === HEAD_OFFICE, isCc = attBranch === CALL_CENTRE;
+    // Guard on BOTH branch and month: judging the shown cycle's days against a
+    // not-yet-reloaded grid from a different branch/month would flash a wrong ⚠.
+    if ((!isHo && !isCc) || !attOfficeSched || attOfficeSched.branch !== attBranch || attOfficeSched.ym !== attYM) return [];
+    const people = isHo ? hoOnlyStaff : ccStaff;
+    const idx = officeClockIndex(hoClockinRows);
+    const opts = { days: attOfficeCycle.days, holidays: attOfficeCycle.holidays, nowTs: Date.now(), fixes: officeHoursFixes };
+    return officeHoursFindings(people, idx, attOfficeSched.grid, opts);
+  }, [attBranch, attYM, attOfficeSched, hoClockinRows, attOfficeCycle, hoOnlyStaff, ccStaff, officeHoursFixes]);
+
+  // Which absent days are real MISSED days (a regular kiosk user's gap) vs the
+  // chronic-non-user rollup — same gate the Office Hours tab uses.
+  const attOfficeMissedEcs = useMemo(() => {
+    const idx = officeClockIndex(hoClockinRows);
+    const clockedOf = (e) => idx[e] ? Object.keys(idx[e]).filter(ymd => ymd >= attOfficeCycle.startYmd && ymd <= attOfficeCycle.endYmd).length : 0;
+    const absentOf = {};
+    attOfficeFindings.forEach(f => { if (f.kind === "absent") { const e = String(f.ec).toUpperCase(); absentOf[e] = (absentOf[e] || 0) + 1; } });
+    const out = new Set();
+    Object.keys(absentOf).forEach(e => { if (officeIsRegularKiosk(clockedOf(e), absentOf[e])) out.add(e); });
+    return out;
+  }, [attOfficeFindings, hoClockinRows, attOfficeCycle]);
+  const attIsOfficeMissedDay = (f) => f && f.kind === "absent" && attOfficeMissedEcs.has(String(f.ec).toUpperCase());
+
+  // ec(upper) → ymd → { finding, open, reviewed, review } for the cells to flag.
+  // Only OFFICE_ACTIONABLE kinds (short / no_out / early_out) and a promoted
+  // missed day are surfaced — exactly the set the Office Hours queue acts on.
+  const attOfficeByEcYmd = useMemo(() => {
+    const m = {};
+    attOfficeFindings.forEach(f => {
+      const missed = attIsOfficeMissedDay(f);
+      if (!(OFFICE_ACTIONABLE.has(f.kind) || missed)) return;
+      const review = officeHoursReview[officeReviewKey(f.ec, f.ymd)] || null;
+      const e = String(f.ec).trim().toUpperCase();
+      (m[e] = m[e] || {})[f.ymd] = { finding: { ...f, missed }, open: !review, reviewed: !!review, review };
+    });
+    return m;
+  }, [attOfficeFindings, attOfficeMissedEcs, officeHoursReview]);
+
   // ── Manager hours alert (dashboard) ────────────────────────────────────────
   // Scan every ELAPSED day of the OPEN pay cycle across all stores and surface
   // two things for National Ops / payroll:
@@ -23746,9 +23891,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const key = officeReviewKey(f.ec, f.ymd);
     // Which store's sidecar: CC&S people live in their own attendance store.
     const branchName = f.isCc ? CALL_CENTRE : HEAD_OFFICE;
-    // boa_early_* is keyed by the START-month ym — the same cycle key this tab
-    // is already showing, so no shifting is needed.
-    const ym = officeHoursYm;
+    // boa_early_* is keyed by the START-month ym. Derive it from the finding's
+    // OWN date rather than the Office Hours tab's selected cycle, so a deduction
+    // fired from the Attendance sheet (whose month may differ) lands in the
+    // correct sidecar — the very one that sheet reads (boa_early_<branch>_<ym>).
+    // For an Office-Hours-tab finding this is identical to officeHoursYm.
+    const ym = officeCycleYm(f.ymd);
     setOfficeHoursBusy(key);
     try {
       const cur = (window.BOA_DB.loadEarlyLeaves ? await window.BOA_DB.loadEarlyLeaves(branchName, ym) : {}) || {};
@@ -23843,6 +23991,40 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       .catch((e) => { console.warn("listRecentHoClockins:", e); });
     return () => { cancelled = true; };
   }, [tab, attBranch, hoClockinDays]);
+
+  // Attendance-sheet office mirror: when a payroll user opens the HO/CC
+  // attendance grid, load the PUBLISHED office schedule for the month it's
+  // showing (findings need the shift each person actually worked to) plus the
+  // shared review + fix ledgers. Payroll-gated like the Office Hours tab, so it
+  // costs nothing for everyone else. The clock feed itself is the effect above.
+  useEffect(() => {
+    const isOffice = tab === "attendance" && (attBranch === HEAD_OFFICE || attBranch === CALL_CENTRE);
+    if (!isOffice || !canSeeOfficeHours) return;
+    if (!window.BOA_DB || !window.BOA_DB.isReady) return;
+    let cancelled = false;
+    const safeP = (p) => Promise.resolve(p).catch(() => null);
+    const techYm = attOfficeCycle.techYm;
+    // Prefer the PUBLISHED snapshot [0] — the schedule staff actually worked to;
+    // fall back to the draft only when a cycle was never published.
+    const gridFor = async (branchName) => {
+      const snaps = window.BOA_DB.loadApprovedSchedules ? await safeP(window.BOA_DB.loadApprovedSchedules(branchName, techYm, false)) : null;
+      if (Array.isArray(snaps) && snaps[0] && snaps[0].grid) return snaps[0].grid;
+      const draft = await safeP(window.BOA_DB.loadSchedule(branchName, techYm, false));
+      return (draft && draft.grid) || {};
+    };
+    (async () => {
+      const [grid, ledger, fixes] = await Promise.all([
+        gridFor(attBranch),
+        window.BOA_DB.loadOfficeHoursReview ? safeP(window.BOA_DB.loadOfficeHoursReview()) : Promise.resolve(null),
+        window.BOA_DB.loadOfficeHoursFixes ? safeP(window.BOA_DB.loadOfficeHoursFixes()) : Promise.resolve(null)
+      ]);
+      if (cancelled) return;
+      setAttOfficeSched({ branch: attBranch, ym: attYM, grid: grid || {} });
+      if (ledger) setOfficeHoursReview(typeof ledger === "object" ? ledger : {});
+      if (fixes) setOfficeHoursFixes(typeof fixes === "object" ? fixes : {});
+    })();
+    return () => { cancelled = true; };
+  }, [tab, attBranch, attYM, canSeeOfficeHours, attOfficeCycle]);
 
   // Load selfies for just the HO clock-ins on the selected day (same sidecar
   // + loader as managers), so stepping day-by-day stays snappy.
@@ -36879,7 +37061,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               // same as isProofStatus in the render (applies to techs AND managers).
               const isProofStatus = bareV === "sick_n" || bareV === "frl";
               const warning = apptVsKioskAbsentWarn || presentNoApptWarn || extDayNoApptWarn || missingCheckin || absentNeedsReview || workedOnOffDay || unaccountedScheduledDay || offButFreshaWorked || mgrClockedInUnscheduled;
-              if (isProofStatus || warning) {
+              // Office (HO/CC) findings mirrored from the Office Hours tab — an
+              // open short/missed/no-out/early-out day is a payroll review here
+              // too, and a resolved one counts as reviewed. Its review state
+              // lives in the shared office ledger, NOT reviewedWarnings, hence
+              // the separate lookup. The render draws ONE icon per cell and
+              // returns early on an office flag (office owns the cell), so the
+              // office term is MUTUALLY EXCLUSIVE with the salon term below — a
+              // cell can carry both signals (e.g. a missed day also marked
+              // "absent" on the grid), and counting both would break the
+              // "tally == visible triangles" invariant.
+              const officeFlag = (attOfficeByEcYmd[String(s.ec).trim().toUpperCase()] || {})[dy.ymd];
+              if (officeFlag) {
+                total++;
+                if (officeFlag.reviewed) reviewed++;
+              } else if (isProofStatus || warning) {
                 total++;
                 const review = (reviewedMap[s.ec] || {})[dy.d];
                 if (reviewMatchesCell(review, s.ec, dy.d, v)) reviewed++;
@@ -37616,6 +37812,30 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                   </div>
                                 )}
                                 {(() => {
+                                  // Office (HO/CC) mirror: a day the Office Hours engine flagged
+                                  // (short / missed / no-clock-out / before-4pm) shows a ⚠ here
+                                  // instead of a clean "On Time"; once reviewed it's a green ✓.
+                                  // Clicking opens the same Clear/Deduct/Fix actions the Office
+                                  // Hours tab uses (shared ledger). Office staff never hit the
+                                  // salon/manager warning terms below, so this owns their icon.
+                                  const officeFlag = (attOfficeByEcYmd[String(s.ec).trim().toUpperCase()] || {})[dy.ymd];
+                                  if (officeFlag) {
+                                    const of = officeFlag.finding;
+                                    const kindLbl = of.missed ? "Missed day — no clock-in"
+                                      : of.kind === "short" ? ("Short " + officeFmtMin(of.shortMin) + " of the " + officeFmtMin(of.expMin) + " day")
+                                        : of.kind === "no_out" ? "Clocked in, never clocked out"
+                                          : of.kind === "early_out" ? ("Left " + officeFmtMin(of.earlyMin) + " before the 16:00 floor")
+                                            : "Needs review";
+                                    const oTip = of.name + " · " + dy.ymd + "\n" + kindLbl + "\n"
+                                      + (officeFlag.reviewed
+                                        ? ("✓ " + (officeFlag.review && officeFlag.review.status === "deducted" ? ("deducted " + officeFlag.review.hours + "h") : "cleared") + (officeFlag.review && officeFlag.review.by ? " by " + officeFlag.review.by : "") + " — click to adjust")
+                                        : "Click to review for payroll (Deduct / Clear / Fix time)");
+                                    return (
+                                      <span title={oTip}
+                                        onClick={(e) => { e.stopPropagation(); setOfficeCellModal({ f: of, review: officeFlag.review, missed: !!of.missed }); }}
+                                        style={{ position: "absolute", top: 6, right: 1, fontSize: officeFlag.open ? 12 : 10, lineHeight: 1, color: officeFlag.open ? "#dc2626" : "#16a34a", fontWeight: 900, cursor: "pointer", textShadow: "0 0 2px white, 0 0 2px white", zIndex: 2 }}>{officeFlag.open ? "⚠" : "✓"}</span>
+                                    );
+                                  }
                                   // Sick + note / FRL + proof cells need an explicit admin review:
                                   // open the proof image, verify the date matches the cell day,
                                   // and only then click Confirm to record the review.
@@ -47051,6 +47271,29 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           onClose={() => setOfficeFixModal(null)}
           onSave={(inTs, outTs) => fixOfficeFinding(officeFixModal.f, inTs, outTs)}
           onRemove={() => unfixOfficeFinding(officeFixModal.f)}
+        />
+      )}
+      {officeCellModal && officeCellModal.f && (
+        <OfficeCellReviewModal
+          f={officeCellModal.f}
+          review={officeCellModal.review}
+          missed={officeCellModal.missed}
+          busy={officeHoursBusy === officeReviewKey(officeCellModal.f.ec, officeCellModal.f.ymd)}
+          onDeduct={async () => {
+            await deductOfficeFinding(officeCellModal.f);
+            // Refresh this sheet's early-leave sidecar so the orange -Xh appears
+            // immediately (the write lands in boa_early_<attBranch>_<attYM>).
+            try { if (window.BOA_DB.loadEarlyLeaves) { const e = await window.BOA_DB.loadEarlyLeaves(attBranch, attYM); setAttEarly(e || {}); } } catch (_) { }
+            setOfficeCellModal(null);
+          }}
+          onClear={async () => { await clearOfficeFinding(officeCellModal.f, ""); setOfficeCellModal(null); }}
+          onUndo={async () => {
+            await undoOfficeFinding(officeCellModal.f);
+            try { if (window.BOA_DB.loadEarlyLeaves) { const e = await window.BOA_DB.loadEarlyLeaves(attBranch, attYM); setAttEarly(e || {}); } } catch (_) { }
+            setOfficeCellModal(null);
+          }}
+          onFix={() => { const f = officeCellModal.f; setOfficeCellModal(null); setOfficeFixModal({ f }); }}
+          onClose={() => setOfficeCellModal(null)}
         />
       )}
       {transferModal && <TransferModal s={transferModal} onClose={() => setTransferModal(null)} onConfirm={handleTransfer} onCancelTransfer={cancelTransfer} />}
