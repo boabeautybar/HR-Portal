@@ -10293,6 +10293,169 @@ function renderDashAlertGroups(entries, openMap, onToggle, isMobile) {
   });
 }
 
+// ─── STAFFING INSIGHTS · CHART PRIMITIVES ───────────────────────────────────
+// Plain inline SVG. Babel-standalone compiles JSX at runtime, so charts need
+// no library and no build step — and staying hand-rolled keeps them on the
+// portal's own palette instead of importing someone else's.
+//
+// Colour jobs (never mix them): `plan` vs `actual` is one comparison,
+// `revenue` vs `cost` is another. Violet/amber is the colour-blind-safe pair
+// for the money charts; plan/actual separate on lightness as well as hue, so
+// they survive a mono print. Green/red only ever appears next to a sign and a
+// number, never as the sole carrier of meaning.
+const STAFF_VIZ = {
+  plan: "#94A3B8",      // rostered / planned — deliberately recessive
+  actual: "#BE185D",    // worked — brand pink, the figure that matters
+  revenue: "#7C3AED",   // takings
+  cost: "#B45309",      // nail-tech cost
+  good: "#047857",      // contribution above water
+  bad: "#B91C1C",       // below water
+  grid: "#F6E4EE",
+  axis: "#9D7387",
+  ink: "#831843"
+};
+
+// Whole-rand ZA money. Cash-up figures are large; cents are noise.
+const fmtRand = (n) => "R" + Math.round(Number(n) || 0).toLocaleString("en-ZA");
+// Compact axis money — R6.6k / R1.2m — so tick labels don't collide.
+const fmtRandShort = (n) => {
+  const v = Math.round(Number(n) || 0);
+  if (Math.abs(v) >= 1000000) return "R" + (v / 1000000).toFixed(1).replace(/\.0$/, "") + "m";
+  if (Math.abs(v) >= 1000) return "R" + Math.round(v / 1000) + "k";
+  return "R" + v;
+};
+
+// Shifts scheduled vs worked across the pay cycle. Plan is a wide pale
+// column, actual a narrower solid one inside it — so "worked short of
+// roster" reads as an unfilled shoulder rather than two bars to compare.
+function StaffDailyShifts({ days, height = 200 }) {
+  if (!days || !days.length) return null;
+  const W = 1080, H = height, padL = 40, padR = 12, padT = 16, padB = 26;
+  const iw = W - padL - padR, ih = H - padT - padB;
+  const max = Math.max(1, ...days.map(d => Math.max(d.scheduled || 0, d.worked || 0)));
+  const bw = iw / days.length;
+  const y = (v) => padT + ih - (Math.max(0, v) / max) * ih;
+  const ticks = [0, Math.round(max / 2), max].filter((v, i, a) => a.indexOf(v) === i);
+  return (
+    <svg width="100%" viewBox={"0 0 " + W + " " + H} preserveAspectRatio="xMidYMid meet"
+      style={{ display: "block", height: "auto", aspectRatio: W + " / " + H }}
+      role="img" aria-label="Nail-tech shifts scheduled versus worked, per day this pay cycle">
+      {ticks.map(t => (
+        <g key={t}>
+          <line x1={padL} x2={W - padR} y1={y(t)} y2={y(t)} stroke={STAFF_VIZ.grid} strokeWidth="1" />
+          <text x={padL - 8} y={y(t) + 4} textAnchor="end" fontSize="11" fill={STAFF_VIZ.axis}>{t}</text>
+        </g>
+      ))}
+      {days.map((d, i) => {
+        const x0 = padL + i * bw;
+        const sTop = y(d.scheduled || 0), wTop = d.worked == null ? null : y(d.worked);
+        const base = padT + ih;
+        return (
+          <g key={d.ymd}>
+            {/* One text node only — a browser renders a multi-child SVG
+                <title> as literal markup in the tooltip. */}
+            <title>{d.dow + " " + d.d + " " + d.monthShort + " — " + (d.scheduled || 0) + " rostered" + (d.worked == null ? " (upcoming)" : ", " + d.worked + " worked")}</title>
+            <rect x={x0 + bw * 0.14} y={sTop} width={Math.max(1, bw * 0.72)} height={Math.max(0, base - sTop)}
+              rx="1.5" fill={STAFF_VIZ.plan} opacity={d.isFuture ? 0.3 : 0.5} />
+            {wTop != null && (
+              <rect x={x0 + bw * 0.31} y={wTop} width={Math.max(1, bw * 0.38)} height={Math.max(0, base - wTop)}
+                rx="1.5" fill={STAFF_VIZ.actual} />
+            )}
+            {d.isToday && <line x1={x0 + bw / 2} x2={x0 + bw / 2} y1={padT - 4} y2={base} stroke={STAFF_VIZ.ink} strokeWidth="0.75" strokeDasharray="2 2" opacity="0.5" />}
+          </g>
+        );
+      })}
+      <line x1={padL} x2={W - padR} y1={padT + ih} y2={padT + ih} stroke={STAFF_VIZ.grid} strokeWidth="1" />
+      {days.map((d, i) => (i % 3 === 0 || d.isToday) ? (
+        <text key={"lbl" + d.ymd} x={padL + i * bw + bw / 2} y={H - 7} textAnchor="middle" fontSize="11"
+          fill={d.isToday ? STAFF_VIZ.ink : STAFF_VIZ.axis} fontWeight={d.isToday ? 700 : 400}>{d.d}</text>
+      ) : null)}
+    </svg>
+  );
+}
+
+// Daily takings for the same cycle, drawn on its own panel under the shifts
+// chart rather than as a second axis on it — two measures on one pair of axes
+// is the fastest way to make a chart lie.
+function StaffDailyTakings({ days, height = 120 }) {
+  if (!days || !days.length) return null;
+  const past = days.filter(d => !d.isFuture);
+  if (!past.length) return null;
+  const W = 1080, H = height, padL = 40, padR = 12, padT = 14, padB = 18;
+  const iw = W - padL - padR, ih = H - padT - padB;
+  const max = Math.max(1, ...past.map(d => d.cashTotal || 0));
+  const bw = iw / days.length;
+  const y = (v) => padT + ih - (Math.max(0, v) / max) * ih;
+  const pts = past.map((d, i) => [padL + i * bw + bw / 2, y(d.cashTotal || 0)]);
+  const line = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
+  const area = line + " L" + pts[pts.length - 1][0].toFixed(1) + " " + (padT + ih) + " L" + pts[0][0].toFixed(1) + " " + (padT + ih) + " Z";
+  return (
+    <svg width="100%" viewBox={"0 0 " + W + " " + H} preserveAspectRatio="xMidYMid meet"
+      style={{ display: "block", height: "auto", aspectRatio: W + " / " + H }}
+      role="img" aria-label="Cash-up takings per day this pay cycle">
+      <defs>
+        <linearGradient id="staffTakeFill" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={STAFF_VIZ.revenue} stopOpacity="0.20" />
+          <stop offset="100%" stopColor={STAFF_VIZ.revenue} stopOpacity="0.02" />
+        </linearGradient>
+      </defs>
+      {[0, max].map(t => (
+        <g key={t}>
+          <line x1={padL} x2={W - padR} y1={y(t)} y2={y(t)} stroke={STAFF_VIZ.grid} strokeWidth="1" />
+          <text x={padL - 8} y={y(t) + 4} textAnchor="end" fontSize="11" fill={STAFF_VIZ.axis}>{fmtRandShort(t)}</text>
+        </g>
+      ))}
+      <path d={area} fill="url(#staffTakeFill)" />
+      <path d={line} fill="none" stroke={STAFF_VIZ.revenue} strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
+      {past.map((d, i) => (
+        <g key={d.ymd}>
+          <title>{d.dow + " " + d.d + " " + d.monthShort + " — " + fmtRand(d.cashTotal || 0)}</title>
+          <circle cx={pts[i][0]} cy={pts[i][1]} r={d.isToday ? 4.5 : 2.2}
+            fill={d.isToday ? "#fff" : STAFF_VIZ.revenue} stroke={STAFF_VIZ.revenue} strokeWidth={d.isToday ? 2 : 0} />
+        </g>
+      ))}
+    </svg>
+  );
+}
+
+// Stores ranked on one measure against a break-even marker. Deliberately
+// HTML rather than SVG: a scaled-up SVG blows its own text up with it, and
+// this needs to sit at the same type size as the table above it.
+function StaffRankedBars({ rows, refValue, refLabel }) {
+  if (!rows || !rows.length) return null;
+  const max = Math.max(1, refValue || 0, ...rows.map(r => Math.max(0, r.value || 0)));
+  const pct = (v) => Math.min(100, (Math.max(0, v) / max) * 100);
+  const refPct = refValue > 0 ? pct(refValue) : null;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+      {refPct != null && (
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 12, marginBottom: 2 }}>
+          <div style={{ width: 132, flexShrink: 0 }} />
+          <div style={{ flex: 1, position: "relative", height: 15 }}>
+            <div style={{ position: "absolute", left: refPct + "%", transform: "translateX(-50%)", whiteSpace: "nowrap", fontSize: 10.5, fontWeight: 800, color: STAFF_VIZ.cost, fontFamily: "'Outfit',system-ui,sans-serif" }}>{refLabel}</div>
+          </div>
+          <div style={{ width: 62, flexShrink: 0 }} />
+        </div>
+      )}
+      {rows.map(r => {
+        const above = refValue > 0 ? (r.value || 0) >= refValue : true;
+        const tone = above ? STAFF_VIZ.good : STAFF_VIZ.bad;
+        return (
+          <div key={r.name} title={r.name + " — " + fmtRand(r.value || 0) + " per tech-shift" + (refValue > 0 ? " (break-even " + fmtRand(refValue) + ")" : "")}
+            style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <div style={{ width: 132, flexShrink: 0, textAlign: "right", fontSize: 12.5, color: STAFF_VIZ.ink, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.name}</div>
+            <div style={{ flex: 1, position: "relative", height: 18, borderRadius: 999, background: "#F6E7EE", minWidth: 60 }}>
+              <div style={{ position: "absolute", inset: 0, width: pct(r.value || 0) + "%", background: tone, opacity: 0.9, borderRadius: 999, transition: "width .3s ease" }} />
+              {refPct != null && <div style={{ position: "absolute", top: -4, bottom: -4, left: refPct + "%", width: 2, background: STAFF_VIZ.cost, borderRadius: 2 }} />}
+            </div>
+            <div style={{ width: 62, flexShrink: 0, textAlign: "right", fontSize: 12, fontWeight: 800, color: tone, fontVariantNumeric: "tabular-nums" }}>{r.value ? fmtRand(r.value) : "—"}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ─── SETTINGS / USER ADMIN ──────────────────────────────────────────────────
 // Owner-only screen for managing PIN logins. Lists every user, lets the
 // owner add new ones, edit permissions, reset PINs and delete accounts.
@@ -17915,11 +18078,396 @@ function TourCompletionsCard() {
   );
 }
 
+// ─── STORE REPORTS — VIZ PRIMITIVES ──────────────────────────────────────────
+// Insights-violet siblings of the STAFF_VIZ set. Nail techs and managers are
+// separated on lightness as well as hue (rose vs deep indigo) so the grouped
+// bars stay readable with red-green colour blindness, and the lost-day ramp
+// runs light-amber → deep-red in order of culpability, so the colour itself
+// carries how bad the absence is.
+const REPORT_VIZ = {
+  tech: "#BE185D",
+  mgr: "#4C1D95",
+  avg: "#7C3AED",
+  ink: "#5B21B6",
+  sub: "#9d6a82",
+  axis: "#A78BC7",
+  grid: "#EDE9FE",
+  track: "#F5F3FF",
+  rail: "#EDE9FE",
+  sick: "#FCD34D",
+  frl: "#F59E0B",
+  absent: "#DC2626",
+  no: "#7F1D1D"
+};
+const LOST_KINDS = [
+  { k: "sick", label: "Sick", colour: REPORT_VIZ.sick },
+  { k: "frl", label: "FRL", colour: REPORT_VIZ.frl },
+  { k: "absent", label: "Absent", colour: REPORT_VIZ.absent },
+  { k: "no", label: "No-show", colour: REPORT_VIZ.no }
+];
+// One tone scale for every attendance figure on the tab, so the same rate can
+// never read as green in a tile and amber in a table.
+const rateTone = (r) => r >= 0.95 ? "#16a34a" : r >= 0.85 ? "#d97706" : "#dc2626";
+const ratePct = (x) => Math.round((Number(x) || 0) * 100) + "%";
+// "2026-08-14" → "14 Aug". Parsed off the string rather than through Date, so a
+// ymd can never slide a day on a timezone boundary.
+const REPORT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const shortDay = (ymd) => {
+  const p = String(ymd || "").split("-");
+  if (p.length !== 3) return "";
+  return String(+p[2]) + " " + (REPORT_MONTHS[+p[1] - 1] || "");
+};
+// Minutes since local midnight → 08:15.
+const mmToHhmm = (m) => {
+  if (m == null || !isFinite(m)) return "—";
+  const h = Math.floor(m / 60), mm = Math.round(m % 60);
+  return String(h).padStart(2, "0") + ":" + String(mm).padStart(2, "0");
+};
+
+// Movement against the equally-long earlier half of the same window. The arrow
+// always means "the number moved this way"; the colour means "that is good or
+// bad" — so a metric where down is better (lost days, opening time) still gets
+// a down arrow, just a green one.
+function ReportTrend({ delta, unit, goodWhenUp, digits }) {
+  const dg = digits || 0;
+  const d = Number(delta);
+  if (delta == null || !isFinite(d) || Math.round(Math.abs(d) * Math.pow(10, dg)) === 0)
+    return <span style={{ fontSize: 11, fontWeight: 600, color: REPORT_VIZ.axis }}>level</span>;
+  const up = d > 0;
+  const good = up === !!goodWhenUp;
+  return (
+    <span style={{
+      display: "inline-flex", alignItems: "center", gap: 3, fontSize: 11, fontWeight: 700,
+      color: good ? "#047857" : "#B91C1C", background: good ? "#ECFDF5" : "#FEF2F2",
+      border: "1px solid " + (good ? "#A7F3D0" : "#FECACA"), borderRadius: 999, padding: "2px 7px", whiteSpace: "nowrap"
+    }}>
+      <span>{up ? "▲" : "▼"}</span>{Math.abs(d).toFixed(dg)}{unit || ""}
+    </span>
+  );
+}
+
+function ReportKpi({ icon, label, value, tone, trend, sub }) {
+  return (
+    <div style={{
+      background: "#fff", border: "1px solid #EDE9FE", borderRadius: 16, padding: "15px 16px",
+      boxShadow: "0 1px 2px rgba(91,33,182,0.04)"
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 11.5, color: REPORT_VIZ.sub, fontWeight: 600 }}>
+        <span aria-hidden="true">{icon}</span><span>{label}</span>
+      </div>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 9, marginTop: 9, flexWrap: "wrap" }}>
+        <span style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 27, fontWeight: 800, letterSpacing: "-0.02em", lineHeight: 1, color: tone || REPORT_VIZ.ink, fontVariantNumeric: "tabular-nums" }}>{value}</span>
+        {trend}
+      </div>
+      <div style={{ fontSize: 11, color: "#B49DCB", marginTop: 6 }}>{sub}</div>
+    </div>
+  );
+}
+
+// Share of owed days each store lost, split by reason. Two choices worth
+// keeping: it plots a SHARE rather than a raw count, so a big store isn't
+// punished for being big; and it plots the loss rather than the attendance
+// rate, because attendance makes a hopeless bar chart — every store sits
+// between roughly 77% and 99%, so bars from zero differ by a sliver and the
+// card looks busy while saying nothing. Loss genuinely starts at nothing and
+// spreads about twenty-fold, so the bars finally carry the ranking.
+function ReportLostByStore({ rows, height }) {
+  if (!rows || !rows.length) return null;
+  const H = height || 208, W = 1080, padL = 42, padR = 12, padT = 22, padB = 16;
+  const iw = W - padL - padR, ih = H - padT - padB;
+  const slot = iw / rows.length;
+  const base = padT + ih;
+  const shareOf = (r) => (r && r.total > 0) ? ((r.sick || 0) + (r.frl || 0) + (r.absent || 0) + (r.no || 0)) / r.total : 0;
+  const peak = Math.max(0.04, ...rows.map(shareOf));
+  // Round the ceiling so that HALF of it is still a whole percent — otherwise a
+  // 25% top gives a "13%" mid-gridline, which reads like a measurement rather
+  // than a round number.
+  const max = peak >= 0.1 ? Math.min(1, Math.ceil(peak * 10) / 10) : Math.ceil(peak * 50) / 50;
+  const hOf = (v) => (Math.max(0, Number(v) || 0) / max) * ih;
+  const bw = Math.max(6, Math.min(34, slot * 0.54));
+  return (
+    <svg width="100%" viewBox={"0 0 " + W + " " + H} preserveAspectRatio="xMidYMid meet"
+      style={{ display: "block", height: "auto", aspectRatio: W + " / " + H }}
+      role="img" aria-label="Share of owed days lost per store, split by reason">
+      {[0, max / 2, max].map((t, ti) => (
+        <g key={ti}>
+          <line x1={padL} x2={W - padR} y1={base - hOf(t)} y2={base - hOf(t)} stroke={REPORT_VIZ.grid} strokeWidth="1" />
+          <text x={padL - 8} y={base - hOf(t) + 4} textAnchor="end" fontSize="11" fill={REPORT_VIZ.axis}>{Math.round(t * 100) + "%"}</text>
+        </g>
+      ))}
+      {rows.map((r, i) => {
+        const x = padL + i * slot + (slot - bw) / 2;
+        const s = shareOf(r);
+        let acc = 0;
+        return (
+          <g key={r.branch}>
+            {/* One text node only — a browser renders a multi-child SVG
+                <title> as literal markup in the tooltip. */}
+            <title>{r.branch + " — " + Math.round(s * 100) + "% of " + r.total + " owed days lost (" + LOST_KINDS.map(k => (r[k.k] || 0) + " " + k.label.toLowerCase()).join(", ") + ")"}</title>
+            {LOST_KINDS.map(k => {
+              const v = r.total > 0 ? (r[k.k] || 0) / r.total : 0;
+              const hh = hOf(v), yTop = base - hOf(acc) - hh;
+              acc += v;
+              if (!(hh > 0)) return null;
+              return <rect key={k.k} x={x} y={yTop} width={bw} height={hh} rx={Math.min(2, hh / 2)} fill={k.colour} />;
+            })}
+            <text x={x + bw / 2} y={base - hOf(s) - 6} textAnchor="middle" fontSize="10.5" fontWeight="700"
+              fill={s > 0 ? REPORT_VIZ.ink : REPORT_VIZ.axis}>{Math.round(s * 100) + "%"}</text>
+          </g>
+        );
+      })}
+      <line x1={padL} x2={W - padR} y1={base} y2={base} stroke={REPORT_VIZ.grid} strokeWidth="1" />
+    </svg>
+  );
+}
+
+// Nail techs against their own manager, store by store, sharing the x-order of
+// the chart above it. Dots rather than bars so the axis can start above zero
+// without lying: position carries the value and no length is being compared.
+// The connector IS the point — a long line means the floor and the office are
+// not having the same month, which is the difference between a store with a
+// staffing problem and a store with a management one.
+function ReportTechMgrGap({ rows, height }) {
+  if (!rows || !rows.length) return null;
+  const H = height || 176, W = 1080, padL = 42, padR = 12, padT = 14, padB = 74;
+  const iw = W - padL - padR, ih = H - padT - padB;
+  const slot = iw / rows.length;
+  const base = padT + ih;
+  const vals = [];
+  rows.forEach(r => { if (r.techRate != null) vals.push(r.techRate); if (r.mgrRate != null) vals.push(r.mgrRate); });
+  const lo = vals.length ? Math.max(0, Math.floor(Math.min.apply(null, vals) * 20) / 20 - 0.05) : 0;
+  const span = Math.max(0.05, 1 - lo);
+  const y = (v) => padT + ih - ((Math.max(lo, Math.min(1, Number(v) || 0)) - lo) / span) * ih;
+  const clip = (s) => (s && s.length > 12) ? s.slice(0, 11) + "…" : (s || "");
+  return (
+    <svg width="100%" viewBox={"0 0 " + W + " " + H} preserveAspectRatio="xMidYMid meet"
+      style={{ display: "block", height: "auto", aspectRatio: W + " / " + H }}
+      role="img" aria-label="Nail-tech attendance against manager attendance, per store">
+      {[lo, lo + span / 2, 1].map((t, ti) => (
+        <g key={ti}>
+          <line x1={padL} x2={W - padR} y1={y(t)} y2={y(t)} stroke={REPORT_VIZ.grid} strokeWidth="1" />
+          <text x={padL - 8} y={y(t) + 4} textAnchor="end" fontSize="11" fill={REPORT_VIZ.axis}>{Math.round(t * 100) + "%"}</text>
+        </g>
+      ))}
+      {rows.map((r, i) => {
+        const cx = padL + i * slot + slot / 2;
+        const ly = base + 15;
+        const both = r.techRate != null && r.mgrRate != null;
+        return (
+          <g key={r.branch}>
+            <title>{r.branch + " — techs " + (r.techRate == null ? "no data" : ratePct(r.techRate)) + ", manager " + (r.mgrRate == null ? "no data" : ratePct(r.mgrRate)) + (both ? " (" + Math.round(Math.abs(r.techRate - r.mgrRate) * 100) + " points apart)" : "")}</title>
+            {both && <line x1={cx} x2={cx} y1={y(r.techRate)} y2={y(r.mgrRate)} stroke="#DDD6FE" strokeWidth="2.5" strokeLinecap="round" />}
+            {r.techRate != null && <circle cx={cx} cy={y(r.techRate)} r="4.5" fill={REPORT_VIZ.tech} />}
+            {r.mgrRate != null && <circle cx={cx} cy={y(r.mgrRate)} r="4.5" fill={REPORT_VIZ.mgr} />}
+            <text x={cx} y={ly} transform={"rotate(-38 " + cx.toFixed(2) + " " + ly + ")"} textAnchor="end" fontSize="11" fill={REPORT_VIZ.axis}>{clip(r.branch)}</text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+// Share of lost days by absence type. Drawn with dashed circles rather than arc
+// paths: no sweep-flag maths means no way to emit a broken path for a segment
+// that happens to cross a half-turn.
+function ReportLostDonut({ segs, total, size }) {
+  const S = size || 190, R = 62, C = 2 * Math.PI * R, cx = S / 2, cy = S / 2;
+  const sum = (segs || []).reduce((a, s) => a + (Number(s.value) || 0), 0);
+  let acc = 0;
+  return (
+    <svg width={S} height={S} viewBox={"0 0 " + S + " " + S} role="img" aria-label="Share of lost days by absence type">
+      <circle cx={cx} cy={cy} r={R} fill="none" stroke={REPORT_VIZ.track} strokeWidth="22" />
+      {sum > 0 && (segs || []).map(s => {
+        const frac = (Number(s.value) || 0) / sum;
+        const len = frac * C;
+        const off = -acc * C;
+        acc += frac;
+        if (!(len > 0)) return null;
+        return (
+          <circle key={s.k} cx={cx} cy={cy} r={R} fill="none" stroke={s.colour} strokeWidth="22" strokeLinecap="butt"
+            strokeDasharray={len.toFixed(2) + " " + Math.max(0, C - len).toFixed(2)} strokeDashoffset={off.toFixed(2)}
+            transform={"rotate(-90 " + cx + " " + cy + ")"}>
+            <title>{s.label + " — " + s.value + " days (" + Math.round(frac * 100) + "%)"}</title>
+          </circle>
+        );
+      })}
+      <text x={cx} y={cy - 1} textAnchor="middle" fontSize="30" fontWeight="800" fill={REPORT_VIZ.ink} fontFamily="'Outfit',system-ui,sans-serif">{total}</text>
+      <text x={cx} y={cy + 18} textAnchor="middle" fontSize="10" letterSpacing="0.09em" fill={REPORT_VIZ.sub}>DAYS LOST</text>
+    </svg>
+  );
+}
+
+// Opening times as a range per store on one shared clock axis: the bar spans
+// earliest → latest, the dot sits at the average. Deliberately HTML rather than
+// SVG — store names need real CSS truncation, and a scaled-up SVG magnifies its
+// own type along with the graphics.
+function ReportOpeningTimeline({ rows, lo, hi, ticks, nameW }) {
+  if (!rows || !rows.length) return null;
+  const span = Math.max(1, hi - lo);
+  const at = (m) => Math.max(0, Math.min(100, ((m - lo) / span) * 100));
+  const nw = nameW || 116;
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+        <div style={{ width: nw, flexShrink: 0 }} />
+        <div style={{ flex: 1, position: "relative", height: 13 }}>
+          {(ticks || []).map(t => (
+            <span key={t} style={{ position: "absolute", left: at(t) + "%", transform: "translateX(-50%)", fontSize: 10, fontWeight: 700, color: REPORT_VIZ.axis, whiteSpace: "nowrap" }}>{mmToHhmm(t)}</span>
+          ))}
+        </div>
+        <div style={{ width: 46, flexShrink: 0 }} />
+      </div>
+      {rows.map((o, i) => (
+        <div key={o.branch} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0" }}>
+          <div style={{ width: nw, flexShrink: 0, display: "flex", alignItems: "baseline", gap: 6, minWidth: 0 }}>
+            <span style={{ fontSize: 11, fontWeight: 800, color: REPORT_VIZ.avg, width: 18, flexShrink: 0 }}>{i < 3 ? ["🥇", "🥈", "🥉"][i] : (i + 1) + "."}</span>
+            <span style={{ fontSize: 12.5, fontWeight: 700, color: "#111827", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o.branch}</span>
+          </div>
+          <div style={{ flex: 1, position: "relative", height: 16, minWidth: 60 }}>
+            <div style={{ position: "absolute", top: 7, left: 0, right: 0, height: 2, borderRadius: 2, background: REPORT_VIZ.rail }} />
+            <div title={"earliest " + mmToHhmm(o.earliest) + " · latest " + mmToHhmm(o.latest)}
+              style={{ position: "absolute", top: 5.5, left: at(o.earliest) + "%", width: Math.max(0.6, at(o.latest) - at(o.earliest)) + "%", height: 5, borderRadius: 999, background: "#DDD6FE" }} />
+            <div title={"average " + mmToHhmm(o.avg)}
+              style={{ position: "absolute", top: 3, left: at(o.avg) + "%", width: 10, height: 10, marginLeft: -5, borderRadius: "50%", background: REPORT_VIZ.avg, boxShadow: "0 0 0 2px #fff" }} />
+          </div>
+          <div style={{ width: 46, flexShrink: 0, textAlign: "right", fontSize: 12, fontWeight: 800, color: REPORT_VIZ.ink, fontVariantNumeric: "tabular-nums" }}>{mmToHhmm(o.avg)}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Five discrete pink bands rather than a smooth 24-step ramp. A continuous
+// ramp isn't decodable anyway, and its mid-tones land in the dead zone where
+// neither white nor ink clears 4.5:1 against the cell — these five each pass
+// comfortably, and "top fifth / upper / middle / lower / bottom fifth" is
+// something you can actually read off the colour.
+const RACE_BANDS = [
+  { bg: "#9D174D", ink: "#FFFFFF", label: "Top fifth" },
+  { bg: "#DB2777", ink: "#FFFFFF", label: "Upper" },
+  { bg: "#F9A8D4", ink: "#831843", label: "Middle" },
+  { bg: "#FBCFE8", ink: "#831843", label: "Lower" },
+  // Same ink as the bands above it: a muted pink here only reached 3.9:1 on
+  // this pale a ground. The band already recedes on its background alone.
+  { bg: "#FDF2F8", ink: "#831843", label: "Bottom fifth" }
+];
+const raceBandOf = (rank, field) => {
+  if (rank == null || !(field > 0)) return null;
+  return RACE_BANDS[Math.max(0, Math.min(4, Math.floor(((rank - 1) / field) * 5)))];
+};
+const moveGlyph = (m) => m > 0 ? "▲" + m : m < 0 ? "▼" + Math.abs(m) : "–";
+const moveTone = (m) => m > 0 ? "#047857" : m < 0 ? "#B91C1C" : "#B49DCB";
+
+// Where every store sat, slice by slice. No connecting lines at all: with two
+// dozen stores a bump chart is seventy-odd crossing segments, and the crossings
+// are what made it unreadable. A row that pales from left to right is a store
+// sliding down the board.
+function ReportPositionGrid({ periods, rows, field }) {
+  if (!periods || !periods.length || !rows || !rows.length) return null;
+  const cols = "minmax(112px,1.3fr) repeat(" + periods.length + ", minmax(46px,1fr)) 60px";
+  const headCell = {
+    fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 9.5, fontWeight: 700,
+    letterSpacing: "0.07em", textTransform: "uppercase", color: "#B49DCB", textAlign: "center", whiteSpace: "nowrap"
+  };
+  return (
+    <div style={{ minWidth: 150 + periods.length * 50 + 70 }}>
+      <div style={{ display: "grid", gridTemplateColumns: cols, gap: 6, alignItems: "center", padding: "0 4px 9px", borderBottom: "1px solid #F6E7EE" }}>
+        <span style={{ ...headCell, textAlign: "left" }}>Store</span>
+        {periods.map((p, i) => <span key={i} style={headCell}>{p.label}</span>)}
+        <span style={{ ...headCell, textAlign: "right" }}>Net</span>
+      </div>
+      {rows.map(r => (
+        <div key={r.branch} title={r.branch + " — " + r.ranks.map((rk, i) => periods[i].label + ": " + (rk == null ? "no data" : "#" + rk + " (" + ratePct(r.rates[i]) + ")")).join("  ·  ")}
+          style={{ display: "grid", gridTemplateColumns: cols, gap: 6, alignItems: "center", padding: "3px 4px" }}>
+          <span style={{ fontSize: 12.5, fontWeight: 700, color: "#111827", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.branch}</span>
+          {r.ranks.map((rk, i) => {
+            const band = raceBandOf(rk, field);
+            return (
+              <span key={i} style={{
+                height: 27, borderRadius: 7, display: "grid", placeItems: "center",
+                fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 12, fontWeight: 700, fontVariantNumeric: "tabular-nums",
+                background: band ? band.bg : "#FBFAFC", color: band ? band.ink : "#D8CCE2",
+                border: band ? "none" : "1px dashed #F1DCE6"
+              }}>{rk == null ? "·" : rk}</span>
+            );
+          })}
+          <span style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 11.5, fontWeight: 700, fontVariantNumeric: "tabular-nums", textAlign: "right", color: moveTone(r.move) }}>{moveGlyph(r.move)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// The same race, answer-first: who gained and who lost ground. Sparklines stay
+// on the shared 1..field scale rather than each store's own range, so the
+// slopes are comparable down the column.
+function ReportMoverSpark({ ranks, field, tone }) {
+  const pts = ranks.map((rk, i) => ({ i, rk })).filter(p => p.rk != null);
+  if (pts.length < 2) return <span style={{ display: "inline-block", width: 104 }} />;
+  const W = 104, H = 34, p = 5;
+  const x = (i) => p + (ranks.length < 2 ? 0 : i * ((W - 2 * p) / (ranks.length - 1)));
+  const y = (rk) => p + (field < 2 ? 0 : ((rk - 1) / (field - 1)) * (H - 2 * p));
+  const d = pts.map((q, k) => (k ? "L" : "M") + x(q.i).toFixed(1) + " " + y(q.rk).toFixed(1)).join(" ");
+  const last = pts[pts.length - 1];
+  return (
+    <svg width={W} height={H} viewBox={"0 0 " + W + " " + H} style={{ display: "block", flexShrink: 0 }} aria-hidden="true">
+      <path d={d} fill="none" stroke={tone} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx={x(last.i)} cy={y(last.rk)} r="2.8" fill={tone} />
+    </svg>
+  );
+}
+
+function ReportMoversBoard({ climbers, slippers, field, quiet, isMobile }) {
+  const panel = (kind, title, sub, list) => {
+    const gain = kind === "gain";
+    const tone = gain ? "#047857" : "#B91C1C";
+    return (
+      <div style={{ border: "1px solid #F6E7EE", borderRadius: 16, padding: "16px 16px 8px", background: "#FDF9FB", minWidth: 0 }}>
+        <div style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 14, fontWeight: 700, color: tone, display: "flex", alignItems: "center", gap: 8 }}>
+          <span aria-hidden="true">{gain ? "▲" : "▼"}</span>{title}
+        </div>
+        <div style={{ fontSize: 12, color: "#9d6a82", margin: "2px 0 12px" }}>{sub}</div>
+        {list.length === 0
+          ? <div style={{ fontSize: 12, color: "#B49DCB", paddingBottom: 10 }}>Nobody moved {gain ? "up" : "down"} in this window.</div>
+          : list.map((r, i) => (
+            <div key={r.branch} title={r.branch + " — #" + r.from + " → #" + r.to}
+              style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto auto", gap: 12, alignItems: "center", padding: "9px 0", borderTop: i === 0 ? "none" : "1px solid #F6E7EE" }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 13.5, fontWeight: 700, color: "#111827", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.branch}</div>
+                <div style={{ fontSize: 11.5, color: "#9d6a82", fontVariantNumeric: "tabular-nums" }}>{"#" + r.from + " → #" + r.to}</div>
+              </div>
+              {!isMobile && <ReportMoverSpark ranks={r.ranks} field={field} tone={tone} />}
+              <span style={{
+                fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 11.5, fontWeight: 700, borderRadius: 999, padding: "3px 9px",
+                whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums", color: tone,
+                background: gain ? "#ECFDF5" : "#FEF2F2", border: "1px solid " + (gain ? "#A7F3D0" : "#FECACA")
+              }}>{moveGlyph(r.move)}</span>
+            </div>
+          ))}
+      </div>
+    );
+  };
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 16 }}>
+        {panel("gain", "Climbed most", "Biggest gains in position", climbers)}
+        {panel("loss", "Slipped most", "Biggest losses in position", slippers)}
+      </div>
+      {quiet > 0 && (
+        <div style={{ fontSize: 11.5, color: "#B49DCB", marginTop: 12 }}>
+          The other {quiet} store{quiet === 1 ? "" : "s"} moved less than these did — the grid above has all of them.
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StoreReportsTab({ extraDayRequests, managers }) {
   const [days, setDays] = React.useState(30);
   const [loading, setLoading] = React.useState(true);
   const [err, setErr] = React.useState(null);
   const [data, setData] = React.useState(null);
+  const isMobile = useIsMobile();
 
   const _p2 = n => String(n).padStart(2, "0");
   const ymdOf = (d) => d.getFullYear() + "-" + _p2(d.getMonth() + 1) + "-" + _p2(d.getDate());
@@ -17932,7 +18480,123 @@ function StoreReportsTab({ extraDayRequests, managers }) {
     } catch (_e) { return null; }
   };
   const saYmd = (iso) => { try { return new Date(iso).toLocaleDateString("en-CA", { timeZone: "Africa/Johannesburg" }); } catch (_e) { return null; } };
-  const fmtMins = (m) => { const h = Math.floor(m / 60), mm = Math.round(m % 60); return _p2(h) + ":" + _p2(mm); };
+
+  // ── The race's own range, independent of the 30/60/90 window above ────────
+  // It ranks on signed-off NAIL-TECH check-ins only. Managers can't come along:
+  // manager attendance needs listRecentManagerClockins, which pages through
+  // every clock-in row in the table and stops dead at 60 000 — a year-to-date
+  // span blows straight past that and silently loses the oldest months, which
+  // is precisely the data a year chart is for. The kiosk log is keyed by
+  // branch-month, so it stays affordable at any span. Managers keep their own
+  // leaderboard tile and the dot plot up the page.
+  const RACE_RANGES = [
+    { k: "daily", label: "Daily", cols: 14, unit: 1, note: "one column per day, last fortnight", caution: "A single day is a handful of techs per store, so expect the board to jump — one sick shift can move a store ten places. Read the weekly view before acting on it." },
+    { k: "weekly", label: "Weekly", cols: 8, unit: 7, note: "one column per week, last eight" },
+    { k: "monthly", label: "4-weekly", cols: 6, unit: 28, note: "one column per four weeks, last six" },
+    { k: "ytd", label: "Year so far", cols: null, unit: null, note: "one column per calendar month since January" }
+  ];
+  const raceSpec = React.useCallback((key) => {
+    const cfg = RACE_RANGES.find(r => r.k === key) || RACE_RANGES[1];
+    if (cfg.k === "ytd") {
+      const now = new Date();
+      const months = [];
+      for (let m = 0; m <= now.getMonth(); m++) months.push(now.getFullYear() + "-" + _p2(m + 1));
+      const jan = new Date(now.getFullYear(), 0, 1); jan.setHours(12, 0, 0, 0);
+      const noon = new Date(); noon.setHours(12, 0, 0, 0);
+      return {
+        cfg,
+        spanDays: Math.round((noon - jan) / 86400000) + 1,
+        periods: months.map(ym => ({ label: REPORT_MONTHS[+ym.slice(5, 7) - 1] })),
+        indexOf: (ymd) => { const i = months.indexOf(String(ymd || "").slice(0, 7)); return i < 0 ? null : i; }
+      };
+    }
+    const span = cfg.unit * cfg.cols;
+    const pos = {}, periods = Array.from({ length: cfg.cols }, () => ({ from: null, to: null }));
+    for (let i = 0; i < span; i++) {
+      const x = new Date(); x.setHours(12, 0, 0, 0); x.setDate(x.getDate() - i);
+      const y = ymdOf(x);
+      // Walking backwards from today, so index 0 ends up the OLDEST column.
+      const b = cfg.cols - 1 - Math.floor(i / cfg.unit);
+      pos[y] = b;
+      if (!periods[b].to) periods[b].to = y;
+      periods[b].from = y;
+    }
+    periods.forEach(p => { p.label = cfg.unit === 1 ? shortDay(p.to) : shortDay(p.from) + "–" + shortDay(p.to); });
+    return { cfg, spanDays: span, periods, indexOf: (ymd) => (pos[ymd] == null ? null : pos[ymd]) };
+  }, []);
+
+  const [raceRange, setRaceRange] = React.useState("weekly");
+  const [race, setRace] = React.useState({ loading: true });
+  const raceCache = React.useRef({});
+  // The tab's own kiosk pull, kept so a race range inside that window doesn't
+  // refetch the same rows.
+  const rawCheckins = React.useRef({ span: 0, rows: null });
+
+  const loadRace = React.useCallback(async (key) => {
+    if (raceCache.current[key]) { setRace(raceCache.current[key]); return; }
+    setRace({ loading: true });
+    try {
+      const spec = raceSpec(key);
+      if (spec.periods.length < 2) { setRace({ error: "Not enough of the year has passed to race yet." }); return; }
+      const cached = rawCheckins.current;
+      const checkins = (cached.rows && cached.span >= spec.spanDays)
+        ? cached.rows
+        : await window.BOA_DB.listRecentKioskCheckins(spec.spanDays, SALONS.map(s => s.name)).catch(() => []);
+
+      const K = spec.periods.length;
+      // Same newest-wins dedupe and same signed-off gate as the leaderboards,
+      // so the race can't disagree with the tiles above it.
+      const finalBy = {};
+      (checkins || []).forEach(e => {
+        if (!e || !e.branch || !e.ec || !e.ymd || !e.signedOff) return;
+        const kk = e.branch + "|" + e.ec + "|" + e.ymd;
+        if (!finalBy[kk] || String(e.ts) > String(finalBy[kk].ts)) finalBy[kk] = e;
+      });
+      const agg = {};
+      Object.values(finalBy).forEach(e => {
+        const i = spec.indexOf(e.ymd); if (i == null) return;
+        const s = e.status;
+        const worked = (s === "on" || s === "late" || s === "ext" || s === "trial" || s === "swap_i");
+        const lost = (s === "sick" || s === "sick_n" || s === "frl" || s === "absent" || s === "no");
+        if (!worked && !lost) return;
+        const b = agg[e.branch] || (agg[e.branch] = Array.from({ length: K }, () => ({ w: 0, l: 0 })));
+        if (worked) b[i].w++; else b[i].l++;
+      });
+
+      const rows = Object.keys(agg).map(branch => ({
+        branch,
+        rates: agg[branch].map(c => (c.w + c.l) > 0 ? c.w / (c.w + c.l) : null),
+        days: agg[branch].map(c => c.w + c.l),
+        ranks: new Array(K).fill(null)
+      }));
+      let field = 0;
+      for (let i = 0; i < K; i++) {
+        const inPlay = rows.filter(r => r.rates[i] != null)
+          .sort((a, b) => b.rates[i] - a.rates[i] || a.branch.localeCompare(b.branch));
+        inPlay.forEach((r, n) => { r.ranks[i] = n + 1; });
+        field = Math.max(field, inPlay.length);
+      }
+      rows.forEach(r => {
+        const a = r.ranks.findIndex(v => v != null);
+        let z = -1;
+        for (let i = r.ranks.length - 1; i >= 0; i--) if (r.ranks[i] != null) { z = i; break; }
+        r.from = a >= 0 ? r.ranks[a] : null;
+        r.to = z >= 0 ? r.ranks[z] : null;
+        // Positive = climbed the board, since a smaller rank number is better.
+        r.move = (a >= 0 && z >= 0 && a !== z) ? r.from - r.to : 0;
+      });
+      const placed = rows.filter(r => r.ranks[K - 1] != null).sort((a, b) => a.to - b.to);
+      const climbers = placed.filter(r => r.move > 0).sort((a, b) => b.move - a.move).slice(0, 6);
+      const slippers = placed.filter(r => r.move < 0).sort((a, b) => a.move - b.move).slice(0, 6);
+      const payload = {
+        periods: spec.periods, rows: placed, field: Math.max(1, field),
+        climbers, slippers, quiet: Math.max(0, placed.length - climbers.length - slippers.length),
+        dropped: rows.length - placed.length, note: spec.cfg.note, caution: spec.cfg.caution || null, spanDays: spec.spanDays
+      };
+      raceCache.current[key] = payload;
+      setRace(payload);
+    } catch (e) { setRace({ error: (e && (e.message || String(e))) || "Couldn't build the race." }); }
+  }, [raceSpec]);
 
   const load = React.useCallback(async (d) => {
     setLoading(true); setErr(null);
@@ -17942,6 +18606,19 @@ function StoreReportsTab({ extraDayRequests, managers }) {
       for (let i = 0; i < d; i++) { const x = new Date(); x.setHours(12, 0, 0, 0); x.setDate(x.getDate() - i); dayList.push(ymdOf(x)); }
       const sinceYmd = dayList[dayList.length - 1];
 
+      // Trend chips compare the recent half of the window against the equally
+      // long half before it. Same fetch, so a "vs prior 15 days" arrow costs
+      // nothing — pulling a genuinely separate previous window would double the
+      // per-day opening queries.
+      const half = Math.max(1, Math.floor(d / 2));
+      const recentSet = new Set(dayList.slice(0, half));
+      const priorSet = new Set(dayList.slice(half, half * 2));
+      const per = {
+        now: { tw: 0, ti: 0, mw: 0, mi: 0, openSum: 0, openN: 0, extras: 0 },
+        prev: { tw: 0, ti: 0, mw: 0, mi: 0, openSum: 0, openN: 0, extras: 0 }
+      };
+      const bucketOf = (ymd) => recentSet.has(ymd) ? per.now : (priorSet.has(ymd) ? per.prev : null);
+
       const [checkins, openingArrays, mgrIns, extrasRaw, mgrStatuses] = await Promise.all([
         window.BOA_DB.listRecentKioskCheckins ? window.BOA_DB.listRecentKioskCheckins(d, branches).catch(() => []) : Promise.resolve([]),
         Promise.all(dayList.map(y => (window.BOA_DB.listStoreOpenings ? window.BOA_DB.listStoreOpenings(y).catch(() => []) : Promise.resolve([])))),
@@ -17950,6 +18627,10 @@ function StoreReportsTab({ extraDayRequests, managers }) {
           : (window.BOA_DB.loadExtraDayRequests ? window.BOA_DB.loadExtraDayRequests().catch(() => []) : Promise.resolve([])),
         window.BOA_DB.loadManagerDayStatuses ? window.BOA_DB.loadManagerDayStatuses(d).catch(() => []) : Promise.resolve([])
       ]);
+
+      // Hand the race the rows we just paid for; it refetches only when its
+      // range reaches back further than this window does.
+      rawCheckins.current = { span: d, rows: checkins || [] };
 
       // ── 1. Attendance — final signed-off status per (branch, ec, day) ──
       const final = {};
@@ -17966,11 +18647,12 @@ function StoreReportsTab({ extraDayRequests, managers }) {
       Object.values(final).forEach(e => {
         const b = aByBranch[e.branch] || (aByBranch[e.branch] = { branch: e.branch, present: 0, sick: 0, frl: 0, absent: 0, no: 0 });
         const s = e.status;
-        if (s === "on" || s === "late" || s === "ext" || s === "trial" || s === "swap_i") b.present++;
-        else if (s === "sick" || s === "sick_n") b.sick++;
-        else if (s === "frl") b.frl++;
-        else if (s === "absent") b.absent++;
-        else if (s === "no") b.no++;
+        const p = bucketOf(e.ymd);
+        if (s === "on" || s === "late" || s === "ext" || s === "trial" || s === "swap_i") { b.present++; if (p) p.tw++; }
+        else if (s === "sick" || s === "sick_n") { b.sick++; if (p) p.ti++; }
+        else if (s === "frl") { b.frl++; if (p) p.ti++; }
+        else if (s === "absent") { b.absent++; if (p) p.ti++; }
+        else if (s === "no") { b.no++; if (p) p.ti++; }
         // al / el / mat / ph / term / off / swap_o / unpaid → ignored
       });
       const attendance = Object.values(aByBranch).map(b => {
@@ -17985,6 +18667,7 @@ function StoreReportsTab({ extraDayRequests, managers }) {
         const mins = saMinutes(iso); if (branch == null || mins == null) return;
         const key = branch + "|" + ymd; if (seen[key]) return; seen[key] = true;
         (openByBranch[branch] || (openByBranch[branch] = [])).push(mins);
+        const p = bucketOf(ymd); if (p) { p.openSum += mins; p.openN++; }
       };
       (openingArrays || []).forEach(arr => (arr || []).forEach(o => { if (o && o.openedAt) addOpen(o.branch, o.ymd, o.openedAt); }));
       const mgrEarliest = {};
@@ -18017,6 +18700,7 @@ function StoreReportsTab({ extraDayRequests, managers }) {
         const k = r.ec || r.name || r.id;
         const e = eByEc[k] || (eByEc[k] = { ec: r.ec, name: r.name, store: r.store, count: 0 });
         e.count++; if (r.store) e.store = r.store;
+        const p = bucketOf(r.work_date); if (p) p.extras++;
       });
       const extras = Object.values(eByEc).sort((a, b) => b.count - a.count || (a.name || "").localeCompare(b.name || ""));
 
@@ -18037,15 +18721,18 @@ function StoreReportsTab({ extraDayRequests, managers }) {
         if (!sid || !branch || !y) return;
         const key = sid + "|" + y; if (workedSeen[key]) return; workedSeen[key] = true;
         ensureMB(branch).worked++;
+        const p = bucketOf(y); if (p) p.mw++;
+       
       });
       (mgrStatuses || []).forEach(r => {
         if (!r || !r.staff_id || !r.date || !r.status) return;
         const m = mgrById[String(r.staff_id)]; const branch = m && m.branch; if (!branch) return;
         const b = ensureMB(branch);
-        if (r.status === "sick" || r.status === "sick_n") b.sick++;
-        else if (r.status === "frl") b.frl++;
-        else if (r.status === "absent") b.absent++;
-        else if (r.status === "no") b.no++;
+        const p = bucketOf(r.date);
+        if (r.status === "sick" || r.status === "sick_n") { b.sick++; if (p) p.mi++; }
+        else if (r.status === "frl") { b.frl++; if (p) p.mi++; }
+        else if (r.status === "absent") { b.absent++; if (p) p.mi++; }
+        else if (r.status === "no") { b.no++; if (p) p.mi++; }
       });
       const mgrAttendance = Object.values(mByBranch).map(b => {
         const issues = b.sick + b.frl + b.absent + b.no;
@@ -18064,122 +18751,340 @@ function StoreReportsTab({ extraDayRequests, managers }) {
         return { ...b, issues, total, attendRate: total ? b.worked / total : 0 };
       }).filter(b => b.total > 0).sort((a, b) => b.attendRate - a.attendRate || a.issues - b.issues || a.branch.localeCompare(b.branch));
 
-      setData({ combined, attendance, openings, extras, mgrAttendance });
+      // ── 5. Headline figures + the per-store series the charts read ──
+      const sumOf = (arr, k) => arr.reduce((a, x) => a + (x[k] || 0), 0);
+      const lost = { sick: sumOf(combined, "sick"), frl: sumOf(combined, "frl"), absent: sumOf(combined, "absent"), no: sumOf(combined, "no") };
+      const lostTotal = lost.sick + lost.frl + lost.absent + lost.no;
+      const workedTotal = sumOf(combined, "worked");
+      const rateOf = (w, i) => (w + i) > 0 ? w / (w + i) : null;
+      const techW = sumOf(attendance, "present"), techI = sumOf(attendance, "issues");
+      const mgrW = sumOf(mgrAttendance, "worked"), mgrI = sumOf(mgrAttendance, "issues");
+      // Weighted by days recorded, so a store that only opened twice in the
+      // window can't drag the group average around.
+      const openDays = sumOf(openings, "days");
+      const avgOpen = openDays > 0 ? openings.reduce((a, o) => a + o.avg * o.days, 0) / openDays : null;
+
+      const tRate = {}, mRate = {};
+      attendance.forEach(b => { tRate[b.branch] = b.attendRate; });
+      mgrAttendance.forEach(b => { mRate[b.branch] = b.attendRate; });
+      // One row per store carrying everything the charts read, in the same
+      // best-first order as the leaderboard below them — so the chart and the
+      // table can be scanned together without re-sorting in your head.
+      const byStore = combined.map(b => ({
+        branch: b.branch,
+        total: b.total, sick: b.sick, frl: b.frl, absent: b.absent, no: b.no,
+        comboRate: b.attendRate,
+        techRate: tRate[b.branch] == null ? null : tRate[b.branch],
+        mgrRate: mRate[b.branch] == null ? null : mRate[b.branch]
+      }));
+
+      const gap = (a, b) => (a == null || b == null) ? null : a - b;
+      const openAvgOf = (p) => p.openN > 0 ? p.openSum / p.openN : null;
+      const totals = {
+        halfDays: half,
+        rate: rateOf(workedTotal, lostTotal),
+        techRate: rateOf(techW, techI),
+        mgrRate: rateOf(mgrW, mgrI),
+        staffDays: workedTotal + lostTotal,
+        lost, lostTotal, avgOpen,
+        stores: combined.length,
+        extraDays: extras.reduce((a, p) => a + p.count, 0),
+        trend: {
+          // Percentage POINTS, not a percentage of a percentage.
+          rate: gap(rateOf(per.now.tw + per.now.mw, per.now.ti + per.now.mi), rateOf(per.prev.tw + per.prev.mw, per.prev.ti + per.prev.mi)),
+          techRate: gap(rateOf(per.now.tw, per.now.ti), rateOf(per.prev.tw, per.prev.ti)),
+          mgrRate: gap(rateOf(per.now.mw, per.now.mi), rateOf(per.prev.mw, per.prev.mi)),
+          open: gap(openAvgOf(per.now), openAvgOf(per.prev)),
+          lost: (per.now.ti + per.now.mi) - (per.prev.ti + per.prev.mi),
+          extras: per.now.extras - per.prev.extras
+        }
+      };
+
+      setData({ combined, attendance, openings, extras, mgrAttendance, byStore, totals });
     } catch (e) { setErr(e && (e.message || String(e))); }
     finally { setLoading(false); }
   }, [extraDayRequests, managers]);
 
   React.useEffect(() => { load(days); }, [load, days]);
+  // Runs after the tab's own load, so a race range inside the window reuses
+  // those rows instead of pulling them twice.
+  React.useEffect(() => { if (!loading) loadRace(raceRange); }, [loadRace, raceRange, loading]);
+  const pickRange = (k) => { if (k !== raceRange) { setRaceRange(k); } };
 
-  const pct = (x) => Math.round(x * 100) + "%";
   const medal = (i) => i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : (i + 1) + ".";
-  const card = { background: "#fff", borderRadius: 16, border: "1px solid #EDE9FE", boxShadow: "0 2px 10px rgba(124,58,237,0.05)", padding: "16px 18px", marginBottom: 20 };
-  const cardHead = { fontSize: 15, fontWeight: 800, color: "#5B21B6", marginBottom: 4 };
-  const cardSub = { fontSize: 11.5, color: "#9d6a82", marginBottom: 12 };
-  const rowS = (top) => ({ display: "grid", gap: 10, alignItems: "center", padding: "8px 6px", borderTop: top ? "none" : "1px solid #F3F4F6" });
-  const rankCell = { fontSize: 15, fontWeight: 800, color: "#6b21a8", textAlign: "center", width: 34 };
-  const nameCell = { fontSize: 13, fontWeight: 700, color: "#111827", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
-  const headCell = { fontSize: 9.5, fontWeight: 800, color: "#9d6a82", letterSpacing: "0.05em", textTransform: "uppercase", textAlign: "right" };
-  const numCell = { fontSize: 13, fontWeight: 800, textAlign: "right" };
-
-  // Shared attendance-ranking table (used for combined / techs / managers).
-  const attCard = (title, sub, rows, noteFor, emptyMsg) => (
-    <div style={card}>
-      <div style={cardHead}>{title}</div>
-      <div style={cardSub}>{sub}</div>
-      {(!rows || rows.length === 0) ? <div style={{ fontSize: 12, color: "#9ca3af" }}>{emptyMsg || "Not enough data in this window yet."}</div> : (
-        <div>
-          <div style={{ ...rowS(true), gridTemplateColumns: "34px 1fr 80px 58px 58px 58px 64px" }}>
-            <div /><div style={{ ...headCell, textAlign: "left" }}>Store</div><div style={headCell}>Attend</div><div style={headCell}>Sick</div><div style={headCell}>FRL</div><div style={headCell}>Absent</div><div style={headCell}>No-show</div>
-          </div>
-          {rows.map((b, i) => (
-            <div key={b.branch} style={{ ...rowS(false), gridTemplateColumns: "34px 1fr 80px 58px 58px 58px 64px", background: i < 3 ? "#FAF5FF" : "transparent", borderRadius: 8 }}>
-              <div style={rankCell}>{medal(i)}</div>
-              <div style={nameCell}>{b.branch}<span style={{ fontSize: 10, color: "#9ca3af", fontWeight: 500 }}> · {noteFor(b)}</span></div>
-              <div style={{ ...numCell, color: b.attendRate >= 0.95 ? "#16a34a" : b.attendRate >= 0.85 ? "#d97706" : "#dc2626" }}>{pct(b.attendRate)}</div>
-              <div style={{ ...numCell, color: b.sick ? "#9a3412" : "#9ca3af" }}>{b.sick}</div>
-              <div style={{ ...numCell, color: b.frl ? "#78350f" : "#9ca3af" }}>{b.frl}</div>
-              <div style={{ ...numCell, color: b.absent ? "#dc2626" : "#9ca3af" }}>{b.absent}</div>
-              <div style={{ ...numCell, color: b.no ? "#dc2626" : "#9ca3af" }}>{b.no}</div>
-            </div>
-          ))}
-        </div>
-      )}
+  const card = {
+    background: "#fff", borderRadius: 20, border: "1px solid #EDE9FE",
+    boxShadow: "0 1px 2px rgba(91,33,182,0.04), 0 14px 30px -22px rgba(91,33,182,0.25)",
+    padding: isMobile ? "18px 16px" : "22px 24px", marginBottom: 18
+  };
+  const secTitle = { fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 16, fontWeight: 700, color: REPORT_VIZ.ink, letterSpacing: "-0.005em" };
+  const secSub = { fontSize: 12.5, color: REPORT_VIZ.sub, marginTop: 5, maxWidth: "76ch", lineHeight: 1.5 };
+  const headCell = { fontSize: 9.5, fontWeight: 700, color: "#B49DCB", letterSpacing: "0.09em", textTransform: "uppercase", textAlign: "right" };
+  const headRow = { paddingBottom: 9, borderBottom: "1px solid #F3EDFB" };
+  const cardHead = (title, sub, right) => (
+    <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, flexWrap: "wrap", marginBottom: 16 }}>
+      <div style={{ minWidth: 0 }}>
+        <div style={secTitle}>{title}</div>
+        {sub && <div style={secSub}>{sub}</div>}
+      </div>
+      {right}
     </div>
   );
+  const swatch = (colour, label, round) => (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5, color: REPORT_VIZ.sub, whiteSpace: "nowrap" }}>
+      <i style={{ width: 11, height: 11, borderRadius: round ? "50%" : 3, background: colour, display: "inline-block" }} />{label}
+    </span>
+  );
+
+  // One square leaderboard tile that scrolls inside itself. These four used to
+  // be full-width tables stacked down the page, which pushed everything else
+  // below the fold; at tile width there is no room for the sick / FRL / absent
+  // / no-show columns, so that breakdown moved into each row's tooltip — the
+  // donut and the store-ranking bars above already carry it visually.
+  const miniCard = (cfg) => {
+    const rows = cfg.rows || [];
+    return (
+      <div style={{
+        ...card, marginBottom: 0, padding: isMobile ? "16px 14px" : "18px 18px",
+        aspectRatio: "1 / 1", display: "flex", flexDirection: "column", minWidth: 0
+      }}>
+        <div style={{ ...secTitle, fontSize: 14.5, display: "flex", alignItems: "baseline", gap: 7 }}>
+          <span aria-hidden="true">{cfg.icon}</span>
+          <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{cfg.title}</span>
+        </div>
+        {/* The count doubles as the scroll hint: five rows are visible, so
+            "17 stores" is what tells you the rest are below. */}
+        <div style={{ fontSize: 11.5, color: REPORT_VIZ.sub, marginTop: 4, lineHeight: 1.45 }}>
+          {cfg.sub}{rows.length ? " · " + rows.length + " " + cfg.unit : ""}
+        </div>
+        <div style={{ ...headRow, display: "flex", justifyContent: "space-between", marginTop: 12 }}>
+          <span style={{ ...headCell, textAlign: "left" }}>{cfg.nameHead}</span>
+          <span style={headCell}>{cfg.valueHead}</span>
+        </div>
+        {rows.length === 0
+          ? <div style={{ fontSize: 12, color: "#B49DCB", marginTop: 12 }}>{cfg.empty}</div>
+          : (
+            // minHeight:0 is load-bearing — without it a flex child refuses to
+            // shrink below its content and the tile grows instead of scrolling.
+            <div style={{ flex: 1, minHeight: 0, overflowY: "auto", margin: "0 -6px", padding: "0 6px" }}>
+              {rows.map((r, i) => (
+                <div key={cfg.keyOf(r, i)} title={cfg.titleOf(r)} style={{
+                  display: "grid", gridTemplateColumns: "22px minmax(0,1fr) auto", gap: 8, alignItems: "center",
+                  padding: "8px 4px", borderBottom: i === rows.length - 1 ? "none" : "1px solid #FAF6FE",
+                  background: i < 3 ? "#FCFAFF" : "transparent", borderRadius: 8
+                }}>
+                  <span style={{ fontSize: 12, fontWeight: 800, color: REPORT_VIZ.avg, textAlign: "center" }}>{medal(i)}</span>
+                  <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    <span style={{ fontSize: 12.5, fontWeight: 700, color: "#111827" }}>{cfg.nameOf(r)}</span>
+                    {cfg.noteOf && <span style={{ fontSize: 10.5, color: "#B49DCB", fontWeight: 500 }}> · {cfg.noteOf(r)}</span>}
+                  </span>
+                  <span style={{ fontSize: 12.5, fontWeight: 800, color: cfg.toneOf(r), fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{cfg.valueOf(r)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+      </div>
+    );
+  };
+
+  // Store leaderboards all share the same shape; only the wording differs.
+  const attTile = (icon, title, sub, rows, noteFor, empty) => miniCard({
+    icon, title, sub, rows, empty, nameHead: "Store", valueHead: "Attendance", unit: "stores",
+    keyOf: r => r.branch, nameOf: r => r.branch, noteOf: noteFor,
+    valueOf: r => ratePct(r.attendRate), toneOf: r => rateTone(r.attendRate),
+    titleOf: r => r.branch + " — " + ratePct(r.attendRate) + " · " + LOST_KINDS.map(k => (r[k.k] || 0) + " " + k.label.toLowerCase()).join(", ")
+  });
+
+  const t = data && data.totals;
+  const lostSegs = t ? LOST_KINDS.map(k => ({ k: k.k, label: k.label, colour: k.colour, value: t.lost[k.k] || 0 })) : [];
+  // A shared clock axis for the opening ranges, snapped out to the half hour so
+  // the tick labels land on round times.
+  const oLo = data && data.openings.length ? Math.floor(Math.min.apply(null, data.openings.map(o => o.earliest)) / 30) * 30 : 0;
+  const oHi = data && data.openings.length ? Math.ceil(Math.max.apply(null, data.openings.map(o => o.latest)) / 30) * 30 : 0;
+  const oStep = (oHi - oLo) <= 120 ? 30 : (oHi - oLo) <= 360 ? 60 : 120;
+  const oTicks = [];
+  for (let m = oLo; m <= oHi && oTicks.length < 12; m += oStep) oTicks.push(m);
 
   return (
-    <div style={{ padding: "0 24px 40px" }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
+    <div style={{ padding: isMobile ? "2px 0 28px" : "8px 10px 40px" }}>
+      <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 14, flexWrap: "wrap", marginBottom: 18 }}>
         <div>
-          <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 26, color: "#5B21B6", fontWeight: 700, marginBottom: 4 }}>🏆 Store Reports</div>
-          <div style={{ fontSize: 12.5, color: "#9d6a82" }}>Cross-store rankings over the last {days} days.</div>
+          <div style={{ fontFamily: "'Playfair Display',serif", fontSize: isMobile ? 24 : 29, color: REPORT_VIZ.ink, fontWeight: 700, letterSpacing: "-0.01em" }}>🏆 Store Reports</div>
+          <div style={{ fontSize: 13, color: REPORT_VIZ.sub, marginTop: 5, maxWidth: "80ch" }}>
+            How every store is doing on the things it controls — showing up, opening on time, and pulling extra days. Last {days} days{data ? <>, with the arrows comparing the most recent {data.totals.halfDays} days against the {data.totals.halfDays} before them</> : null}.
+          </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-          <div style={{ display: "flex", background: "#F3F4F6", padding: 3, borderRadius: 10, border: "1px solid #E5E7EB" }}>
+          <div style={{ display: "flex", background: "#F5F3FF", padding: 3, borderRadius: 11, border: "1px solid #EDE9FE" }}>
             {[30, 60, 90].map(d => (
-              <button key={d} onClick={() => setDays(d)} style={{ padding: "6px 13px", borderRadius: 8, border: "none", background: days === d ? "#fff" : "transparent", color: days === d ? "#5B21B6" : "#6B7280", boxShadow: days === d ? "0 2px 4px rgba(0,0,0,0.05)" : "none", cursor: "pointer", fontSize: 12.5, fontWeight: 700, fontFamily: "inherit" }}>{d}d</button>
+              <button key={d} onClick={() => setDays(d)} style={{ padding: "7px 14px", borderRadius: 9, border: "none", background: days === d ? "#fff" : "transparent", color: days === d ? REPORT_VIZ.ink : "#9184A8", boxShadow: days === d ? "0 1px 3px rgba(91,33,182,0.12)" : "none", cursor: "pointer", fontSize: 12.5, fontWeight: 700, fontFamily: "inherit" }}>{d}d</button>
             ))}
           </div>
-          <button onClick={() => load(days)} style={{ background: "#5B21B6", color: "#fff", border: "none", borderRadius: 8, padding: "7px 14px", cursor: "pointer", fontWeight: 700, fontSize: 12.5 }}>{loading ? "Loading…" : "↻ Refresh"}</button>
+          <button onClick={() => load(days)} disabled={loading} style={{ background: loading ? "#A78BFA" : REPORT_VIZ.ink, color: "#fff", border: "none", borderRadius: 10, padding: "9px 15px", cursor: loading ? "default" : "pointer", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit" }}>{loading ? "Loading…" : "↻ Refresh"}</button>
         </div>
       </div>
 
       {err && <div style={{ ...card, color: "#9b1c1c", border: "1px solid #fecaca", background: "#fef2f2" }}>Couldn't load reports: {err}</div>}
-      {loading && !data && <div style={{ ...card, color: "#9d6a82" }}>Crunching the numbers across all stores…</div>}
+      {loading && !data && <div style={{ ...card, color: REPORT_VIZ.sub }}>Crunching the numbers across all stores…</div>}
 
       {data && (<>
-        {/* 1a. Combined — techs + managers */}
-        {attCard("🏆 Best attendance — all staff", "Nail techs and managers combined, per store. Ranked by attendance rate (days worked vs. sick / FRL / absent / no-show). Leave, maternity, public holidays and terminated days are ignored.", data.combined, b => b.total + " staff-days", "Not enough attendance data in this window yet.")}
-
-        {/* 1b. Nail techs */}
-        {attCard("💅 Best attendance — Nail Techs", "Nail techs only, from signed-off kiosk check-ins. Only sick, FRL, absent and no-show count against a store.", data.attendance, b => b.total + " days", "No signed-off nail-tech check-ins in this window yet.")}
-
-        {/* 1c. Managers */}
-        {attCard("👑 Best attendance — Managers", "Managers only — days clocked in vs. sick / FRL / absent / no-show recorded for them.", data.mgrAttendance, b => b.worked + " worked", "No manager clock-ins or absences in this window yet.")}
-
-        {/* 2. Openings */}
-        <div style={card}>
-          <div style={cardHead}>🌅 Earliest store opening</div>
-          <div style={cardSub}>Ranked by average opening time (South Africa time). Uses the store-open record, or the earliest manager clock-in when that's missing.</div>
-          {data.openings.length === 0 ? <div style={{ fontSize: 12, color: "#9ca3af" }}>No opening times recorded in this window.</div> : (
-            <div>
-              <div style={{ ...rowS(true), gridTemplateColumns: "34px 1fr 90px 80px 80px" }}>
-                <div /><div style={{ ...headCell, textAlign: "left" }}>Store</div><div style={headCell}>Avg open</div><div style={headCell}>Earliest</div><div style={headCell}>Latest</div>
-              </div>
-              {data.openings.map((o, i) => (
-                <div key={o.branch} style={{ ...rowS(false), gridTemplateColumns: "34px 1fr 90px 80px 80px", background: i < 3 ? "#FAF5FF" : "transparent", borderRadius: 8 }}>
-                  <div style={rankCell}>{medal(i)}</div>
-                  <div style={nameCell}>{o.branch}<span style={{ fontSize: 10, color: "#9ca3af", fontWeight: 500 }}> · {o.days} days</span></div>
-                  <div style={{ ...numCell, color: "#5B21B6" }}>{fmtMins(o.avg)}</div>
-                  <div style={{ ...numCell, color: "#16a34a" }}>{fmtMins(o.earliest)}</div>
-                  <div style={{ ...numCell, color: "#6b7280" }}>{fmtMins(o.latest)}</div>
-                </div>
-              ))}
-            </div>
-          )}
+        {/* ── Headline figures ─────────────────────────────────────────── */}
+        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(auto-fit,minmax(178px,1fr))", gap: 12, marginBottom: 18 }}>
+          <ReportKpi icon="🏆" label="All-staff attendance" value={t.rate == null ? "—" : ratePct(t.rate)} tone={t.rate == null ? REPORT_VIZ.ink : rateTone(t.rate)}
+            trend={<ReportTrend delta={t.trend.rate == null ? null : t.trend.rate * 100} unit=" pts" digits={1} goodWhenUp={true} />}
+            sub={t.staffDays.toLocaleString("en-ZA") + " staff-days"} />
+          <ReportKpi icon="💅" label="Nail techs" value={t.techRate == null ? "—" : ratePct(t.techRate)} tone={t.techRate == null ? REPORT_VIZ.ink : rateTone(t.techRate)}
+            trend={<ReportTrend delta={t.trend.techRate == null ? null : t.trend.techRate * 100} unit=" pts" digits={1} goodWhenUp={true} />}
+            sub="signed-off kiosk check-ins" />
+          <ReportKpi icon="👑" label="Managers" value={t.mgrRate == null ? "—" : ratePct(t.mgrRate)} tone={t.mgrRate == null ? REPORT_VIZ.ink : rateTone(t.mgrRate)}
+            trend={<ReportTrend delta={t.trend.mgrRate == null ? null : t.trend.mgrRate * 100} unit=" pts" digits={1} goodWhenUp={true} />}
+            sub="clock-ins vs absences" />
+          <ReportKpi icon="🌅" label="Average opening" value={mmToHhmm(t.avgOpen)} tone={REPORT_VIZ.ink}
+            trend={<ReportTrend delta={t.trend.open} unit=" min" digits={0} goodWhenUp={false} />}
+            sub={t.stores + " stores tracked"} />
+          <ReportKpi icon="🚫" label="Days lost" value={t.lostTotal.toLocaleString("en-ZA")} tone={t.lostTotal ? "#B91C1C" : "#16a34a"}
+            trend={<ReportTrend delta={t.trend.lost} unit=" days" digits={0} goodWhenUp={false} />}
+            sub="sick, FRL, absent, no-show" />
+          <ReportKpi icon="💪" label="Extra days worked" value={t.extraDays.toLocaleString("en-ZA")} tone={REPORT_VIZ.avg}
+            trend={<ReportTrend delta={t.trend.extras} unit="" digits={0} goodWhenUp={true} />}
+            sub={data.extras.length + " people pitched in"} />
         </div>
 
-        {/* 3. Extras */}
+        {/* ── Store ranking: what was lost, and by whom ────────────────── */}
         <div style={card}>
-          <div style={cardHead}>💪 Most extra days worked</div>
-          <div style={cardSub}>Approved extra days actually worked per person in the window, across all stores.</div>
-          {data.extras.length === 0 ? <div style={{ fontSize: 12, color: "#9ca3af" }}>No approved extra days in this window.</div> : (
-            <div>
-              <div style={{ ...rowS(true), gridTemplateColumns: "34px 1fr 1fr 90px" }}>
-                <div /><div style={{ ...headCell, textAlign: "left" }}>Person</div><div style={{ ...headCell, textAlign: "left" }}>Store</div><div style={headCell}>Extra days</div>
-              </div>
-              {data.extras.slice(0, 20).map((p, i) => (
-                <div key={(p.ec || p.name) + "_" + i} style={{ ...rowS(false), gridTemplateColumns: "34px 1fr 1fr 90px", background: i < 3 ? "#FAF5FF" : "transparent", borderRadius: 8 }}>
-                  <div style={rankCell}>{medal(i)}</div>
-                  <div style={nameCell}>{p.name || p.ec || "—"}</div>
-                  <div style={{ fontSize: 12, color: "#6b7280", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.store || "—"}</div>
-                  <div style={{ ...numCell, color: "#5B21B6" }}>{p.count}</div>
+          {cardHead("Store ranking", "Best first, same order as the leaderboards below. The bars are the share of owed days each store lost and why; the dots underneath split that between the nail techs and their manager.",
+            <div style={{ display: "flex", alignItems: "center", gap: 13, flexWrap: "wrap" }}>
+              {LOST_KINDS.map(k => <React.Fragment key={k.k}>{swatch(k.colour, k.label)}</React.Fragment>)}
+            </div>)}
+          {data.byStore.length === 0
+            ? <div style={{ fontSize: 12.5, color: "#B49DCB" }}>Not enough attendance data in this window yet.</div>
+            : (<>
+              {/* Both panels live in ONE scroller. They share an x-order, which
+                  is the whole point of stacking them — two scrollers would let
+                  the halves drift apart on a phone and quietly mislead. */}
+              <div style={{ overflowX: "auto", overflowY: "hidden", margin: "0 -4px", padding: "0 4px" }}>
+                <div style={{ minWidth: isMobile ? 760 : 0 }}>
+                  <ReportLostByStore rows={data.byStore} height={208} />
+                  <div style={{ height: 1, background: "#F6F1FD", margin: "14px 0" }} />
+                  <ReportTechMgrGap rows={data.byStore} height={176} />
                 </div>
+              </div>
+              <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 14, flexWrap: "wrap", marginTop: 12 }}>
+                <div style={{ fontSize: 12.5, color: REPORT_VIZ.sub, maxWidth: "70ch" }}>
+                  Lower panel: each store's techs against their own manager. A long connector means the floor and the office aren't having the same month — that axis starts above zero, so read where the dots sit, not how far they are from the bottom.
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+                  {swatch(REPORT_VIZ.tech, "Nail techs", true)}
+                  {swatch(REPORT_VIZ.mgr, "Manager", true)}
+                </div>
+              </div>
+            </>)}
+        </div>
+
+        {/* ── Lost days + opening times ────────────────────────────────── */}
+        {/* alignItems:start, or the donut card stretches to the height of the
+            17-row timeline beside it and ends in a slab of white. */}
+        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "minmax(280px,340px) 1fr", gap: 18, marginBottom: 18, alignItems: "start" }}>
+          <div style={{ ...card, marginBottom: 0 }}>
+            {cardHead("Where the days go", "Every absence that counted against a store, by type.")}
+            {t.lostTotal === 0 ? <div style={{ fontSize: 12.5, color: "#16a34a", fontWeight: 600 }}>Not a single day lost in this window.</div> : (
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16 }}>
+                <ReportLostDonut segs={lostSegs} total={t.lostTotal} size={190} />
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, width: "100%" }}>
+                  {lostSegs.map(s => (
+                    <div key={s.k} style={{ display: "flex", alignItems: "center", gap: 8, background: "#FCFAFF", border: "1px solid #F3EDFB", borderRadius: 10, padding: "8px 10px", minWidth: 0 }}>
+                      <i style={{ width: 9, height: 9, borderRadius: 3, background: s.colour, flexShrink: 0 }} />
+                      <span style={{ fontSize: 11.5, color: "#4b3a57", fontWeight: 600, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.label}</span>
+                      <span style={{ fontSize: 12, fontWeight: 800, color: REPORT_VIZ.ink, fontVariantNumeric: "tabular-nums" }}>{Math.round((s.value / t.lostTotal) * 100)}%</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div style={{ ...card, marginBottom: 0 }}>
+            {cardHead("Earliest store opening", "The bar spans each store's earliest to latest opening; the dot is its average. Uses the store-open record, or the earliest manager clock-in when that's missing.")}
+            {data.openings.length === 0
+              ? <div style={{ fontSize: 12.5, color: "#B49DCB" }}>No opening times recorded in this window.</div>
+              : <ReportOpeningTimeline rows={data.openings} lo={oLo} hi={oHi} ticks={oTicks} nameW={isMobile ? 96 : 132} />}
+          </div>
+        </div>
+
+        {/* ── Four square leaderboards, each scrolling inside itself ────── */}
+        {/* The method is stated once here rather than repeated in all four
+            tiles — at tile width that copy cost a visible row each. */}
+        <div style={{ marginBottom: 12 }}>
+          <div style={secTitle}>Leaderboards</div>
+          <div style={secSub}>Ranked on days worked against sick, FRL, absent and no-show. Leave, maternity, public holidays and terminated days count neither for nor against a store. Each tile scrolls.</div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(4, minmax(0,1fr))", gap: 14, marginBottom: 22 }}>
+          {attTile("🏆", "All staff", "Techs and managers together",
+            data.combined, b => b.total + " staff-days", "Not enough attendance data in this window yet.")}
+          {attTile("💅", "Nail Techs", "Signed-off kiosk check-ins",
+            data.attendance, b => b.total + " days", "No signed-off nail-tech check-ins in this window yet.")}
+          {attTile("👑", "Managers", "Clock-ins against recorded absences",
+            data.mgrAttendance, b => b.worked + " worked", "No manager clock-ins or absences in this window yet.")}
+          {miniCard({
+            icon: "💪", title: "Extra days", sub: "Approved extras actually worked",
+            rows: data.extras, empty: "No approved extra days in this window.",
+            nameHead: "Person", valueHead: "Days", unit: "people",
+            keyOf: (r, i) => (r.ec || r.name || "") + "_" + i,
+            nameOf: r => r.name || r.ec || "—",
+            noteOf: r => r.store || "—",
+            valueOf: r => r.count,
+            toneOf: () => REPORT_VIZ.ink,
+            titleOf: r => (r.name || r.ec || "—") + " · " + (r.store || "no store") + " — " + r.count + " extra day" + (r.count === 1 ? "" : "s")
+          })}
+        </div>
+
+        {/* ── The race: position grid + movers, on their own range ─────── */}
+        <div style={card}>
+          {cardHead("The race",
+            "Where every store sat on the nail-tech leaderboard, column by column. Darker pink is higher up the board; a row paling left to right is a store sliding.",
+            <div style={{ display: "flex", background: "#FDF2F8", padding: 3, borderRadius: 11, border: "1px solid #FBCFE8", flexWrap: "wrap" }}>
+              {RACE_RANGES.map(r => (
+                <button key={r.k} onClick={() => pickRange(r.k)} style={{
+                  padding: "7px 13px", borderRadius: 9, border: "none", cursor: "pointer",
+                  background: raceRange === r.k ? "#fff" : "transparent",
+                  color: raceRange === r.k ? "#9D174D" : "#B08A9C",
+                  boxShadow: raceRange === r.k ? "0 1px 3px rgba(157,23,77,0.14)" : "none",
+                  fontSize: 12.5, fontWeight: 700, fontFamily: "inherit", whiteSpace: "nowrap"
+                }}>{r.label}</button>
               ))}
-              {data.extras.length > 20 && <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 8, textAlign: "center" }}>Showing top 20 of {data.extras.length}.</div>}
-            </div>
-          )}
+            </div>)}
+
+          {race.loading ? <div style={{ fontSize: 12.5, color: REPORT_VIZ.sub }}>Rebuilding the board…</div>
+            : race.error ? <div style={{ fontSize: 12.5, color: "#9b1c1c" }}>{race.error}</div>
+              : !race.rows || race.rows.length === 0
+                ? <div style={{ fontSize: 12.5, color: "#B49DCB" }}>No signed-off check-ins in this range yet.</div>
+                : (<>
+                  <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", marginBottom: 14 }}>
+                    {RACE_BANDS.map(b => (
+                      <span key={b.label} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5, color: REPORT_VIZ.sub, whiteSpace: "nowrap" }}>
+                        <i style={{ width: 11, height: 11, borderRadius: 3, background: b.bg, display: "inline-block", border: b.bg === "#FDF2F8" ? "1px solid #FBCFE8" : "none" }} />{b.label}
+                      </span>
+                    ))}
+                  </div>
+                  <div style={{ overflowX: "auto", overflowY: "hidden", margin: "0 -4px", padding: "0 4px" }}>
+                    <ReportPositionGrid periods={race.periods} rows={race.rows} field={race.field} />
+                  </div>
+                  <div style={{ fontSize: 11.5, color: "#B49DCB", margin: "12px 0 22px", lineHeight: 1.55 }}>
+                    {"Sorted by where each store finished · " + race.note + "."} Ranked on attendance rate within each column, so a store climbs by improving relative to the others rather than just improving.
+                    {race.dropped > 0 ? " " + race.dropped + " store" + (race.dropped === 1 ? "" : "s") + " had no signed-off days in the final column and can't be placed." : ""}
+                  </div>
+                  {race.caution && (
+                    <div style={{ fontSize: 12, color: "#9a3412", background: "#fff7ed", border: "1px solid #fed7aa", borderRadius: 12, padding: "10px 13px", margin: "-10px 0 22px", lineHeight: 1.55 }}>
+                      <strong>Small sample.</strong> {race.caution}
+                    </div>
+                  )}
+
+                  <div style={{ paddingTop: 20, borderTop: "1px solid #F6E7EE" }}>
+                    <div style={{ ...secTitle, fontSize: 15, marginBottom: 4 }}>Who moved</div>
+                    <div style={{ ...secSub, marginTop: 0, marginBottom: 16 }}>The same race, answer first — the stores worth a phone call. Each sparkline is that store's own path across the columns above, highest at the top.</div>
+                    <ReportMoversBoard climbers={race.climbers} slippers={race.slippers} field={race.field} quiet={race.quiet} isMobile={isMobile} />
+                  </div>
+                </>)}
         </div>
       </>)}
     </div>
@@ -21651,6 +22556,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // shifts were scheduled vs actually worked (so revenue ÷ worked shifts gives
   // a true earn-per-shift). Loaded on demand when the tab opens.
   const [staffingData, setStaffingData] = useState(null);   // null | { loading } | { …computed }
+  // Staffing & Shifts view controls. The filters only re-slice data already in
+  // memory — every branch's per-day detail rides along in staffingData — so
+  // switching store is instant and costs no queries.
+  const [staffRegion, setStaffRegion] = useState("all");
+  const [staffStore, setStaffStore] = useState("all");
+  const [staffTableOpen, setStaffTableOpen] = useState(false);
+  // What one nail tech costs for a full pay period. A baseline for judging
+  // which stores carry themselves — editable here so the number can be
+  // sharpened without a code change, and remembered per browser.
+  const [techCostPerCycle, setTechCostPerCycle] = useState(() => {
+    try { const v = Number(window.localStorage.getItem("boaTechCostPerCycle")); return Number.isFinite(v) && v > 0 ? v : 8500; }
+    catch (_) { return 8500; }
+  });
+  const setTechCost = (v) => {
+    const n = Math.max(0, Number(v) || 0);
+    setTechCostPerCycle(n);
+    try { window.localStorage.setItem("boaTechCostPerCycle", String(n)); } catch (_) { }
+  };
 
   // ── Attendance / Absenteeism Reports (Payroll → Reports) ───────────
   // Cross-branch overview of who is missing the most work, who attends
@@ -22705,185 +23628,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     return () => { cancelled = true; };
   }, [tab, staff, managers, techLoans, leaveRecs]);
 
-  // ── Staffing & Shifts loader (Insights → Staffing & Shifts) ────────
-  // Builds two views from the live tech schedules + attendance grids:
-  //   • next 7 days — how many techs are scheduled to work each day
-  //   • current pay cycle — tech shifts scheduled vs actually worked
-  // Reuses the dashboard's definitions of "working" (schedule code) and
-  // "present" (attendance status) so the numbers line up with the tiles.
-  useEffect(() => {
-    if (tab !== "staffingReport") return;
-    if (!window.BOA_DB || !window.BOA_DB.isReady) return;
-    let cancelled = false;
-    setStaffingData({ loading: true });
-    const pad = (n) => String(n).padStart(2, "0");
-    const ymdOf = (dt) => dt.getFullYear() + "-" + pad(dt.getMonth() + 1) + "-" + pad(dt.getDate());
-    // END-month ym (tech-schedule convention) for the cycle a date sits in.
-    const schedYmOf = (dt) => _schedYmOfDate(dt);
-    // START-month ym (attendance convention) for the same cycle.
-    const attYmOf = (dt) => { let y = dt.getFullYear(), m = dt.getMonth() + 1; if (dt.getDate() <= 24) { m -= 1; if (m < 1) { m = 12; y -= 1; } } return y + "-" + pad(m); };
-    const isWorking = (v) => v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E";
-    const PRESENT = { on: 1, late: 1, ext: 1, trial: 1, swap_i: 1 };
-    const ABSENTM = { absent: 1, no: 1, sick: 1, sick_n: 1, frl: 1 };
-    // Attendance statuses that override the roster to "not working today".
-    const OFF_OVERRIDE = { off: 1, swap_o: 1, al: 1, el: 1, ph: 1, mat: 1, term: 1, unpaid: 1 };
-    const today = new Date(); today.setHours(0, 0, 0, 0);
-    const todayYmd = ymdOf(today);
-    const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    // Next 7 days (today + 6).
-    const next7Dates = [];
-    for (let i = 0; i < 7; i++) { const d = new Date(today); d.setDate(d.getDate() + i); next7Dates.push(d); }
-    // Current pay cycle (the one containing today) — END-month ym for the grid,
-    // its periodDays gives every calendar day in the cycle.
-    const cycSchedYm = schedYmOf(today);
-    const cycAttYm = attYmOf(today);
-    const cycleDays = window.BOA_DB.periodDays(cycSchedYm);   // [{ d, monthIdx, year, dow }]
-    // All schedule cycles we must load (current cycle + any the next 7 touch).
-    const schedYms = Array.from(new Set([cycSchedYm, ...next7Dates.map(schedYmOf)]));
-    // All attendance cycles for the "worked" tally (current cycle + any the
-    // next-7 worked column touches — only today contributes a worked value,
-    // but a 7-day window can straddle the 25th).
-    const attYms = Array.from(new Set([cycAttYm, ...next7Dates.filter(d => ymdOf(d) <= todayYmd).map(attYmOf)]));
-    const scoped = SALONS.filter(sl => scopedSalonNames.has(sl.name));
-    const safe = (p) => (p && p.catch ? p.catch(() => null) : Promise.resolve(null));
-    // Re-key a grid by upper-cased EC so lookups match enriched ECs regardless
-    // of how the saved grid happened to case them.
-    const normGrid = (g) => { const o = {}; for (const k in (g || {})) o[String(k).toUpperCase().trim()] = g[k]; return o; };
-    // Cash-ups for the whole cycle (one query, all branches). 40 days back
-    // safely spans the 25th→24th cycle wherever today sits inside it.
-    const cashLoad = (window.BOA_DB.listRecentCashups
-      ? safe(window.BOA_DB.listRecentCashups(40))
-      : Promise.resolve([]));
-    Promise.all([
-      Promise.all(scoped.map(async (sl) => {
-        const schedByYm = {}, attByYm = {};
-        await Promise.all([
-          ...schedYms.map(async (ym) => { const r = await safe(window.BOA_DB.loadSchedule(sl.name, ym, false)); schedByYm[ym] = normGrid(r && r.grid); }),
-          ...attYms.map(async (ym) => { const r = await safe(window.BOA_DB.loadAttendance(sl.name, ym)); attByYm[ym] = normGrid(r && r.grid); })
-        ]);
-        return { name: sl.name, schedByYm, attByYm };
-      })),
-      cashLoad
-    ]).then(([branchData, cashRows]) => {
-      if (cancelled) return;
-      // Total cash-up takings per day across in-scope branches. Mirrors the
-      // Cash Ups tab: sum the generated `total` (turnover, excludes tips) of
-      // non-archived rows (reopened/superseded rows carry archived_at).
-      // Per-cashup turnover. Prefer the generated `total` column, but fall back
-      // to summing the components (some rows don't carry a populated `total`),
-      // matching the Cash Ups tab's own live-total formula (excludes tips).
-      const cashTotalOf = (r) => {
-        const t = Number(r.total);
-        if (Number.isFinite(t) && t > 0) return t;
-        return (Number(r.yoco) || 0) + (Number(r.yoco_link) || 0) + (Number(r.cash) || 0)
-          + (Number(r.vouchers) || 0) + (Number(r.gift_card) || 0) - (Number(r.manual_discounts) || 0);
-      };
-      const cashByYmd = {};
-      (cashRows || []).forEach(r => {
-        if (!r || !r.date || r.archived_at) return;
-        if (!scopedSalonNames.has(r.branch)) return;
-        const key = String(r.date).slice(0, 10);   // normalise to YYYY-MM-DD
-        cashByYmd[key] = (cashByYmd[key] || 0) + cashTotalOf(r);
-      });
-      // One entry per active tech (exclude maternity / unpaid-legal / off-boarded).
-      // Keep transfer info so each tech is evaluated at their EFFECTIVE branch
-      // per day — once a transfer date passes they're read at the destination's
-      // roster + attendance, not the stale cells left in the old branch's grid.
-      const branchMap = {}; branchData.forEach(bd => { branchMap[bd.name] = bd; });
-      const allTechs = [];
-      for (const s of (enriched || [])) {
-        if (!s || !s.ec || !s.branch) continue;
-        if (s.onMat || s.onUnpaidLegal || s.offboarded) continue;
-        allTechs.push({
-          ec: String(s.ec).toUpperCase().trim(), name: s.name || s.ec, branch: s.branch,
-          leftDate: s.leftDate || null,
-          transferring: !!s.transferring, transferTo: s.transferTo || null,
-          transferDate: s.transferDate ? String(s.transferDate).replace(/\//g, "-") : null
-        });
-      }
-      const effBranchFor = (t, ymd) => (t.transferring && t.transferTo && t.transferDate && ymd >= t.transferDate) ? t.transferTo : t.branch;
-      // Leave (annual / emergency) coverage by EC → quick per-day check.
-      const leaveByEc = {};
-      (leaveRecs || []).forEach(lv => {
-        if (!lv || !lv.ec || !lv.startDate || !lv.endDate) return;
-        (leaveByEc[String(lv.ec).toUpperCase().trim()] = leaveByEc[String(lv.ec).toUpperCase().trim()] || []).push([lv.startDate, lv.endDate]);
-      });
-      const onLeave = (ecU, ymd) => (leaveByEc[ecU] || []).some(([a, b]) => ymd >= a && ymd <= b);
-      const activeOn = (t, ymd) => (!t.leftDate || ymd <= t.leftDate);
-      // Per-day tally over all in-scope techs (deduped one-per-person). Counts:
-      //   scheduled        — rostered to work (work cell, not overridden OFF)
-      //   worked           — actually present (incl. extra/cover shifts)
-      //   presentScheduled — rostered AND present (for a ≤100% attendance rate)
-      //   absent           — rostered but marked sick / no-show / absent
-      const dayStats = (dt, withAttn) => {
-        const sym = schedYmOf(dt), aym = attYmOf(dt), dayNum = dt.getDate(), ymd = ymdOf(dt);
-        let scheduled = 0, worked = 0, presentScheduled = 0, absent = 0;
-        for (const t of allTechs) {
-          if (!activeOn(t, ymd) || onLeave(t.ec, ymd)) continue;
-          const eb = effBranchFor(t, ymd);
-          if (!scopedSalonNames.has(eb)) continue;
-          const bd = branchMap[eb];
-          if (!bd) continue;
-          let st = ((bd.attByYm[aym] || {})[t.ec] || {})[dayNum];
-          if (st && st.charAt(0) === "~") st = st.slice(1);
-          const off = st && OFF_OVERRIDE[st];
-          const rostered = isWorking(((bd.schedByYm[sym] || {})[t.ec] || {})[dayNum]) && !off;
-          if (rostered) scheduled++;
-          if (withAttn) {
-            // Count a kiosk clock-in as worked even when it never made it onto the
-            // saved attendance grid — historically some check-ins weren't tapped
-            // into the sheet, so the grid alone under-counts. This mirrors what
-            // the attendance sheet shows (the green ✓ comes from the same source).
-            const ci = ((checkInsByBranch[eb] || {})[t.ec] || {})[ymd];
-            const hasIn = !!(ci && ci.hasIn) && st !== "swap_o";
-            const present = (st && PRESENT[st]) || hasIn;
-            if (present) { worked++; if (rostered) presentScheduled++; }
-            else if (rostered && st && ABSENTM[st]) absent++;
-          }
-        }
-        return { scheduled, worked, presentScheduled, absent };
-      };
-      // Next 7 days.
-      const next7 = next7Dates.map((dt) => {
-        const ymd = ymdOf(dt);
-        const past = ymd <= todayYmd;
-        const s = dayStats(dt, past);
-        return { ymd, dow: DOW[dt.getDay()], dayNum: dt.getDate(), monthShort: MON[dt.getMonth()], scheduled: s.scheduled, isToday: ymd === todayYmd, checkedIn: past ? s.worked : null, absent: past ? s.absent : null };
-      });
-      // Current cycle, per day.
-      const days = cycleDays.map((cd) => {
-        const dt = new Date(cd.year, cd.monthIdx, cd.d); dt.setHours(0, 0, 0, 0);
-        const ymd = ymdOf(dt);
-        const isFuture = ymd > todayYmd;
-        const s = dayStats(dt, !isFuture);
-        return {
-          ymd, d: cd.d, dow: DOW[dt.getDay()], monthShort: MON[dt.getMonth()],
-          scheduled: s.scheduled,
-          worked: isFuture ? null : s.worked,
-          presentScheduled: isFuture ? null : s.presentScheduled,
-          cashTotal: isFuture ? null : (cashByYmd[ymd] || 0),
-          isFuture, isToday: ymd === todayYmd
-        };
-      });
-      const totalScheduled = days.reduce((a, r) => a + r.scheduled, 0);
-      const toDate = days.filter(r => !r.isFuture);
-      const totalScheduledToDate = toDate.reduce((a, r) => a + r.scheduled, 0);
-      const totalWorked = toDate.reduce((a, r) => a + (r.worked || 0), 0);
-      const totalPresentScheduled = toDate.reduce((a, r) => a + (r.presentScheduled || 0), 0);
-      const totalCash = toDate.reduce((a, r) => a + (r.cashTotal || 0), 0);
-      const attendanceRate = totalScheduledToDate > 0 ? Math.round((totalPresentScheduled / totalScheduledToDate) * 100) : null;
-      setStaffingData({
-        loading: false,
-        scopeLabel: _hasStoreScope ? (dashScope === "mine" ? "My stores" : dashScope === "other" ? "Other stores" : "All stores") : "All stores",
-        branchCount: scoped.length,
-        next7,
-        cycle: { ym: cycSchedYm, label: window.BOA_DB.periodLabel ? window.BOA_DB.periodLabel(cycSchedYm) : cycSchedYm, days, totalScheduled, totalScheduledToDate, totalWorked, totalPresentScheduled, totalCash, attendanceRate }
-      });
-    }).catch((err) => { if (!cancelled) setStaffingData({ loading: false, error: (err && err.message) || String(err) }); });
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, staff, managers, leaveRecs, scopedSalonNames, dashScope, clockinVer]);
 
   // ── Upcoming-cycle schedule check ── flags branches whose tech / manager
   // schedule for the coming month hasn't been saved. Deadline is the 15th.
@@ -24435,6 +25179,299 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
   // Enrich staff (salon nail techs).
   const enriched = useMemo(() => _enrichRoster(staff), [staff, _enrichRoster]);
+
+  // ── Staffing & Shifts loader (Insights → Staffing & Shifts) ────────
+  // Builds three views from the live tech schedules + attendance grids:
+  //   • next 7 days — how many techs are scheduled to work each day
+  //   • current pay cycle — tech shifts scheduled vs actually worked
+  //   • per branch — shifts, attendance, takings and nail-tech cost, so a
+  //     store can be read as carrying its own weight or not
+  // Reuses the dashboard's definitions of "working" (schedule code) and
+  // "present" (attendance status) so the numbers line up with the tiles.
+  //
+  // WHY THE SIGNATURE DEP: this effect used to depend on `staff`, `managers`
+  // and `leaveRecs` directly. reloadCoreData replaces all three array refs
+  // every 90 seconds (and on every window focus), so the effect re-ran and
+  // blanked the entire report to a "Loading…" card several times a minute
+  // even when not one number had changed. It now depends on a CONTENT
+  // signature of only the fields it actually reads, so an identical
+  // background reload is a no-op. `managers` was never read at all, and
+  // `dashScope` is already baked into `scopedSalonNames`.
+  const staffingInputSig = useMemo(() => {
+    const techs = (enriched || [])
+      .filter(s => s && s.ec && s.branch && !s.onMat && !s.onUnpaidLegal && !s.offboarded)
+      .map(s => [s.ec, s.branch, s.leftDate || "", s.transferring ? 1 : 0, s.transferTo || "", s.transferDate || ""].join(":"))
+      .sort().join("|");
+    const lv = (leaveRecs || [])
+      .filter(l => l && l.ec && l.startDate && l.endDate)
+      .map(l => [l.ec, l.startDate, l.endDate].join(":"))
+      .sort().join("|");
+    return techs + "#" + lv;
+  }, [enriched, leaveRecs]);
+  // Today's authoritative tally briefly goes null while the dashboard loader
+  // refetches. Holding the last good one stops today's card flicking back to
+  // the schedule-based number and out again.
+  const _lastTechDayTotals = useRef(null);
+  useEffect(() => {
+    if (tab !== "staffingReport") return;
+    if (!window.BOA_DB || !window.BOA_DB.isReady) return;
+    let cancelled = false;
+    const run = () => {
+    // A background refresh must not tear the report down — keep the numbers
+    // on screen and let them change in place when the new figures land.
+    setStaffingData(prev => (prev && !prev.loading && !prev.error) ? { ...prev, refreshing: true } : { loading: true });
+    const pad = (n) => String(n).padStart(2, "0");
+    const ymdOf = (dt) => dt.getFullYear() + "-" + pad(dt.getMonth() + 1) + "-" + pad(dt.getDate());
+    // END-month ym (tech-schedule convention) for the cycle a date sits in.
+    const schedYmOf = (dt) => _schedYmOfDate(dt);
+    // START-month ym (attendance convention) for the same cycle.
+    const attYmOf = (dt) => { let y = dt.getFullYear(), m = dt.getMonth() + 1; if (dt.getDate() <= 24) { m -= 1; if (m < 1) { m = 12; y -= 1; } } return y + "-" + pad(m); };
+    const isWorking = (v) => v === "W" || v === "WE" || v === "WB" || v === "WM" || v === "WL" || v === "E";
+    const PRESENT = { on: 1, late: 1, ext: 1, trial: 1, swap_i: 1 };
+    const ABSENTM = { absent: 1, no: 1, sick: 1, sick_n: 1, frl: 1 };
+    // Attendance statuses that override the roster to "not working today".
+    const OFF_OVERRIDE = { off: 1, swap_o: 1, al: 1, el: 1, ph: 1, mat: 1, term: 1, unpaid: 1 };
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const todayYmd = ymdOf(today);
+    const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    // Next 7 days (today + 6).
+    const next7Dates = [];
+    for (let i = 0; i < 7; i++) { const d = new Date(today); d.setDate(d.getDate() + i); next7Dates.push(d); }
+    // Current pay cycle (the one containing today) — END-month ym for the grid,
+    // its periodDays gives every calendar day in the cycle.
+    const cycSchedYm = schedYmOf(today);
+    const cycAttYm = attYmOf(today);
+    const cycleDays = window.BOA_DB.periodDays(cycSchedYm);   // [{ d, monthIdx, year, dow }]
+    // All schedule cycles we must load (current cycle + any the next 7 touch).
+    const schedYms = Array.from(new Set([cycSchedYm, ...next7Dates.map(schedYmOf)]));
+    // All attendance cycles for the "worked" tally (current cycle + any the
+    // next-7 worked column touches — only today contributes a worked value,
+    // but a 7-day window can straddle the 25th).
+    const attYms = Array.from(new Set([cycAttYm, ...next7Dates.filter(d => ymdOf(d) <= todayYmd).map(attYmOf)]));
+    const scoped = SALONS.filter(sl => scopedSalonNames.has(sl.name));
+    const safe = (p) => (p && p.catch ? p.catch(() => null) : Promise.resolve(null));
+    // Re-key a grid by upper-cased EC so lookups match enriched ECs regardless
+    // of how the saved grid happened to case them.
+    const normGrid = (g) => { const o = {}; for (const k in (g || {})) o[String(k).toUpperCase().trim()] = g[k]; return o; };
+    // Cash-ups for the whole cycle (one query, all branches). 40 days back
+    // safely spans the 25th→24th cycle wherever today sits inside it.
+    const cashLoad = (window.BOA_DB.listRecentCashups
+      ? safe(window.BOA_DB.listRecentCashups(40))
+      : Promise.resolve([]));
+    Promise.all([
+      Promise.all(scoped.map(async (sl) => {
+        const schedByYm = {}, attByYm = {};
+        await Promise.all([
+          ...schedYms.map(async (ym) => { const r = await safe(window.BOA_DB.loadSchedule(sl.name, ym, false)); schedByYm[ym] = normGrid(r && r.grid); }),
+          ...attYms.map(async (ym) => { const r = await safe(window.BOA_DB.loadAttendance(sl.name, ym)); attByYm[ym] = normGrid(r && r.grid); })
+        ]);
+        return { name: sl.name, schedByYm, attByYm };
+      })),
+      cashLoad
+    ]).then(([branchData, cashRows]) => {
+      if (cancelled) return;
+      // Total cash-up takings per day across in-scope branches. Mirrors the
+      // Cash Ups tab: sum the generated `total` (turnover, excludes tips) of
+      // non-archived rows (reopened/superseded rows carry archived_at).
+      // Per-cashup turnover. Prefer the generated `total` column, but fall back
+      // to summing the components (some rows don't carry a populated `total`),
+      // matching the Cash Ups tab's own live-total formula (excludes tips).
+      const cashTotalOf = (r) => {
+        const t = Number(r.total);
+        if (Number.isFinite(t) && t > 0) return t;
+        return (Number(r.yoco) || 0) + (Number(r.yoco_link) || 0) + (Number(r.cash) || 0)
+          + (Number(r.vouchers) || 0) + (Number(r.gift_card) || 0) - (Number(r.manual_discounts) || 0);
+      };
+      // Keep the branch. `cashups` is already one row per branch per date, so
+      // holding on to it here is what makes per-store takings (and therefore
+      // per-store profitability) possible at all — this used to collapse
+      // straight to a date key and throw the branch away.
+      const cashByYmd = {};
+      const cashByBranchYmd = {};
+      (cashRows || []).forEach(r => {
+        if (!r || !r.date || r.archived_at) return;
+        if (!scopedSalonNames.has(r.branch)) return;
+        const key = String(r.date).slice(0, 10);   // normalise to YYYY-MM-DD
+        const amt = cashTotalOf(r);
+        cashByYmd[key] = (cashByYmd[key] || 0) + amt;
+        (cashByBranchYmd[r.branch] = cashByBranchYmd[r.branch] || {})[key] = ((cashByBranchYmd[r.branch] || {})[key] || 0) + amt;
+      });
+      // One entry per active tech (exclude maternity / unpaid-legal / off-boarded).
+      // Keep transfer info so each tech is evaluated at their EFFECTIVE branch
+      // per day — once a transfer date passes they're read at the destination's
+      // roster + attendance, not the stale cells left in the old branch's grid.
+      const branchMap = {}; branchData.forEach(bd => { branchMap[bd.name] = bd; });
+      const allTechs = [];
+      for (const s of (enriched || [])) {
+        if (!s || !s.ec || !s.branch) continue;
+        if (s.onMat || s.onUnpaidLegal || s.offboarded) continue;
+        allTechs.push({
+          ec: String(s.ec).toUpperCase().trim(), name: s.name || s.ec, branch: s.branch,
+          leftDate: s.leftDate || null,
+          transferring: !!s.transferring, transferTo: s.transferTo || null,
+          transferDate: s.transferDate ? String(s.transferDate).replace(/\//g, "-") : null
+        });
+      }
+      const effBranchFor = (t, ymd) => (t.transferring && t.transferTo && t.transferDate && ymd >= t.transferDate) ? t.transferTo : t.branch;
+      // Leave (annual / emergency) coverage by EC → quick per-day check.
+      const leaveByEc = {};
+      (leaveRecs || []).forEach(lv => {
+        if (!lv || !lv.ec || !lv.startDate || !lv.endDate) return;
+        (leaveByEc[String(lv.ec).toUpperCase().trim()] = leaveByEc[String(lv.ec).toUpperCase().trim()] || []).push([lv.startDate, lv.endDate]);
+      });
+      const onLeave = (ecU, ymd) => (leaveByEc[ecU] || []).some(([a, b]) => ymd >= a && ymd <= b);
+      const activeOn = (t, ymd) => (!t.leftDate || ymd <= t.leftDate);
+      // Per-day tally over all in-scope techs (deduped one-per-person). Counts:
+      //   scheduled        — rostered to work (work cell, not overridden OFF)
+      //   worked           — actually present (incl. extra/cover shifts)
+      //   presentScheduled — rostered AND present (for a ≤100% attendance rate)
+      //   absent           — rostered but marked sick / no-show / absent
+      // Per-branch roll-up for the whole cycle to date, filled in as the day
+      // walk below runs so it costs nothing extra. `roster` / `did` are sets
+      // of ECs: roster is who this store is paying for (the cost base),
+      // did is who actually turned up at least once.
+      const bAgg = {};
+      const bucket = (name) => (bAgg[name] = bAgg[name] || {
+        name, scheduled: 0, worked: 0, presentScheduled: 0, absent: 0,
+        roster: new Set(), did: new Set()
+      });
+      const dayStats = (dt, withAttn, collect) => {
+        const sym = schedYmOf(dt), aym = attYmOf(dt), dayNum = dt.getDate(), ymd = ymdOf(dt);
+        let scheduled = 0, worked = 0, presentScheduled = 0, absent = 0;
+        const perBranch = {};
+        const hit = (b, k) => { (perBranch[b] = perBranch[b] || { scheduled: 0, worked: 0, presentScheduled: 0, absent: 0 })[k]++; };
+        for (const t of allTechs) {
+          if (!activeOn(t, ymd) || onLeave(t.ec, ymd)) continue;
+          const eb = effBranchFor(t, ymd);
+          if (!scopedSalonNames.has(eb)) continue;
+          const bd = branchMap[eb];
+          if (!bd) continue;
+          let st = ((bd.attByYm[aym] || {})[t.ec] || {})[dayNum];
+          if (st && st.charAt(0) === "~") st = st.slice(1);
+          const off = st && OFF_OVERRIDE[st];
+          const rostered = isWorking(((bd.schedByYm[sym] || {})[t.ec] || {})[dayNum]) && !off;
+          if (rostered) { scheduled++; hit(eb, "scheduled"); if (collect) bucket(eb).roster.add(t.ec); }
+          if (withAttn) {
+            // Count a kiosk clock-in as worked even when it never made it onto the
+            // saved attendance grid — historically some check-ins weren't tapped
+            // into the sheet, so the grid alone under-counts. This mirrors what
+            // the attendance sheet shows (the green ✓ comes from the same source).
+            const ci = ((checkInsByBranch[eb] || {})[t.ec] || {})[ymd];
+            const hasIn = !!(ci && ci.hasIn) && st !== "swap_o";
+            const present = (st && PRESENT[st]) || hasIn;
+            if (present) {
+              worked++; hit(eb, "worked");
+              if (collect) bucket(eb).did.add(t.ec);
+              if (rostered) { presentScheduled++; hit(eb, "presentScheduled"); }
+            } else if (rostered && st && ABSENTM[st]) { absent++; hit(eb, "absent"); }
+          }
+        }
+        if (collect) {
+          for (const b in perBranch) {
+            const g = bucket(b), s = perBranch[b];
+            g.scheduled += s.scheduled; g.worked += s.worked;
+            g.presentScheduled += s.presentScheduled; g.absent += s.absent;
+          }
+        }
+        return { scheduled, worked, presentScheduled, absent, perBranch };
+      };
+      // Next 7 days.
+      const next7 = next7Dates.map((dt) => {
+        const ymd = ymdOf(dt);
+        const past = ymd <= todayYmd;
+        const s = dayStats(dt, past);
+        return { ymd, dow: DOW[dt.getDay()], dayNum: dt.getDate(), monthShort: MON[dt.getMonth()], scheduled: s.scheduled, isToday: ymd === todayYmd, checkedIn: past ? s.worked : null, absent: past ? s.absent : null, byBranch: s.perBranch };
+      });
+      // Current cycle, per day.
+      const days = cycleDays.map((cd) => {
+        const dt = new Date(cd.year, cd.monthIdx, cd.d); dt.setHours(0, 0, 0, 0);
+        const ymd = ymdOf(dt);
+        const isFuture = ymd > todayYmd;
+        // Only days that have actually happened feed the per-branch roll-up,
+        // so branch shifts line up with branch takings (both "to date").
+        const s = dayStats(dt, !isFuture, !isFuture);
+        return {
+          ymd, d: cd.d, dow: DOW[dt.getDay()], monthShort: MON[dt.getMonth()],
+          scheduled: s.scheduled,
+          worked: isFuture ? null : s.worked,
+          presentScheduled: isFuture ? null : s.presentScheduled,
+          cashTotal: isFuture ? null : (cashByYmd[ymd] || 0),
+          // Per-branch detail rides along on every day so the store filter can
+          // re-slice the whole page instantly, with no refetch. Future days
+          // carry it too — they still have a roster to break down.
+          byBranch: s.perBranch,
+          cashByBranch: isFuture ? null : (() => {
+            const o = {};
+            for (const b in cashByBranchYmd) { const v = cashByBranchYmd[b][ymd]; if (v) o[b] = v; }
+            return o;
+          })(),
+          isFuture, isToday: ymd === todayYmd
+        };
+      });
+      const totalScheduled = days.reduce((a, r) => a + r.scheduled, 0);
+      const toDate = days.filter(r => !r.isFuture);
+      const totalScheduledToDate = toDate.reduce((a, r) => a + r.scheduled, 0);
+      const totalWorked = toDate.reduce((a, r) => a + (r.worked || 0), 0);
+      const totalPresentScheduled = toDate.reduce((a, r) => a + (r.presentScheduled || 0), 0);
+      const totalCash = toDate.reduce((a, r) => a + (r.cashTotal || 0), 0);
+      const attendanceRate = totalScheduledToDate > 0 ? Math.round((totalPresentScheduled / totalScheduledToDate) * 100) : null;
+      // How far into the cycle we are — the nail-tech cost is quoted per full
+      // pay period, so a mid-cycle read has to be pro-rated or every store
+      // looks like it's losing money on the 26th.
+      const cycleDaysTotal = days.length;
+      const cycleDaysElapsed = toDate.length;
+      const elapsedFrac = cycleDaysTotal > 0 ? (cycleDaysElapsed / cycleDaysTotal) : 0;
+      // Per-branch table. Revenue is that branch's own cash-ups to date;
+      // headcount is how many distinct techs it rostered (who you pay),
+      // not how many showed up.
+      const branches = scoped.map(sl => {
+        const g = bAgg[sl.name] || { scheduled: 0, worked: 0, presentScheduled: 0, absent: 0, roster: new Set(), did: new Set() };
+        const cashMap = cashByBranchYmd[sl.name] || {};
+        let revenue = 0;
+        toDate.forEach(r => { revenue += (cashMap[r.ymd] || 0); });
+        const headcount = g.roster.size;
+        const rate = g.scheduled > 0 ? Math.round((g.presentScheduled / g.scheduled) * 100) : null;
+        return {
+          name: sl.name, region: sl.region || "",
+          capacity: sl.targetCapacity || sl.capacity || 0,
+          scheduled: g.scheduled, worked: g.worked, absent: g.absent,
+          attendanceRate: rate,
+          headcount, workedHeads: g.did.size,
+          revenue,
+          revPerShift: g.worked > 0 ? revenue / g.worked : null,
+          hasCashups: Object.keys(cashMap).length > 0
+        };
+      });
+      setStaffingData(prev => {
+        const payload = {
+          loading: false, refreshing: false,
+          scopeLabel: _hasStoreScope ? (dashScope === "mine" ? "My stores" : dashScope === "other" ? "Other stores" : "All stores") : "All stores",
+          branchCount: scoped.length,
+          next7, branches,
+          cycle: { ym: cycSchedYm, label: window.BOA_DB.periodLabel ? window.BOA_DB.periodLabel(cycSchedYm) : cycSchedYm, days, totalScheduled, totalScheduledToDate, totalWorked, totalPresentScheduled, totalCash, attendanceRate, cycleDaysTotal, cycleDaysElapsed, elapsedFrac }
+        };
+        // Fingerprint every figure we render. When a background refresh comes
+        // back with the same numbers we hand React the SAME object, so it
+        // bails out of the re-render entirely — nothing on screen so much as
+        // repaints. Only genuinely changed figures cause an update.
+        payload.sig = JSON.stringify([
+          next7, days,
+          branches.map(b => [b.name, b.scheduled, b.worked, b.absent, b.headcount, b.workedHeads, Math.round(b.revenue)]),
+          totalScheduled, totalScheduledToDate, totalWorked, totalPresentScheduled, Math.round(totalCash), cycleDaysElapsed
+        ]);
+        if (prev && prev.sig === payload.sig) return prev.refreshing ? { ...prev, refreshing: false } : prev;
+        return payload;
+      });
+    }).catch((err) => { if (!cancelled) setStaffingData({ loading: false, error: (err && err.message) || String(err) }); });
+    };
+    // Opening the tab fires this three or four times in a row — once for the
+    // tab change, then again as each check-in loader settles and bumps
+    // clockinVer. Coalesce them into a single fetch instead of three.
+    const timer = setTimeout(run, 140);
+    return () => { cancelled = true; clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, staffingInputSig, scopedSalonNames, clockinVer]);
   // Remove an approved leave record and unstamp its schedule/snapshot "L" cells.
   // Passed to the Leave Requests wizard so a new request can supersede an
   // overlapping one that's already on the calendar (the "reverse & continue"
@@ -38542,7 +39579,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     </div>
                     <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
                       <thead>
-                        <tr style={{ background: "#FDEEF5", color: "#831843" }}>
+                        <tr>
                           <th style={{ padding: "8px 12px", textAlign: "left", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Branch</th>
                           <th style={{ padding: "8px 12px", textAlign: "right", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Open</th>
                           <th style={{ padding: "8px 12px", textAlign: "right", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Reviewed</th>
@@ -38554,11 +39591,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         {sorted.map(e => (
                           <tr key={e.branch} style={{ background: e.open > 0 ? "#fef2f2" : (e.total > 0 ? "#f0fdf4" : "transparent"), cursor: "pointer" }}
                             onClick={() => { setAttBranch(e.branch); setTab("attendance"); }}>
-                            <td style={{ padding: "8px 12px", borderBottom: "1px solid #FDEEF5", color: "#831843", fontWeight: 600 }}>{e.branch}{e.approx ? <span title="Estimated — open this branch's attendance sheet once so it can publish its exact count." style={{ marginLeft: 6, fontSize: 10, color: "#b45309", fontWeight: 700 }}>~ est.</span> : null}</td>
-                            <td style={{ padding: "8px 12px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: e.open > 0 ? "#7f1d1d" : "#9ca3af", fontWeight: 700 }}>{e.open}</td>
-                            <td style={{ padding: "8px 12px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: "#166534", fontWeight: 600 }}>{e.reviewed}</td>
-                            <td style={{ padding: "8px 12px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: "#831843", fontWeight: 600 }}>{e.total}</td>
-                            <td style={{ padding: "8px 12px", borderBottom: "1px solid #FDEEF5", textAlign: "right" }}>
+                            <td style={{ padding: "8px 12px", borderBottom: "1px solid #FBF1F5", color: "#831843", fontWeight: 600 }}>{e.branch}{e.approx ? <span title="Estimated — open this branch's attendance sheet once so it can publish its exact count." style={{ marginLeft: 6, fontSize: 10, color: "#b45309", fontWeight: 700 }}>~ est.</span> : null}</td>
+                            <td style={{ padding: "8px 12px", borderBottom: "1px solid #FBF1F5", textAlign: "right", color: e.open > 0 ? "#7f1d1d" : "#9ca3af", fontWeight: 700 }}>{e.open}</td>
+                            <td style={{ padding: "8px 12px", borderBottom: "1px solid #FBF1F5", textAlign: "right", color: "#166534", fontWeight: 600 }}>{e.reviewed}</td>
+                            <td style={{ padding: "8px 12px", borderBottom: "1px solid #FBF1F5", textAlign: "right", color: "#831843", fontWeight: 600 }}>{e.total}</td>
+                            <td style={{ padding: "8px 12px", borderBottom: "1px solid #FBF1F5", textAlign: "right" }}>
                               <button onClick={(ev) => { ev.stopPropagation(); setAttBranch(e.branch); setTab("attendance"); }} style={{ background: "transparent", border: "1px solid #F9A8D4", color: "#831843", cursor: "pointer", padding: "4px 10px", borderRadius: 5, fontSize: 11 }}>Open →</button>
                             </td>
                           </tr>
@@ -38585,13 +39622,25 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       )}
       {tab === "staffingReport" && !((currentUser.hideCategories || []).includes("Insights")) && (() => {
         const sd = staffingData;
-        const card = { background: "#FFFFFF", border: "1px solid #FBCFE8", borderRadius: 14, padding: "20px 22px" };
+        // Softer, roomier chrome than the rest of the portal: this page is read
+        // rather than operated, so it gets air and a diffuse shadow instead of
+        // a hard pink outline on everything.
+        const card = { background: "#FFFFFF", border: "1px solid #F6E7EE", borderRadius: 20, padding: isMobile ? "18px 16px" : "22px 24px", boxShadow: "0 1px 2px rgba(131,24,67,0.04), 0 14px 30px -22px rgba(131,24,67,0.22)" };
+        const secTitle = { fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 16, fontWeight: 700, color: "#831843", letterSpacing: "-0.005em" };
+        const secSub = { fontSize: 12.5, color: "#9D7387", marginTop: 5, maxWidth: "72ch" };
+        const eyebrow = { fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "#B08A9C" };
+        const ctrl = { fontFamily: "inherit", fontSize: 13, color: "#831843", background: "#FDF9FB", border: "1px solid #F1DCE6", borderRadius: 10, padding: "9px 12px", outline: "none" };
         return (
-          <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 16, padding: isMobile ? "2px 0 24px" : "8px 10px 40px" }}>
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: 16 }}>
               <div>
-                <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, fontWeight: 700, color: "#831843" }}>📅 Staffing &amp; Shifts</div>
-                <div style={{ fontSize: 13, color: "#9d6a82", marginTop: 2 }}>Techs scheduled over the next 7 days, and scheduled-vs-worked shifts for this pay cycle.</div>
+                <div style={{ fontFamily: "'Playfair Display',serif", fontSize: isMobile ? 24 : 30, fontWeight: 800, color: "#831843", letterSpacing: "-0.01em" }}>
+                  📅 Staffing &amp; Shifts
+                  {sd && sd.refreshing && (
+                    <span title="Refreshing in the background — the figures update in place" style={{ marginLeft: 10, fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 10.5, fontWeight: 700, color: "#9d6a82", background: "#FDEEF5", border: "1px solid #FBCFE8", borderRadius: 999, padding: "2px 9px", verticalAlign: "middle" }}>updating…</span>
+                  )}
+                </div>
+                <div style={{ fontSize: 13, color: "#9d6a82", marginTop: 2 }}>Who is rostered, who actually worked, what each store took, and whether it covers its nail-tech cost.</div>
               </div>
               {renderScopeBar && renderScopeBar({})}
             </div>
@@ -38604,19 +39653,49 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             )}
 
             {sd && !sd.loading && !sd.error && (() => {
-              // Make TODAY identical to the Dashboard tiles by reusing the same
-              // authoritative tally (computeTechDayStats over the dashboard
-              // loader's data — kiosk sign-off gated, loan-resolved). The
-              // forward/whole-cycle figures keep the report's schedule-based
-              // counts, which now use the same active-tech / transfer / leave
-              // rules as the dashboard so today lines up across the board.
-              const tt = computeTechDayStats(dashTechByBranch);
-              const next7 = sd.next7.map(d => (d.isToday && tt)
-                ? { ...d, scheduled: tt.scheduled, checkedIn: tt.checkedIn, absent: tt.absent }
-                : d);
-              const days = sd.cycle.days.map(r => (r.isToday && tt)
-                ? { ...r, scheduled: tt.scheduled, worked: tt.checkedIn, presentScheduled: tt.checkedIn }
-                : r);
+              // Today's authoritative tally — the same one the Dashboard tiles
+              // use, so the two never disagree. It briefly goes null while the
+              // dashboard loader refetches, so hold the last good one rather
+              // than letting today's number flick back and forth.
+              const ttLive = computeTechDayStats(dashTechByBranch);
+              if (ttLive) _lastTechDayTotals.current = ttLive;
+              const tt = ttLive || _lastTechDayTotals.current;
+
+              // ── Store filter ── everything below is a re-slice of data
+              // already in memory, so changing store costs no queries.
+              const allBranches = sd.branches || [];
+              const regions = Array.from(new Set(allBranches.map(b => b.region).filter(Boolean))).sort();
+              const visible = allBranches.filter(b => staffRegion === "all" || b.region === staffRegion);
+              const storeSel = (staffStore !== "all" && visible.some(b => b.name === staffStore)) ? staffStore : "all";
+              const picked = storeSel === "all" ? visible.map(b => b.name) : [storeSel];
+              const isFiltered = storeSel !== "all" || staffRegion !== "all";
+              const sliceOf = (row) => {
+                if (!isFiltered) return row;
+                let scheduled = 0, worked = 0, presentScheduled = 0, absent = 0, cash = 0;
+                for (const b of picked) {
+                  const g = (row.byBranch || {})[b];
+                  if (g) { scheduled += g.scheduled; worked += g.worked; presentScheduled += g.presentScheduled; absent += g.absent; }
+                  if (row.cashByBranch) cash += (row.cashByBranch[b] || 0);
+                }
+                return { ...row, scheduled, worked, presentScheduled, absent, cash };
+              };
+              // The dashboard tally is a whole-scope figure, so it can only
+              // stand in for today while no store filter is applied.
+              const useTt = tt && !isFiltered;
+              const days = sd.cycle.days.map(r0 => {
+                const r = sliceOf(r0);
+                const out = isFiltered
+                  ? { ...r, worked: r.isFuture ? null : r.worked, presentScheduled: r.isFuture ? null : r.presentScheduled, cashTotal: r.isFuture ? null : r.cash }
+                  : r;
+                return (out.isToday && useTt) ? { ...out, scheduled: tt.scheduled, worked: tt.checkedIn, presentScheduled: tt.checkedIn } : out;
+              });
+              const next7 = sd.next7.map(d0 => {
+                const past = d0.checkedIn != null;
+                const d = sliceOf(d0);
+                const out = isFiltered ? { ...d, checkedIn: past ? d.worked : null, absent: past ? d.absent : null } : d;
+                return (out.isToday && useTt) ? { ...out, scheduled: tt.scheduled, checkedIn: tt.checkedIn, absent: tt.absent } : out;
+              });
+
               const toDate = days.filter(r => !r.isFuture);
               const totalScheduled = days.reduce((a, r) => a + r.scheduled, 0);
               const totalScheduledToDate = toDate.reduce((a, r) => a + r.scheduled, 0);
@@ -38624,95 +39703,259 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const totalPresentScheduled = toDate.reduce((a, r) => a + (r.presentScheduled || 0), 0);
               const totalCash = toDate.reduce((a, r) => a + (r.cashTotal || 0), 0);
               const attendanceRate = totalScheduledToDate > 0 ? Math.round((totalPresentScheduled / totalScheduledToDate) * 100) : null;
-              const c = { ...sd.cycle, days, totalScheduled, totalScheduledToDate, totalWorked, totalPresentScheduled, totalCash, attendanceRate };
-              // Whole rand, no cents — cash-up figures are large.
-              const fmtR = (n) => "R" + Math.round(Number(n) || 0).toLocaleString("en-ZA");
+              const elapsedFrac = sd.cycle.elapsedFrac || 0;
+
+              // ── Store economics ── the cost is quoted per full pay period,
+              // so a mid-cycle read is pro-rated by how much of the cycle has
+              // actually run. Headcount is who the store ROSTERED (who it
+              // pays), not who turned up — an absent tech still costs.
+              const rows = visible
+                .filter(b => storeSel === "all" || b.name === storeSel)
+                // A store that rostered nobody and took nothing (typically one
+                // that hasn't opened yet) is noise in a performance table —
+                // unless it's the one you've explicitly selected.
+                .filter(b => b.headcount > 0 || b.revenue > 0 || b.name === storeSel)
+                .map(b => {
+                  const cost = b.headcount * techCostPerCycle * elapsedFrac;
+                  const contribution = b.revenue - cost;
+                  return {
+                    ...b, cost, contribution,
+                    margin: b.revenue > 0 ? (contribution / b.revenue) : null,
+                    costPerShift: b.worked > 0 ? (cost / b.worked) : null
+                  };
+                })
+                .sort((a, b) => b.contribution - a.contribution);
+              const sumCost = rows.reduce((a, r) => a + r.cost, 0);
+              const sumRev = rows.reduce((a, r) => a + r.revenue, 0);
+              const sumContribution = sumRev - sumCost;
+              const sumHeads = rows.reduce((a, r) => a + r.headcount, 0);
+              // Portfolio break-even: what one worked shift has to bring in
+              // just to cover the tech cost behind it.
+              const breakEven = totalWorked > 0 ? (sumCost / totalWorked) : 0;
+              const revPerShift = totalWorked > 0 ? (totalCash / totalWorked) : null;
+              const withCashups = rows.filter(r => r.hasCashups);
+              const missingCashups = rows.filter(r => !r.hasCashups && r.worked > 0);
+              const scopeNote = storeSel !== "all" ? storeSel : (staffRegion !== "all" ? staffRegion + " region" : sd.scopeLabel);
+
+              const kpi = (v, l, tone, sub) => (
+                <div style={{ background: "#fff", border: "1px solid #F6E7EE", borderRadius: 16, padding: "17px 18px", boxShadow: "0 1px 2px rgba(131,24,67,0.04)" }}>
+                  <div style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 27, fontWeight: 800, color: tone, lineHeight: 1, letterSpacing: "-0.02em", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{v}</div>
+                  <div style={{ ...eyebrow, marginTop: 10 }}>{l}</div>
+                  {sub ? <div style={{ fontSize: 11.5, color: "#C09BAC", marginTop: 3 }}>{sub}</div> : null}
+                </div>
+              );
+
               return (
                 <>
+                  {/* ── Filters + cost assumption ── */}
+                  <div style={{ ...card, display: "flex", alignItems: "flex-end", gap: 14, flexWrap: "wrap" }}>
+                    <div>
+                      <div style={{ ...eyebrow, marginBottom: 6 }}>Region</div>
+                      <select value={staffRegion} onChange={e => { setStaffRegion(e.target.value); setStaffStore("all"); }} style={{ ...ctrl, cursor: "pointer" }}>
+                        <option value="all">All regions</option>
+                        {regions.map(r => <option key={r} value={r}>{r}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <div style={{ ...eyebrow, marginBottom: 6 }}>Store</div>
+                      <select value={storeSel} onChange={e => setStaffStore(e.target.value)} style={{ ...ctrl, cursor: "pointer", minWidth: 180 }}>
+                        <option value="all">All stores ({visible.length})</option>
+                        {visible.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <div style={{ ...eyebrow, marginBottom: 6 }} title="What one nail tech costs for a full pay period — the baseline for judging whether a store carries itself.">Cost per tech / cycle</div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <span style={{ fontSize: 13, color: "#9d6a82", fontWeight: 700 }}>R</span>
+                        <input type="number" min="0" step="100" value={techCostPerCycle}
+                          onChange={e => setTechCost(e.target.value)}
+                          style={{ ...ctrl, width: 108 }} />
+                      </div>
+                    </div>
+                    {(storeSel !== "all" || staffRegion !== "all") && (
+                      <button onClick={() => { setStaffRegion("all"); setStaffStore("all"); }}
+                        style={{ ...ctrl, cursor: "pointer", fontWeight: 700, background: "#FDEEF5" }}>Clear filters</button>
+                    )}
+                    <div style={{ flex: 1 }} />
+                    <div style={{ fontSize: 11.5, color: "#9d6a82", textAlign: "right" }}>
+                      <div style={{ fontWeight: 700, color: "#831843" }}>{sd.cycle.label}</div>
+                      <div>Day {sd.cycle.cycleDaysElapsed} of {sd.cycle.cycleDaysTotal} · {Math.round(elapsedFrac * 100)}% through the cycle</div>
+                    </div>
+                  </div>
+
+                  {/* ── Headline figures ── */}
+                  <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(auto-fit,minmax(160px,1fr))", gap: 11 }}>
+                    {kpi(totalWorked, "shifts worked", "#BE185D", totalScheduledToDate + " rostered to date")}
+                    {kpi(attendanceRate == null ? "—" : attendanceRate + "%", "attendance", attendanceRate == null ? "#9d6a82" : (attendanceRate >= 90 ? "#166534" : attendanceRate >= 75 ? "#854d0e" : "#b91c1c"), "of rostered techs")}
+                    {kpi(fmtRand(totalCash), "takings to date", "#7C3AED", totalScheduled + " shifts planned this cycle")}
+                    {kpi(revPerShift == null ? "—" : fmtRand(revPerShift), "per tech-shift", "#a21caf", "break-even " + fmtRand(breakEven))}
+                    {kpi(fmtRand(sumCost), "nail-tech cost", "#B45309", sumHeads + " techs · pro-rated")}
+                    {kpi((sumContribution >= 0 ? "+" : "−") + fmtRand(Math.abs(sumContribution)), "after tech cost", sumContribution >= 0 ? "#047857" : "#B91C1C", sumRev > 0 ? Math.round((sumContribution / sumRev) * 100) + "% of takings" : "no takings yet")}
+                  </div>
+
+                  {/* ── Store performance ── */}
+                  <div style={card}>
+                    <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 3 }}>
+                      <div>
+                        <div style={secTitle}>Store performance</div>
+                        <div style={secSub}>Takings against what each store's rostered nail techs cost so far. Sorted by what's left over.</div>
+                      </div>
+                      <span style={{ ...eyebrow, background: "#FDF2F7", border: "1px solid #F6E7EE", borderRadius: 999, padding: "5px 12px", whiteSpace: "nowrap" }}>{scopeNote}</span>
+                    </div>
+                    {rows.length === 0 ? (
+                      <div style={{ fontSize: 13, color: "#9ca3af", fontStyle: "italic" }}>No stores in this selection.</div>
+                    ) : (
+                      <div style={{ overflowX: "auto" }}>
+                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 720 }}>
+                          <thead>
+                            <tr>
+                              <th style={{ padding: "0 12px 10px", textAlign: "left", fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.09em", textTransform: "uppercase", color: "#B08A9C", borderBottom: "1px solid #F3E3EB", whiteSpace: "nowrap" }}>Store</th>
+                              <th style={{ padding: "0 12px 10px", textAlign: "right", fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.09em", textTransform: "uppercase", color: "#B08A9C", borderBottom: "1px solid #F3E3EB", whiteSpace: "nowrap" }} title="Distinct nail techs this store rostered this cycle — who it pays for">Techs</th>
+                              <th style={{ padding: "0 12px 10px", textAlign: "right", fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.09em", textTransform: "uppercase", color: "#B08A9C", borderBottom: "1px solid #F3E3EB", whiteSpace: "nowrap" }}>Shifts</th>
+                              <th style={{ padding: "0 12px 10px", textAlign: "right", fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.09em", textTransform: "uppercase", color: "#B08A9C", borderBottom: "1px solid #F3E3EB", whiteSpace: "nowrap" }}>Attend.</th>
+                              <th style={{ padding: "0 12px 10px", textAlign: "right", fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.09em", textTransform: "uppercase", color: "#B08A9C", borderBottom: "1px solid #F3E3EB", whiteSpace: "nowrap" }}>Takings</th>
+                              <th style={{ padding: "0 12px 10px", textAlign: "right", fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.09em", textTransform: "uppercase", color: "#B08A9C", borderBottom: "1px solid #F3E3EB", whiteSpace: "nowrap" }}>Tech cost</th>
+                              <th style={{ padding: "0 12px 10px", textAlign: "right", fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.09em", textTransform: "uppercase", color: "#B08A9C", borderBottom: "1px solid #F3E3EB", whiteSpace: "nowrap" }} title="Takings minus the pro-rated nail-tech cost. Not profit — rent, stock and managers aren't in here.">After tech cost</th>
+                              <th style={{ padding: "8px 10px", textAlign: "left", fontWeight: 700, borderBottom: "1px solid #F9A8D4", width: 150 }}>Per tech-shift</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {rows.map(r => {
+                              const good = r.contribution >= 0;
+                              const rps = r.revPerShift || 0;
+                              const maxRps = Math.max(breakEven, ...rows.map(x => x.revPerShift || 0)) || 1;
+                              return (
+                                <tr key={r.name} style={{ background: storeSel === r.name ? "#FDEEF5" : "transparent" }}>
+                                  <td style={{ padding: "12px", borderBottom: "1px solid #FBF1F5", color: "#831843", fontWeight: 700 }}>
+                                    {r.name}
+                                    {!r.hasCashups && r.worked > 0 && <span title="No cash-ups captured for this store this cycle, so takings read as zero" style={{ marginLeft: 6, fontSize: 10, color: "#b45309" }}>⚠ no cash-ups</span>}
+                                  </td>
+                                  <td style={{ padding: "12px", borderBottom: "1px solid #FBF1F5", textAlign: "right", color: "#831843" }}>{r.headcount}</td>
+                                  <td style={{ padding: "12px", borderBottom: "1px solid #FBF1F5", textAlign: "right", color: "#831843", fontWeight: 600 }}>{r.worked}</td>
+                                  <td style={{ padding: "12px", borderBottom: "1px solid #FBF1F5", textAlign: "right", fontWeight: 600, color: r.attendanceRate == null ? "#cbd5e1" : (r.attendanceRate >= 90 ? "#166534" : r.attendanceRate >= 75 ? "#854d0e" : "#b91c1c") }}>{r.attendanceRate == null ? "—" : r.attendanceRate + "%"}</td>
+                                  <td style={{ padding: "12px", borderBottom: "1px solid #FBF1F5", textAlign: "right", color: "#5b21b6", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{fmtRand(r.revenue)}</td>
+                                  <td style={{ padding: "12px", borderBottom: "1px solid #FBF1F5", textAlign: "right", color: "#B45309", fontVariantNumeric: "tabular-nums" }}>{fmtRand(r.cost)}</td>
+                                  <td style={{ padding: "12px", borderBottom: "1px solid #FBF1F5", textAlign: "right", fontWeight: 800, color: good ? "#047857" : "#B91C1C", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+                                    {good ? "▲ +" : "▼ −"}{fmtRand(Math.abs(r.contribution))}
+                                  </td>
+                                  <td style={{ padding: "12px", borderBottom: "1px solid #FBF1F5" }}>
+                                    <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                                      <div style={{ flex: 1, height: 6, borderRadius: 999, background: "rgba(131,24,67,0.07)", overflow: "hidden", position: "relative", minWidth: 54 }}>
+                                        <div style={{ height: "100%", width: Math.min(100, (rps / maxRps) * 100) + "%", background: good ? "#047857" : "#B91C1C", opacity: 0.85, transition: "width .3s ease" }} />
+                                        {breakEven > 0 && <div title={"break-even " + fmtRand(breakEven)} style={{ position: "absolute", top: -2, bottom: -2, left: Math.min(100, (breakEven / maxRps) * 100) + "%", width: 2, background: "#B45309" }} />}
+                                      </div>
+                                      <span style={{ fontSize: 11.5, fontWeight: 700, color: "#831843", fontVariantNumeric: "tabular-nums", minWidth: 52, textAlign: "right" }}>{r.revPerShift == null ? "—" : fmtRand(r.revPerShift)}</span>
+                                    </div>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                    <div style={{ marginTop: 16, fontSize: 12, lineHeight: 1.65, color: "#7a6270", background: "#FDF9FB", border: "1px solid #F6E7EE", borderRadius: 12, padding: "12px 14px" }}>
+                      💡 <b>How the cost is worked out:</b> {sumHeads} rostered tech{sumHeads === 1 ? "" : "s"} × {fmtRand(techCostPerCycle)} per cycle × {Math.round(elapsedFrac * 100)}% of the cycle elapsed = <b>{fmtRand(sumCost)}</b>. Spread over {totalWorked} worked shift{totalWorked === 1 ? "" : "s"}, every shift has to bring in <b>{fmtRand(breakEven)}</b> to cover the tech behind it.
+                      {missingCashups.length > 0 && <span style={{ color: "#b45309" }}> {missingCashups.length} store{missingCashups.length === 1 ? " has" : "s have"} worked shifts but no cash-ups captured this cycle, so {missingCashups.length === 1 ? "it reads" : "they read"} as making nothing.</span>}
+                      {" "}This is takings after nail-tech cost only — rent, stock, managers and everything else still come off it. A tech who transferred mid-cycle counts against both stores.
+                    </div>
+                  </div>
+
+                  {/* ── Ranked stores ── only worth drawing with more than one */}
+                  {withCashups.length > 1 && (
+                    <div style={card}>
+                      <div style={secTitle}>Takings per nail-tech shift</div>
+                      <div style={{ ...secSub, marginBottom: 16 }}>
+                        Bars past the marker cover their tech cost; short of it, the store is working below what its techs cost.
+                      </div>
+                      <StaffRankedBars
+                        rows={withCashups.slice().sort((a, b) => (b.revPerShift || 0) - (a.revPerShift || 0)).map(r => ({ name: r.name, value: r.revPerShift || 0 }))}
+                        refValue={breakEven} refLabel={"break-even " + fmtRand(breakEven)} />
+                    </div>
+                  )}
+
+                  {/* ── Cycle rhythm ── two panels, one shared day axis. Never
+                       a second y-axis on the same panel. */}
+                  <div style={card}>
+                    <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 3 }}>
+                      <div>
+                        <div style={secTitle}>Shifts &amp; takings across the cycle</div>
+                        <div style={secSub}>{scopeNote} · {sd.cycle.label}</div>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 14, fontSize: 11, color: "#9d6a82" }}>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 2, background: STAFF_VIZ.plan, opacity: 0.5 }} /> rostered</span>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 2, background: STAFF_VIZ.actual }} /> worked</span>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><span style={{ width: 10, height: 3, borderRadius: 2, background: STAFF_VIZ.revenue }} /> takings</span>
+                      </div>
+                    </div>
+                    <StaffDailyShifts days={days} />
+                    <StaffDailyTakings days={days} />
+                  </div>
+
                   {/* ── Next 7 days ── */}
                   <div>
-                    <div style={{ fontSize: 13, fontWeight: 800, color: "#831843", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 10 }}>Next 7 days &middot; nail techs scheduled to work</div>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 10 }}>
+                    <div style={{ ...secTitle, marginBottom: 12 }}>Next 7 days</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(108px, 1fr))", gap: 10 }}>
                       {next7.map(d => (
-                        <div key={d.ymd} style={{ ...card, padding: "14px 14px", textAlign: "center", background: d.isToday ? "#e0f2fe" : "#FFFFFF", borderColor: d.isToday ? "#7dd3fc" : "#FBCFE8" }}>
-                          <div style={{ fontSize: 11, fontWeight: 800, color: d.isToday ? "#0c4a6e" : "#9d6a82", textTransform: "uppercase", letterSpacing: "0.04em" }}>{d.isToday ? "Today" : d.dow}</div>
-                          <div style={{ fontSize: 11, color: "#9d6a82", marginBottom: 6 }}>{d.dayNum} {d.monthShort}</div>
-                          <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 34, fontWeight: 800, color: d.isToday ? "#0c4a6e" : "#831843", lineHeight: 1 }}>{d.scheduled}</div>
-                          <div style={{ fontSize: 10.5, color: "#9d6a82", marginTop: 4 }}>scheduled</div>
+                        <div key={d.ymd} style={{ ...card, padding: "13px 12px", textAlign: "center", background: d.isToday ? "#e0f2fe" : "#FFFFFF", borderColor: d.isToday ? "#7dd3fc" : "#FBCFE8" }}>
+                          <div style={{ fontSize: 10.5, fontWeight: 800, color: d.isToday ? "#0c4a6e" : "#9d6a82", textTransform: "uppercase", letterSpacing: "0.05em" }}>{d.isToday ? "Today" : d.dow}</div>
+                          <div style={{ fontSize: 10.5, color: "#9d6a82", marginBottom: 5 }}>{d.dayNum} {d.monthShort}</div>
+                          <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 32, fontWeight: 800, color: d.isToday ? "#0c4a6e" : "#831843", lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>{d.scheduled}</div>
+                          <div style={{ fontSize: 10, color: "#9d6a82", marginTop: 3 }}>rostered</div>
                           {d.checkedIn != null && (
-                            <div style={{ marginTop: 6, fontSize: 11, fontWeight: 700, color: "#166534" }}>✓ {d.checkedIn} worked{d.absent ? <span style={{ color: "#b91c1c", fontWeight: 700 }}> &middot; {d.absent} absent</span> : null}</div>
+                            <div style={{ marginTop: 6, fontSize: 11, fontWeight: 700, color: "#166534" }}>✓ {d.checkedIn} worked{d.absent ? <span style={{ color: "#b91c1c", fontWeight: 700 }}> · {d.absent} absent</span> : null}</div>
                           )}
                         </div>
                       ))}
                     </div>
                   </div>
 
-                  {/* ── This pay cycle: scheduled vs worked ── */}
-                  <div style={{ ...card }}>
-                    <div style={{ fontSize: 13, fontWeight: 800, color: "#831843", textTransform: "uppercase", letterSpacing: "0.05em" }}>This pay cycle &middot; shifts scheduled vs worked</div>
-                    <div style={{ fontSize: 12, color: "#9d6a82", marginTop: 2, marginBottom: 14 }}>{c.label}</div>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginBottom: 16 }}>
-                      <div style={{ background: "#FDEEF5", borderRadius: 10, padding: "14px 16px" }}>
-                        <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 30, fontWeight: 800, color: "#831843", lineHeight: 1 }}>{c.totalScheduled}</div>
-                        <div style={{ fontSize: 11.5, color: "#9d6a82", marginTop: 4 }}>shifts scheduled (whole cycle)</div>
-                      </div>
-                      <div style={{ background: "#dcfce7", borderRadius: 10, padding: "14px 16px" }}>
-                        <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 30, fontWeight: 800, color: "#166534", lineHeight: 1 }}>{c.totalWorked}</div>
-                        <div style={{ fontSize: 11.5, color: "#3f6212", marginTop: 4 }}>shifts worked so far (to date)</div>
-                      </div>
-                      <div style={{ background: "#fef9c3", borderRadius: 10, padding: "14px 16px" }}>
-                        <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 30, fontWeight: 800, color: "#854d0e", lineHeight: 1 }}>{c.totalScheduledToDate}</div>
-                        <div style={{ fontSize: 11.5, color: "#854d0e", marginTop: 4 }}>scheduled to date</div>
-                      </div>
-                      <div style={{ background: "#e0f2fe", borderRadius: 10, padding: "14px 16px" }}>
-                        <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 30, fontWeight: 800, color: "#0c4a6e", lineHeight: 1 }}>{c.attendanceRate == null ? "—" : c.attendanceRate + "%"}</div>
-                        <div style={{ fontSize: 11.5, color: "#0c4a6e", marginTop: 4 }}>attendance (rostered who worked)</div>
-                      </div>
-                      <div style={{ background: "#ede9fe", borderRadius: 10, padding: "14px 16px" }}>
-                        <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 30, fontWeight: 800, color: "#5b21b6", lineHeight: 1 }}>{fmtR(c.totalCash)}</div>
-                        <div style={{ fontSize: 11.5, color: "#5b21b6", marginTop: 4 }}>cash-ups total (to date)</div>
-                      </div>
-                      <div style={{ background: "#fae8ff", borderRadius: 10, padding: "14px 16px" }}>
-                        <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 30, fontWeight: 800, color: "#a21caf", lineHeight: 1 }}>{c.totalWorked > 0 ? fmtR(c.totalCash / c.totalWorked) : "—"}</div>
-                        <div style={{ fontSize: 11.5, color: "#a21caf", marginTop: 4 }}>avg cash-up per tech-shift</div>
-                      </div>
+                  {/* ── Day-by-day detail ── collapsed by default; the charts
+                       above answer the usual questions without it. */}
+                  <div style={card}>
+                    <div onClick={() => setStaffTableOpen(o => !o)} title={(staffTableOpen ? "Hide" : "Show") + " the day-by-day table"}
+                      style={{ display: "flex", alignItems: "center", gap: 9, cursor: "pointer", userSelect: "none" }}>
+                      <span style={secTitle}>Day by day</span>
+                      <span style={{ fontSize: 11.5, color: "#9d6a82" }}>{sd.cycle.label}</span>
+                      <span style={{ flex: 1 }} />
+                      <span style={{ color: "#831843", fontSize: 12 }}>{staffTableOpen ? "▾" : "▸"}</span>
                     </div>
-                    <div style={{ fontSize: 12, color: "#6b7280", background: "#f9fafb", border: "1px solid #f3f4f6", borderRadius: 8, padding: "10px 12px", marginBottom: 16 }}>
-                      💡 <b>Average per nail tech per shift:</b> {fmtR(c.totalCash)} of cash-ups ÷ {c.totalWorked} shifts worked = <b>{c.totalWorked > 0 ? fmtR(c.totalCash / c.totalWorked) : "—"}</b> per tech worked, this cycle to date. The table below breaks it down per day.
-                    </div>
-                    <div style={{ overflowX: "auto" }}>
-                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
-                        <thead>
-                          <tr style={{ background: "#FDEEF5", color: "#831843" }}>
-                            <th style={{ padding: "7px 10px", textAlign: "left", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Day</th>
-                            <th style={{ padding: "7px 10px", textAlign: "right", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Scheduled</th>
-                            <th style={{ padding: "7px 10px", textAlign: "right", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Worked</th>
-                            <th style={{ padding: "7px 10px", textAlign: "right", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }} title="Of the techs rostered, how many actually worked">Attendance</th>
-                            <th style={{ padding: "7px 10px", textAlign: "right", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Cash-ups</th>
-                            <th style={{ padding: "7px 10px", textAlign: "right", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Avg / tech</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {c.days.map(r => {
-                            const rate = (!r.isFuture && r.scheduled > 0) ? Math.round(((r.presentScheduled || 0) / r.scheduled) * 100) : null;
-                            const avgPerTech = (!r.isFuture && r.worked > 0) ? (r.cashTotal / r.worked) : null;
-                            return (
-                              <tr key={r.ymd} style={{ background: r.isToday ? "#e0f2fe" : "transparent" }}>
-                                <td style={{ padding: "6px 10px", borderBottom: "1px solid #FDEEF5", color: "#831843", fontWeight: r.isToday ? 800 : 500 }}>{r.dow} {r.d} {r.monthShort}{r.isToday ? " · today" : ""}</td>
-                                <td style={{ padding: "6px 10px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: "#831843", fontWeight: 600 }}>{r.scheduled}</td>
-                                <td style={{ padding: "6px 10px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: r.isFuture ? "#cbd5e1" : "#166534", fontWeight: 600 }}>{r.isFuture ? "—" : r.worked}</td>
-                                <td style={{ padding: "6px 10px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: rate == null ? "#cbd5e1" : (rate >= 90 ? "#166534" : rate >= 75 ? "#854d0e" : "#b91c1c"), fontWeight: 600 }}>{rate == null ? "—" : rate + "%"}</td>
-                                <td style={{ padding: "6px 10px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: r.isFuture ? "#cbd5e1" : "#5b21b6", fontWeight: 600 }}>{r.isFuture ? "—" : (r.cashTotal ? fmtR(r.cashTotal) : "—")}</td>
-                                <td style={{ padding: "6px 10px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: avgPerTech == null ? "#cbd5e1" : "#a21caf", fontWeight: 700 }}>{avgPerTech == null ? "—" : fmtR(avgPerTech)}</td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                    <div style={{ marginTop: 12, fontSize: 11.5, color: "#9d6a82" }}>
-                      “Scheduled” counts active nail techs rostered to work that day (excludes leave, maternity, off / rest days, and departed staff), read at the branch each tech actually works — so a mid-cycle transfer is counted at their new store. “Worked” counts everyone present — marked on the sheet (on time, late, extra, trial, swap-in) <i>or</i> with a kiosk clock-in for that day (even older ones that never got tapped onto the sheet) — so it can exceed scheduled on days with extra/cover shifts. “Attendance” is how many of the <i>rostered</i> techs worked (capped at 100%). <b>Today’s numbers mirror the Dashboard tiles exactly.</b> “Cash-ups” is the day’s total takings from the Cash Ups tab (turnover, excludes tips; superseded entries ignored) summed across the in-scope branches, and “Avg / tech” splits that across the techs who worked that day. Covers {sd.branchCount} branch{sd.branchCount === 1 ? "" : "es"} · {sd.scopeLabel}.
-                    </div>
+                    {staffTableOpen && (
+                      <div style={{ overflowX: "auto", marginTop: 12 }}>
+                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+                          <thead>
+                            <tr>
+                              <th style={{ padding: "0 12px 10px", textAlign: "left", fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.09em", textTransform: "uppercase", color: "#B08A9C", borderBottom: "1px solid #F3E3EB", whiteSpace: "nowrap" }}>Day</th>
+                              <th style={{ padding: "0 12px 10px", textAlign: "right", fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.09em", textTransform: "uppercase", color: "#B08A9C", borderBottom: "1px solid #F3E3EB", whiteSpace: "nowrap" }}>Rostered</th>
+                              <th style={{ padding: "0 12px 10px", textAlign: "right", fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.09em", textTransform: "uppercase", color: "#B08A9C", borderBottom: "1px solid #F3E3EB", whiteSpace: "nowrap" }}>Worked</th>
+                              <th style={{ padding: "0 12px 10px", textAlign: "right", fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.09em", textTransform: "uppercase", color: "#B08A9C", borderBottom: "1px solid #F3E3EB", whiteSpace: "nowrap" }} title="Of the techs rostered, how many actually worked">Attendance</th>
+                              <th style={{ padding: "0 12px 10px", textAlign: "right", fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.09em", textTransform: "uppercase", color: "#B08A9C", borderBottom: "1px solid #F3E3EB", whiteSpace: "nowrap" }}>Takings</th>
+                              <th style={{ padding: "0 12px 10px", textAlign: "right", fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.09em", textTransform: "uppercase", color: "#B08A9C", borderBottom: "1px solid #F3E3EB", whiteSpace: "nowrap" }}>Per tech</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {days.map(r => {
+                              const rate = (!r.isFuture && r.scheduled > 0) ? Math.round(((r.presentScheduled || 0) / r.scheduled) * 100) : null;
+                              const avgPerTech = (!r.isFuture && r.worked > 0) ? (r.cashTotal / r.worked) : null;
+                              return (
+                                <tr key={r.ymd} style={{ background: r.isToday ? "#e0f2fe" : "transparent" }}>
+                                  <td style={{ padding: "9px 12px", borderBottom: "1px solid #FBF1F5", color: "#831843", fontWeight: r.isToday ? 800 : 500 }}>{r.dow} {r.d} {r.monthShort}{r.isToday ? " · today" : ""}</td>
+                                  <td style={{ padding: "9px 12px", borderBottom: "1px solid #FBF1F5", textAlign: "right", color: "#831843", fontWeight: 600 }}>{r.scheduled}</td>
+                                  <td style={{ padding: "9px 12px", borderBottom: "1px solid #FBF1F5", textAlign: "right", color: r.isFuture ? "#cbd5e1" : "#166534", fontWeight: 600 }}>{r.isFuture ? "—" : r.worked}</td>
+                                  <td style={{ padding: "9px 12px", borderBottom: "1px solid #FBF1F5", textAlign: "right", color: rate == null ? "#cbd5e1" : (rate >= 90 ? "#166534" : rate >= 75 ? "#854d0e" : "#b91c1c"), fontWeight: 600 }}>{rate == null ? "—" : rate + "%"}</td>
+                                  <td style={{ padding: "9px 12px", borderBottom: "1px solid #FBF1F5", textAlign: "right", color: r.isFuture ? "#cbd5e1" : "#5b21b6", fontWeight: 600 }}>{r.isFuture ? "—" : (r.cashTotal ? fmtRand(r.cashTotal) : "—")}</td>
+                                  <td style={{ padding: "9px 12px", borderBottom: "1px solid #FBF1F5", textAlign: "right", color: avgPerTech == null ? "#cbd5e1" : "#a21caf", fontWeight: 700 }}>{avgPerTech == null ? "—" : fmtRand(avgPerTech)}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+
+                  <div style={{ fontSize: 11.5, color: "#9d6a82", lineHeight: 1.6 }}>
+                    “Rostered” counts active nail techs scheduled to work that day (excludes leave, maternity, off / rest days and departed staff), read at the branch each tech actually works — so a mid-cycle transfer counts at their new store. “Worked” counts everyone present — marked on the sheet (on time, late, extra, trial, swap-in) <i>or</i> with a kiosk clock-in for that day — so it can exceed rostered on days with extra or cover shifts. “Attendance” is how many of the <i>rostered</i> techs worked, capped at 100%. “Takings” is the day's cash-up total (turnover, excludes tips; superseded entries ignored). <b>Today's numbers mirror the Dashboard tiles exactly</b> when no store filter is applied. Covers {rows.length} store{rows.length === 1 ? "" : "s"} · {scopeNote}.
                   </div>
                 </>
               );
@@ -38746,7 +39989,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         ].filter(Boolean);
         const flagChip = (f) => <span key={f} style={{ background: "#fef3c7", color: "#92400e", border: "1px solid #fcd34d", padding: "1px 7px", borderRadius: 6, fontSize: 10, fontWeight: 800, whiteSpace: "nowrap" }}>⚠ {f}</span>;
         const personRow = (r, i, accent) => (
-          <div key={r.ec + i} style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "9px 12px", borderBottom: "1px solid #FDEEF5" }}>
+          <div key={r.ec + i} style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "9px 12px", borderBottom: "1px solid #FBF1F5" }}>
             <div style={{ fontSize: 13, fontWeight: 800, color: accent, minWidth: 22, textAlign: "right" }}>{i + 1}</div>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
@@ -39001,7 +40244,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         <div style={{ overflowX: "auto" }}>
                           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                             <thead>
-                              <tr style={{ background: "#FDEEF5", color: "#831843" }}>
+                              <tr>
                                 <th style={{ padding: "8px 12px", textAlign: "left", fontWeight: 700, borderBottom: "1px solid #F9A8D4", position: "sticky", left: 0, background: "#FDEEF5" }}>Staff</th>
                                 {trendData.cycleYms.map(ym => <th key={ym} title={cyTitle(ym)} style={{ padding: "8px 10px", textAlign: "center", fontWeight: 700, borderBottom: "1px solid #F9A8D4", minWidth: 44 }}>{cyLabel(ym)}</th>)}
                                 <th style={{ padding: "8px 12px", textAlign: "center", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Trend</th>
@@ -39012,12 +40255,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 const tt = ti(r.trend);
                                 return (
                                   <tr key={r.ec + ri}>
-                                    <td style={{ padding: "7px 12px", borderBottom: "1px solid #FDEEF5", position: "sticky", left: 0, background: "#fff" }}>
+                                    <td style={{ padding: "7px 12px", borderBottom: "1px solid #FBF1F5", position: "sticky", left: 0, background: "#fff" }}>
                                       <div style={{ fontSize: 12, fontWeight: 700, color: "#831843" }}>{r.name}</div>
                                       <div style={{ fontSize: 10, color: "#9d4d6e" }}>{r.branch}{r.role && r.role !== "NT" ? " · " + r.role : ""}</div>
                                     </td>
-                                    {r.missed.map((n, ci) => { const c = cellColor(n); return <td key={ci} style={{ padding: "5px 6px", borderBottom: "1px solid #FDEEF5", textAlign: "center" }}><span style={{ display: "inline-block", minWidth: 22, padding: "2px 6px", borderRadius: 6, background: c.bg, color: c.fg, fontWeight: 700, fontSize: 11 }}>{n}</span></td>; })}
-                                    <td style={{ padding: "5px 12px", borderBottom: "1px solid #FDEEF5", textAlign: "center", color: tt.c, fontWeight: 800, fontSize: 14 }} title={r.trend === "up" ? "More absences than prior-cycle average" : r.trend === "down" ? "Fewer absences than prior-cycle average" : "About the same"}>{tt.s}</td>
+                                    {r.missed.map((n, ci) => { const c = cellColor(n); return <td key={ci} style={{ padding: "5px 6px", borderBottom: "1px solid #FBF1F5", textAlign: "center" }}><span style={{ display: "inline-block", minWidth: 22, padding: "2px 6px", borderRadius: 6, background: c.bg, color: c.fg, fontWeight: 700, fontSize: 11 }}>{n}</span></td>; })}
+                                    <td style={{ padding: "5px 12px", borderBottom: "1px solid #FBF1F5", textAlign: "center", color: tt.c, fontWeight: 800, fontSize: 14 }} title={r.trend === "up" ? "More absences than prior-cycle average" : r.trend === "down" ? "Fewer absences than prior-cycle average" : "About the same"}>{tt.s}</td>
                                   </tr>
                                 );
                               })}
@@ -39319,24 +40562,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               ) : (
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                   <thead>
-                    <tr style={{ background: "#FDEEF5", color: "#831843" }}>
-                      <th style={{ padding: "8px 10px", textAlign: "left", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Manager</th>
-                      <th style={{ padding: "8px 10px", textAlign: "left", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Branch</th>
-                      <th style={{ padding: "8px 10px", textAlign: "right", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Approved OT</th>
-                      <th style={{ padding: "8px 10px", textAlign: "right", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Pending</th>
-                      <th style={{ padding: "8px 10px", textAlign: "right", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Short hours</th>
-                      <th style={{ padding: "8px 10px", textAlign: "right", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Net payable</th>
+                    <tr>
+                      <th style={{ padding: "0 12px 10px", textAlign: "left", fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.09em", textTransform: "uppercase", color: "#B08A9C", borderBottom: "1px solid #F3E3EB", whiteSpace: "nowrap" }}>Manager</th>
+                      <th style={{ padding: "0 12px 10px", textAlign: "left", fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.09em", textTransform: "uppercase", color: "#B08A9C", borderBottom: "1px solid #F3E3EB", whiteSpace: "nowrap" }}>Branch</th>
+                      <th style={{ padding: "0 12px 10px", textAlign: "right", fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.09em", textTransform: "uppercase", color: "#B08A9C", borderBottom: "1px solid #F3E3EB", whiteSpace: "nowrap" }}>Approved OT</th>
+                      <th style={{ padding: "0 12px 10px", textAlign: "right", fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.09em", textTransform: "uppercase", color: "#B08A9C", borderBottom: "1px solid #F3E3EB", whiteSpace: "nowrap" }}>Pending</th>
+                      <th style={{ padding: "0 12px 10px", textAlign: "right", fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.09em", textTransform: "uppercase", color: "#B08A9C", borderBottom: "1px solid #F3E3EB", whiteSpace: "nowrap" }}>Short hours</th>
+                      <th style={{ padding: "0 12px 10px", textAlign: "right", fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.09em", textTransform: "uppercase", color: "#B08A9C", borderBottom: "1px solid #F3E3EB", whiteSpace: "nowrap" }}>Net payable</th>
                     </tr>
                   </thead>
                   <tbody>
                     {summary.map(s => (
                       <tr key={s.ec}>
-                        <td style={{ padding: "7px 10px", borderBottom: "1px solid #FDEEF5", color: "#831843", fontWeight: 600 }}>{s.name}</td>
-                        <td style={{ padding: "7px 10px", borderBottom: "1px solid #FDEEF5", color: "#9d4d6e" }}>{s.branch}</td>
-                        <td style={{ padding: "7px 10px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: "#14532d", fontWeight: 700 }}>{s.approved || 0}h</td>
-                        <td style={{ padding: "7px 10px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: s.pending > 0 ? "#92400e" : "#9ca3af", fontWeight: 600 }}>{s.pending || 0}h</td>
-                        <td style={{ padding: "7px 10px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: s.short > 0 ? "#7f1d1d" : "#9ca3af", fontWeight: 600 }}>−{s.short || 0}h</td>
-                        <td style={{ padding: "7px 10px", borderBottom: "1px solid #FDEEF5", textAlign: "right", color: s.net > 0 ? "#14532d" : "#9ca3af", fontWeight: 800 }}>{s.net}h</td>
+                        <td style={{ padding: "7px 10px", borderBottom: "1px solid #FBF1F5", color: "#831843", fontWeight: 600 }}>{s.name}</td>
+                        <td style={{ padding: "7px 10px", borderBottom: "1px solid #FBF1F5", color: "#9d4d6e" }}>{s.branch}</td>
+                        <td style={{ padding: "7px 10px", borderBottom: "1px solid #FBF1F5", textAlign: "right", color: "#14532d", fontWeight: 700 }}>{s.approved || 0}h</td>
+                        <td style={{ padding: "7px 10px", borderBottom: "1px solid #FBF1F5", textAlign: "right", color: s.pending > 0 ? "#92400e" : "#9ca3af", fontWeight: 600 }}>{s.pending || 0}h</td>
+                        <td style={{ padding: "7px 10px", borderBottom: "1px solid #FBF1F5", textAlign: "right", color: s.short > 0 ? "#7f1d1d" : "#9ca3af", fontWeight: 600 }}>−{s.short || 0}h</td>
+                        <td style={{ padding: "7px 10px", borderBottom: "1px solid #FBF1F5", textAlign: "right", color: s.net > 0 ? "#14532d" : "#9ca3af", fontWeight: 800 }}>{s.net}h</td>
                       </tr>
                     ))}
                   </tbody>
@@ -40092,7 +41335,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             <div style={{ background: "#fff", border: "1px solid #F9A8D4", borderRadius: 10, overflow: "hidden" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
                 <thead>
-                  <tr style={{ background: "#FDEEF5", color: "#831843" }}>
+                  <tr>
                     <th style={{ padding: "8px 12px", textAlign: "left", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Branch</th>
                     <th style={{ padding: "8px 12px", textAlign: "left", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Status</th>
                     <th style={{ padding: "8px 12px", textAlign: "left", fontWeight: 700, borderBottom: "1px solid #F9A8D4" }}>Opened at</th>
@@ -40102,12 +41345,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <tbody>
                   {sorted.map(s => (
                     <tr key={s.branch} style={{ background: s.opened ? "#f0fdf4" : "#fef2f2" }}>
-                      <td style={{ padding: "8px 12px", borderBottom: "1px solid #FDEEF5", color: "#831843", fontWeight: 600 }}>{s.branch}</td>
-                      <td style={{ padding: "8px 12px", borderBottom: "1px solid #FDEEF5", color: s.opened ? "#166534" : "#7f1d1d", fontWeight: 700 }}>
+                      <td style={{ padding: "8px 12px", borderBottom: "1px solid #FBF1F5", color: "#831843", fontWeight: 600 }}>{s.branch}</td>
+                      <td style={{ padding: "8px 12px", borderBottom: "1px solid #FBF1F5", color: s.opened ? "#166534" : "#7f1d1d", fontWeight: 700 }}>
                         {s.opened ? "✓ Open" : "⚠ Closed"}
                       </td>
-                      <td style={{ padding: "8px 12px", borderBottom: "1px solid #FDEEF5", color: "#831843" }}>{fmtTime(s.openedAt)}</td>
-                      <td style={{ padding: "8px 12px", borderBottom: "1px solid #FDEEF5", color: "#831843" }}>{s.openedBy || "—"}</td>
+                      <td style={{ padding: "8px 12px", borderBottom: "1px solid #FBF1F5", color: "#831843" }}>{fmtTime(s.openedAt)}</td>
+                      <td style={{ padding: "8px 12px", borderBottom: "1px solid #FBF1F5", color: "#831843" }}>{s.openedBy || "—"}</td>
                     </tr>
                   ))}
                 </tbody>
