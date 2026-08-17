@@ -4092,7 +4092,7 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete, smTrialActive, smTria
         </div>
         <div style={{ display: "grid", gap: 13 }}>
           <div><label style={lbl}>EC Code</label>
-            <input style={inp} value={f.ec} onChange={e => set("ec", e.target.value)} placeholder="e.g. B185M" /></div>
+            <input style={inp} value={f.ec} onChange={e => set("ec", e.target.value)} placeholder="e.g. B185-M" /></div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <div><label style={lbl}>First Name</label>
               <input style={inp} value={f.firstName || ""} onChange={e => set("firstName", e.target.value)} placeholder="e.g. Thandi" /></div>
@@ -4345,6 +4345,19 @@ function OfficeStaffModal({ s, pin, dept, onClose, onSave, onDelete }) {
   const isNew = f._id === undefined;
   const roleOpts = d === "CC" ? CC_ROLES : HO_ROLES;
   const deptLabel = d === "CC" ? CALL_CENTRE : HEAD_OFFICE;
+  // Keep the auto-assigned code's SUFFIX in step with the chosen department/role
+  // while it's still machine-managed (new record, not yet hand-edited): CC → -CC,
+  // a Head Office Trainer → -T, any other office role → -M. The NUMBER is kept;
+  // only the suffix flips. Stops the moment the user edits the field, and never
+  // touches an existing person's code (that would cascade an EC migration).
+  const [ecAuto, setEcAuto] = React.useState(isNew);
+  React.useEffect(() => {
+    if (!isNew || !ecAuto) return;
+    const base = String(f.ec || "").replace(/-(?:CC|M|T)$/i, "");
+    if (!base) return;
+    const suffix = d === "CC" ? "-CC" : (String(f.role || "").trim().toUpperCase() === "T" ? "-T" : "-M");
+    if (base + suffix !== f.ec) setF(p => ({ ...p, ec: base + suffix }));
+  }, [d, f.role, ecAuto, isNew]);
   const _ecU = String(f.ec || "").trim().toUpperCase();
   const _ecIsCc = /-CC$/.test(_ecU);
   // A role the record already carries that isn't in the current department's
@@ -4375,7 +4388,7 @@ function OfficeStaffModal({ s, pin, dept, onClose, onSave, onDelete }) {
         </div>
         <div style={{ display: "grid", gap: 13 }}>
           <div><label style={lbl}>EC Code</label>
-            <input style={inp} value={f.ec || ""} onChange={e => set("ec", e.target.value)} placeholder={d === "CC" ? "e.g. B891-CC" : "e.g. B206-M"} />
+            <input style={inp} value={f.ec || ""} onChange={e => { set("ec", e.target.value); setEcAuto(false); }} placeholder={d === "CC" ? "e.g. B891-CC" : "e.g. B206-M"} />
             {_ecBlocked && (
               <div style={{ fontSize: 11, color: "#dc2626", marginTop: 4, lineHeight: 1.45 }}>
                 A <strong>-CC</strong> code marks someone as Call Centre &amp; Sales, so this person would show on the CC&amp;S roster and schedule — but still be paid Head Office hours (08:00–17:00), because hours read the <em>role</em>. Use a non-<strong>-CC</strong> code (e.g. <code>{_ecU.replace(/-CC$/, "-M")}</code>), or switch Department to Call Centre &amp; Sales.
@@ -26133,6 +26146,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     }
   }
 
+  // Next employee-code NUMBER — the max B#### across EVERY population that can
+  // own a code (salon staff + managers, pending onboards, ALL office/CC staff via
+  // HEAD_OFFICE_ECS/CALL_CENTRE_ECS, and retired codes we must never reuse) + 1.
+  // ONE sequence for everyone, so an auto-assigned code can never collide across
+  // salon / managers / office / CC. The suffix (-M / -CC / -T / none) is applied
+  // by the caller per role/department; the number is population-agnostic. Floor
+  // 900 matches the onboarding generator this replaces.
+  const nextEcNumber = () => {
+    const src = [
+      ...(staff || []).map(s => s && s.ec),
+      ...(managers || []).map(m => m && m.ec),
+      ...(obList || []).map(o => o && o.ec),
+      ...HEAD_OFFICE_ECS, ...CALL_CENTRE_ECS,
+      ...(retiredEcs || []).map(x => x && x.ec)
+    ].filter(Boolean);
+    return src.reduce((mx, ec) => { const m = /B[- ]?(\d+)/i.exec(ec || ""); return m ? Math.max(mx, parseInt(m[1], 10)) : mx; }, 900) + 1;
+  };
+
   async function saveStaff(f) {
     // Shadow records are derived UI rows — closing the edit modal on one
     // is a no-op, not a DB write. (The real record at the source branch
@@ -26552,6 +26583,25 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     // is a no-op, not a DB write. (Edit the real record at the source
     // branch to change transfer details.)
     if (f && f.isShadow) { setMgrModal(null); return; }
+    // Duplicate-EC guard. There is NO DB unique constraint on employee_code and
+    // saveManager has no dup check of its own, so this is the only defence for
+    // the manual "+ Add Manager" path — every code is globally unique and never
+    // reused; a collision would silently overwrite another person's schedules,
+    // attendance, PINs and leave. Scan every other population (salon staff,
+    // managers, office/CC) for a different record already holding this code.
+    const _mgrEcU = String(f.ec || "").trim().toUpperCase();
+    if (!_mgrEcU) { alert("An EC Code is required — schedules, attendance, PINs and leave are all keyed on it."); return; }
+    {
+      const mine = f._id;
+      const holder = (list) => (list || []).find(x => x && x._id !== mine && String(x.ec || "").trim().toUpperCase() === _mgrEcU);
+      const clash = (() => {
+        const m0 = holder(managers); if (m0) return { name: m0.name, where: (m0.branch || "a salon") + " (manager)" };
+        const s0 = holder(staff); if (s0) return { name: s0.name, where: s0.branch || "a salon" };
+        const h0 = holder(hoStaff); if (h0) return { name: h0.name, where: "office staff" };
+        return null;
+      })();
+      if (clash) { alert("EC code " + _mgrEcU + " already belongs to " + (clash.name || "someone") + " (" + clash.where + ").\n\nEvery employee code is unique and never reused — pick a different code."); return; }
+    }
     try {
       const isEdit = f._id !== undefined;
       const _priorMgr = isEdit ? (managers || []).find(x => x._id === f._id) : null;
@@ -27041,7 +27091,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
               <InstallButton />
               {stats.vacancies > 0 && <div style={{ background: "#374151", color: "#fbbf24", borderRadius: 20, padding: "4px 12px", fontSize: 11, fontWeight: 700 }}>🪑 {stats.vacancies} vacancies</div>}
-              <button onClick={() => setStaffModal({ ec: "", name: "", branch: "Sea Point", contract: "Permanent", permit: "sa_citizen", level: "" })}
+              <button onClick={() => setStaffModal({ ec: "B" + nextEcNumber(), name: "", branch: "Sea Point", contract: "Permanent", permit: "sa_citizen", level: "" })}
                 style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 9, padding: "8px 14px", cursor: "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: 12 }}>+ Add Staff</button>
             </div>
           </div>
@@ -27318,7 +27368,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
                         <div style={{ borderTop: "1px solid #FBCFE8", padding: "12px 18px", display: "flex", flexDirection: "column", gap: 8 }}>
                           <InstallButton />
-                          <button onClick={() => { setStaffModal({ ec: "", name: "", branch: "Sea Point", contract: "Permanent", permit: "sa_citizen", level: "" }); setMobileNavOpen(false); }}
+                          <button onClick={() => { setStaffModal({ ec: "B" + nextEcNumber(), name: "", branch: "Sea Point", contract: "Permanent", permit: "sa_citizen", level: "" }); setMobileNavOpen(false); }}
                             style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 9, padding: "11px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: "pointer" }}>+ Add Staff</button>
                           <button onClick={onSignOut}
                             style={{ background: "#fff", border: "1px solid #FBCFE8", color: "#831843", borderRadius: 9, padding: "11px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: "pointer" }}>Sign out</button>
@@ -29467,9 +29517,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   gate on its own is cosmetic. */}
               {canAddOfficeStaff && (
                 <>
-                  <button onClick={() => setOfficeModal({ _dept: "HO", ec: "", name: "", branch: HEAD_OFFICE, role: "", contract: "Permanent", permit: "sa_citizen" })}
+                  <button onClick={() => setOfficeModal({ _dept: "HO", ec: "B" + nextEcNumber() + "-M", name: "", branch: HEAD_OFFICE, role: "", contract: "Permanent", permit: "sa_citizen" })}
                     style={{ background: "#3730a3", color: "#fff", border: "none", borderRadius: 8, padding: "7px 14px", cursor: "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: 12 }}>+ Add Head Office Staff</button>
-                  <button onClick={() => setOfficeModal({ _dept: "CC", ec: "", name: "", branch: HEAD_OFFICE, role: "", contract: "Permanent", permit: "sa_citizen" })}
+                  <button onClick={() => setOfficeModal({ _dept: "CC", ec: "B" + nextEcNumber() + "-CC", name: "", branch: HEAD_OFFICE, role: "", contract: "Permanent", permit: "sa_citizen" })}
                     style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 8, padding: "7px 14px", cursor: "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: 12 }}>+ Add Call Centre &amp; Sales Staff</button>
                 </>
               )}
@@ -29612,9 +29662,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               }}
                 title="Download the staff currently shown (respects the filters above) as a CSV with EC + names. Opens in Excel / Google Sheets."
                 style={{ background: "#FFFFFF", color: "#831843", border: `1px solid ${bdr}`, borderRadius: 8, padding: "7px 14px", cursor: "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: 12 }}>⬇ Export CSV</button>
-              <button onClick={() => setStaffModal({ ec: "", name: "", branch: "Sea Point", contract: "Permanent", permit: "sa_citizen", level: "" })}
+              <button onClick={() => setStaffModal({ ec: "B" + nextEcNumber(), name: "", branch: "Sea Point", contract: "Permanent", permit: "sa_citizen", level: "" })}
                 style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 8, padding: "7px 14px", cursor: "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: 12 }}>+ Add Tech</button>
-              <button onClick={() => setMgrModal({ ec: "", name: "", branch: "Sea Point", role: "AM", contract: "Permanent" })}
+              <button onClick={() => setMgrModal({ ec: "B" + nextEcNumber() + "-M", name: "", branch: "Sea Point", role: "AM", contract: "Permanent" })}
                 style={{ background: "#7c3aed", color: "#fff", border: "none", borderRadius: 8, padding: "7px 14px", cursor: "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: 12 }}>+ Add Manager</button>
             </div>
 
@@ -30028,7 +30078,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           </div>
                         </div>
                         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                          <button onClick={() => setStaffModal({ ec: "", name: "", branch: salon.name, contract: "Permanent", permit: "sa_citizen", level: "" })}
+                          <button onClick={() => setStaffModal({ ec: "B" + nextEcNumber(), name: "", branch: salon.name, contract: "Permanent", permit: "sa_citizen", level: "" })}
                             style={{ background: accent, color: "#fff", border: "none", borderRadius: 7, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>+ Add</button>
                           <button onClick={() => setManagePanel(managePanel === salon.name ? null : salon.name)}
                             style={{ background: managePanel === salon.name ? "#1e3a8a" : "#f3f4f6", color: managePanel === salon.name ? "#fff" : "#374151", border: "none", borderRadius: 7, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>
@@ -30137,7 +30187,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                   </div>
                                 );
                               })}
-                              <button onClick={() => { setMgrModal({ ec: "", name: "", branch: salon.name, role: "AM", contract: "Permanent" }); setManagePanel(null); }}
+                              <button onClick={() => { setMgrModal({ ec: "B" + nextEcNumber() + "-M", name: "", branch: salon.name, role: "AM", contract: "Permanent" }); setManagePanel(null); }}
                                 style={{ width: "100%", background: "#FCE7F3", border: "1px dashed #FBCFE8", borderRadius: 7, padding: "5px", cursor: "pointer", fontSize: 11, fontWeight: 700, color: "#BE185D", marginBottom: 6 }}>+ Add Manager</button>
                               <div style={{ height: 1, background: "#e5e7eb", marginBottom: 8 }} />
                             </div>
@@ -33549,20 +33599,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           if (!window.confirm(head + lines + (outstanding.length ? "\n\nPromote anyway?" : ""))) return;
           // Pre-fill the onboarding form and switch to onboarding tab
           const isMgrTrial = r.role === "am";
-          // Include Head Office codes — they're in neither staff nor managers
-          // state, so without this the max-B scan under-shoots and could mint an
-          // EC that collides with an HO person's code.
-          // Retired codes are included too: a reversed onboarding deletes the
-          // staff row, so without them the scan would hand the freed code
-          // straight to the next hire — exactly what "never reused" forbids.
-          const allEcs = [...staff.map(s => s.ec), ...managers.map(m => m.ec), ...obList.map(o => o.ec), ...HEAD_OFFICE_ECS, ...(retiredEcs || []).map(x => x && x.ec)].filter(Boolean);
-          const maxNum = allEcs.reduce((max, ec) => {
-            const m = /B[- ]?(\d+)/i.exec(ec || "");
-            return m ? Math.max(max, parseInt(m[1], 10)) : max;
-          }, 900);
-          // Managers (AM trials) get an "M"-suffixed code — that suffix is what
+          // Managers (AM trials) get a "-M"-suffixed code — that suffix is what
           // marks them as a manager everywhere (scheduling, clock-ins, leave).
-          const nextEc = "B" + (maxNum + 1) + (isMgrTrial ? "M" : "");
+          // nextEcNumber() scans every code-owning population (salon, managers,
+          // pending onboards, ALL office/CC, retired) so the number can't collide.
+          const nextEc = "B" + nextEcNumber() + (isMgrTrial ? "-M" : "");
           // Use the effective branch: if a scheduled transfer has already taken
           // effect (date in the past), onboard the candidate at the store they
           // moved to, not the origin still stored on the trial record.
@@ -35220,7 +35261,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const isMgrPos = ["SSM", "SM", "AM"].includes(obForm.position);
           const roleType = isMgrPos ? "manager" : "tech";
           let ec = (obForm.ec || "").trim();
-          if (isMgrPos && ec && !/M$/i.test(ec)) ec = ec + "M";
+          if (isMgrPos && ec && !/M$/i.test(ec)) ec = ec + "-M";
 
           // Duplicate-EC guard. The EC keys the entire employee model and has NO
           // DB unique constraint, so a code shared between an HO hire and a salon
@@ -35799,7 +35840,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         <div style={{ gridColumn: "1 / -1" }}><label style={lbl}>Full Name *</label><input style={{ ...inp, width: "100%", boxSizing: "border-box" }} value={obForm.name || ""} onChange={e => setObForm({ ...obForm, name: e.target.value })} placeholder="Full official name" /></div>
                         <div><label style={lbl}>EC Code *</label><input style={{ ...inp, width: "100%", boxSizing: "border-box", background: "#fdf2f8", fontWeight: 700 }} value={obForm.ec || ""} onChange={e => setObForm({ ...obForm, ec: e.target.value })} placeholder="e.g. B950" />
                           {["SSM", "SM", "AM"].includes(obForm.position) && obForm.ec && !/M$/i.test(obForm.ec.trim()) && (
-                            <div style={{ fontSize: 10.5, color: "#BE185D", marginTop: 3, fontWeight: 700 }}>Manager → saved as {obForm.ec.trim() + "M"} (the “M” marks them as a manager)</div>
+                            <div style={{ fontSize: 10.5, color: "#BE185D", marginTop: 3, fontWeight: 700 }}>Manager → saved as {obForm.ec.trim() + "-M"} (the “-M” marks them as a manager)</div>
                           )}
                         </div>
                         <div><label style={lbl}>Start Date *</label><input type="date" style={{ ...inp, width: "100%", boxSizing: "border-box" }} value={obForm.startDate || ""} onChange={e => setObForm({ ...obForm, startDate: e.target.value })} /></div>
