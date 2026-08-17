@@ -1980,6 +1980,46 @@
     return candidate;
   }
 
+  // ---------- HQ / Call Centre & Sales trial check-in (boa_office_trial_v1) ----------
+  // The Head Office kiosk's "Trial Check-in" tile reads and writes this store —
+  // the office-trial twin of the salon trial functions above. Candidates aren't
+  // in the staff table yet, so they identify by name selection (no PIN).
+  async function listOfficeTrialCandidates() {
+    var v = await cachedSingleton("boa_office_trial_v1");
+    return Array.isArray(v) ? v : [];
+  }
+  async function recordOfficeTrialCheckin(candidateId, status) {
+    var c = client(); if (!c) throw new Error("Supabase not configured");
+    var res = await c.from("app_state").select("value").eq("key", "boa_office_trial_v1").maybeSingle();
+    if (res.error) throw res.error;
+    var v = res.data && res.data.value;
+    var list = Array.isArray(v) ? v : [];
+    var candidate = list.find(function (item) { return String(item._id) === String(candidateId); });
+    if (!candidate) throw new Error("Candidate not found");
+    var today = todayStr();
+    if (!candidate.checkins || Array.isArray(candidate.checkins)) candidate.checkins = {};
+    candidate.checkins[today] = status;
+    candidate.updatedAt = new Date().toISOString();
+    var up = await c.from("app_state").upsert({ key: "boa_office_trial_v1", value: list });
+    if (up.error) throw up.error;
+    return candidate;
+  }
+  async function saveOfficeTrialEvaluation(candidateId, evalKey, evalObj, newStatus) {
+    var c = client(); if (!c) throw new Error("Supabase not configured");
+    var res = await c.from("app_state").select("value").eq("key", "boa_office_trial_v1").maybeSingle();
+    if (res.error) throw res.error;
+    var v = res.data && res.data.value;
+    var list = Array.isArray(v) ? v : [];
+    var candidate = list.find(function (item) { return String(item._id) === String(candidateId); });
+    if (!candidate) throw new Error("Candidate not found");
+    candidate[evalKey] = evalObj;
+    if (newStatus) candidate.status = newStatus;
+    candidate.updatedAt = new Date().toISOString();
+    var up = await c.from("app_state").upsert({ key: "boa_office_trial_v1", value: list });
+    if (up.error) throw up.error;
+    return candidate;
+  }
+
   window.APP_DATA = {
     isConfigured: isConfigured,
     isManagerRow: isManagerRow,
@@ -1992,6 +2032,9 @@
     listTrialCandidates: listTrialCandidates,
     recordTrialCheckin: recordTrialCheckin,
     saveTrialEvaluation: saveTrialEvaluation,
+    listOfficeTrialCandidates: listOfficeTrialCandidates,
+    recordOfficeTrialCheckin: recordOfficeTrialCheckin,
+    saveOfficeTrialEvaluation: saveOfficeTrialEvaluation,
     markKioskReminderDone: markKioskReminderDone,
     markKioskReminderUndone: markKioskReminderUndone,
     categorizeStaff: categorizeStaff, listOffRequestStaff: listOffRequestStaff, addStaff: addStaff, updateStaff: updateStaff,
