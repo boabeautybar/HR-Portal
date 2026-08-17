@@ -1023,6 +1023,37 @@
     return records;
   }
 
+  // ---------- HQ / Call Centre & Sales Trial (boa_office_trial_v1) ----------
+  // Separate from the salon trial (boa_trial_period_v1) so the salon Trial Period
+  // tab stays untouched. Same shape as an AM trial record plus dept ("HO"|"CC")
+  // and an office/CC role; no branch (always Head Office on hire), no dayLocs,
+  // no Fresha. On passing, the candidate is hired via saveOfficeStaff.
+  async function loadOfficeTrial() {
+    var v = await cachedSingleton("boa_office_trial_v1");
+    return Array.isArray(v) ? v : [];
+  }
+  async function saveOfficeTrial(records) {
+    var res = await sb.from("app_state").upsert({ key: "boa_office_trial_v1", value: records || [] });
+    if (res.error) throw res.error;
+    return records;
+  }
+
+  // ---------- Probation ledger (boa_probation_v1) ----------
+  // Keyed by EC: { start, end, confirmedAt, confirmedBy }. Written when an office
+  // trial-hire signs their permanent contract (start = hire date, end = +6mo).
+  // Presence with confirmedAt null = "on probation"; Confirm-permanent stamps
+  // confirmedAt. A sidecar (not a staff column) so no DB schema change is needed
+  // and a plain permanent add carries no probation record.
+  async function loadProbation() {
+    var v = await cachedSingleton("boa_probation_v1");
+    return (v && typeof v === "object" && !Array.isArray(v)) ? v : {};
+  }
+  async function saveProbation(map) {
+    var res = await sb.from("app_state").upsert({ key: "boa_probation_v1", value: map || {} });
+    if (res.error) throw res.error;
+    return map || {};
+  }
+
   // ---------- Nail-tech Interviews (boa_nt_interviews_v1) ----------
   // The recruitment front of the funnel — BEFORE the trial period. The
   // recruiter logs interview candidates (name, nationality, contact, area) and
@@ -2965,6 +2996,10 @@
     saveOnboarding: saveOnboarding,
     loadTrialPeriod: loadTrialPeriod,
     saveTrialPeriod: saveTrialPeriod,
+    loadOfficeTrial: loadOfficeTrial,
+    saveOfficeTrial: saveOfficeTrial,
+    loadProbation: loadProbation,
+    saveProbation: saveProbation,
     loadInterviews: loadInterviews,
     saveInterviews: saveInterviews,
     loadOffboarding: loadOffboarding,

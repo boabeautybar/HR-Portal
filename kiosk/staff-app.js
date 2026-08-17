@@ -193,11 +193,87 @@
           '<div class="tile-label">Request Off</div>' +
           '<div class="tile-hint">TIME OFF</div>' +
         '</button>' +
+        '<button class="tile tile-big" id="tile-ho-trial" type="button">' +
+          '<div class="tile-icon">🎓</div>' +
+          '<div class="tile-label">Trial Check-in</div>' +
+          '<div class="tile-hint">HQ / CC&amp;S TRIAL</div>' +
+        '</button>' +
       '</div>'
     );
     document.getElementById("tile-ho-checkin").onclick = renderHoClockin;
     document.getElementById("tile-ho-offreq").onclick  = renderOffRequests;
+    document.getElementById("tile-ho-trial").onclick   = renderHoTrialCheckin;
     refreshSickToday();
+  }
+
+  // HQ / Call Centre & Sales trial check-in. Candidates aren't in the staff
+  // table yet, so they identify by tapping their name (no PIN, like the nail-tech
+  // trial). Writes into boa_office_trial_v1 via recordOfficeTrialCheckin; the HR
+  // portal's HQ Trials tab reads the same store.
+  function _officeTrialToday() {
+    var d = new Date();
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  }
+  async function renderHoTrialCheckin() {
+    setSublabel("Trial Check-in");
+    setMain(
+      '<div class="panel">' +
+        '<div class="panel-head">' +
+          '<h2>🎓 Trial Check-in</h2>' +
+          '<div style="display:flex;gap:8px">' +
+            '<button class="link-btn" id="ho-trial-refresh">Refresh</button>' +
+            '<button class="link-btn link-btn-dark" id="ho-trial-back">← Back</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="dly-sub">Trial candidates: tap your name and mark today\'s attendance.</div>' +
+        '<div id="ho-trial-list">Loading…</div>' +
+      '</div>'
+    );
+    document.getElementById("ho-trial-back").onclick    = function () { renderHoLanding(); };
+    document.getElementById("ho-trial-refresh").onclick = renderHoTrialCheckin;
+    if (!window.APP_DATA || !window.APP_DATA.isConfigured() || !window.APP_DATA.listOfficeTrialCandidates) {
+      document.getElementById("ho-trial-list").innerHTML = configMissingHtml();
+      return;
+    }
+    await _paintHoTrialList();
+  }
+  async function _paintHoTrialList() {
+    var listEl = document.getElementById("ho-trial-list");
+    if (!listEl) return;
+    var cands;
+    try { cands = (await window.APP_DATA.listOfficeTrialCandidates()) || []; }
+    catch (e) { listEl.innerHTML = '<div class="warn">Could not load trials: ' + esc((e && e.message) || String(e)) + '</div>'; return; }
+    var active = cands.filter(function (c) { return c && (c.status === "trial_w1" || c.status === "trial_w2"); });
+    if (active.length === 0) {
+      listEl.innerHTML = '<div class="dly-empty" style="padding:24px;text-align:center;color:var(--gray-500)">No active trial candidates today.</div>';
+      return;
+    }
+    var today = _officeTrialToday();
+    var CI = { on: ["#ecfdf5", "#047857", "On time"], late: ["#fffbeb", "#b45309", "Late"], absent: ["#fef2f2", "#b91c1c", "Absent"] };
+    listEl.innerHTML = active.map(function (c) {
+      var st = (c.checkins || {})[today];
+      var deptL = c.dept === "CC" ? "Call Centre & Sales" : "Head Office";
+      var badge = st
+        ? '<span class="dly-status-badge" style="background:' + CI[st][0] + ';color:' + CI[st][1] + '">' + CI[st][2] + '</span>'
+        : '<span class="dly-status-badge" style="background:#f3f4f6;color:#374151">Not marked</span>';
+      var acts =
+        '<button class="dly-act" data-trial-id="' + esc(c._id) + '" data-trial-st="on" type="button">On time</button>' +
+        '<button class="dly-act" data-trial-id="' + esc(c._id) + '" data-trial-st="late" type="button" style="background:#fde047;color:#713f12">Late</button>';
+      return '<div class="dly-row" style="display:flex;align-items:center;gap:12px;padding:12px 8px;border-bottom:1px solid var(--pink-100)">' +
+        '<div style="flex:1">' +
+          '<div style="font-weight:700;color:var(--pink-800)">' + esc(c.name || "—") + '</div>' +
+          '<div style="font-size:12px;color:var(--gray-500)">' + esc(c.role || "") + ' · ' + esc(deptL) + '</div>' +
+        '</div>' + badge + acts +
+      '</div>';
+    }).join("");
+    listEl.querySelectorAll("button[data-trial-id]").forEach(function (btn) {
+      btn.onclick = function () { _doOfficeTrialCheckin(btn.dataset.trialId, btn.dataset.trialSt); };
+    });
+  }
+  async function _doOfficeTrialCheckin(id, status) {
+    try { await window.APP_DATA.recordOfficeTrialCheckin(id, status); }
+    catch (e) { window.alert("Could not record: " + ((e && e.message) || e)); return; }
+    await _paintHoTrialList();
   }
 
   // Roster schedule for HO: prefer the PUBLISHED snapshot [0], fall back to the

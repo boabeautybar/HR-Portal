@@ -669,6 +669,198 @@ const AM_EVAL_SECTIONS = [
 ];
 const AM_EVAL_MAX = 135, AM_EVAL_PASS = 95, AM_EVAL_KEY_MIN = 4;
 
+// ── Head Office evaluation (HQ trial) ──────────────────────────────────────
+// A general office-competency rubric that fits every HO role (HR/PM/REC/OA/MC/
+// EPA/HOH/Trainer) — scored 1–5, key indicators must clear the key minimum.
+// DRAFT criteria: adjust the item text/keys freely; the scorer reads the shape.
+const OFFICE_EVAL_SECTIONS = [
+  {
+    title: "Professionalism & Conduct", max: 30, items: [
+      { k: "presentation", label: "Professional Presentation", key: true, desc: "Neat, appropriate business presentation; represents Head Office well." },
+      { k: "punctuality", label: "Punctuality & Attendance", key: true, desc: "Arrives on time and is present for the full 08:00–17:00 day." },
+      { k: "confidentiality", label: "Integrity & Confidentiality", key: true, desc: "Handles sensitive staff/payroll information with discretion." },
+      { k: "initiative", label: "Attitude & Initiative", desc: "Positive, proactive; takes ownership without being asked." },
+      { k: "teamwork", label: "Teamwork", desc: "Works well with the office and store teams." },
+      { k: "conduct", label: "Workplace Conduct", desc: "Follows HR policy — cellphone, language, professionalism." }]
+  },
+  {
+    title: "Role Competence", max: 30, items: [
+      { k: "task_accuracy", label: "Task Accuracy", key: true, desc: "Completes assigned work correctly with few errors." },
+      { k: "systems", label: "Systems & Tools", key: true, desc: "Competent with the required tools (email, spreadsheets, the HR portal)." },
+      { k: "quality", label: "Quality of Output", desc: "Work is thorough and well presented." },
+      { k: "time_mgmt", label: "Time Management", desc: "Prioritises and meets deadlines." },
+      { k: "detail", label: "Attention to Detail", key: true, desc: "Catches mistakes; double-checks their own work." },
+      { k: "process", label: "Follows Process", desc: "Works to the documented procedures." }]
+  },
+  {
+    title: "Communication", max: 15, items: [
+      { k: "written", label: "Written Communication", desc: "Clear, professional email/messages." },
+      { k: "verbal", label: "Verbal & Interpersonal", desc: "Communicates clearly and respectfully in person." },
+      { k: "responsiveness", label: "Responsiveness", desc: "Replies and follows up promptly." }]
+  },
+  {
+    title: "Reliability & Growth", max: 20, items: [
+      { k: "dependable", label: "Dependability", key: true, desc: "Consistent and reliable day to day." },
+      { k: "problem_solving", label: "Problem Solving", desc: "Works problems through sensibly before escalating." },
+      { k: "adaptability", label: "Adaptability & Learning", desc: "Picks up new tasks and feedback well." },
+      { k: "accountability", label: "Accountability", desc: "Owns outcomes and corrects mistakes." }]
+  }
+];
+const OFFICE_EVAL_MAX = 95, OFFICE_EVAL_PASS = 67, OFFICE_EVAL_KEY_MIN = 4;   // 19 items × 5 = 95; pass ≈ 70%
+
+// ── Call Centre & Sales evaluation (HQ trial) ──────────────────────────────
+// Sales/CC-specific criteria for MCC/CC/SALES candidates. DRAFT — editable.
+const CC_EVAL_SECTIONS = [
+  {
+    title: "Customer & Call Handling", max: 25, items: [
+      { k: "greeting_tone", label: "Greeting & Tone", key: true, desc: "Warm, professional opening; on-brand tone throughout." },
+      { k: "active_listening", label: "Active Listening", desc: "Understands the customer's need before responding." },
+      { k: "call_control", label: "Call Control", key: true, desc: "Guides the call efficiently to a clear outcome." },
+      { k: "objection", label: "Objection Handling", desc: "Addresses concerns calmly and persuasively." },
+      { k: "empathy", label: "Empathy & Rapport", desc: "Builds trust and handles difficult callers well." }]
+  },
+  {
+    title: "Sales & Targets", max: 20, items: [
+      { k: "conversion", label: "Conversion", key: true, desc: "Turns enquiries into bookings/sales." },
+      { k: "upsell", label: "Upsell & Cross-sell", desc: "Offers relevant add-ons appropriately." },
+      { k: "product_know", label: "Product Knowledge", key: true, desc: "Knows services, pricing and promotions accurately." },
+      { k: "targets", label: "Target Achievement", key: true, desc: "Meets the daily/weekly activity and sales targets." }]
+  },
+  {
+    title: "Systems & Accuracy", max: 15, items: [
+      { k: "crm_accuracy", label: "CRM / Booking Accuracy", key: true, desc: "Captures customer and booking data correctly." },
+      { k: "data_capture", label: "Data Capture Discipline", desc: "Logs every interaction as required." },
+      { k: "follow_up", label: "Follow-up", desc: "Completes callbacks and follow-ups on time." }]
+  },
+  {
+    title: "Professionalism & Reliability", max: 20, items: [
+      { k: "punctuality", label: "Punctuality & Attendance", key: true, desc: "On time and present for the full shift." },
+      { k: "adherence", label: "Schedule Adherence", key: true, desc: "Sticks to shift and break schedule; ready on the line." },
+      { k: "attitude", label: "Attitude & Coachability", desc: "Positive; acts on feedback." },
+      { k: "confidentiality", label: "Confidentiality", key: true, desc: "Protects customer and company information." }]
+  }
+];
+const CC_EVAL_MAX = 80, CC_EVAL_PASS = 56, CC_EVAL_KEY_MIN = 4;   // 16 items × 5 = 80; pass = 70%
+
+// Pick the evaluation form for an office/CC trial by its department.
+// Returns the same {sections, max, pass, keyMin} shape scoreForm expects.
+function officeEvalFormFor(dept) {
+  return dept === "CC"
+    ? { sections: CC_EVAL_SECTIONS, max: CC_EVAL_MAX, pass: CC_EVAL_PASS, keyMin: CC_EVAL_KEY_MIN }
+    : { sections: OFFICE_EVAL_SECTIONS, max: OFFICE_EVAL_MAX, pass: OFFICE_EVAL_PASS, keyMin: OFFICE_EVAL_KEY_MIN };
+}
+
+// ── HQ trial: add / edit candidate modal ───────────────────────────────────
+// HQ palette (indigo) so it reads as Head Office, not the salon pink.
+function OfficeTrialAddModal({ seed, onClose, onSave }) {
+  const [f, setF] = React.useState(seed || {});
+  const set = (k, v) => setF(p => ({ ...p, [k]: v }));
+  const dept = f.dept === "CC" ? "CC" : "HO";
+  const roleOpts = dept === "CC" ? CC_ROLES : HO_ROLES;
+  const isEdit = f._id != null;
+  const inp = { width: "100%", padding: "8px 11px", borderRadius: 8, border: "1px solid #c7d2fe", background: "#eef2ff", fontFamily: "inherit", fontSize: 13, color: "#1e1b4b", boxSizing: "border-box" };
+  const lbl = { display: "block", fontSize: 10, fontWeight: 700, color: "#3730a3", letterSpacing: "0.08em", marginBottom: 4, textTransform: "uppercase" };
+  const setDept = (d) => setF(p => ({ ...p, dept: d, role: (d === "CC" ? CC_ROLES : HO_ROLES).some(r => r.key === p.role) ? p.role : "" }));
+  const canSave = !!String(f.name || "").trim() && !!f.role && !!f.startDate;
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(30,27,75,.55)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}
+      onClick={e => e.target === e.currentTarget && onClose()}>
+      <div style={{ background: "#FFFFFF", borderRadius: 20, width: "min(480px,96vw)", maxHeight: "90vh", overflowY: "auto", padding: "26px 24px", boxShadow: "0 30px 90px rgba(30,27,75,.3)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
+          <h2 style={{ fontFamily: "'Playfair Display',serif", fontSize: 22, color: "#3730a3", margin: 0 }}>{isEdit ? "Edit HQ Trial Candidate" : (dept === "CC" ? "New Call Centre & Sales Trial" : "New Head Office Trial")}</h2>
+          <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 24, cursor: "pointer", color: "#9ca3af" }}>×</button>
+        </div>
+        <div style={{ display: "grid", gap: 12 }}>
+          <div>
+            <label style={lbl}>Department</label>
+            <div style={{ display: "flex", gap: 8 }}>
+              {[["HO", "🏢 Head Office"], ["CC", "📞 Call Centre & Sales"]].map(([k, l]) => (
+                <button key={k} onClick={() => setDept(k)} style={{ flex: 1, padding: "8px", borderRadius: 8, border: "1px solid " + (dept === k ? "#4f46e5" : "#c7d2fe"), background: dept === k ? "#4f46e5" : "#eef2ff", color: dept === k ? "#fff" : "#3730a3", fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>{l}</button>
+              ))}
+            </div>
+          </div>
+          <div><label style={lbl}>Full Name</label><input style={inp} value={f.name || ""} onChange={e => set("name", e.target.value)} placeholder="e.g. Priya Naidoo" /></div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div><label style={lbl}>Phone</label><input style={inp} value={f.phone || ""} onChange={e => set("phone", e.target.value)} /></div>
+            <div><label style={lbl}>Email</label><input style={inp} value={f.email || ""} onChange={e => set("email", e.target.value)} /></div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div>
+              <label style={lbl}>Role</label>
+              <select style={inp} value={f.role || ""} onChange={e => set("role", e.target.value)}>
+                <option value="" disabled>— Select —</option>
+                {roleOpts.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
+              </select>
+            </div>
+            <div><label style={lbl}>Trial Start Date</label><input type="date" style={inp} value={f.startDate || ""} onChange={e => set("startDate", e.target.value)} /></div>
+          </div>
+          <div><label style={lbl}>Notes</label><textarea style={{ ...inp, minHeight: 60, resize: "vertical" }} value={f.notes || ""} onChange={e => set("notes", e.target.value)} /></div>
+        </div>
+        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 18 }}>
+          <button onClick={onClose} style={{ padding: "9px 16px", borderRadius: 9, border: "1px solid #c7d2fe", background: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 13 }}>Cancel</button>
+          <button disabled={!canSave} onClick={() => onSave(f)} style={{ padding: "9px 20px", borderRadius: 9, border: "none", background: canSave ? "#4f46e5" : "#c7c9d6", color: "#fff", cursor: canSave ? "pointer" : "not-allowed", fontFamily: "inherit", fontSize: 13, fontWeight: 700 }}>{isEdit ? "Save" : "Start Trial"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── HQ trial: evaluation form modal (Week-1 "mid" / Final) ──────────────────
+function OfficeTrialEvalModal({ rec, which, onClose, onSubmit }) {
+  const form = officeEvalFormFor(rec.dept);
+  const prior = which === "final" ? rec.finalEval : rec.midEval;
+  const [scores, setScores] = React.useState((prior && prior.scores) || {});
+  const [notes, setNotes] = React.useState((prior && prior.notes) || "");
+  const res = scoreForm(scores, form);
+  const setScore = (k, v) => setScores(p => ({ ...p, [k]: v }));
+  const pct = form.max ? Math.round((res.total / form.max) * 100) : 0;
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(30,27,75,.55)", zIndex: 320, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "24px 16px", overflowY: "auto" }}
+      onClick={e => e.target === e.currentTarget && onClose()}>
+      <div style={{ background: "#fff", borderRadius: 18, width: "min(640px,96vw)", padding: "24px 26px", boxShadow: "0 30px 90px rgba(30,27,75,.3)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6 }}>
+          <div>
+            <h2 style={{ fontFamily: "'Playfair Display',serif", fontSize: 21, color: "#3730a3", margin: 0 }}>{which === "final" ? "Final Evaluation" : "Week-1 Evaluation"}</h2>
+            <div style={{ fontSize: 12, color: "#6366f1", marginTop: 2 }}>{rec.name} · {rec.dept === "CC" ? "Call Centre & Sales" : "Head Office"} · {OFFICE_ROLE_LABEL[rec.role] || rec.role}</div>
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 24, cursor: "pointer", color: "#9ca3af" }}>×</button>
+        </div>
+        <div style={{ position: "sticky", top: 0, background: "#eef2ff", border: "1px solid #c7d2fe", borderRadius: 10, padding: "8px 12px", margin: "8px 0 14px", display: "flex", alignItems: "center", gap: 12, fontSize: 13, fontWeight: 700, color: "#3730a3" }}>
+          <span>Score: {res.total} / {form.max} ({pct}%)</span>
+          <span style={{ marginLeft: "auto", padding: "3px 10px", borderRadius: 6, background: res.pass ? "#dcfce7" : (res.complete ? "#fee2e2" : "#e5e7eb"), color: res.pass ? "#166534" : (res.complete ? "#991b1b" : "#6b7280") }}>
+            {res.complete ? (res.pass ? "✓ PASS" : (res.keyOk ? "Below pass mark" : "Key indicator below " + form.keyMin)) : (res.answered + "/" + res.count + " scored")}
+          </span>
+        </div>
+        {form.sections.map(sec => (
+          <div key={sec.title} style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 12, fontWeight: 800, color: "#312e81", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 6 }}>{sec.title}</div>
+            {sec.items.map(it => (
+              <div key={it.k} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0", borderBottom: "1px solid #eef2ff" }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 12.5, fontWeight: 600, color: "#1e1b4b" }}>{it.label}{it.key ? <span title="Key indicator" style={{ color: "#c026d3", marginLeft: 5, fontSize: 10, fontWeight: 800 }}>KEY</span> : null}</div>
+                  {it.desc ? <div style={{ fontSize: 10.5, color: "#9ca3af" }}>{it.desc}</div> : null}
+                </div>
+                <div style={{ display: "flex", gap: 3 }}>
+                  {[1, 2, 3, 4, 5].map(n => {
+                    const on = Number(scores[it.k]) === n;
+                    return <button key={n} onClick={() => setScore(it.k, n)} style={{ width: 26, height: 26, borderRadius: 6, border: "1px solid " + (on ? "#4f46e5" : "#c7d2fe"), background: on ? "#4f46e5" : "#fff", color: on ? "#fff" : "#6366f1", fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>{n}</button>;
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        ))}
+        <div><label style={{ display: "block", fontSize: 10, fontWeight: 700, color: "#3730a3", letterSpacing: "0.08em", marginBottom: 4, textTransform: "uppercase" }}>Notes</label>
+          <textarea value={notes} onChange={e => setNotes(e.target.value)} style={{ width: "100%", minHeight: 54, padding: "8px 11px", borderRadius: 8, border: "1px solid #c7d2fe", background: "#eef2ff", fontFamily: "inherit", fontSize: 13, boxSizing: "border-box", resize: "vertical" }} /></div>
+        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 16 }}>
+          <button onClick={onClose} style={{ padding: "9px 16px", borderRadius: 9, border: "1px solid #c7d2fe", background: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 13 }}>Cancel</button>
+          <button disabled={!res.complete} onClick={() => onSubmit(scores, notes)} style={{ padding: "9px 20px", borderRadius: 9, border: "none", background: res.complete ? "#4f46e5" : "#c7c9d6", color: "#fff", cursor: res.complete ? "pointer" : "not-allowed", fontFamily: "inherit", fontSize: 13, fontWeight: 700 }}>Submit evaluation</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Score a set of marks against an arbitrary form ({sections, max, pass, keyMin}).
 // Same rule as the role-keyed scoreEval in the trial-period tab, but takes the
 // form directly so the SM trial can score against its editable config.
@@ -4976,6 +5168,25 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
     });
   }, [branch, ym]);
 
+  // HQ auto-populate: the first time an EMPTY Head Office cycle is opened, fill
+  // the standard office week (08:00–17:00 Mon–Fri, weekends/holidays off) so a
+  // newly-hired office person's schedule is ready with no manual step. Fires only
+  // on a completely blank office grid and leaves the draft for review (Save/
+  // Publish stays deliberate). A schedule that already has data — or one the user
+  // cleared (dirty) — is never touched. Head-Office-only; CC is hand-built by the
+  // CC manager. `autoPopulateHoWeek` is a hoisted function declaration below.
+  const _hoAutoRef = React.useRef("");
+  useEffect(() => {
+    if (!_isHoSchedule || loading || dirty) return;
+    const key = branch + "|" + ym;
+    if (_hoAutoRef.current === key) return;
+    const eligible = (techs || []).filter(t => t && t.ec && !t.onMat && !t.isShadow);
+    if (!eligible.length || !days.length) return;
+    _hoAutoRef.current = key;                       // mark this cycle checked (fill or not) so we never re-trigger
+    const empty = eligible.every(t => !grid[t.ec] || Object.keys(grid[t.ec]).length === 0);
+    if (empty) autoPopulateHoWeek({ silent: true });
+  }, [_isHoSchedule, loading, dirty, branch, ym, techs, days, grid]);
+
   // Heal grid rows keyed by a DRIFTED employee code — stray whitespace or a
   // case difference between the saved row key and the current staff record's
   // ec (e.g. after the code was edited on the staff record). The grid render
@@ -5294,10 +5505,11 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
   // stray holiday shift). On-mat people and arriving transfer shadows are skipped,
   // and no cell is written past a leaver's last day. Not saved until Save —
   // snapshotted for Undo.
-  function autoPopulateHoWeek() {
+  function autoPopulateHoWeek(opts) {
+    const silent = !!(opts && opts.silent === true);
     if (!days.length) return;
     const eligible = techs.filter(t => t && t.ec && !t.onMat && !t.isShadow);
-    if (!eligible.length) { alert("No office staff on this schedule to populate."); return; }
+    if (!eligible.length) { if (!silent) alert("No office staff on this schedule to populate."); return; }
     const _ymd = (dy) => dy.year + "-" + String(dy.monthIdx + 1).padStart(2, "0") + "-" + String(dy.d).padStart(2, "0");
     const _isHol = (dy) => !!(saHolidays(dy.year) || {})[_ymd(dy)];   // incl. Sunday-observed Mondays
     const snap = JSON.parse(JSON.stringify(grid || {}));
@@ -5323,7 +5535,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
         filled++;
       });
     });
-    if (!filled) { alert("Nothing to fill — every day is already set for the staff on this schedule. Use “Clear period” first if you want to reset it."); return; }
+    if (!filled) { if (!silent) alert("Nothing to fill — every day is already set for the staff on this schedule. Use “Clear period” first if you want to reset it."); return; }
     setUndoSnap({ grid: snap, label: "Auto-populate" });
     setGrid(next);
     setDirty(true);
@@ -10524,6 +10736,7 @@ const SETTINGS_TABS = [
   { t: "offboard", l: "Off-boarding", cat: "People", icon: "👋" },
   { t: "recruitment", l: "Recruitment", cat: "People", icon: "🎯" },
   { t: "trialPeriod", l: "Trial Period & Induction", cat: "People", icon: "🧪" },
+  { t: "officeTrials", l: "HQ Trials", cat: "People", icon: "🏢" },
   { t: "maternity", l: "Maternity", cat: "People", icon: "🤱" },
   { t: "smTrial", l: "SM Trials", cat: "People", icon: "⭐" },
   { t: "unpaidLegal", l: "Unpaid Leave (Legal)", cat: "People", icon: "⏸️" },
@@ -21662,7 +21875,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [navShowCategory, setNavShowCategory] = useState(false);
   // Map of tab → category name. Kept in sync with the groups list below.
   const NAV_TAB_TO_CATEGORY = {
-    onboard: "People", offboard: "People", staff: "People", officeStaff: "People", recruitment: "People", hrLibrary: "People", maternity: "People", unpaidLegal: "People", trialPeriod: "People", smTrial: "People",
+    onboard: "People", offboard: "People", staff: "People", officeStaff: "People", recruitment: "People", hrLibrary: "People", maternity: "People", unpaidLegal: "People", trialPeriod: "People", officeTrials: "People", smTrial: "People",
     scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", hoCheckins: "Operations", ccCheckins: "Operations", leave: "Operations", checkins: "Operations", freshaTodo: "Operations", storeOpenings: "Operations", storeHours: "Operations", movements: "Operations", cashups: "Operations", mgrCoverage: "Operations",
     attendance: "Payroll", payrollProgress: "Payroll", payrollReports: "Payroll", overtime: "Payroll", officeHours: "Payroll", payrollInbox: "Payroll", leaveBalances: "Payroll", frl: "Payroll",
     leaveRequests: "Operations", calledInSick: "Operations", extraDayRequests: "Operations",
@@ -22136,6 +22349,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [obList, setObList] = useState([]);           // joiner records (3-month contract signers)
   const [obFilter, setObFilter] = useState("recent"); // "recent" = last 31 days, "all" = every onboarded record
   const [trialList, setTrialList] = useState([]);     // trial period candidates (pre-contract)
+  const [officeTrialList, setOfficeTrialList] = useState([]);  // HQ / CC&S trial candidates (boa_office_trial_v1)
+  const [officeTrialSubTab, setOfficeTrialSubTab] = useState("HO");  // "HO" | "CC" — HQ Trials tab dept toggle
+  const [officeTrialModal, setOfficeTrialModal] = useState(null);    // add/edit HQ trial candidate modal
+  const [officeTrialEvalModal, setOfficeTrialEvalModal] = useState(null); // { rec, which } evaluation form
+  const [probation, setProbation] = useState({});     // boa_probation_v1: { [EC]: {start,end,confirmedAt,confirmedBy} }
   const [showArchivedTrials, setShowArchivedTrials] = useState(false); // reveal archived (completed) trial candidates
   const [interviewList, setInterviewList] = useState([]); // nail-tech interview candidates (pre-trial; boa_nt_interviews_v1)
   const [freshaAccess, setFreshaAccess] = useState({}); // who opens/sees trial Fresha reminders (boa_fresha_access_v1)
@@ -22318,6 +22536,87 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     try { await window.BOA_DB.saveTrialPeriod(next); }
     catch (e) { window.alert("Could not save trial data: " + (e.message || e)); }
   };
+  // HQ / CC&S trial persistence — separate store (boa_office_trial_v1) so the
+  // salon trial list is never touched.
+  const persistOfficeTrial = async (next) => {
+    setOfficeTrialList(next);
+    try { await window.BOA_DB.saveOfficeTrial(next); }
+    catch (e) { window.alert("Could not save HQ trial data: " + (e.message || e)); }
+  };
+  // Probation ledger persistence (boa_probation_v1).
+  const persistProbation = async (next) => {
+    setProbation(next);
+    try { await window.BOA_DB.saveProbation(next); }
+    catch (e) { window.alert("Could not save probation data: " + (e.message || e)); }
+  };
+
+  // ── HQ / CC&S trial actions ────────────────────────────────────────────────
+  const OFFICE_TRIAL_GONE = new Set(["failed", "not_onboarding", "hired"]);
+  const officeTrialActive = (r) => !!r && !OFFICE_TRIAL_GONE.has(r.status);
+  const _officeTrialWorked = (r) => Object.values((r && r.checkins) || {}).filter(s => s === "on" || s === "late").length;
+  const _officeTrialAbsent = (r) => Object.values((r && r.checkins) || {}).filter(s => s === "absent").length;
+  const _addMonthsYmd = (ymd, n) => { const d = new Date((ymd || ymdStr(new Date())) + "T12:00:00"); d.setMonth(d.getMonth() + n); return ymdStr(d); };
+  const _officeTrialSet = (r, patch) => persistOfficeTrial(officeTrialList.map(x => x._id === r._id ? { ...x, ...patch, updatedAt: new Date().toISOString() } : x));
+
+  // Manual check-in mark (portal side; the HO kiosk writes the same shape).
+  const setOfficeTrialCheckin = (r, ymd, status) => {
+    const next = officeTrialList.map(x => {
+      if (x._id !== r._id) return x;
+      const ci = { ...(x.checkins || {}) };
+      if (status) ci[ymd] = status; else delete ci[ymd];
+      return { ...x, checkins: ci, updatedAt: new Date().toISOString() };
+    });
+    persistOfficeTrial(next);
+  };
+
+  // Record a Week-1 (mid) or Final evaluation; advance the stage on a pass.
+  const submitOfficeTrialEval = (r, which, scores, notes) => {
+    const res = scoreForm(scores, officeEvalFormFor(r.dept));
+    const evalObj = { submittedAt: new Date().toISOString(), submittedBy: (currentUser && currentUser.name) || "", which, scores, total: res.total, max: res.max, keyOk: res.keyOk, pass: res.pass, notes: notes || "" };
+    const key = which === "final" ? "finalEval" : "midEval";
+    let newStatus = r.status;
+    if (res.pass) newStatus = which === "final" ? "passed" : "trial_w2";
+    _officeTrialSet(r, { [key]: evalObj, status: newStatus });
+    setOfficeTrialEvalModal(null);
+    logActivity(which === "final" ? "HQ trial final review" : "HQ trial week-1 review",
+      (r.name || "") + " · " + (res.pass ? "PASS" : "below pass") + " (" + res.total + "/" + res.max + ")", r.dept === "CC" ? "Call Centre & Sales" : "Head Office", "People");
+  };
+
+  const passOfficeTrial = (r) => { if (window.confirm("Mark " + (r.name || "this candidate") + " as PASSED?\n\nThey can then sign their permanent contract and be added to the Office Staff list.")) _officeTrialSet(r, { status: "passed", forcedPassAt: new Date().toISOString() }); };
+  const failOfficeTrial = (r) => { if (window.confirm("Fail " + (r.name || "this candidate") + "?\n\nThis ends their trial.")) _officeTrialSet(r, { status: "failed", failedAt: new Date().toISOString() }); };
+  const extendOfficeTrial = (r) => {
+    const reason = window.prompt("Extend " + (r.name || "this candidate") + "'s trial by one week. Reason (optional):", "");
+    if (reason === null) return;
+    const ext = { n: ((r.extensions || []).length + 1), grantedAt: new Date().toISOString(), grantedBy: (currentUser && currentUser.name) || "", reason: reason || "" };
+    _officeTrialSet(r, { extensions: [...(r.extensions || []), ext] });
+    logActivity("Extended HQ trial", (r.name || "") + " · +1 week", reason || "", "People");
+  };
+
+  // Open the Office Staff modal pre-filled to hire a passed candidate. On save,
+  // saveOfficeStaff runs the full office-creation path and (via _fromOfficeTrialId)
+  // marks the trial hired, writes the probation window, and seeds the HQ schedule.
+  const hireOfficeTrial = (r) => {
+    const dept = r.dept === "CC" ? "CC" : "HO";
+    const suffix = dept === "CC" ? "-CC" : (String(r.role || "").trim().toUpperCase() === "T" ? "-T" : "-M");
+    setOfficeModal({
+      _dept: dept, ec: "B" + nextEcNumber() + suffix, name: r.name || "",
+      branch: HEAD_OFFICE, role: r.role || "", contract: "Permanent", permit: "sa_citizen",
+      startDate: ymdStr(new Date()), phone: r.phone || "", email: r.email || "",
+      _fromOfficeTrialId: r._id, _probationMonths: 6
+    });
+  };
+
+  // Confirm-permanent — close a person's probation window (badge + alert clear).
+  const confirmProbation = (ec) => {
+    const u = String(ec || "").trim().toUpperCase();
+    const rec = probation[u]; if (!rec) return;
+    if (!window.confirm("Confirm " + u + " as permanent? This closes their 6-month probation.")) return;
+    persistProbation({ ...probation, [u]: { ...rec, confirmedAt: new Date().toISOString(), confirmedBy: (currentUser && currentUser.name) || "" } });
+    logActivity("Confirmed permanent (probation passed)", u, "", "People");
+  };
+  // A person is "on probation" if they have an unconfirmed probation record.
+  const onProbation = (ec) => { const r = probation[String(ec || "").trim().toUpperCase()]; return !!(r && !r.confirmedAt); };
+
   // Interview pipeline persister — same optimistic-then-save pattern. The
   // read-only guard (see READ_ONLY_GUARDED_METHODS) turns saveInterviews into a
   // no-op for view-only users, so this is safe to call from the UI.
@@ -23760,8 +24059,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       window.BOA_DB.loadFreshaBlocks ? window.BOA_DB.loadFreshaBlocks() : Promise.resolve({}),
       window.BOA_DB.loadInterviews ? window.BOA_DB.loadInterviews() : Promise.resolve([]),
       window.BOA_DB.loadSmCriteriaConfig ? window.BOA_DB.loadSmCriteriaConfig() : Promise.resolve(null),
-      window.BOA_DB.loadRetiredEcs ? window.BOA_DB.loadRetiredEcs() : Promise.resolve([])
-    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess, offStaffAccess, offHoursAccess, cuReviewAccess, lvOpsAccess, lvPayrollAccess, lvBalancesAccess, incidents, leaveReqs, extraReqs, freshaExtraOpenMap, freshaBlocksMap, interviews, smCriteria, retiredEcList]) => {
+      window.BOA_DB.loadRetiredEcs ? window.BOA_DB.loadRetiredEcs() : Promise.resolve([]),
+      window.BOA_DB.loadOfficeTrial ? window.BOA_DB.loadOfficeTrial() : Promise.resolve([]),
+      window.BOA_DB.loadProbation ? window.BOA_DB.loadProbation() : Promise.resolve({})
+    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess, offStaffAccess, offHoursAccess, cuReviewAccess, lvOpsAccess, lvPayrollAccess, lvBalancesAccess, incidents, leaveReqs, extraReqs, freshaExtraOpenMap, freshaBlocksMap, interviews, smCriteria, retiredEcList, officeTrial, probationMap]) => {
       // Register Head Office employee codes BEFORE any state update so
       // isManagerEc() never mis-classifies an HO person (e.g. a -M code) as a
       // salon manager. Rebuilt each load; empty when no HO staff exist.
@@ -23847,6 +24148,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       setMgrPins(pins && typeof pins === "object" ? pins : {});
       setHrTasks(Array.isArray(tasks) ? tasks : []);
       setTrialList(Array.isArray(trial) ? trial : []);
+      setOfficeTrialList(Array.isArray(officeTrial) ? officeTrial : []);
+      setProbation(probationMap && typeof probationMap === "object" && !Array.isArray(probationMap) ? probationMap : {});
       setInterviewList(Array.isArray(interviews) ? interviews : []);
       setRetiredEcs(Array.isArray(retiredEcList) ? retiredEcList : []);
       // Config first — normalising a trial record needs the checkpoint set.
@@ -24853,6 +25156,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     setOfficeFixModal(null);
     logActivity("Removed office clock correction", f.name + " · " + f.ymd, "", "Payroll");
   };
+
+  // Re-load the HQ trial list whenever the HQ Trials tab is opened, so the HR
+  // user sees the latest kiosk check-ins and their in-memory copy is fresh before
+  // any action rewrites the whole boa_office_trial_v1 array (shrinks the
+  // concurrent-write window between the kiosk and the portal). Fires only on tab
+  // entry, so it never clobbers an in-session optimistic edit.
+  useEffect(() => {
+    if (tab !== "officeTrials") return;
+    if (!window.BOA_DB || !window.BOA_DB.isReady || !window.BOA_DB.loadOfficeTrial) return;
+    let cancelled = false;
+    window.BOA_DB.loadOfficeTrial()
+      .then((l) => { if (!cancelled) setOfficeTrialList(Array.isArray(l) ? l : []); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [tab]);
 
   // ── Head Office Check-ins loaders ──────────────────────────────────
   // Recent HO clock-in rows when the tab opens (and for the attendance grid's
@@ -26752,6 +27070,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         (saved.name || "") + (saved.ec ? " (" + saved.ec + ")" : ""),
         (OFFICE_ROLE_LABEL[saved.role] || saved.role || "") + " · " + (isCallCentreStaff(saved) ? CALL_CENTRE : HEAD_OFFICE)
       );
+      // Trial-hire linkage: when this save came from the HQ Trials "Sign contract"
+      // step, close the trial and open the 6-month probation window. (HQ schedule
+      // auto-fills 08:00–17:00 Mon–Fri on the Head Office schedule tab; CC is
+      // hand-built by the CC manager.)
+      if (!isEdit && f._fromOfficeTrialId != null) {
+        try {
+          const _hiredEcU = String(saved.ec || f.ec).trim().toUpperCase();
+          persistOfficeTrial(officeTrialList.map(x => x._id === f._fromOfficeTrialId
+            ? { ...x, status: "hired", hiredAt: new Date().toISOString(), hiredEc: saved.ec || f.ec, updatedAt: new Date().toISOString() } : x));
+          const _pStart = f.startDate || ymdStr(new Date());
+          persistProbation({ ...probation, [_hiredEcU]: { start: _pStart, end: _addMonthsYmd(_pStart, Number(f._probationMonths) || 6), confirmedAt: null, confirmedBy: "" } });
+          logActivity("Hired from HQ trial", (saved.name || "") + " (" + (saved.ec || f.ec) + ")", "Permanent · 6-month probation", "People");
+        } catch (_te) { /* non-fatal: person is saved; trial/probation bookkeeping can be redone */ }
+      }
     } catch (e) { alert("Could not save: " + (e.message || e)); }
   }
   async function delOfficeStaff(id) {
@@ -27139,6 +27471,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             // application is exactly the thing that shouldn't sit unseen.
             const activeSmTrialCount = (smTrialList || []).filter(r => r.status === "active" || r.status === "applied").length;
             const trialLbl = "🧪 Trial Period" + (activeTrialCount > 0 ? " (" + activeTrialCount + ")" : "");
+            const activeOfficeTrialCount = (officeTrialList || []).filter(r => officeTrialActive(r)).length;
+            const officeTrialLbl = "🏢 HQ Trials" + (activeOfficeTrialCount > 0 ? " (" + activeOfficeTrialCount + ")" : "");
             const smTrialLbl = "⭐ SM Trials" + (activeSmTrialCount > 0 ? " (" + activeSmTrialCount + ")" : "");
             const onboardLbl = "🌱 Onboarding" + (obCount > 0 ? " (" + obCount + ")" : "");
             const offboardLbl = "👋 Off-boarding" + (offList.length > 0 ? " (" + offList.length + ")" : "");
@@ -27161,6 +27495,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   // salon-only users: the V4 migration hides the key for
                   // non-owners, and accessAllows gates canAddOfficeStaff.
                   ...(hoStaff.length || canAddOfficeStaff ? [{ t: "officeStaff", l: "🏢 Office Staff List" }] : []),
+                  // HQ / CC&S trial pipeline — same gate as the Office Staff List
+                  // (canAddOfficeStaff), since it feeds that list. Also shown once
+                  // any office trial exists so an in-flight trial is never hidden.
+                  ...(canAddOfficeStaff || (officeTrialList || []).length ? [{ t: "officeTrials", l: officeTrialLbl }] : []),
                   { t: "recruitment", l: "🎯 Recruitment" },
                   ...(currentUser?.role === "Master Admin" || currentUser?.isOwner ? [
                     { t: "hrLibrary", l: "📁 Employee Files" }
@@ -28201,6 +28539,42 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     {urgentBlock.map(r => row("ub-" + r.key, r.name, "🚫 Block — " + (r.emergency ? "Emergency leave" : (LEAVE_TYPE[r.leave_type] || r.leave_type)) + " · " + fmtIncidentDate(r.start_date) + (r.store ? " · 📍 " + r.store : ""), "close " + dl(Math.max(0, r._d ?? 0))))}
                     {urgentRemove.map(r => row("ur-" + r.key, r.name, "👋 Remove from Fresha — off-boarded" + (r.leftDate ? " · " + fmtIncidentDate(r.leftDate) : "") + (r.store ? " · 📍 " + r.store : ""), "remove " + dl(Math.max(0, r._d ?? 0))))}
                     {urgentProfiles.map(o => row("up-" + o._id, o.name, "🆕 Create Fresha profile — new " + (o.position || "manager") + (o.startDate ? " · starts " + fmtIncidentDate(o.startDate) : "") + (o.branch ? " · 📍 " + o.branch : ""), "create " + dl(Math.max(0, o._d ?? 0))))}
+                  </div>
+                );
+              })());
+
+              /* ── SECTION: PROBATION ENDING · HR ACTIONS ──
+                  Office/CC staff hired from an HQ trial carry a 6-month probation
+                  (boa_probation_v1). Two weeks before it ends — and once overdue —
+                  surface them so HR reviews and clicks Confirm permanent. */
+              dashAlert("probationEnding", "people", "warning",
+              canAddOfficeStaff && (() => {
+                const _pt = ymdStr(new Date());
+                const _soon = ymdStr((() => { const d = new Date(); d.setDate(d.getDate() + 14); return d; })());
+                const rows = (hoStaff || []).map(s => {
+                  const u = String(s.ec || "").trim().toUpperCase();
+                  const p = probation[u];
+                  if (!p || p.confirmedAt || !p.end || p.end > _soon) return null;
+                  return { s, end: p.end, overdue: p.end < _pt };
+                }).filter(Boolean).sort((a, b) => String(a.end).localeCompare(String(b.end)));
+                if (!rows.length) return null;
+                return (
+                  <div style={{ background: "#eef2ff", border: "2px solid #c7d2fe", borderRadius: 16, padding: "16px 18px", marginBottom: 22, boxShadow: "0 4px 16px rgba(79,70,229,0.08)" }}>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
+                      <div style={{ fontSize: 15, fontWeight: 800, color: "#3730a3", letterSpacing: "0.04em", textTransform: "uppercase" }}>🔵 Probation ending</div>
+                      <div style={{ fontSize: 12, color: "#6366f1", fontWeight: 700 }}>{rows.length} {rows.length === 1 ? "person" : "people"} to review</div>
+                      <div style={{ flex: 1 }} />
+                      <button onClick={() => tryChangeTab("officeStaff")} style={{ background: "#fff", color: "#3730a3", border: "1px solid #c7d2fe", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>Open Office Staff →</button>
+                    </div>
+                    {rows.map(({ s, end, overdue }) => (
+                      <div key={s.ec} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "8px 0", borderTop: "1px dashed #c7d2fe", flexWrap: "wrap" }}>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: "#312e81" }}>{s.name} <span style={{ fontWeight: 500, color: "#6366f1" }}>· {OFFICE_ROLE_LABEL[s.role] || s.role || ""} · {isCallCentreStaff(s) ? "CC&S" : "Head Office"}</span></div>
+                          <div style={{ fontSize: 11, color: overdue ? "#b91c1c" : "#6366f1", marginTop: 1, fontWeight: overdue ? 700 : 500 }}>{overdue ? "⚠ Probation ended " + end + " — overdue" : "Probation ends " + end}</div>
+                        </div>
+                        <button onClick={() => confirmProbation(s.ec)} style={{ background: "#4f46e5", color: "#fff", border: "none", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>Confirm permanent</button>
+                      </div>
+                    ))}
                   </div>
                 );
               })());
@@ -29620,6 +29994,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                     ? <span style={{ fontSize: 10, fontWeight: 800, background: "#b45309", color: "#fff", padding: "3px 8px", borderRadius: 6, letterSpacing: "0.04em" }}>⏳ Notice{p.leftDate ? " · leaves " + _fmt(p.leftDate) : ""}</span>
                                     : <span style={{ fontSize: 10, fontWeight: 800, background: sec.ink, color: "#fff", padding: "3px 8px", borderRadius: 6, letterSpacing: "0.04em" }}>{p.active === false || p.active === "false" ? "Archived" : "Active"}</span>}
                                 {p.onMat && <span style={{ marginLeft: 6, fontSize: 10, background: "#FBCFE8", color: "#8E5570", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>🤱 mat.</span>}
+                                {(() => {
+                                  const _pr = probation[String(p.ec || "").trim().toUpperCase()];
+                                  if (!_pr || _pr.confirmedAt || departed) return null;
+                                  const _ov = _pr.end && _pr.end < ymdStr(new Date());
+                                  return <span title={(_ov ? "Probation ended " + _pr.end + " — overdue." : "On 6-month probation until " + _pr.end + ".") + (canAddOfficeStaff ? " Click to confirm permanent." : "")}
+                                    onClick={canAddOfficeStaff ? () => confirmProbation(p.ec) : undefined}
+                                    style={{ marginLeft: 6, fontSize: 10, background: _ov ? "#fee2e2" : "#e0e7ff", color: _ov ? "#991b1b" : "#3730a3", borderRadius: 4, padding: "1px 6px", fontWeight: 700, cursor: canAddOfficeStaff ? "pointer" : "default" }}>🔵 Prob.{_pr.end ? " to " + new Date(_pr.end + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>;
+                                })()}
                               </td>
                               <td style={{ padding: "10px 12px", fontSize: 11, color: "#831843" }}>{p.matRec && p.matRec.returnDate ? new Date(p.matRec.returnDate.replace(/\//g, "-") + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : <span style={{ color: "#d1d5db" }}>—</span>}</td>
                               <td style={{ padding: "10px 12px", textAlign: "right", whiteSpace: "nowrap" }}>
@@ -34518,6 +34900,143 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   })}
                 </div>
               </div>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* ── HQ / CALL CENTRE & SALES TRIALS TAB ──
+          A pre-hire trial pipeline for office/CC candidates, styled in the HQ
+          indigo palette. Separate store (boa_office_trial_v1) from the salon
+          Trial Period tab. On passing, the candidate signs a permanent contract
+          (6-month probation) and is added to the Office Staff List via the same
+          saveOfficeStaff door every office person goes through. */}
+      {tab === "officeTrials" && (() => {
+        const dept = officeTrialSubTab === "CC" ? "CC" : "HO";
+        const deptLabel = dept === "CC" ? "Call Centre & Sales" : "Head Office";
+        const today = ymdStr(new Date());
+        const all = (officeTrialList || []).filter(r => (r.dept === "CC" ? "CC" : "HO") === dept);
+        const active = all.filter(officeTrialActive);
+        const shown = (showArchivedTrials ? all : active).slice().sort((a, b) => String(b.startDate || "").localeCompare(String(a.startDate || "")) || String(a.name || "").localeCompare(String(b.name || "")));
+        const OT_STATUS = {
+          trial_w1: { l: "Week 1", bg: "#e0e7ff", fg: "#3730a3" },
+          trial_w2: { l: "Week 2", bg: "#c7d2fe", fg: "#312e81" },
+          passed: { l: "Passed — ready to hire", bg: "#dcfce7", fg: "#166534" },
+          failed: { l: "Failed", bg: "#fee2e2", fg: "#991b1b" },
+          hired: { l: "Hired", bg: "#f3f4f6", fg: "#374151" },
+          not_onboarding: { l: "Not onboarding", bg: "#fef3c7", fg: "#92400e" }
+        };
+        const CI = { on: { bg: "#86efac", fg: "#14532d", t: "On time" }, late: { bg: "#fde047", fg: "#713f12", t: "Late" }, absent: { bg: "#fca5a5", fg: "#7f1d1d", t: "Absent" } };
+        const dayWindow = (r) => {
+          const out = []; let d = new Date((r.startDate || today) + "T12:00:00"); const end = new Date(today + "T12:00:00"); let g = 0;
+          while (d <= end && g < 40) { out.push(ymdStr(d)); d.setDate(d.getDate() + 1); g++; }
+          return out.length > 21 ? out.slice(out.length - 21) : out;
+        };
+        const cycleCheckin = (r, ymd) => { const cur = (r.checkins || {})[ymd]; const nx = cur === "on" ? "late" : cur === "late" ? "absent" : cur === "absent" ? null : "on"; setOfficeTrialCheckin(r, ymd, nx); };
+        const evalChip = (ev, label) => ev
+          ? <span style={{ fontSize: 10.5, fontWeight: 700, padding: "2px 8px", borderRadius: 5, background: ev.pass ? "#dcfce7" : "#fee2e2", color: ev.pass ? "#166534" : "#991b1b" }}>{label}: {ev.pass ? "PASS" : "below"} {ev.total}/{ev.max}</span>
+          : <span style={{ fontSize: 10.5, fontWeight: 700, padding: "2px 8px", borderRadius: 5, background: "#eef2ff", color: "#6366f1" }}>{label}: pending</span>;
+        const btn = (bg) => ({ background: bg, color: "#fff", border: "none", borderRadius: 7, padding: "6px 12px", fontSize: 11.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" });
+        return (
+          <div style={{ padding: "0 24px 40px" }}>
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 26, color: "#3730a3", fontWeight: 700 }}>🏢 HQ Trials</div>
+              <div style={{ fontSize: 12.5, color: "#6366f1", maxWidth: 860, lineHeight: 1.5 }}>
+                Pre-hire trials for Head Office and Call Centre &amp; Sales candidates — a Week-1 and a Final evaluation, tracked check-ins, then a pass. On passing, sign the permanent contract (6-month probation) and add them to the Office Staff List. Check-ins are recorded here or on the Head Office kiosk's Trial Check-in tile.
+              </div>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
+              <div style={{ display: "flex", gap: 6, background: "#eef2ff", border: "1px solid #c7d2fe", borderRadius: 10, padding: 4 }}>
+                {[["HO", "🏢 Head Office"], ["CC", "📞 Call Centre & Sales"]].map(([k, l]) => (
+                  <button key={k} onClick={() => setOfficeTrialSubTab(k)} style={{ padding: "6px 14px", borderRadius: 7, border: "none", background: dept === k ? "#4f46e5" : "transparent", color: dept === k ? "#fff" : "#3730a3", fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>{l}</button>
+                ))}
+              </div>
+              {canAddOfficeStaff && (
+                <button onClick={() => setOfficeTrialModal({ dept, startDate: today })} style={{ ...btn("#4f46e5"), padding: "8px 16px", fontSize: 12.5 }}>➕ New {dept === "CC" ? "CC&S" : "HQ"} Trial</button>
+              )}
+              <label style={{ marginLeft: "auto", fontSize: 11.5, color: "#6366f1", display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+                <input type="checkbox" checked={showArchivedTrials} onChange={e => setShowArchivedTrials(e.target.checked)} /> Show completed (hired / failed)
+              </label>
+            </div>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
+              {[["Active", active.length], ["Week 1", active.filter(r => r.status === "trial_w1").length], ["Week 2", active.filter(r => r.status === "trial_w2").length], ["Ready to hire", active.filter(r => r.status === "passed").length]].map(([l, n]) => (
+                <div key={l} style={{ background: "#eef2ff", border: "1px solid #c7d2fe", borderRadius: 10, padding: "8px 16px", minWidth: 96 }}>
+                  <div style={{ fontSize: 22, fontWeight: 800, color: "#3730a3" }}>{n}</div>
+                  <div style={{ fontSize: 10.5, color: "#6366f1", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em" }}>{l}</div>
+                </div>
+              ))}
+            </div>
+            {shown.length === 0 ? (
+              <div style={{ background: "#f8faff", border: "1px dashed #c7d2fe", borderRadius: 12, padding: "40px 20px", textAlign: "center", color: "#6366f1", fontSize: 13 }}>
+                No {showArchivedTrials ? "" : "active "}{deptLabel} trials.{canAddOfficeStaff ? " Click “➕ New " + (dept === "CC" ? "CC&S" : "HQ") + " Trial” to add a candidate." : ""}
+              </div>
+            ) : shown.map(r => {
+              const status = OT_STATUS[r.status] || OT_STATUS.trial_w1;
+              const days = dayWindow(r);
+              const worked = _officeTrialWorked(r), absent = _officeTrialAbsent(r);
+              const canEdit = canAddOfficeStaff && officeTrialActive(r);
+              return (
+                <div key={r._id} style={{ background: "#fff", border: "1px solid #e0e7ff", borderRadius: 14, padding: "16px 18px", marginBottom: 12, boxShadow: "0 2px 10px rgba(79,70,229,0.06)" }}>
+                  <div style={{ display: "flex", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+                    <div style={{ flex: 1, minWidth: 200 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                        <span style={{ fontSize: 16, fontWeight: 800, color: "#1e1b4b" }}>{r.name}</span>
+                        <span style={{ fontSize: 10.5, fontWeight: 800, padding: "2px 9px", borderRadius: 6, background: status.bg, color: status.fg }}>{status.l}</span>
+                        {r.status === "hired" && r.hiredEc ? <span style={{ fontSize: 10.5, color: "#6366f1", fontWeight: 700 }}>→ {r.hiredEc}</span> : null}
+                      </div>
+                      <div style={{ fontSize: 11.5, color: "#6366f1", marginTop: 2 }}>{OFFICE_ROLE_LABEL[r.role] || r.role || "—"} · {deptLabel} · started {r.startDate || "—"}{(r.extensions || []).length ? " · +" + r.extensions.length + "wk extension" : ""}</div>
+                      {(r.phone || r.email) ? <div style={{ fontSize: 10.5, color: "#9ca3af", marginTop: 1 }}>{[r.phone, r.email].filter(Boolean).join(" · ")}</div> : null}
+                    </div>
+                    <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>{evalChip(r.midEval, "Wk 1")}{evalChip(r.finalEval, "Final")}</div>
+                  </div>
+                  {/* Check-in day grid */}
+                  <div style={{ display: "flex", gap: 3, flexWrap: "wrap", marginTop: 12, alignItems: "center" }}>
+                    {days.map(ymd => {
+                      const st = (r.checkins || {})[ymd];
+                      const c = st ? CI[st] : null;
+                      const dd = new Date(ymd + "T12:00:00");
+                      const isWk = dd.getDay() === 0 || dd.getDay() === 6;
+                      return (
+                        <button key={ymd} disabled={!canEdit} onClick={() => cycleCheckin(r, ymd)}
+                          title={ymd + (c ? " · " + c.t : "") + (canEdit ? " (click to change)" : "")}
+                          style={{ width: 30, height: 34, borderRadius: 6, border: "1px solid " + (c ? "transparent" : "#e0e7ff"), background: c ? c.bg : (isWk ? "#f8faff" : "#fff"), color: c ? c.fg : "#c7d2fe", fontSize: 9, fontWeight: 700, cursor: canEdit ? "pointer" : "default", fontFamily: "inherit", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", lineHeight: 1.1 }}>
+                          <span style={{ fontSize: 8, opacity: 0.7 }}>{"SMTWTFS"[dd.getDay()]}</span>
+                          <span>{dd.getDate()}</span>
+                        </button>
+                      );
+                    })}
+                    <span style={{ fontSize: 11, color: "#6366f1", marginLeft: 8 }}>✓ {worked} worked{absent ? " · ✕ " + absent + " absent" : ""}</span>
+                  </div>
+                  {/* Actions */}
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+                    {canEdit && r.status === "trial_w1" && <button onClick={() => setOfficeTrialEvalModal({ rec: r, which: "mid" })} style={btn("#4f46e5")}>📋 Week-1 evaluation</button>}
+                    {canEdit && r.status === "trial_w2" && <button onClick={() => setOfficeTrialEvalModal({ rec: r, which: "final" })} style={btn("#4f46e5")}>📋 Final evaluation</button>}
+                    {canEdit && r.status === "passed" && <button onClick={() => hireOfficeTrial(r)} style={btn("#16a34a")}>✍ Sign contract &amp; add to Office Staff</button>}
+                    {canEdit && (r.status === "trial_w1" || r.status === "trial_w2") && <button onClick={() => passOfficeTrial(r)} style={btn("#15803d")}>Pass</button>}
+                    {canEdit && (r.status === "trial_w1" || r.status === "trial_w2") && <button onClick={() => extendOfficeTrial(r)} style={btn("#b45309")}>Extend +1wk</button>}
+                    {canEdit && <button onClick={() => setOfficeTrialModal({ ...r })} style={{ ...btn("#6366f1"), background: "#eef2ff", color: "#4f46e5" }}>Edit</button>}
+                    {canEdit && <button onClick={() => failOfficeTrial(r)} style={{ ...btn("#dc2626"), background: "#fee2e2", color: "#991b1b" }}>Fail</button>}
+                  </div>
+                </div>
+              );
+            })}
+            {officeTrialModal && (
+              <OfficeTrialAddModal seed={officeTrialModal} onClose={() => setOfficeTrialModal(null)}
+                onSave={(f) => {
+                  if (f._id != null) {
+                    persistOfficeTrial(officeTrialList.map(x => x._id === f._id ? { ...x, name: f.name, phone: f.phone || "", email: f.email || "", dept: f.dept === "CC" ? "CC" : "HO", role: f.role, startDate: f.startDate, notes: f.notes || "", updatedAt: new Date().toISOString() } : x));
+                  } else {
+                    const rec = { _id: Date.now(), name: String(f.name || "").trim(), phone: f.phone || "", email: f.email || "", dept: f.dept === "CC" ? "CC" : "HO", role: f.role, startDate: f.startDate, notes: f.notes || "", status: "trial_w1", checkins: {}, addedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+                    persistOfficeTrial([...officeTrialList, rec]);
+                    logActivity("Started HQ trial", rec.name + " · " + (OFFICE_ROLE_LABEL[rec.role] || rec.role), rec.dept === "CC" ? "Call Centre & Sales" : "Head Office", "People");
+                  }
+                  setOfficeTrialModal(null);
+                }} />
+            )}
+            {officeTrialEvalModal && officeTrialEvalModal.rec && (
+              <OfficeTrialEvalModal rec={officeTrialEvalModal.rec} which={officeTrialEvalModal.which}
+                onClose={() => setOfficeTrialEvalModal(null)}
+                onSubmit={(scores, notes) => submitOfficeTrialEval(officeTrialEvalModal.rec, officeTrialEvalModal.which, scores, notes)} />
             )}
           </div>
         );
