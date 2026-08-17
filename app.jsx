@@ -3089,6 +3089,36 @@ const COMPLIANCE = {
   z_na: { label: "Z/NA – No Valid Permit", icon: "🚨", color: "#831843", bg: "#fee2e2", border: "#fca5a5" },
 };
 
+// ── STILL ON THE BOOKS ───────────────────────────────────────────────────
+// One departure test for the compliance surfaces, which were re-deriving it
+// per-pool and more narrowly than the Staff List does. The three ways it
+// used to leak someone who had already gone:
+//   • managers were never departure-filtered at ALL — the pools read the raw
+//     `managers` array, which carries no offboarded / leftDate enrichment, so
+//     anyone off-boarded (including managers let go FOR non-compliance) stayed
+//     on the Compliance tab forever after vanishing from every other view;
+//   • `status: "terminated"` / `active: false` straight on the staff record
+//     was ignored, though the Staff List hides people on exactly that test;
+//   • a leftDate written by the staff modal rather than the Off-boarding tab
+//     was ignored, because offDaysSinceLeft is only ever derived from the
+//     off-boarding record's own leftDate.
+//
+// Takes the enriched shape (_enrichRoster / enrichedManagers), so pass
+// enriched* lists, never the raw staff / managers arrays.
+//
+// Someone serving out notice — last day still in the FUTURE — is deliberately
+// kept: they are still on the floor, so their documents still matter. Anyone
+// past their last day is dropped.
+function isStillOnBooks(p, todayYmd) {
+  if (!p || !p.ec) return false;
+  if (p.status === "terminated" || p.active === false || p.active === "false") return false;
+  if (p.offHidden) return false;                        // past the 31-day leaver window
+  if (p.offboarded && !(p.offDaysSinceLeft != null && p.offDaysSinceLeft < 0)) return false;
+  const t = todayYmd || new Date().toISOString().slice(0, 10);
+  if (p.leftDate && String(p.leftDate) < t) return false;  // leftDate on the record, no off-board row
+  return true;
+}
+
 // ── VFS APPLICATION OVERLAY ──────────────────────────────────────────────
 // VFS Global (vfsglobal.com/southafrica) is the centre Home Affairs
 // outsources visa / permit submissions to. Lodging there is a STEP, not a
@@ -31498,15 +31528,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const effBranch = (p) => (p && p.transferring && p.transferTo && p.transferDate && _todayYmd >= p.transferDate)
             ? p.transferTo
             : ((p && p.branch) || "");
-          // Build the combined pool: active techs (exclude off-boarded /
-          // on-mat for clarity - they're not the people to chase) + every
-          // manager. Off-boarded folk who have already left are dropped
-          // because chasing them is pointless.
+          const stillOnBooks = (p) => isStillOnBooks(p, _todayYmd);
+
+          // Build the combined pool: techs + managers who are still on the
+          // books. Managers now come from enrichedManagers (not the raw
+          // `managers` array) so they carry the same offboarded / leftDate /
+          // onMat enrichment the techs do and the filter can actually bite.
           const pool = [
             ...enriched
-              .filter(s => !s.offboarded || (s.offDaysSinceLeft != null && s.offDaysSinceLeft < 0))
+              .filter(stillOnBooks)
               .map(s => ({ ec: s.ec, name: s.name, branch: effBranch(s), permit: s.permit, role: "NT", onMat: s.onMat })),
-            ...(managers || [])
+            ...(enrichedManagers || [])
+              .filter(stillOnBooks)
               .map(m => ({ ec: m.ec, name: m.name, branch: effBranch(m), permit: m.permit, role: m.role || "AM", onMat: !!m.onMat }))
           ].filter(p => p && p.ec);
 
@@ -31548,7 +31581,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             ...pool,
             ...(enrichedOffice || [])
               .filter(s => s && s.ec && !pool.some(p => p.ec === s.ec))
-              .filter(s => !s.offboarded || (s.offDaysSinceLeft != null && s.offDaysSinceLeft < 0))
+              .filter(stillOnBooks)
               .map(s => ({ ec: s.ec, name: s.name, branch: effBranch(s), permit: s.permit, role: String(s.role || "HO"), onMat: !!s.onMat }))
           ];
           const vfsPool = vfsCandidates.filter(p => hasVfs(complianceActions[p.ec]));
@@ -31831,11 +31864,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 };
                 const expPool = [
                   ...(enriched || [])
-                    .filter(s => s && s.ec && (!s.offboarded || (s.offDaysSinceLeft != null && s.offDaysSinceLeft < 0)))
+                    .filter(stillOnBooks)
                     .filter(s => (s.permit === "asylum" || s.permit === "work_permit") && s.permitExpiry)
                     .map(s => ({ _id: s._id, ec: s.ec, name: s.name, branch: effBranch(s), permit: s.permit, permitExpiry: s.permitExpiry, role: "NT", onMat: s.onMat })),
-                  ...(managers || [])
-                    .filter(m => m && m.ec)
+                  ...(enrichedManagers || [])
+                    .filter(stillOnBooks)
                     .filter(m => (m.permit === "asylum" || m.permit === "work_permit") && m.permitExpiry)
                     .map(m => ({ _id: m._id, ec: m.ec, name: m.name, branch: effBranch(m), permit: m.permit, permitExpiry: m.permitExpiry, role: m.role || "AM", onMat: !!m.onMat }))
                 ];
@@ -31964,11 +31997,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 // compliant rows belong in the stat tiles above.
                 const dirPool = [
                   ...(enriched || [])
-                    .filter(s => s && s.ec && (!s.offboarded || (s.offDaysSinceLeft != null && s.offDaysSinceLeft < 0)))
+                    .filter(stillOnBooks)
                     .filter(s => !s.permit || s.permit === "z_na")
                     .map(s => ({ _id: s._id, ec: s.ec, name: s.name, branch: effBranch(s), permit: s.permit, role: "NT", onMat: s.onMat })),
-                  ...(managers || [])
-                    .filter(m => m && m.ec)
+                  ...(enrichedManagers || [])
+                    .filter(stillOnBooks)
                     .filter(m => !m.permit || m.permit === "z_na")
                     .map(m => ({ _id: m._id, ec: m.ec, name: m.name, branch: effBranch(m), permit: m.permit, role: m.role || "AM", onMat: !!m.onMat }))
                 ];
@@ -32247,18 +32280,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const set = (k, v) => setVfsModal({ ...m, [k]: v });
           const lbl = { display: "block", fontSize: 11, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 };
           const fld = { width: "100%", padding: "9px 11px", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 14, fontFamily: "inherit", marginBottom: 12, background: "#fff" };
-          // Picker pool — every tech, manager and office employee still on
-          // the books. Off-boarded people who have already left are dropped;
-          // logging a VFS application against a leaver is never right.
+          // Picker pool — every tech, manager and office employee still on the
+          // books, by the same test the Compliance tab uses. Logging a VFS
+          // application against someone who has already left is never right.
+          const _pickToday = new Date().toISOString().slice(0, 10);
           const pickPool = [
             ...(enriched || [])
-              .filter(s => s && s.ec && (!s.offboarded || (s.offDaysSinceLeft != null && s.offDaysSinceLeft < 0)))
+              .filter(s => isStillOnBooks(s, _pickToday))
               .map(s => ({ ec: s.ec, name: s.name, branch: s.branch || "", role: "NT", permit: s.permit })),
-            ...(managers || [])
-              .filter(x => x && x.ec)
+            ...(enrichedManagers || [])
+              .filter(x => isStillOnBooks(x, _pickToday))
               .map(x => ({ ec: x.ec, name: x.name, branch: x.branch || "", role: x.role || "AM", permit: x.permit })),
             ...(enrichedOffice || [])
-              .filter(s => s && s.ec && (!s.offboarded || (s.offDaysSinceLeft != null && s.offDaysSinceLeft < 0)))
+              .filter(s => isStillOnBooks(s, _pickToday))
               .map(s => ({ ec: s.ec, name: s.name, branch: s.branch || "", role: String(s.role || "HO"), permit: s.permit }))
           ];
           const pq = (m._q || "").trim().toLowerCase();
