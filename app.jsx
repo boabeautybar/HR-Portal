@@ -14617,6 +14617,34 @@ function findLeaveOverlaps(r, leaveRecs, requests) {
   return { calOverlaps, reqOverlaps, coveredDays };
 }
 
+// First-come-first-served nudge: OTHER people's still-PENDING requests, in the
+// same operational pool (managers / techs / Head Office / Call Centre) at the
+// same branch, whose dates overlap r's and who applied BEFORE r. When a branch
+// can't spare everyone at once the earlier applicant should be considered first,
+// so the approver gets a "someone applied for this period first" notice (they
+// can still continue). Returned oldest-application first. Branch = resolved home
+// branch, falling back to the request's store so a transfer doesn't split it.
+// Same pool only: a tech and a manager don't compete for the same headroom.
+function earlierSamePeriodRequests(r, requests, enriched, managers) {
+  if (!r || r.status !== "pending" || !r.start_date || !r.end_date) return [];
+  const poolOf = (x) => (isCallCentreEc(x.ec) || isCallCentreBranch(x.store)) ? "cc"
+    : (isHeadOfficeEc(x.ec) || isHeadOfficeBranch(x.store)) ? "ho"
+      : isManagerEc(x.ec) ? "mgr" : "tech";
+  const branchOf = (x) => { const p = findLeavePerson(x.ec, enriched, managers); return String((p && p.branch) || x.store || "").trim().toLowerCase(); };
+  const myPool = poolOf(r), myBranch = branchOf(r), myApplied = r.created_at || "";
+  const ecU = String(r.ec || "").trim().toUpperCase();
+  if (!myBranch || !myApplied) return [];
+  return (requests || []).filter(o =>
+    o && o.id !== r.id && o.status === "pending"
+    && o.leave_type !== "Sick" && o.leave_type !== "Absent"
+    && String(o.ec || "").trim().toUpperCase() !== ecU
+    && o.start_date && o.end_date
+    && o.start_date <= r.end_date && o.end_date >= r.start_date
+    && poolOf(o) === myPool && branchOf(o) === myBranch
+    && (o.created_at || "") && (o.created_at || "") < myApplied
+  ).sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")));
+}
+
 // People who used the My BOA "Call in sick / Mark absent" tile — either sick
 // (leave_type "Sick") or absent for another reason ("Absent") — whose
 // away-period overlaps today or tomorrow.
@@ -17577,6 +17605,9 @@ function LeaveApprovalWizard({ r, mode, deps, actor, onReverse, onComplete, onCa
   const need = bd.real;
   const oa = assessLeaveOps(r, enriched, managers, leaveRecs);
   const ov = findLeaveOverlaps(r, leaveRecs, deps.requests || []);
+  // Other people at this branch who applied for overlapping dates FIRST — a
+  // first-come-first-served nudge shown at the top of step 1 (she can continue).
+  const earlierApplicants = earlierSamePeriodRequests(r, deps.requests || [], enriched, managers);
   const peopleLabel = oa.isMgr ? "managers" : "techs";
 
   const balToday = annualBalanceFor(r.ec, deps);              // live figure
@@ -17649,6 +17680,14 @@ function LeaveApprovalWizard({ r, mode, deps, actor, onReverse, onComplete, onCa
           {step === 1 && (
             <div>
               <div style={{ fontSize: 13.5, fontWeight: 800, color: "#831843", marginBottom: 10 }}>1 · Operational check</div>
+              {earlierApplicants.length > 0 && (
+                <div style={verdict("#eff6ff", "#bfdbfe", "#1e40af")}>
+                  <div style={{ fontWeight: 800, marginBottom: 4 }}>🕑 Someone applied for this period first</div>
+                  <div style={{ fontSize: 12.5, lineHeight: 1.5 }}>
+                    {earlierApplicants.length === 1 ? (earlierApplicants[0].name || earlierApplicants[0].ec) : earlierApplicants.length + " people"} at {branch || "this branch"} applied for overlapping dates <strong>before</strong> this request ({earlierApplicants.slice(0, 3).map(o => fmtIncidentDate(o.start_date) + "→" + fmtIncidentDate(o.end_date)).join(", ")}{earlierApplicants.length > 3 ? "…" : ""}). First-come, first-served — consider approving the earliest first. You can still continue with this one.
+                  </div>
+                </div>
+              )}
               {(ov.calOverlaps.length > 0) && (
                 <div style={verdict("#fffbeb", "#fde68a", "#92400e")}>
                   <div style={{ fontWeight: 800, marginBottom: 5 }}>⚠ Already has leave overlapping these dates — {ov.coveredDays} of {bd.cal} requested day{bd.cal === 1 ? "" : "s"} already covered</div>
@@ -17792,6 +17831,7 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
   const [declineText, setDeclineText] = useState("");
   const [busy, setBusy] = useState(false);
   const [wizard, setWizard] = useState(null);   // request being walked through the 3-step approval wizard
+  const [sortBy, setSortBy] = useState("smart");   // card sort order (see _resolvedSort below)
   // Uploaded leave-balance sheet — so the form can show how many days the person
   // actually has (opening + accrual − leave already on the calendar) and flag at
   // a glance whether this request fits.
@@ -17839,6 +17879,17 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
     } catch (e) { alert("Could not add to the Leave Planner: " + (e.message || e)); }
     setBusy(false);
   };
+  // Planner-gap per APPROVED request, computed once and shared by the top
+  // "not on planner" banner, the collapsed-card highlight and the expanded view
+  // (uncoveredLeaveSegments walks days, so we don't want it per-render-per-card).
+  const plannerGapById = useMemo(() => {
+    const m = {};
+    (requests || []).forEach(r => {
+      if (r.status === "approved" && r.leave_type !== "Sick" && r.leave_type !== "Absent") m[r.id] = plannerGap(r);
+    });
+    return m;
+  }, [requests, leaveRecs, enrichedBase, hoStaff, managers]);   // enriched = base+HO, recomputed each render; key off the stable props
+  const isPlannerGap = (r) => { const g = plannerGapById[r.id]; return !!(g && (!g.person || g.days > 0)); };
   // Open the 3-step approval wizard for a request. It replaces the old two
   // separate gate buttons with one guided flow so the operational clash and the
   // leave-balance projection are impossible to skip past.
@@ -17923,6 +17974,36 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
     if (statusFilter === "all") return true;
     return r.status === statusFilter;
   });
+  // Card sort order (applies inside every column — classifyRequestGroups keeps
+  // the incoming order). "smart" follows the view: pending → the soonest-starting
+  // leave floats up (what's coming), approved/declined → most recently decided.
+  // The explicit options let National Ops re-sort — e.g. "first applied" to work
+  // the queue first-come-first-served within a branch.
+  const _resolvedSort = sortBy !== "smart" ? sortBy
+    : (statusFilter === "approved" || statusFilter === "declined") ? "recently_decided"
+      : "soonest";
+  const _s = (x) => x || "";
+  const _sortCmp = (a, b) => {
+    switch (_resolvedSort) {
+      case "soonest": return _s(a.start_date).localeCompare(_s(b.start_date)) || _s(a.created_at).localeCompare(_s(b.created_at));
+      case "latest_start": return _s(b.start_date).localeCompare(_s(a.start_date));
+      case "first_applied": return _s(a.created_at).localeCompare(_s(b.created_at));
+      case "recently_applied": return _s(b.created_at).localeCompare(_s(a.created_at));
+      case "recently_decided": return _s(b.decided_at || b.created_at).localeCompare(_s(a.decided_at || a.created_at));
+      case "longest": return (leaveDays(b.start_date, b.end_date) - leaveDays(a.start_date, a.end_date)) || _s(a.start_date).localeCompare(_s(b.start_date));
+      case "name": return String(a.name || a.ec || "").localeCompare(String(b.name || b.ec || ""));
+      default: return 0;
+    }
+  };
+  filtered.sort(_sortCmp);
+  // Approved leave that never reached the Leave Planner (an old overlap skipped
+  // the write, or it failed — e.g. approved before the branch had a published
+  // schedule). Approval never retries, so these are easy to overlook; surface
+  // them loudly. Respects the CC&S-only scope like the rest of the board.
+  const notOnPlanner = annualReqs.filter(r =>
+    r.status === "approved" && isPlannerGap(r)
+    && !(ccOnly && !isCallCentreEc(r.ec) && !isCallCentreBranch(r.store))
+  );
   const pendingCount = annualReqs.filter(r => r.status === "pending").length;
   // Live counts for the workflow overview (open = not declined / not approved).
   const openReqs = annualReqs.filter(r => r.status !== "approved" && r.status !== "declined");
@@ -17964,6 +18045,35 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
       <p style={{ color: "#9d6a82", fontSize: 13.5, marginTop: 4, maxWidth: 760 }}>
         How a leave request flows from request to the calendar — and who does each step. A request is <strong>auto-approved and added to the Leave Planner</strong> only once both checks below are ticked. Anyone can <strong>decline</strong> at any point with a reason. Who can do each check is set under <strong>Settings</strong>.
       </p>
+
+      {notOnPlanner.length > 0 && (
+        <div style={{ ...card, background: "#fef2f2", border: "2px solid #ef4444" }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 9, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 13.5, fontWeight: 900, color: "#b91c1c" }}>⚠ {notOnPlanner.length} approved leave{notOnPlanner.length === 1 ? "" : "s"} not on the Leave Planner</span>
+            <span style={{ fontSize: 11.5, color: "#7f1d1d" }}>Approved, but the planner never got {notOnPlanner.length === 1 ? "it" : "them"} (e.g. no published schedule at the time). Until added, {notOnPlanner.length === 1 ? "it doesn't" : "they don't"} count toward the 20% cap, balances or Fresha blocking.</span>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {notOnPlanner.map(r => {
+              const g = plannerGapById[r.id];
+              const p = g && g.person;
+              const nm = (p && p.name) || r.name || r.ec || "?";
+              return (
+                <div key={r.id} style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, fontSize: 12.5, color: "#7f1d1d", borderBottom: "1px solid #fecaca", paddingBottom: 6 }}>
+                  <strong>{nm}</strong>
+                  <span style={{ color: "#9ca3af", fontSize: 11.5 }}>{r.ec}{p && p.branch ? " · " + p.branch : (r.store ? " · " + r.store : "")}</span>
+                  <span>📅 {fmtIncidentDate(r.start_date)} → {fmtIncidentDate(r.end_date)}</span>
+                  {g && g.person && g.days > 0 && <span style={{ color: "#b91c1c", fontWeight: 700 }}>· {g.days} day{g.days === 1 ? "" : "s"} missing</span>}
+                  {p ? (
+                    <button onClick={() => repairPlanner(r)} disabled={busy} title={"Add this approved leave to the Leave Planner now."} style={{ marginLeft: "auto", fontSize: 11.5, fontWeight: 800, color: "#fff", background: "#dc2626", border: "none", borderRadius: 8, padding: "5px 12px", cursor: "pointer", opacity: busy ? 0.6 : 1 }}>➕ Add to planner now</button>
+                  ) : (
+                    <span style={{ marginLeft: "auto", fontSize: 11, fontWeight: 700, color: "#92400e", background: "#fef3c7", border: "1px solid #f59e0b", borderRadius: 999, padding: "2px 9px" }} title={"No staff member or manager matches employee code \"" + (r.ec || "—") + "\" — add it on the Leave Planner manually."}>no EC match — add manually</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {recentApproved.length > 0 && (
         <div style={{ ...card, background: "#f0fdf4", border: "1px solid #bbf7d0" }}>
@@ -18054,6 +18164,17 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
           <option value="">All stores</option>
           {stores.map(s => <option key={s} value={s}>{s}</option>)}
         </select>
+        <select value={sortBy} onChange={e => setSortBy(e.target.value)} title="Sort the request cards"
+          style={{ fontFamily: "inherit", fontSize: 13, padding: "8px 10px", borderRadius: 9, border: "1.5px solid #e7c6d4" }}>
+          <option value="smart">↕ Smart sort</option>
+          <option value="soonest">Closest upcoming leave</option>
+          <option value="latest_start">Latest starting</option>
+          <option value="first_applied">First applied (oldest)</option>
+          <option value="recently_applied">Recently applied</option>
+          <option value="recently_decided">Recently approved / declined</option>
+          <option value="longest">Longest leave</option>
+          <option value="name">Employee name (A–Z)</option>
+        </select>
         <span style={{ alignSelf: "center", fontSize: 12.5, color: "#9d6a82" }}>{filtered.length} request{filtered.length === 1 ? "" : "s"}</span>
       </div>
 
@@ -18070,8 +18191,9 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
               const notes = Array.isArray(r.internal_notes) ? r.internal_notes : [];
               const days = leaveDays(r.start_date, r.end_date);
               const thisCycle = isCurrentCycleReq(r);
+              const gapCard = isPlannerGap(r);   // approved but not on the Leave Planner
               return (
-                <div key={r.id} style={{ ...card, marginBottom: 12, ...(thisCycle ? { borderLeft: "5px solid #f59e0b" } : {}) }}>
+                <div key={r.id} style={{ ...card, marginBottom: 12, ...(gapCard ? { border: "2px solid #ef4444", background: "#fff5f5" } : thisCycle ? { borderLeft: "5px solid #f59e0b" } : {}) }}>
                   <div onClick={() => onOpen(r)} style={{ display: "flex", gap: 8, alignItems: "center", cursor: "pointer", flexWrap: "wrap" }}>
                     {!r.reviewed && <span style={{ width: 9, height: 9, borderRadius: 999, background: "#BE185D", display: "inline-block" }} title="Not yet opened" />}
                     <strong style={{ color: "#111827", fontSize: 14 }}>{r.name}</strong>
@@ -18079,6 +18201,7 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
                     <span style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "#fdf2f8", border: "1px solid #f9a8d4", color: "#9d174d", fontWeight: 800, fontSize: 14, padding: "4px 11px", borderRadius: 9 }}>📅 {fmtIncidentDate(r.start_date)} → {fmtIncidentDate(r.end_date)}</span>
                     <span style={{ color: "#9ca3af", fontSize: 12 }}>· {days} day{days === 1 ? "" : "s"}{r.store ? " · " + r.store : ""}</span>
                     {thisCycle && <span style={{ display: "inline-flex", alignItems: "center", gap: 4, background: "#fef3c7", border: "1px solid #f59e0b", color: "#92400e", fontWeight: 800, fontSize: 11, padding: "3px 9px", borderRadius: 999, letterSpacing: "0.02em" }} title={"This leave falls in the CURRENT pay cycle (" + fmtIncidentDate(cycleStartYmd) + " – " + fmtIncidentDate(cycleEndYmd) + "). Leave should be booked in advance — you can still approve it."}>⚠ THIS CYCLE · short notice</span>}
+                    {gapCard && <span style={{ display: "inline-flex", alignItems: "center", gap: 4, background: "#fee2e2", border: "1px solid #ef4444", color: "#b91c1c", fontWeight: 800, fontSize: 11, padding: "3px 9px", borderRadius: 999, letterSpacing: "0.02em" }} title="Approved, but not on the Leave Planner. Open this card to add it.">⚠ NOT ON PLANNER</span>}
                     <span style={{ marginLeft: "auto", ...chip(st) }}>{st.label}</span>
                     <span style={{ color: "#cbb1bd", fontSize: 18, lineHeight: 1 }}>{open ? "▾" : "▸"}</span>
                   </div>
@@ -18115,6 +18238,27 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
                             <div style={{ fontSize: 11, color: "#9a7b3a", marginTop: 4 }}>Check this isn't a duplicate before approving.</div>
                           </div>
                         )}
+
+                        {r.status === "pending" && (() => {
+                          const earlier = earlierSamePeriodRequests(r, requests, enriched, managers);
+                          if (earlier.length === 0) return null;
+                          return (
+                            <div style={{ background: "#eff6ff", border: "1.5px solid #bfdbfe", borderRadius: 11, padding: "10px 13px", marginBottom: 14 }}>
+                              <div style={{ fontSize: 12.5, fontWeight: 800, color: "#1e40af", marginBottom: 4 }}>🕑 Someone applied for this period first — first-come, first-served</div>
+                              <div style={{ fontSize: 12, color: "#1e3a8a", lineHeight: 1.5, marginBottom: 4 }}>
+                                {earlier.length === 1 ? "Another person" : earlier.length + " others"} at this branch applied for overlapping dates <strong>before</strong> this request. Consider reviewing {earlier.length === 1 ? "theirs" : "the earliest"} first — you can still approve this one.
+                              </div>
+                              {earlier.map(o => (
+                                <div key={o.id} style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, fontSize: 12, color: "#1e3a8a", marginTop: 4 }}>
+                                  <strong>{o.name || o.ec}</strong>
+                                  <span>📅 {fmtIncidentDate(o.start_date)} → {fmtIncidentDate(o.end_date)}</span>
+                                  <span style={{ color: "#3b5bdb" }}>· applied {fmtIncidentTime(o.created_at)}</span>
+                                  <button onClick={e => { e.stopPropagation(); setOpenId(o.id); }} style={{ marginLeft: "auto", fontSize: 11.5, fontWeight: 800, color: "#1e40af", background: "#fff", border: "1px solid #bfdbfe", borderRadius: 8, padding: "4px 11px", cursor: "pointer" }}>Review theirs first →</button>
+                                </div>
+                              ))}
+                            </div>
+                          );
+                        })()}
 
                         {r.status === "approved" && (() => {
                           const g = plannerGap(r);
