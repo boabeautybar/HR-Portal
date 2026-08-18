@@ -5168,25 +5168,6 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
     });
   }, [branch, ym]);
 
-  // HQ auto-populate: the first time an EMPTY Head Office cycle is opened, fill
-  // the standard office week (08:00–17:00 Mon–Fri, weekends/holidays off) so a
-  // newly-hired office person's schedule is ready with no manual step. Fires only
-  // on a completely blank office grid and leaves the draft for review (Save/
-  // Publish stays deliberate). A schedule that already has data — or one the user
-  // cleared (dirty) — is never touched. Head-Office-only; CC is hand-built by the
-  // CC manager. `autoPopulateHoWeek` is a hoisted function declaration below.
-  const _hoAutoRef = React.useRef("");
-  useEffect(() => {
-    if (!_isHoSchedule || loading || dirty) return;
-    const key = branch + "|" + ym;
-    if (_hoAutoRef.current === key) return;
-    const eligible = (techs || []).filter(t => t && t.ec && !t.onMat && !t.isShadow);
-    if (!eligible.length || !days.length) return;
-    _hoAutoRef.current = key;                       // mark this cycle checked (fill or not) so we never re-trigger
-    const empty = eligible.every(t => !grid[t.ec] || Object.keys(grid[t.ec]).length === 0);
-    if (empty) autoPopulateHoWeek({ silent: true });
-  }, [_isHoSchedule, loading, dirty, branch, ym, techs, days, grid]);
-
   // Heal grid rows keyed by a DRIFTED employee code — stray whitespace or a
   // case difference between the saved row key and the current staff record's
   // ec (e.g. after the code was edited on the staff record). The grid render
@@ -5390,6 +5371,31 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
       return (a.ec || "").localeCompare(b.ec || "");
     });
   }, [allStaff, branch, _periodStartYmdForTechs]);
+
+  // HQ auto-populate: the first time an EMPTY Head Office cycle is opened, fill
+  // the standard office week (08:00–17:00 Mon–Fri, weekends/holidays off) so a
+  // newly-hired office person's schedule is ready with no manual step. Fires only
+  // on a completely blank office grid and leaves the draft for review (Save/
+  // Publish stays deliberate). A schedule that already has data — or one the user
+  // cleared (dirty) — is never touched. Head-Office-only; CC is hand-built by the
+  // CC manager. `autoPopulateHoWeek` is a hoisted function declaration below.
+  // MUST stay below the `techs` and `days` declarations: both appear in this
+  // effect's dependency array, which React evaluates DURING render — referencing
+  // them before their `const` runs throws "can't access 'techs' before
+  // initialization" (a TDZ error) and crashes the whole Schedule tab. The effect
+  // BODY may reference later-declared values (it runs after commit); the DEP
+  // ARRAY may not.
+  const _hoAutoRef = React.useRef("");
+  useEffect(() => {
+    if (!_isHoSchedule || loading || dirty) return;
+    const key = branch + "|" + ym;
+    if (_hoAutoRef.current === key) return;
+    const eligible = (techs || []).filter(t => t && t.ec && !t.onMat && !t.isShadow);
+    if (!eligible.length || !days.length) return;
+    _hoAutoRef.current = key;                       // mark this cycle checked (fill or not) so we never re-trigger
+    const empty = eligible.every(t => !grid[t.ec] || Object.keys(grid[t.ec]).length === 0);
+    if (empty) autoPopulateHoWeek({ silent: true });
+  }, [_isHoSchedule, loading, dirty, branch, ym, techs, days, grid]);
 
   // Set of "ec|dayOfMonth" combos that have a pending off-day request in the
   // active branch + cycle. Used to render a small dot on the schedule cell so
