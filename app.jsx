@@ -1770,8 +1770,10 @@ function exportSchedulePdf(opts) {
 }
 
 // ─── SOUTH AFRICAN PUBLIC HOLIDAYS ──────────────────────────────────────────────
-// Per the Public Holidays Act, 1994. If a holiday falls on a Sunday, the
-// following Monday is also a public holiday ("observed").
+// Per the Public Holidays Act, 1994. A holiday that falls on a SUNDAY is NOT a
+// paid public holiday on the Sunday itself — only the observed day (the Monday
+// after, or the next day that isn't already a holiday) counts for payout. A
+// holiday on a Saturday is not shifted.
 function _easterSunday(year) {
   const a = year % 19;
   const b = Math.floor(year / 100);
@@ -1795,30 +1797,39 @@ function _dkey(y, m, d) {
 const _saHolidayCache = {};
 function saHolidays(year) {
   if (_saHolidayCache[year]) return _saHolidayCache[year];
-  const out = {};
-  const add = (m, d, name) => {
-    const dt = new Date(year, m - 1, d);
-    out[_dkey(year, m, d)] = name;
-    if (dt.getDay() === 0) {
-      const dt2 = new Date(year, m - 1, d + 1);
-      out[_dkey(dt2.getFullYear(), dt2.getMonth() + 1, dt2.getDate())] = name + " (observed)";
-    }
-  };
-  add(1, 1, "New Year's Day");
-  add(3, 21, "Human Rights Day");
   const easter = _easterSunday(year);
-  const gf = new Date(easter); gf.setDate(easter.getDate() - 2);
-  const fd = new Date(easter); fd.setDate(easter.getDate() + 1);
-  out[_dkey(gf.getFullYear(), gf.getMonth() + 1, gf.getDate())] = "Good Friday";
-  out[_dkey(fd.getFullYear(), fd.getMonth() + 1, fd.getDate())] = "Family Day";
-  add(4, 27, "Freedom Day");
-  add(5, 1, "Workers' Day");
-  add(6, 16, "Youth Day");
-  add(8, 9, "Women's Day");
-  add(9, 24, "Heritage Day");
-  add(12, 16, "Day of Reconciliation");
-  add(12, 25, "Christmas Day");
-  add(12, 26, "Day of Goodwill");
+  const gf = new Date(easter); gf.setDate(easter.getDate() - 2);   // Good Friday (always a Friday)
+  const fd = new Date(easter); fd.setDate(easter.getDate() + 1);   // Family Day (always a Monday)
+  // Gazetted dates. Good Friday / Family Day are Fri/Mon so never fall on Sunday.
+  const base = [
+    [new Date(year, 0, 1), "New Year's Day"],
+    [new Date(year, 2, 21), "Human Rights Day"],
+    [gf, "Good Friday"],
+    [fd, "Family Day"],
+    [new Date(year, 3, 27), "Freedom Day"],
+    [new Date(year, 4, 1), "Workers' Day"],
+    [new Date(year, 5, 16), "Youth Day"],
+    [new Date(year, 7, 9), "Women's Day"],
+    [new Date(year, 8, 24), "Heritage Day"],
+    [new Date(year, 11, 16), "Day of Reconciliation"],
+    [new Date(year, 11, 25), "Christmas Day"],
+    [new Date(year, 11, 26), "Day of Goodwill"],
+  ];
+  const out = {};
+  const key = (dt) => _dkey(dt.getFullYear(), dt.getMonth() + 1, dt.getDate());
+  // Pass 1: every holiday that does NOT fall on a Sunday keeps its own date. A
+  // Sunday holiday is skipped here — it is not paid on the Sunday itself.
+  base.forEach(([dt, name]) => { if (dt.getDay() !== 0) out[key(dt)] = name; });
+  // Pass 2: each Sunday holiday is observed on the next day that isn't already a
+  // public holiday — normally the Monday after, but if that Monday is itself a
+  // holiday it moves on (Christmas on a Sunday → Goodwill takes the Mon →
+  // Christmas observed on the Tue). Pass 1 runs first so those clashes are seen.
+  base.forEach(([dt, name]) => {
+    if (dt.getDay() !== 0) return;
+    const obs = new Date(dt); obs.setDate(obs.getDate() + 1);
+    while (out[key(obs)]) obs.setDate(obs.getDate() + 1);
+    out[key(obs)] = name + " (observed)";
+  });
   _saHolidayCache[year] = out;
   return out;
 }
