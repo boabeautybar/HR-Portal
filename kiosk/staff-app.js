@@ -911,29 +911,33 @@
     if (_saHolCache[year]) return _saHolCache[year];
     var out = {};
     var dk = function (y, m, d) { return y + "-" + String(m).padStart(2, "0") + "-" + String(d).padStart(2, "0"); };
-    var add = function (m, d, name) {
-      var dt = new Date(year, m - 1, d);
-      out[dk(year, m, d)] = name;
-      if (dt.getDay() === 0) {
-        var dt2 = new Date(year, m - 1, d + 1);
-        out[dk(dt2.getFullYear(), dt2.getMonth() + 1, dt2.getDate())] = name + " (observed)";
-      }
-    };
-    add(1, 1, "New Year's Day");
-    add(3, 21, "Human Rights Day");
+    var key = function (dt) { return dk(dt.getFullYear(), dt.getMonth() + 1, dt.getDate()); };
     var easter = _easterSunday(year);
     var gf = new Date(easter); gf.setDate(easter.getDate() - 2);
     var fd = new Date(easter); fd.setDate(easter.getDate() + 1);
-    out[dk(gf.getFullYear(), gf.getMonth() + 1, gf.getDate())] = "Good Friday";
-    out[dk(fd.getFullYear(), fd.getMonth() + 1, fd.getDate())] = "Family Day";
-    add(4, 27, "Freedom Day");
-    add(5, 1, "Workers' Day");
-    add(6, 16, "Youth Day");
-    add(8, 9, "Women's Day");
-    add(9, 24, "Heritage Day");
-    add(12, 16, "Day of Reconciliation");
-    add(12, 25, "Christmas Day");
-    add(12, 26, "Day of Goodwill");
+    var base = [
+      [new Date(year, 0, 1), "New Year's Day"],
+      [new Date(year, 2, 21), "Human Rights Day"],
+      [gf, "Good Friday"],
+      [fd, "Family Day"],
+      [new Date(year, 3, 27), "Freedom Day"],
+      [new Date(year, 4, 1), "Workers' Day"],
+      [new Date(year, 5, 16), "Youth Day"],
+      [new Date(year, 7, 9), "Women's Day"],
+      [new Date(year, 8, 24), "Heritage Day"],
+      [new Date(year, 11, 16), "Day of Reconciliation"],
+      [new Date(year, 11, 25), "Christmas Day"],
+      [new Date(year, 11, 26), "Day of Goodwill"]
+    ];
+    // A Sunday holiday is NOT paid on the Sunday — only its observed day (the
+    // Monday after, or the next free day) counts. Mirrors the portal exactly.
+    base.forEach(function (row) { if (row[0].getDay() !== 0) out[key(row[0])] = row[1]; });
+    base.forEach(function (row) {
+      if (row[0].getDay() !== 0) return;
+      var obs = new Date(row[0]); obs.setDate(obs.getDate() + 1);
+      while (out[key(obs)]) obs.setDate(obs.getDate() + 1);
+      out[key(obs)] = row[1] + " (observed)";
+    });
     _saHolCache[year] = out;
     return out;
   }

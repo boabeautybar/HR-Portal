@@ -111,22 +111,36 @@
     return new Date(year, month - 1, day);
   }
   var _holCache = {};
+  // A holiday on a SUNDAY is not paid on the Sunday itself — only its observed
+  // day counts (the Monday after, or the next day that isn't already a holiday).
+  // Mirrors the portal's saHolidays exactly so the double-pay flag agrees.
   function saHolidays(year) {
     if (_holCache[year]) return _holCache[year];
-    var out = {};
-    var add = function (mo, d, name) {
-      var dt = new Date(year, mo - 1, d);
-      out[ymdStr(dt)] = name;
-      if (dt.getDay() === 0) { var dt2 = new Date(year, mo - 1, d + 1); out[ymdStr(dt2)] = name + " (observed)"; }
-    };
-    add(1, 1, "New Year's Day"); add(3, 21, "Human Rights Day");
     var easter = _easterSunday(year);
     var gf = new Date(easter); gf.setDate(easter.getDate() - 2);
     var fd = new Date(easter); fd.setDate(easter.getDate() + 1);
-    out[ymdStr(gf)] = "Good Friday"; out[ymdStr(fd)] = "Family Day";
-    add(4, 27, "Freedom Day"); add(5, 1, "Workers' Day"); add(6, 16, "Youth Day");
-    add(8, 9, "Women's Day"); add(9, 24, "Heritage Day"); add(12, 16, "Day of Reconciliation");
-    add(12, 25, "Christmas Day"); add(12, 26, "Day of Goodwill");
+    var base = [
+      [new Date(year, 0, 1), "New Year's Day"],
+      [new Date(year, 2, 21), "Human Rights Day"],
+      [gf, "Good Friday"],
+      [fd, "Family Day"],
+      [new Date(year, 3, 27), "Freedom Day"],
+      [new Date(year, 4, 1), "Workers' Day"],
+      [new Date(year, 5, 16), "Youth Day"],
+      [new Date(year, 7, 9), "Women's Day"],
+      [new Date(year, 8, 24), "Heritage Day"],
+      [new Date(year, 11, 16), "Day of Reconciliation"],
+      [new Date(year, 11, 25), "Christmas Day"],
+      [new Date(year, 11, 26), "Day of Goodwill"]
+    ];
+    var out = {};
+    base.forEach(function (row) { if (row[0].getDay() !== 0) out[ymdStr(row[0])] = row[1]; });
+    base.forEach(function (row) {
+      if (row[0].getDay() !== 0) return;
+      var obs = new Date(row[0]); obs.setDate(obs.getDate() + 1);
+      while (out[ymdStr(obs)]) obs.setDate(obs.getDate() + 1);
+      out[ymdStr(obs)] = row[1] + " (observed)";
+    });
     _holCache[year] = out;
     return out;
   }
