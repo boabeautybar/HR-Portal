@@ -10790,6 +10790,7 @@ const SETTINGS_TABS = [
   { t: "alerts", l: "Alerts", cat: "Insights", icon: "🔔" },
   { t: "activity", l: "Activity Log", cat: "Insights", icon: "📜" },
   { t: "storeReports", l: "Store Reports", cat: "Insights", icon: "🏆" },
+  { t: "hrReports", l: "HR Reports", cat: "Insights", icon: "📈" },
   { t: "staffingReport", l: "Staffing & Shifts", cat: "Insights", icon: "📅" },
   { t: "kioskPins", l: "Kiosk PINs", cat: "Admin", icon: "🔑" },
   { t: "managerPins", l: "Manager PINs", cat: "Admin", icon: "🆔" },
@@ -19524,6 +19525,1580 @@ const INTERVIEW_STAGE = {
   to_trial: { label: "In Trial Period", bg: "#ede9fe", color: "#5b21b6" },
   failed: { label: "Not successful", bg: "#f3f4f6", color: "#6b7280" },
 };
+/* ═══════════════════════════════════════════════════════════════════════
+   HR REPORTS  ·  HR Outlook + H&S Reports
+   Plan: docs/hr-reports-plan.md
+
+   Everything here READS existing stores. The only write is the optional H&S
+   classification override (boa_hs_class_v1), which is a new key of its own.
+
+   Two rules this tab is built on, both learned the hard way elsewhere in
+   this file:
+     · Nail techs have no clock timestamp — their lateness is a count of
+       `late` cells, never minutes. Managers / Head Office / CC&S clock in,
+       so theirs is measured against their PUBLISHED scheduled start.
+     · A shift's real start comes from the published snapshot's baked
+       `hours` first and only then falls back to shift-rules. Guessing a
+       generic "W" start would call every late-shift manager two hours late.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+// Chart palette. Validated for colour-blind separation, chroma and contrast
+// against white before being used (lightness band / chroma floor / deutan +
+// tritan ΔE / normal-vision ΔE / 3:1 contrast all pass). Fixed order, never
+// cycled, and one hue keeps one meaning across every chart on the tab:
+// rose = conduct·health·permit risk, cyan = office·hygiene·maternity,
+// amber = facilities·safety·notice, violet = management, blue = loss/other.
+// NB: this is deliberately NOT the older LOST_KINDS ramp — sick #FCD34D and
+// frl #F59E0B there sit ΔE 12.6 apart (below the 15 floor) and both fall
+// under 3:1 on white, so those two bars are hard to separate even with full
+// colour vision.
+const HR_VIZ = {
+  c1: "#9F7AEA", c2: "#D6698F", c3: "#3FA5C7", c4: "#CE8F55", c5: "#7B92DB",
+  ink: REPORT_VIZ.ink, sub: REPORT_VIZ.sub, faint: "#B49DCB",
+  grid: "#EDE9FE", track: "#F5F3FF", hair: "#F3EDFB",
+  good: "#15803D", warn: "#B45309", bad: "#B91C1C"
+};
+// Single-hue sequential ramp for the pattern heat strips (light → dark).
+// Softened to sit in the hub's pastel range. It stops at the categorical violet
+// rather than running to near-black, so one dark ink label reads on every step
+// and no cell needs white text (which pastel fills cannot carry).
+const HR_RAMP = ["#F7F5FF", "#EFEAFD", "#E2D8FA", "#D0BEF6", "#BCA2F0", "#AC8CEC", "#9F7AEA"];
+const HR_RAMP_INK = "#3B1E70";
+
+const HR_ROLE = {
+  tech: { label: "Nail tech", colour: HR_VIZ.c2 },
+  mgr: { label: "Manager", colour: HR_VIZ.c1 },
+  office: { label: "Office / CC&S", colour: HR_VIZ.c3 }
+};
+
+// Arrivals later than this are a late ARRIVAL rather than a rounding artefact.
+// Same threshold the office-hours engine already uses (OFFICE_LATE_LOG_MIN).
+const HR_LATE_GRACE_MIN = 10;
+const HR_WORK_CODES = new Set(["W", "WE", "WM", "WL", "WB", "E"]);
+
+/* ── Shared attendance classifier ───────────────────────────────────────
+   These four functions ARE the attendance vocabulary: which status counts
+   as missed, as worked, and what trips a pattern flag. `loadAttendanceReports`
+   (Payroll → Attendance Reports) calls the exact same four, so a new status
+   code can never mean one thing on the payroll tab and another here.
+
+   The HR tab needs three things payroll doesn't — where in the WEEK and where
+   in the PAY CYCLE the events land, and when the last one was. Those are
+   added as extra fields; payroll simply ignores them, so its output is
+   byte-for-byte what it was.                                            */
+const HR_ATT_MISSED = { sick: 1, sick_n: 1, no: 1, absent: 1, unpaid: 1, frl: 1 };
+
+// Index 0..30 of a ymd within its 25th→24th pay cycle.
+function hrCycleIdx(ymd) {
+  const dom = parseInt(String(ymd).slice(8, 10), 10);
+  return dom >= 25 ? dom - 25 : dom + 6;
+}
+function attBlankRec(s, role) {
+  return {
+    ec: s.ec, name: s.name, branch: s.branch || "", role,
+    sickNoNote: 0, sickNote: 0, noShow: 0, absent: 0, frl: 0, unpaid: 0, late: 0, extra: 0,
+    worked: 0, missed: 0, monthEnd: 0, byDow: [0, 0, 0, 0, 0, 0, 0],
+    // HR-only additions — unused by the payroll report.
+    lateDow: [0, 0, 0, 0, 0, 0, 0], lateCycle: new Array(31).fill(0),
+    lateMinSum: 0, lateMinCount: 0, lastLateYmd: null, lastMissYmd: null, scheduled: 0,
+    // Days we could actually JUDGE for lateness: a known scheduled start and a
+    // clock-in to compare it against. This is the denominator for anyone who
+    // badges in — `scheduled` only counts days carrying an attendance status,
+    // and a manager with no recorded absences has none of those, which would
+    // otherwise divide a real late count by 1 and report 2400%.
+    lateJudged: 0
+  };
+}
+function attMarkPattern(rec, ymd) {
+  const dow = new Date(ymd + "T00:00:00").getDay();
+  rec.byDow[dow]++;
+  const dom = parseInt(ymd.slice(8, 10), 10);
+  if (dom >= 26 || dom <= 3) rec.monthEnd++;     // around month boundary / payday
+  if (!rec.lastMissYmd || ymd > rec.lastMissYmd) rec.lastMissYmd = ymd;
+}
+// Record a late ARRIVAL for the pattern views. Called from attClassify for a
+// grid "late" cell, and directly by the clock-in pass (which also knows by
+// how many minutes).
+function attMarkLate(rec, ymd, mins) {
+  const dow = new Date(ymd + "T00:00:00").getDay();
+  rec.lateDow[dow]++;
+  rec.lateCycle[hrCycleIdx(ymd)]++;
+  if (mins != null && isFinite(mins)) { rec.lateMinSum += mins; rec.lateMinCount++; }
+  if (!rec.lastLateYmd || ymd > rec.lastLateYmd) rec.lastLateYmd = ymd;
+}
+function attClassify(rec, bare, ymd) {
+  switch (bare) {
+    case "sick": rec.sickNoNote++; rec.missed++; attMarkPattern(rec, ymd); break;
+    case "sick_n": rec.sickNote++; rec.missed++; attMarkPattern(rec, ymd); break;
+    case "no": rec.noShow++; rec.missed++; attMarkPattern(rec, ymd); break;
+    case "absent": rec.absent++; rec.missed++; attMarkPattern(rec, ymd); break;
+    case "unpaid": rec.unpaid++; rec.missed++; attMarkPattern(rec, ymd); break;
+    case "frl": rec.frl++; rec.missed++; break;                 // legitimate — counted, not pattern-flagged
+    case "late": rec.late++; rec.worked++; attMarkLate(rec, ymd, null); break;
+    case "ext": rec.extra++; rec.worked++; break;             // extra day worked (beyond schedule)
+    case "on": case "trial": case "swap_i": rec.worked++; break;
+    default: break;                                              // al / mat / ph / off / term / swap_o / loan_out / deduct → ignore
+  }
+}
+function attFinish(rec) {
+  const base = rec.sickNoNote + rec.sickNote + rec.noShow + rec.absent + rec.unpaid;   // missed excl. FRL → pattern denominator
+  const flags = [];
+  if (base >= 3) {
+    const mon = rec.byDow[1], fri = rec.byDow[5], wknd = rec.byDow[0] + rec.byDow[6];
+    if (mon >= 2 && mon / base >= 0.4) flags.push("Monday-heavy");
+    if (fri >= 2 && fri / base >= 0.4) flags.push("Friday-heavy");
+    if (wknd >= 2 && wknd / base >= 0.5) flags.push("Weekend-heavy");
+    if (rec.monthEnd >= 2 && rec.monthEnd / base >= 0.5) flags.push("Month-end cluster");
+    if (rec.sickNoNote >= 3 && rec.sickNoNote >= rec.sickNote) flags.push("Frequent no-note sick");
+  }
+  rec.flags = flags;
+  rec.concerning = rec.sickNoNote + rec.noShow + rec.absent;
+  rec.attendanceRate = (rec.worked + rec.missed) > 0 ? rec.worked / (rec.worked + rec.missed) : null;
+  return rec;
+}
+
+/* ── HR-specific pattern flags (lateness) ─────────────────────────────── */
+function hrLateFlags(rec) {
+  const out = [];
+  const tot = rec.lateDow.reduce((a, b) => a + b, 0);
+  if (tot < 3) return out;
+  const wknd = rec.lateDow[0] + rec.lateDow[6];
+  if (wknd / tot >= 0.5) out.push({ t: "Weekend-heavy", k: "warn" });
+  if (rec.lateDow[1] / tot >= 0.4) out.push({ t: "Monday-heavy", k: "warn" });
+  if (rec.lateDow[5] / tot >= 0.4) out.push({ t: "Friday-heavy", k: "warn" });
+  // Pay cycle turns on the 25th — a cluster in the first week of the cycle is
+  // the "goes out after payday" pattern the owner asked us to surface.
+  const payday = rec.lateCycle.slice(0, 7).reduce((a, b) => a + b, 0);
+  if (payday / tot >= 0.4) out.push({ t: "Payday cluster", k: "bad" });
+  return out;
+}
+function hrRecency(days) {
+  if (days == null) return { t: "—", k: "quiet" };
+  return days <= 14 ? { t: "Active", k: "bad" } : days <= 45 ? { t: "Cooling", k: "warn" } : { t: "Historic", k: "quiet" };
+}
+// Trim a long name for a chart's left axis so it can't collide with the plot.
+function hrShort(s, n) {
+  const t = String(s || "");
+  return t.length > n ? t.slice(0, n - 1) + "…" : t;
+}
+function hrDaysSince(ymd, todayYmd) {
+  if (!ymd) return null;
+  const a = new Date(ymd + "T00:00:00"), b = new Date(todayYmd + "T00:00:00");
+  return Math.round((b - a) / 86400000);
+}
+
+/* ── Clock-in index (ec → ymd → earliest IN) ──────────────────────────── */
+function hrClockIndex(rows) {
+  const out = {};
+  (rows || []).forEach(r => {
+    if (!r || !r.ts || r.type !== "in") return;
+    const ec = String((r.staff && r.staff.employee_code) || r.employee_code || "").trim().toUpperCase();
+    if (!ec) return;
+    const ymd = ymdStr(new Date(r.ts));
+    const day = (out[ec] = out[ec] || {});
+    if (!day[ymd] || r.ts < day[ymd]) day[ymd] = r.ts;
+  });
+  return out;
+}
+// The person's real scheduled START for a day, in minutes from midnight.
+// Precedence: published baked hours → shift-rules for the published code.
+// Returns null when we genuinely don't know — the day is then skipped rather
+// than judged against a guess.
+function hrSchedStart(entry, person, ymd, dom, dow, branch) {
+  if (!entry) return null;
+  const ec = String(person.ec || "").trim(), ecU = ec.toUpperCase();
+  const hours = entry.hours;
+  if (hours) {
+    const hrow = hours[ec] || hours[ecU];
+    const cell = hrow && hrow[ymd];
+    if (cell && cell.t) { const r = parseShiftRange(cell.t); if (r) return r.start; }
+  }
+  const grid = entry.grid || {};
+  const grow = grid[ec] || grid[ecU];
+  if (!grow) return null;
+  const code = String(grow[ymd] || grow[dom] || grow[String(dom)] || "").trim().toUpperCase();
+  if (!HR_WORK_CODES.has(code)) return null;          // off / leave / not scheduled
+  const r = parseShiftRange(shiftTimes(person.role, code, branch, dow));
+  return r ? r.start : null;
+}
+
+/* ── The scan ─────────────────────────────────────────────────────────────
+   One pass over the window producing a per-person record for every
+   population. Read-only. Every branch × touched cycle is one keyed read, so
+   the whole company is a bounded number of round-trips, all in parallel.  */
+async function hrScanAttendance(opts) {
+  const o = opts || {};
+  const days = o.days || 90;
+  const staff = o.staff || [], managers = o.managers || [], office = o.office || [];
+  const onMatEcs = o.onMatEcs || new Set();
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const start = new Date(today); start.setDate(start.getDate() - (days - 1));
+  const startYmd = ymdStr(start), todayYmd = ymdStr(today);
+  const ymds = [];
+  for (let cur = new Date(start); ymdStr(cur) <= todayYmd; cur.setDate(cur.getDate() + 1)) ymds.push(ymdStr(cur));
+  // Attendance grids are keyed by the START-month of the 25th→24th cycle.
+  const attYmFor = (ymd) => {
+    const p = ymd.split("-").map(Number);
+    let yy = p[0], mm = p[1];
+    if (p[2] <= 24) { mm -= 1; if (mm < 1) { mm = 12; yy--; } }
+    return yy + "-" + String(mm).padStart(2, "0");
+  };
+  const cycles = Array.from(new Set(ymds.map(attYmFor)));
+  const officeBranches = [HEAD_OFFICE, CALL_CENTRE];
+
+  const gridByKey = {}, schedByKey = {};
+  const safe = (p, fb) => p.then(v => (v == null ? fb : v)).catch(() => fb);
+  await Promise.all(
+    SALONS.map(sl => sl.name).concat(officeBranches).flatMap(branch => {
+      const isSalon = officeBranches.indexOf(branch) < 0;
+      return cycles.map(async ym => {
+        const k = branch + "|" + ym;
+        const both = await Promise.all([
+          safe(window.BOA_DB.loadAttendance(branch, ym), null),
+          window.BOA_DB.loadApprovedSchedules
+            ? safe(window.BOA_DB.loadApprovedSchedules(branch, ym, isSalon), [])
+            : Promise.resolve([])
+        ]);
+        gridByKey[k] = (both[0] && both[0].grid) || {};
+        const pub = (both[1] && both[1][0]) || null;
+        schedByKey[k] = { grid: (pub && pub.grid) || {}, hours: (pub && pub.hours) || null };
+      });
+    })
+  );
+
+  const daysBack = days + 2;
+  const [mgrStatuses, mgrClock, hoClock, leaveRecs] = await Promise.all([
+    window.BOA_DB.loadManagerDayStatuses ? safe(window.BOA_DB.loadManagerDayStatuses(daysBack), []) : Promise.resolve([]),
+    window.BOA_DB.listRecentManagerClockins ? safe(window.BOA_DB.listRecentManagerClockins(daysBack), []) : Promise.resolve([]),
+    window.BOA_DB.listRecentHoClockins ? safe(window.BOA_DB.listRecentHoClockins(daysBack), []) : Promise.resolve([]),
+    Promise.resolve(o.leaveRecs || [])
+  ]);
+  const clockIdx = hrClockIndex((mgrClock || []).concat(hoClock || []));
+  const mgrStatusByIdYmd = {};
+  (mgrStatuses || []).forEach(r => {
+    if (r && r.staff_id && r.date && r.status) (mgrStatusByIdYmd[String(r.staff_id)] = mgrStatusByIdYmd[String(r.staff_id)] || {})[r.date] = r.status;
+  });
+
+  // Exclusions, mirroring the payroll report: gone before the window,
+  // maternity, and days already covered by approved leave.
+  const offByEc = {};
+  (o.offList || []).forEach(x => { if (x && x.ec && x.leftDate) offByEc[x.ec] = x.leftDate; });
+  const leaveSet = new Set();
+  (leaveRecs || []).forEach(lv => {
+    if (!lv || !lv.ec || !lv.startDate || !lv.endDate) return;
+    const ecT = String(lv.ec).trim();
+    for (let cur = new Date(lv.startDate + "T00:00:00"); ymdStr(cur) <= lv.endDate; cur.setDate(cur.getDate() + 1)) leaveSet.add(ecT + "|" + ymdStr(cur));
+  });
+
+  const out = [];
+  // Grid-driven populations: nail techs and office staff both have an
+  // attendance grid at their branch.
+  const gridPass = (list, kind) => (list || []).forEach(s => {
+    const ec = s.ec; if (!ec) return;
+    const ecT = String(ec).trim(), ecU = ecT.toUpperCase();
+    if (onMatEcs.has(ecT)) return;
+    const ld = offByEc[ec]; if (ld && ld < startYmd) return;
+    const rec = attBlankRec(s, kind === "office" ? (s.role || "HO") : "NT");
+    rec.roleKind = kind;
+    ymds.forEach(ymd => {
+      if (ld && ymd > ld) return;
+      if (leaveSet.has(ecT + "|" + ymd)) return;
+      const ym = attYmFor(ymd), dom = parseInt(ymd.slice(8, 10), 10);
+      const g = gridByKey[(s.branch || "") + "|" + ym] || {};
+      const v = (g[ec] || g[ecT] || g[ecU] || {})[dom];
+      const bare = v ? (v.charAt(0) === "~" ? v.slice(1) : v) : "";
+      if (bare) { rec.scheduled++; attClassify(rec, bare, ymd); }
+    });
+    // Office staff clock in, so their lateness is measured in minutes against
+    // the published start rather than counted off a grid cell.
+    if (kind === "office") {
+      rec.late = 0; rec.lateDow = [0, 0, 0, 0, 0, 0, 0]; rec.lateCycle = new Array(31).fill(0);
+      rec.lateMinSum = 0; rec.lateMinCount = 0; rec.lastLateYmd = null;
+      clockPass(rec, s, s.branch || "");
+    }
+    if (rec.worked + rec.missed > 0 || rec.lateMinCount > 0) out.push(attFinish(rec));
+  });
+  // Clock-driven lateness for anyone who badges in.
+  function clockPass(rec, person, branch) {
+    const ecU = String(person.ec || "").trim().toUpperCase();
+    const byDay = clockIdx[ecU] || {};
+    ymds.forEach(ymd => {
+      const ts = byDay[ymd]; if (!ts) return;
+      if (leaveSet.has(String(person.ec).trim() + "|" + ymd)) return;
+      const ym = attYmFor(ymd), dom = parseInt(ymd.slice(8, 10), 10);
+      const dow = new Date(ymd + "T00:00:00").getDay();
+      const schedStart = hrSchedStart(schedByKey[branch + "|" + ym], person, ymd, dom, dow, branch);
+      if (schedStart == null) return;                       // unknown shift — never guessed
+      rec.lateJudged++;                                     // a day we could judge, late or not
+      const mins = officeMinOfDay(ts) - schedStart;
+      if (mins > HR_LATE_GRACE_MIN) { rec.late++; attMarkLate(rec, ymd, mins); }
+    });
+  }
+
+  gridPass(staff, "tech");
+  gridPass(office, "office");
+
+  // Managers: absences come from manager_day_status (the ROM's record, same
+  // source payroll uses); lateness comes from their clock-ins, which carry
+  // the minutes a status code never could.
+  (managers || []).forEach(m => {
+    const ec = m.ec; if (!ec) return;
+    const ecT = String(ec).trim();
+    if (onMatEcs.has(ecT)) return;
+    const ld = offByEc[ec]; if (ld && ld < startYmd) return;
+    const sid = String(m._id || m.id || "");
+    const rec = attBlankRec(m, m.role || "AM");
+    rec.roleKind = "mgr";
+    ymds.forEach(ymd => {
+      if (ld && ymd > ld) return;
+      if (leaveSet.has(ecT + "|" + ymd)) return;
+      const st = (mgrStatusByIdYmd[sid] || {})[ymd];
+      if (st && st !== "late" && HR_ATT_MISSED[st]) { rec.scheduled++; attClassify(rec, st, ymd); }
+      else if (st === "late") { rec.scheduled++; rec.worked++; }   // clock-ins decide lateness, not the status
+    });
+    clockPass(rec, m, m.branch || "");
+    if (rec.worked + rec.missed > 0 || rec.lateMinCount > 0) out.push(attFinish(rec));
+  });
+
+  out.forEach(r => {
+    r.lateFlags = hrLateFlags(r);
+    r.avgLateMin = r.lateMinCount ? Math.round(r.lateMinSum / r.lateMinCount) : null;
+    r.lastLateDays = hrDaysSince(r.lastLateYmd, todayYmd);
+    r.lastMissDays = hrDaysSince(r.lastMissYmd, todayYmd);
+    r.denom = Math.max(r.scheduled, r.worked + r.missed);
+    // Judge lateness against days we could actually judge. Clock-in people use
+    // lateJudged; grid-only people (nail techs) use their recorded days. If we
+    // can measure neither, the rate is null and the column says so rather than
+    // inventing a percentage.
+    r.lateDenom = r.lateJudged > 0 ? r.lateJudged : r.denom;
+    r.lateRate = r.lateDenom > 0 ? r.late / r.lateDenom : null;
+  });
+  return { people: out, startYmd, endYmd: todayYmd, days };
+}
+
+/* ── C1 · Recruitment forecast ────────────────────────────────────────────
+   Not a statistical model — a deterministic projection from dated facts, so
+   every number can be explained person by person. Each person contributes
+   at most ONE reason (worst first), so nobody is counted twice.            */
+function hrRecruitRows(salonData, recruitFuture, hz, matByEc, actions) {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const todayYmd = ymdStr(today);
+  const daysTo = (ymd) => ymd ? Math.round((new Date(ymd + "T00:00:00") - today) / 86400000) : null;
+  return (salonData || []).map(s => {
+    const rf = ((recruitFuture && recruitFuture.perBranch) || {})[s.name] || { needNow: 0, goal: s.goal };
+    const permit = [], notice = [], mat = [], zna = [];
+    let vfs = 0;
+    (s.active || []).forEach(p => {
+      if (actions && hasVfs(actions[p.ec])) vfs++;
+      // Undated risk first — no permit on file is exposure with no clock on it.
+      if (!p.permit || p.permit === "z_na") { zna.push({ p, why: "No valid permit on file", when: "undated" }); return; }
+      const pe = daysTo(p.permitExpiry);
+      if ((p.permit === "work_permit" || p.permit === "asylum") && pe != null && pe <= hz) {
+        permit.push({ p, why: (COMPLIANCE[p.permit] ? COMPLIANCE[p.permit].label : p.permit) + " expires", when: pe < 0 ? "expired" : "in " + pe + "d" });
+        return;
+      }
+      const nd = daysTo(p.leftDate);
+      if (nd != null && nd >= 0 && nd <= hz) { notice.push({ p, why: "Notice served", when: "in " + nd + "d" }); return; }
+      const mr = matByEc[String(p.ec || "").trim()];
+      if (mr && mr.matStatus === "pregnant") {
+        const ms = daysTo(mr.matStart);
+        if (ms != null && ms <= hz) { mat.push({ p, why: "Maternity leave starts", when: "in " + Math.max(ms, 0) + "d" }); return; }
+      }
+      if (mr && mr.matStatus === "dates_tbc") mat.push({ p, why: "Maternity — dates TBC", when: "undated" });
+    });
+    const needNow = rf.needNow || 0;
+    const projected = needNow + permit.length + notice.length + mat.length;
+    const focus = projected + zna.length;
+    return {
+      store: s.name, goal: s.goal, active: (s.active || []).length, needNow: needNow,
+      permit, notice, mat, zna, vfs, projected, focus,
+      urgency: s.urgency, preOpen: s.preOpen,
+      // Fully staffed today but short inside the horizon — the peak-season
+      // warning this whole report exists to give.
+      flips: needNow === 0 && projected > 0
+    };
+  }).sort((a, b) => b.focus - a.focus || b.needNow - a.needNow || a.store.localeCompare(b.store));
+}
+
+/* ── C4 / D1 · Incidents ──────────────────────────────────────────────── */
+// Severity is DERIVED — incident_reports has no severity column, only the
+// reporter's `urgent` tick. Documented on screen so nobody reads it as a
+// field somebody filled in.
+function hrSeverity(r) {
+  if (!r) return "Low";
+  if (r.urgent) return "High";
+  if (r.category === "Harassment" || r.category === "Theft" || r.category === "Safety") return "High";
+  if (r.category === "StaffConduct" || r.category === "Customer" || r.category === "Stock") return "Medium";
+  return "Low";
+}
+const HR_ACTION_RE = /(verbal|written|final|warning|hearing|dismiss|suspend)/i;
+// There is no disciplinary register in this system (see the plan, §A8), so a
+// "recorded outcome" is the closest honest proxy: a resolved incident whose
+// resolution or notes actually say an action was taken. Labelled as such
+// everywhere it appears — never called a disciplinary count.
+function hrActioned(r) {
+  if (!r || r.status !== "resolved") return false;
+  const notes = Array.isArray(r.internal_notes) ? r.internal_notes.map(n => (n && n.note) || "").join(" ") : "";
+  return HR_ACTION_RE.test(String(r.resolution || "") + " " + notes);
+}
+const HR_INC_BUCKETS = [
+  { k: "Conduct", colour: HR_VIZ.c2, cats: ["StaffConduct", "Harassment"] },
+  { k: "Management", colour: HR_VIZ.c1, cats: ["Management"] },
+  { k: "Safety", colour: HR_VIZ.c4, cats: ["Safety"] },
+  { k: "Hygiene", colour: HR_VIZ.c3, cats: ["Hygiene"] },
+  { k: "Loss / other", colour: HR_VIZ.c5, cats: ["Theft", "Stock", "Customer", "Other"] }
+];
+function hrBucket(cat) {
+  for (let i = 0; i < HR_INC_BUCKETS.length; i++) if (HR_INC_BUCKETS[i].cats.indexOf(cat) >= 0) return HR_INC_BUCKETS[i].k;
+  return "Loss / other";
+}
+// H&S type. The incident form has no H&S sub-type, so it is inferred from the
+// category plus the wording — and every inference is overridable (boa_hs_class_v1).
+// Nothing is silently dropped: an unmatched Safety report lands in "Other H&S".
+const HR_HS_TYPES = [
+  { k: "Health", colour: HR_VIZ.c2, label: "Health" },
+  { k: "Facilities", colour: HR_VIZ.c4, label: "Facilities" },
+  { k: "Hygiene", colour: HR_VIZ.c3, label: "Hygiene" },
+  { k: "Other", colour: HR_VIZ.c1, label: "Other H&S" }
+];
+const HR_RE_HEALTH = /(faint|injur|burn|cut\b|bleed|blood|\bill\b|collapse|ambulance|first aid|dizz|sick on the floor|allerg|splash|eye)/i;
+const HR_RE_FACIL = /(broken|break|leak|blocked|block|plumb|\btap\b|pedi ?station|chair|smell|odour|odor|electric|aircon|air-con|geyser|water|toilet|basin|drain|light|door)/i;
+const HR_RE_HYG = /(dirty|mould|mold|pest|cockroach|rat\b|sanit|hygien|towel|unclean|contamin)/i;
+function hrHsType(r, overrides) {
+  if (!r) return null;
+  const ov = overrides && overrides[r.id];
+  if (ov && ov.hsType) return ov.hsType;
+  const cat = r.category, txt = String(r.description || "");
+  if (cat === "Hygiene") return HR_RE_FACIL.test(txt) && !HR_RE_HYG.test(txt) ? "Facilities" : "Hygiene";
+  if (HR_RE_HEALTH.test(txt) && (cat === "Safety" || cat === "Other")) return "Health";
+  if (HR_RE_FACIL.test(txt) && (cat === "Safety" || cat === "Stock" || cat === "Other")) return "Facilities";
+  if (HR_RE_HYG.test(txt)) return "Hygiene";
+  if (cat === "Safety") return "Other";
+  return null;                                   // not an H&S matter
+}
+function hrTagged(r) {
+  const t = r && r.tagged_ecs;
+  if (!t) return [];
+  const arr = Array.isArray(t) ? t : (typeof t === "string" ? (() => { try { return JSON.parse(t); } catch (_) { return []; } })() : []);
+  return arr.map(x => String((x && x.ec) || x || "").trim()).filter(Boolean);
+}
+
+/* ── Chart primitives ─────────────────────────────────────────────────────
+   Plain inline SVG, same idiom as the Store Reports charts above: a fixed
+   1080 viewBox that scales to its container, a recessive grid, thin marks,
+   a 2px surface gap between touching fills so stacked segments never merge,
+   and rounded outer ends on every bar. Every chart on this tab also has its
+   TABLE underneath, so nothing is ever carried by colour alone.
+   NB: a <title> must hold a single text node — a multi-child one renders as
+   literal markup (same trap as ReportLostByStore above).                  */
+let _hrUid = 0;
+function useHrUid() { return React.useMemo(() => "hr" + (++_hrUid), []); }
+function hrHatchDefs(uid) {
+  return (
+    <defs>
+      {[HR_VIZ.c1, HR_VIZ.c2, HR_VIZ.c3, HR_VIZ.c4, HR_VIZ.c5].map((c, i) => (
+        <pattern key={i} id={uid + "-h" + i} width="7" height="7" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
+          <rect width="7" height="7" fill={c} opacity="0.14" />
+          <line x1="0" y1="0" x2="0" y2="7" stroke={c} strokeWidth="4" />
+        </pattern>
+      ))}
+    </defs>
+  );
+}
+function hrFill(colour, hatch, uid) {
+  if (!hatch) return colour;
+  const i = [HR_VIZ.c1, HR_VIZ.c2, HR_VIZ.c3, HR_VIZ.c4, HR_VIZ.c5].indexOf(colour);
+  return i < 0 ? colour : "url(#" + uid + "-h" + i + ")";
+}
+const HR_W = 1080;
+
+function HrStackBars({ rows, labelW, ariaLabel, onTip, fmtTick }) {
+  const uid = useHrUid();
+  if (!rows || !rows.length) return null;
+  const tick = fmtTick || ((t) => Math.round(t * 10) / 10);
+  const padL = labelW || 190, padR = 128, barH = 22, gap = 14, top = 34;
+  const h = top + rows.length * (barH + gap) + 12;
+  const max = Math.max(1, rows.reduce((m, r) => Math.max(m, r.segs.reduce((a, s) => a + s.v, 0)), 0));
+  const plotW = HR_W - padL - padR;
+  return (
+    <svg width="100%" viewBox={"0 0 " + HR_W + " " + h} preserveAspectRatio="xMidYMid meet"
+      style={{ display: "block", height: "auto", aspectRatio: HR_W + " / " + h }} role="img" aria-label={ariaLabel || "Stacked bars by store"}>
+      {hrHatchDefs(uid)}
+      {[0, max / 2, max].map((t, i) => {
+        const x = padL + (t / max) * plotW;
+        return (
+          <g key={i}>
+            <line x1={x} y1={top - 10} x2={x} y2={h - 16} stroke={HR_VIZ.grid} strokeWidth="1" />
+            <text x={x} y={top - 16} textAnchor="middle" fontSize="11" fill={HR_VIZ.faint} fontFamily="'Outfit',sans-serif">{tick(t)}</text>
+          </g>
+        );
+      })}
+      {rows.map((r, i) => {
+        const y = top + i * (barH + gap);
+        const total = r.segs.reduce((a, s) => a + s.v, 0);
+        const tw = (total / max) * plotW;
+        let run = padL;
+        return (
+          <g key={r.label}>
+            <text x={padL - 12} y={y + barH / 2 + 4} textAnchor="end" fontSize="12.5" fontWeight="600" fill={HR_VIZ.ink} fontFamily="'Outfit',sans-serif">{r.label}</text>
+            <rect x={padL} y={y} width={plotW} height={barH} rx="6" fill={HR_VIZ.track} />
+            {total > 0 && <clipPath id={uid + "-c" + i}><rect x={padL} y={y} width={Math.max(tw, 6)} height={barH} rx="6" /></clipPath>}
+            {total > 0 && (
+              <g clipPath={"url(#" + uid + "-c" + i + ")"}>
+                {r.segs.map((sg, j) => {
+                  if (sg.v <= 0) return null;
+                  const w = (sg.v / max) * plotW, x = run; run += w;
+                  return (
+                    <rect key={j} x={x} y={y} width={Math.max(w - 2, 1)} height={barH} fill={hrFill(sg.colour, sg.hatch, uid)}
+                      aria-label={r.label + " " + sg.label + " " + sg.v}
+                      onMouseMove={(e) => onTip && onTip(e, { title: r.label + " · " + sg.label, lead: sg.lead != null ? sg.lead : sg.v, lines: sg.note || [] })}
+                      onMouseLeave={() => onTip && onTip(null)} />
+                  );
+                })}
+              </g>
+            )}
+            <text x={padL + Math.max(tw, 6) + 10} y={y + barH / 2 + 4} fontSize="12.5" fontWeight="800"
+              fill={r.tone || HR_VIZ.ink} fontFamily="'Outfit',sans-serif" style={{ fontVariantNumeric: "tabular-nums" }}>
+              {r.valueLabel != null ? r.valueLabel : total}
+            </text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+function HrDonut({ slices, centre, ariaLabel, onTip }) {
+  const uid = useHrUid();
+  const total = (slices || []).reduce((a, s) => a + s.v, 0);
+  const h = 260, cx = HR_W / 2, cy = 128, R = 92, r = 56, pad = 0.018;
+  let a = -Math.PI / 2;
+  const arcs = [];
+  (slices || []).forEach((sl, i) => {
+    if (!sl.v) return;
+    const sweep = (sl.v / total) * Math.PI * 2, a0 = a + pad / 2, a1 = a + sweep - pad / 2;
+    a += sweep;
+    if (a1 <= a0) return;
+    const big = (a1 - a0) > Math.PI ? 1 : 0;
+    const d = "M" + (cx + R * Math.cos(a0)) + " " + (cy + R * Math.sin(a0)) +
+      "A" + R + " " + R + " 0 " + big + " 1 " + (cx + R * Math.cos(a1)) + " " + (cy + R * Math.sin(a1)) +
+      "L" + (cx + r * Math.cos(a1)) + " " + (cy + r * Math.sin(a1)) +
+      "A" + r + " " + r + " 0 " + big + " 0 " + (cx + r * Math.cos(a0)) + " " + (cy + r * Math.sin(a0)) + "Z";
+    const am = (a0 + a1) / 2;
+    arcs.push({ d, sl, i, am, share: sl.v / total });
+  });
+  return (
+    <svg width="100%" viewBox={"0 0 " + HR_W + " " + h} preserveAspectRatio="xMidYMid meet"
+      style={{ display: "block", height: "auto", aspectRatio: HR_W + " / " + h }} role="img" aria-label={ariaLabel || "Share by type"}>
+      {hrHatchDefs(uid)}
+      {!total && <text x={cx} y={cy} textAnchor="middle" fontSize="13" fill={HR_VIZ.faint} fontFamily="'Outfit',sans-serif">Nothing recorded in this window</text>}
+      {arcs.map(ar => (
+        <g key={ar.i}>
+          <path d={ar.d} fill={hrFill(ar.sl.colour, ar.sl.hatch, uid)}
+            aria-label={ar.sl.label + " " + ar.sl.v}
+            onMouseMove={(e) => onTip && onTip(e, { title: ar.sl.label, lead: ar.sl.v + " days", lines: [Math.round(ar.share * 100) + "% of everything shown"] })}
+            onMouseLeave={() => onTip && onTip(null)} />
+          {ar.share > 0.07 && (
+            <text x={cx + (R + 18) * Math.cos(ar.am)} y={cy + (R + 18) * Math.sin(ar.am)}
+              textAnchor={Math.cos(ar.am) < -0.15 ? "end" : Math.cos(ar.am) > 0.15 ? "start" : "middle"}
+              dominantBaseline="middle" fontSize="11.5" fontWeight="700" fill={HR_VIZ.ink} fontFamily="'Outfit',sans-serif">
+              {ar.sl.label + " " + ar.sl.v}
+            </text>
+          )}
+        </g>
+      ))}
+      {!!total && <text x={cx} y={cy - 4} textAnchor="middle" fontSize="30" fontWeight="800" fill={HR_VIZ.ink} fontFamily="'Outfit',sans-serif" style={{ fontVariantNumeric: "tabular-nums" }}>{total}</text>}
+      {!!total && <text x={cx} y={cy + 16} textAnchor="middle" fontSize="11" fill={HR_VIZ.faint} fontFamily="'Outfit',sans-serif">{centre || "days"}</text>}
+    </svg>
+  );
+}
+
+function HrHeatStrip({ vals, labels, title, every, onTip }) {
+  const n = vals.length, cw = Math.floor((HR_W - 40) / n), h = 92;
+  const max = Math.max(1, Math.max.apply(null, vals));
+  return (
+    <svg width="100%" viewBox={"0 0 " + HR_W + " " + h} preserveAspectRatio="xMidYMid meet"
+      style={{ display: "block", height: "auto", aspectRatio: HR_W + " / " + h }} role="img" aria-label={title || "Pattern"}>
+      <text x="20" y="16" fontSize="10.5" fill={HR_VIZ.faint} fontFamily="'Outfit',sans-serif" letterSpacing="0.08em">{String(title || "").toUpperCase()}</text>
+      {vals.map((v, i) => {
+        const step = v === 0 ? 0 : Math.min(HR_RAMP.length - 1, 1 + Math.round((v / max) * (HR_RAMP.length - 2)));
+        const x = 20 + i * cw;
+        return (
+          <g key={i}>
+            <rect x={x} y="26" width={cw - 3} height="34" rx="4" fill={HR_RAMP[step]}
+              aria-label={labels[i] + " " + v}
+              onMouseMove={(e) => onTip && onTip(e, { title: String(title || ""), lead: labels[i], lines: [v + (v === 1 ? " late arrival" : " late arrivals")] })}
+              onMouseLeave={() => onTip && onTip(null)} />
+            {v > 0 && <text x={x + (cw - 3) / 2} y="48" textAnchor="middle" fontSize="11" fontWeight="700" fill={HR_RAMP_INK} fontFamily="'Outfit',sans-serif">{v}</text>}
+            {(!every || i % every === 0) && <text x={x + (cw - 3) / 2} y="76" textAnchor="middle" fontSize="10.5" fill={HR_VIZ.faint} fontFamily="'Outfit',sans-serif">{labels[i]}</text>}
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+function HrSpark({ vals, labels, title, note, colour, onTip }) {
+  const h = 92, padL = 20, padR = 20, top = 26, bot = h - 24, plotW = HR_W - padL - padR;
+  const max = Math.max(1, Math.max.apply(null, vals));
+  const col = colour || HR_VIZ.c1;
+  const pts = vals.map((v, i) => [padL + (vals.length === 1 ? plotW / 2 : i * plotW / (vals.length - 1)), bot - (v / max) * (bot - top)]);
+  const line = "M" + pts.map(p => p[0] + " " + p[1]).join(" L");
+  return (
+    <svg width="100%" viewBox={"0 0 " + HR_W + " " + h} preserveAspectRatio="xMidYMid meet"
+      style={{ display: "block", height: "auto", aspectRatio: HR_W + " / " + h }} role="img" aria-label={title || "Trend"}>
+      <text x={padL} y="16" fontSize="10.5" fill={HR_VIZ.faint} fontFamily="'Outfit',sans-serif" letterSpacing="0.08em">{String(title || "").toUpperCase()}</text>
+      <text x={HR_W - padR} y="16" textAnchor="end" fontSize="11" fontWeight="700" fill={col} fontFamily="'Outfit',sans-serif">{note || ""}</text>
+      <path d={line + " L" + pts[pts.length - 1][0] + " " + bot + " L" + pts[0][0] + " " + bot + " Z"} fill={col} fillOpacity="0.1" />
+      <path d={line} fill="none" stroke={col} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+      {pts.map((p, i) => (
+        <circle key={i} cx={p[0]} cy={p[1]} r={i === pts.length - 1 ? 6 : 4} fill={i === pts.length - 1 ? col : "#fff"} stroke={col} strokeWidth="2"
+          aria-label={(labels && labels[i] ? labels[i] : "Point " + (i + 1)) + " " + vals[i]}
+          onMouseMove={(e) => onTip && onTip(e, { title: String(title || ""), lead: (labels && labels[i]) ? labels[i] : "Point " + (i + 1), lines: [vals[i] + (vals[i] === 1 ? " report" : " reports")] })}
+          onMouseLeave={() => onTip && onTip(null)} />
+      ))}
+    </svg>
+  );
+}
+
+function HrTimeline({ rows, onTip }) {
+  const uid = useHrUid();
+  if (!rows || !rows.length) return null;
+  const padL = 230, padR = 110, barH = 20, gap = 18, top = 46, max = 210;
+  const h = top + rows.length * (barH + gap) + 16, plotW = HR_W - padL - padR;
+  return (
+    <svg width="100%" viewBox={"0 0 " + HR_W + " " + h} preserveAspectRatio="xMidYMid meet"
+      style={{ display: "block", height: "auto", aspectRatio: HR_W + " / " + h }} role="img" aria-label="Maternity timeline">
+      {hrHatchDefs(uid)}
+      {[0, 30, 60, 90, 120, 150, 180].map(d => {
+        const x = padL + (d / max) * plotW;
+        return (
+          <g key={d}>
+            <line x1={x} y1={top - 14} x2={x} y2={h - 14} stroke={HR_VIZ.grid} strokeWidth="1" />
+            <text x={x} y={top - 22} textAnchor="middle" fontSize="10.5" fill={HR_VIZ.faint} fontFamily="'Outfit',sans-serif">{d === 0 ? "today" : "+" + d + "d"}</text>
+          </g>
+        );
+      })}
+      {rows.map((r, i) => {
+        const y = top + i * (barH + gap);
+        const x0 = padL + (Math.min(r.start, max) / max) * plotW;
+        const x1 = padL + (Math.min(r.end || max, max) / max) * plotW;
+        return (
+          <g key={r.key || i}>
+            <text x={padL - 12} y={y + barH / 2 + 4} textAnchor="end" fontSize="12.5" fontWeight="600" fill={HR_VIZ.ink} fontFamily="'Outfit',sans-serif">{r.label}</text>
+            {r.tbc ? (
+              <g>
+                <rect x={padL} y={y} width={plotW} height={barH} rx="6" fill={hrFill(HR_VIZ.c3, true, uid)} opacity="0.55"
+                  aria-label={r.label + " dates unknown"}
+                  onMouseMove={(e) => onTip && onTip(e, { title: r.label, lead: "Dates not on file", lines: ["Cannot be planned around — chase the expected start date"] })}
+                  onMouseLeave={() => onTip && onTip(null)} />
+                <text x={padL + 12} y={y + barH / 2 + 4} fontSize="11.5" fontWeight="700" fill="#155E75" fontFamily="'Outfit',sans-serif">⏳ dates unknown — chase</text>
+              </g>
+            ) : (
+              <g>
+                <rect x={padL} y={y + 7} width={Math.max(x0 - padL, 0)} height={barH - 14} rx="3" fill="#DDD6FE"
+                  aria-label={r.label + " still working"}
+                  onMouseMove={(e) => onTip && onTip(e, { title: r.label, lead: "Still working", lines: [r.start + " days before leave starts", "Cover needed from week " + Math.round(r.start / 7)] })}
+                  onMouseLeave={() => onTip && onTip(null)} />
+                <rect x={x0} y={y} width={Math.max(x1 - x0, 4)} height={barH} rx="6" fill={HR_VIZ.c3}
+                  aria-label={r.label + " on maternity leave"}
+                  onMouseMove={(e) => onTip && onTip(e, { title: r.label, lead: "On maternity leave", lines: ["Starts in " + r.start + " days"] })}
+                  onMouseLeave={() => onTip && onTip(null)} />
+                <text x={padL + plotW + 10} y={y + barH / 2 + 4} fontSize="11.5" fontWeight="700" fill={HR_VIZ.c3} fontFamily="'Outfit',sans-serif">{"+" + r.start + "d"}</text>
+              </g>
+            )}
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+/* ═══ The tab ═══════════════════════════════════════════════════════════ */
+const HR_HS_CLASS_KEY = "boa_hs_class_v1";
+
+function HRReportsTab(props) {
+  const isMobile = useIsMobile();
+  const [sub, setSub] = React.useState("outlook");
+  const [days, setDays] = React.useState(90);
+  const [hz, setHz] = React.useState(90);
+  const [ev, setEv] = React.useState("missed");
+  const [incMode, setIncMode] = React.useState("count");
+  const [fStore, setFStore] = React.useState("all");
+  const [fRole, setFRole] = React.useState("all");
+  const [openRow, setOpenRow] = React.useState(null);
+  const [scan, setScan] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [err, setErr] = React.useState("");
+  const [hsOv, setHsOv] = React.useState({});
+  // One tooltip for every chart on the tab. The native SVG <title> was doing
+  // this before, but the browser's own tooltip is slow to appear, unstyled and
+  // truncates a list of names into an unreadable run-on line.
+  const [tip, setTip] = React.useState(null);
+  const onTip = React.useCallback((e, payload) => {
+    if (!e || !payload) { setTip(null); return; }
+    setTip({ x: e.clientX, y: e.clientY, ...payload });
+  }, []);
+
+  const { salonData, recruitFuture, matRecs, incidentReports, complianceActions,
+    unpaidLegalRecs, staff, managers, enrichedOffice, onMatEcs, offList, leaveRecs } = props;
+
+  const todayYmd = ymdStr(new Date());
+
+  // ── Load ──────────────────────────────────────────────────────────────
+  const load = React.useCallback(async (d) => {
+    setLoading(true); setErr("");
+    try {
+      const res = await hrScanAttendance({
+        days: d, staff, managers, office: enrichedOffice,
+        onMatEcs, offList, leaveRecs
+      });
+      setScan(res);
+    } catch (e) {
+      console.error("hr reports scan:", e);
+      setErr((e && e.message) || String(e));
+    } finally { setLoading(false); }
+  }, [staff, managers, enrichedOffice, onMatEcs, offList, leaveRecs]);
+
+  React.useEffect(() => { load(days); }, [days, load]);
+  React.useEffect(() => {
+    let dead = false;
+    (async () => {
+      try {
+        if (!window.BOA_DB.loadByKey) return;
+        const v = await window.BOA_DB.loadByKey(HR_HS_CLASS_KEY);
+        if (!dead && v && typeof v === "object") setHsOv(v);
+      } catch (_) { /* override sidecar is optional — the derived type stands */ }
+    })();
+    return () => { dead = true; };
+  }, []);
+  const saveHsOv = async (id, hsType) => {
+    const next = { ...hsOv, [id]: { hsType, by: (props.currentUser && props.currentUser.name) || "", at: new Date().toISOString() } };
+    setHsOv(next);
+    try { if (window.BOA_DB.saveByKey) await window.BOA_DB.saveByKey(HR_HS_CLASS_KEY, next); } catch (e) { console.error("hs class save:", e); }
+  };
+
+  // ── Shared derivations ────────────────────────────────────────────────
+  const matByEc = React.useMemo(() => {
+    const m = {};
+    (matRecs || []).forEach(r => { if (r && r.ec) m[String(r.ec).trim()] = r; });
+    return m;
+  }, [matRecs]);
+  // Maternity records are matched EC-first with a NAME fallback: production
+  // carries orphan records filed against stale / pre-promotion codes, and an
+  // EC-only match shows several people as active while they are on leave.
+  const matByName = React.useMemo(() => {
+    const m = {};
+    (matRecs || []).forEach(r => { if (r && r.name) m[String(r.name).trim().toLowerCase()] = r; });
+    return m;
+  }, [matRecs]);
+  const matFor = React.useCallback((p) => {
+    if (!p) return null;
+    return matByEc[String(p.ec || "").trim()] || matByName[String(p.name || "").trim().toLowerCase()] || null;
+  }, [matByEc, matByName]);
+
+  const storeOptions = React.useMemo(() => {
+    const s = (salonData || []).map(x => x.name);
+    return s.concat([HEAD_OFFICE, CALL_CENTRE]);
+  }, [salonData]);
+
+  // Real incidents only — the leave-expiry radar auto-files into the SAME
+  // table and would otherwise bury every genuine staff report.
+  const incAll = React.useMemo(() =>
+    (incidentReports || []).filter(r => r && !isLeaveExpiryReport(r)), [incidentReports]);
+  const incWin = React.useMemo(() => {
+    const cut = new Date(); cut.setDate(cut.getDate() - days);
+    const cutYmd = ymdStr(cut);
+    return incAll.filter(r => {
+      const d = String(r.incident_date || (r.created_at || "").slice(0, 10));
+      if (d && d < cutYmd) return false;
+      if (fStore !== "all" && r.store !== fStore) return false;
+      return true;
+    });
+  }, [incAll, days, fStore]);
+  const incByEc = React.useMemo(() => {
+    const m = {};
+    incAll.forEach(r => hrTagged(r).forEach(ec => { (m[ec] = m[ec] || []).push(r); }));
+    return m;
+  }, [incAll]);
+
+  const scanRows = React.useMemo(() => {
+    const list = (scan && scan.people) || [];
+    return list.filter(r => {
+      if (fStore !== "all" && r.branch !== fStore) return false;
+      if (fRole !== "all" && r.roleKind !== fRole) return false;
+      return true;
+    });
+  }, [scan, fStore, fRole]);
+
+  // ── Styles (report house style — roomier card, no hard outline) ────────
+  const card = {
+    background: "#fff", borderRadius: 20, border: "1px solid " + HR_VIZ.grid,
+    boxShadow: "0 1px 2px rgba(91,33,182,0.04), 0 14px 30px -22px rgba(91,33,182,0.25)",
+    padding: isMobile ? "18px 16px" : "22px 24px", marginBottom: 18
+  };
+  const secTitle = { fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 16, fontWeight: 700, color: HR_VIZ.ink, letterSpacing: "-0.005em" };
+  const secSub = { fontSize: 12.5, color: HR_VIZ.sub, marginTop: 5, maxWidth: "76ch", lineHeight: 1.5 };
+  const cardHead = (title, sub, right) => (
+    <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, flexWrap: "wrap", marginBottom: 16 }}>
+      <div style={{ minWidth: 0 }}><div style={secTitle}>{title}</div>{sub && <div style={secSub}>{sub}</div>}</div>
+      {right}
+    </div>
+  );
+  // Header stays put while a long people-table scrolls. The rule under it is an
+  // INSET shadow, not a border — under border-collapse a border detaches from a
+  // sticky header and floats away as you scroll.
+  const th = { textAlign: "left", padding: "8px 10px", fontSize: 9.5, fontWeight: 700, color: HR_VIZ.faint, textTransform: "uppercase", letterSpacing: "0.09em", whiteSpace: "nowrap", background: "#fff", position: "sticky", top: 0, zIndex: 2, boxShadow: "inset 0 -1px 0 " + HR_VIZ.hair };
+  const thN = { ...th, textAlign: "right" };
+  const td = { padding: "9px 10px", fontSize: 12.5, color: "#4C1D95", borderBottom: "1px solid " + HR_VIZ.hair, verticalAlign: "top" };
+  const tdN = { ...td, textAlign: "right", fontVariantNumeric: "tabular-nums" };
+  const chipTone = { good: { c: HR_VIZ.good, b: "#ECFDF5", br: "#A7F3D0" }, warn: { c: HR_VIZ.warn, b: "#FEF3C7", br: "#FDE68A" }, bad: { c: HR_VIZ.bad, b: "#FEF2F2", br: "#FECACA" }, quiet: { c: HR_VIZ.faint, b: HR_VIZ.track, br: HR_VIZ.grid }, neutral: { c: "#6B21A8", b: HR_VIZ.grid, br: "#DDD6FE" } };
+  const chip = (label, tone, key) => {
+    const t = chipTone[tone] || chipTone.neutral;
+    return <span key={key} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 700, borderRadius: 999, padding: "2px 8px", whiteSpace: "nowrap", color: t.c, background: t.b, border: "1px solid " + t.br, marginRight: 4 }}>{label}</span>;
+  };
+  const swatch = (colour, label, hatch) => (
+    <span key={label} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5, color: HR_VIZ.sub, whiteSpace: "nowrap" }}>
+      <i style={{ width: 11, height: 11, borderRadius: 3, display: "inline-block", background: hatch ? "repeating-linear-gradient(45deg," + colour + "," + colour + " 2px,#fff 2px,#fff 4px)" : colour }} />{label}
+    </span>
+  );
+  const seg = (items, val, set, aria) => (
+    <div style={{ display: "inline-flex", background: HR_VIZ.track, padding: 3, borderRadius: 11, border: "1px solid " + HR_VIZ.grid }} role="group" aria-label={aria}>
+      {items.map(it => (
+        <button key={it.k} onClick={() => set(it.k)} aria-pressed={val === it.k}
+          style={{ padding: "7px 14px", borderRadius: 9, border: "none", background: val === it.k ? "#fff" : "transparent", color: val === it.k ? HR_VIZ.ink : "#9184A8", boxShadow: val === it.k ? "0 1px 3px rgba(91,33,182,0.12)" : "none", cursor: "pointer", fontSize: 12.5, fontWeight: 700, fontFamily: "inherit" }}>
+          {it.l}
+        </button>
+      ))}
+    </div>
+  );
+  const ctrl = { fontFamily: "inherit", fontSize: 12.5, fontWeight: 600, color: HR_VIZ.ink, background: "#fff", border: "1px solid " + HR_VIZ.grid, borderRadius: 10, padding: "8px 11px", cursor: "pointer" };
+  const empty = (t) => <div style={{ fontSize: 12.5, color: HR_VIZ.faint, padding: "18px 2px" }}>{t}</div>;
+  const scrollX = { overflowX: "auto" };
+  const tbl = { width: "100%", borderCollapse: "collapse", minWidth: 720 };
+  // A people-table shows about twenty rows and scrolls the rest, so one busy
+  // store can't push every report below it off the page.
+  const HR_ROWS_VISIBLE = 20;
+  const tallScroll = (n) => n > HR_ROWS_VISIBLE
+    ? { overflowX: "auto", overflowY: "auto", maxHeight: 820, border: "1px solid " + HR_VIZ.hair, borderRadius: 12 }
+    : scrollX;
+  const rowNote = (n) => n > HR_ROWS_VISIBLE
+    ? <div style={{ fontSize: 11.5, color: HR_VIZ.faint, marginTop: 7 }}>{"Showing all " + n + " — scroll inside the table for the rest."}</div>
+    : null;
+  const chartNote = (shown, total) => total > shown
+    ? <div style={{ fontSize: 11.5, color: HR_VIZ.faint, marginTop: 4 }}>{"Charted: the " + shown + " highest of " + total + ". Every one is in the table below."}</div>
+    : null;
+
+  // ══ C1 · Recruitment ═══════════════════════════════════════════════════
+  const recruit = React.useMemo(() => {
+    const rows = hrRecruitRows(salonData, recruitFuture, hz, matByEc, complianceActions);
+    return fStore === "all" ? rows : rows.filter(r => r.store === fStore);
+  }, [salonData, recruitFuture, hz, matByEc, complianceActions, fStore]);
+  const recruitTot = React.useMemo(() => recruit.reduce((a, r) => {
+    a.focus += r.focus; a.needNow += r.needNow; a.zna += r.zna.length;
+    a.permit += r.permit.length; a.mat += r.mat.length; a.notice += r.notice.length;
+    if (r.flips) a.flips++;
+    return a;
+  }, { focus: 0, needNow: 0, zna: 0, permit: 0, mat: 0, notice: 0, flips: 0 }), [recruit]);
+
+  const URG = { critical: ["bad", "Critical"], high: ["bad", "High"], low: ["warn", "Low"], full: ["good", "Full"], preopen: ["neutral", "Pre-opening"] };
+
+  const renderRecruit = () => (
+    <div style={card}>
+      {cardHead("Recruitment forecast — where we will be short",
+        "Today's vacancy plus every departure we can already put a date to: work permits expiring, notice served, and maternity leave starting. Undated permit risk (Z/NA or nothing on file) is shown hatched — real exposure, no date attached to it yet. Nobody is counted twice: each person contributes their single worst reason.",
+        <div style={{ display: "flex", alignItems: "center", gap: 13, flexWrap: "wrap" }}>
+          {swatch(HR_VIZ.c1, "Vacant now")}{swatch(HR_VIZ.c2, "Permit expiry")}
+          {swatch(HR_VIZ.c2, "Permit Z/NA (undated)", true)}{swatch(HR_VIZ.c4, "Notice served")}{swatch(HR_VIZ.c3, "Maternity")}
+        </div>)}
+      <div style={{ marginBottom: 14 }}>{seg([{ k: 30, l: "+30 days" }, { k: 60, l: "+60 days" }, { k: 90, l: "+90 days" }], hz, setHz, "Forecast horizon")}</div>
+      {recruit.length === 0 ? empty("No stores in this filter.") : (
+        <>
+          <div style={{ marginBottom: 16 }}>
+            <HrStackBars ariaLabel="Recruitment focus by store" onTip={onTip} rows={recruit.map(r => ({
+              label: r.store, valueLabel: r.focus, tone: r.focus >= 4 ? HR_VIZ.bad : HR_VIZ.ink,
+              segs: [
+                { label: "Vacant now", v: r.needNow, colour: HR_VIZ.c1, lead: r.needNow + (r.needNow === 1 ? " seat open today" : " seats open today") },
+                { label: "Permit expiry", v: r.permit.length, colour: HR_VIZ.c2, lead: r.permit.length + (r.permit.length === 1 ? " person" : " people"), note: r.permit.map(x => x.p.name + " — " + x.when) },
+                { label: "Notice served", v: r.notice.length, colour: HR_VIZ.c4, lead: r.notice.length + (r.notice.length === 1 ? " person" : " people"), note: r.notice.map(x => x.p.name + " — " + x.when) },
+                { label: "Maternity", v: r.mat.length, colour: HR_VIZ.c3, lead: r.mat.length + (r.mat.length === 1 ? " person" : " people"), note: r.mat.map(x => x.p.name + " — " + x.when) },
+                { label: "Permit Z/NA (undated)", v: r.zna.length, colour: HR_VIZ.c2, hatch: true, lead: r.zna.length + " with no valid permit", note: r.zna.map(x => x.p.name) }
+              ]
+            }))} />
+          </div>
+          <div style={scrollX}>
+            <table style={tbl}>
+              <thead><tr>
+                <th style={th}>Store</th><th style={thN}>Goal</th><th style={thN}>Active</th><th style={thN}>Vacant now</th>
+                <th style={th}>{"Departures inside +" + hz + "d"}</th><th style={thN}>Z/NA</th><th style={thN}>VFS</th>
+                <th style={thN}>Focus total</th><th style={th}>Urgency</th>
+              </tr></thead>
+              <tbody>
+                {recruit.map(r => {
+                  const dep = r.permit.concat(r.notice).concat(r.mat);
+                  const u = URG[r.urgency] || URG.full;
+                  return (
+                    <tr key={r.store}>
+                      <td style={td}>
+                        <div style={{ fontWeight: 700, color: HR_VIZ.ink }}>{r.store}</div>
+                        {r.flips && <div style={{ marginTop: 3 }}>{chip("⚠ goes short by +" + hz + "d", "bad")}</div>}
+                      </td>
+                      <td style={tdN}>{r.goal}</td><td style={tdN}>{r.active}</td><td style={tdN}>{r.needNow || "—"}</td>
+                      <td style={td}>
+                        {dep.length ? dep.map((x, i) => (
+                          <div key={i} style={{ marginBottom: 3 }}>
+                            <span style={{ fontWeight: 700, color: HR_VIZ.ink }}>{x.p.name}</span>{" "}
+                            <span style={{ fontSize: 11, color: HR_VIZ.faint }}>{x.p.ec + " · " + x.why + " " + x.when}</span>
+                          </div>
+                        )) : <span style={{ fontSize: 11, color: HR_VIZ.faint }}>none dated</span>}
+                      </td>
+                      <td style={tdN}>{r.zna.length ? chip(r.zna.length, "bad") : "—"}</td>
+                      <td style={tdN}>{r.vfs || "—"}</td>
+                      <td style={{ ...tdN, fontWeight: 800, color: r.focus >= 4 ? HR_VIZ.bad : HR_VIZ.ink }}>{r.focus}</td>
+                      <td style={td}>{chip(u[1], u[0])}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
+  );
+
+  // ══ C2 · Lateness ══════════════════════════════════════════════════════
+  const lateRows = React.useMemo(() =>
+    scanRows.filter(r => r.late > 0)
+      .sort((a, b) => (b.lateRate || 0) - (a.lateRate || 0) || b.late - a.late),
+    [scanRows]);
+  // The chart shows the worst handful; the table below carries everyone. Eighty
+  // overlapping dots in one band was unreadable — a ranked bar per person is not.
+  const lateTop = React.useMemo(() => lateRows.slice(0, 15), [lateRows]);
+
+  const renderLate = () => (
+    <div style={card}>
+      {cardHead("Lateness — who, how often, and when",
+        "Managers, Head Office and Call Centre staff clock in, so their lateness is measured in minutes against their published scheduled start. Nail techs have no timestamp, so theirs is a count of confirmed Late check-ins — the minutes column reads “—” for them rather than guessing. Click any row for the day-of-week and day-of-cycle pattern.",
+        <div style={{ display: "flex", alignItems: "center", gap: 13, flexWrap: "wrap" }}>
+          {swatch(HR_VIZ.c1, "Managers")}{swatch(HR_VIZ.c2, "Nail techs")}{swatch(HR_VIZ.c3, "Office / CC&S")}
+        </div>)}
+      {lateRows.length === 0 ? empty("Nobody was late in this window under the current filters.") : (
+        <>
+          <div style={{ marginBottom: 16 }}>
+            <HrStackBars
+              ariaLabel="Highest lateness rates by person"
+              labelW={250} onTip={onTip}
+              fmtTick={(t) => Math.round(t * 100) + "%"}
+              rows={lateTop.map(r => ({
+                label: hrShort(r.name, 26),
+                valueLabel: (r.lateRate == null ? "—" : Math.round(r.lateRate * 100) + "%") + "  ·  " + r.late + "×",
+                tone: (r.lateRate || 0) > 0.15 ? HR_VIZ.bad : (r.lateRate || 0) > 0.07 ? HR_VIZ.warn : HR_VIZ.ink,
+                segs: [{
+                  label: (HR_ROLE[r.roleKind] || {}).label || "", v: r.lateRate || 0, colour: (HR_ROLE[r.roleKind] || {}).colour,
+                  lead: (r.lateRate == null ? "—" : Math.round(r.lateRate * 100) + "% of days late"),
+                  note: [
+                    r.branch,
+                    r.late + " late out of " + r.lateDenom + " days judged",
+                    r.avgLateMin != null ? "Average " + r.avgLateMin + " minutes late" : "Count only — nail techs have no clock timestamp",
+                    r.lastLateDays != null ? "Last late " + r.lastLateDays + " days ago" : null,
+                    r.lateFlags.length ? r.lateFlags.map(f => f.t).join(", ") : null
+                  ].filter(Boolean)
+                }]
+              }))} />
+            {chartNote(lateTop.length, lateRows.length)}
+          </div>
+          <div style={tallScroll(lateRows.length)}>
+            <table style={tbl}>
+              <thead><tr>
+                <th style={th}>Person</th><th style={th}>Store</th><th style={th}>Role</th>
+                <th style={thN}>Late / days</th><th style={thN}>Rate</th><th style={thN}>Avg min</th>
+                <th style={thN}>Last late</th><th style={th}>Recency</th><th style={th}>Pattern</th><th style={thN}>Linked incidents</th>
+              </tr></thead>
+              <tbody>
+                {lateRows.map(r => {
+                  const rate = r.lateRate;
+                  const rec = hrRecency(r.lastLateDays);
+                  const open = openRow === "late-" + r.ec;
+                  const linked = (incByEc[String(r.ec).trim()] || []).filter(x => x.category === "StaffConduct" || x.category === "Management");
+                  return (
+                    <React.Fragment key={r.ec}>
+                      <tr onClick={() => setOpenRow(open ? null : "late-" + r.ec)} style={{ cursor: "pointer", background: open ? "#F8F5FF" : "transparent" }}>
+                        <td style={td}><div style={{ fontWeight: 700, color: HR_VIZ.ink }}>{r.name}</div><div style={{ fontSize: 11, color: HR_VIZ.faint }}>{r.ec}</div></td>
+                        <td style={td}>{r.branch}</td>
+                        <td style={td}>{chip(HR_ROLE[r.roleKind].label, "neutral")}</td>
+                        <td style={tdN}>{r.late + " / " + r.lateDenom}</td>
+                        <td style={{ ...tdN, fontWeight: 800, color: rate == null ? HR_VIZ.faint : rate > 0.15 ? HR_VIZ.bad : rate > 0.07 ? HR_VIZ.warn : HR_VIZ.good }}>{rate == null ? "—" : Math.round(rate * 100) + "%"}</td>
+                        <td style={tdN}>{r.avgLateMin != null ? r.avgLateMin + " min" : <span style={{ color: HR_VIZ.faint }}>—</span>}</td>
+                        <td style={tdN}>{r.lastLateDays != null ? r.lastLateDays + "d ago" : "—"}</td>
+                        <td style={td}>{chip(rec.t, rec.k)}</td>
+                        <td style={td}>{r.lateFlags.length ? r.lateFlags.map((f, i) => chip(f.t, f.k, i)) : <span style={{ fontSize: 11, color: HR_VIZ.faint }}>no pattern</span>}</td>
+                        <td style={tdN}>{linked.length ? chip(linked.length, "bad") : <span style={{ color: HR_VIZ.faint }}>—</span>}</td>
+                      </tr>
+                      {open && (
+                        <tr style={{ background: "#F8F5FF" }}>
+                          <td colSpan={10} style={{ padding: "14px 12px 18px", borderBottom: "1px solid " + HR_VIZ.hair }}>
+                            <div style={{ display: "grid", gap: 18, gridTemplateColumns: isMobile ? "1fr" : "repeat(auto-fit,minmax(300px,1fr))" }}>
+                              <HrHeatStrip onTip={onTip} vals={r.lateDow.slice(1).concat([r.lateDow[0]])} labels={["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]} title="By day of week" />
+                              <HrHeatStrip onTip={onTip} vals={r.lateCycle} labels={HR_CYCLE_LABELS} title="By day of pay cycle (25th → 24th)" every={5} />
+                              {linked.length > 0 && (
+                                <div>
+                                  <div style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.09em", color: HR_VIZ.faint, fontWeight: 700, marginBottom: 8 }}>Linked incidents</div>
+                                  {linked.map(x => (
+                                    <div key={x.id} style={{ marginBottom: 8 }}>
+                                      <span style={{ fontWeight: 700, color: HR_VIZ.ink }}>{x.ref_code}</span> {chip((INCIDENT_CAT[x.category] || {}).label || x.category, "neutral")}
+                                      <div style={{ fontSize: 11, color: HR_VIZ.faint }}>{String(x.description || "").slice(0, 160)}</div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          {rowNote(lateRows.length)}
+        </>
+      )}
+    </div>
+  );
+
+  // ══ C3 · Missed & sick ═════════════════════════════════════════════════
+  const absRows = React.useMemo(() => {
+    const rows = scanRows.map(r => ({
+      r,
+      total: ev === "sick" ? (r.sickNote + r.sickNoNote) : (r.absent + r.noShow + r.frl + r.unpaid)
+    })).filter(x => x.total > 0);
+    return rows.sort((a, b) => b.total - a.total);
+  }, [scanRows, ev]);
+  const absTot = React.useMemo(() => scanRows.reduce((a, r) => {
+    a.sickNote += r.sickNote; a.sickNoNote += r.sickNoNote; a.frl += r.frl;
+    a.absent += r.absent; a.noShow += r.noShow; a.unpaid += r.unpaid; return a;
+  }, { sickNote: 0, sickNoNote: 0, frl: 0, absent: 0, noShow: 0, unpaid: 0 }), [scanRows]);
+
+  const renderAbs = () => {
+    const sick = ev === "sick";
+    const slices = sick
+      ? [{ label: "Sick + note", v: absTot.sickNote, colour: HR_VIZ.c3 }, { label: "Sick, no note", v: absTot.sickNoNote, colour: HR_VIZ.c3, hatch: true }]
+      : [{ label: "Family responsibility", v: absTot.frl, colour: HR_VIZ.c5 }, { label: "Unpaid", v: absTot.unpaid, colour: HR_VIZ.c1 },
+         { label: "Absent", v: absTot.absent, colour: HR_VIZ.c4 }, { label: "No-show", v: absTot.noShow, colour: HR_VIZ.c2 }];
+    const byStore = {};
+    absRows.forEach(x => {
+      const b = byStore[x.r.branch] = byStore[x.r.branch] || { sickNote: 0, sickNoNote: 0, frl: 0, absent: 0, noShow: 0, unpaid: 0 };
+      ["sickNote", "sickNoNote", "frl", "absent", "noShow", "unpaid"].forEach(k => { b[k] += x.r[k]; });
+    });
+    const storeRows = Object.keys(byStore).map(name => ({
+      label: name,
+      segs: sick
+        ? [{ label: "Sick + note", v: byStore[name].sickNote, colour: HR_VIZ.c3 }, { label: "Sick, no note", v: byStore[name].sickNoNote, colour: HR_VIZ.c3, hatch: true }]
+        : [{ label: "Family responsibility", v: byStore[name].frl, colour: HR_VIZ.c5 }, { label: "Unpaid", v: byStore[name].unpaid, colour: HR_VIZ.c1 },
+           { label: "Absent", v: byStore[name].absent, colour: HR_VIZ.c4 }, { label: "No-show", v: byStore[name].noShow, colour: HR_VIZ.c2 }]
+    })).sort((a, b) => b.segs.reduce((m, s) => m + s.v, 0) - a.segs.reduce((m, s) => m + s.v, 0)).slice(0, 10);
+    return (
+      <div style={card}>
+        {cardHead("Missed days & sick days",
+          "Sick with a note and sick without one are kept apart — the no-note column is the abuse signal, and it is drawn hatched wherever it appears. Days already covered by approved leave are excluded, so nobody is charged twice for the same absence.",
+          seg([{ k: "missed", l: "Missed" }, { k: "sick", l: "Sick" }], ev, setEv, "Event type"))}
+        {absRows.length === 0 ? empty("Nothing recorded in this window under the current filters.") : (
+          <>
+            <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "minmax(280px,360px) 1fr", gap: 22, alignItems: "start", marginBottom: 16 }}>
+              <HrDonut onTip={onTip} slices={slices} centre={sick ? "sick days" : "days missed"} ariaLabel="Absence mix" />
+              <HrStackBars onTip={onTip} rows={storeRows} labelW={150} ariaLabel="Days lost by store" />
+            </div>
+            <div style={tallScroll(absRows.length)}>
+              <table style={tbl}>
+                <thead><tr>
+                  <th style={th}>Person</th><th style={th}>Store</th><th style={th}>Role</th>
+                  {sick ? <><th style={thN}>Sick + note</th><th style={thN}>Sick, no note</th></>
+                    : <><th style={thN}>Absent</th><th style={thN}>No-show</th><th style={thN}>FRL</th><th style={thN}>Unpaid</th></>}
+                  <th style={thN}>Total</th><th style={thN}>Of days</th><th style={th}>Pattern</th>
+                </tr></thead>
+                <tbody>
+                  {absRows.map(x => {
+                    const r = x.r, rate = x.total / Math.max(r.denom, 1);
+                    return (
+                      <tr key={r.ec}>
+                        <td style={td}><div style={{ fontWeight: 700, color: HR_VIZ.ink }}>{r.name}</div><div style={{ fontSize: 11, color: HR_VIZ.faint }}>{r.ec}</div></td>
+                        <td style={td}>{r.branch}</td>
+                        <td style={td}>{chip(HR_ROLE[r.roleKind].label, "neutral")}</td>
+                        {sick ? <>
+                          <td style={tdN}>{r.sickNote || "—"}</td>
+                          <td style={{ ...tdN, fontWeight: 800, color: r.sickNoNote >= 3 ? HR_VIZ.bad : "#4C1D95" }}>{r.sickNoNote || "—"}</td>
+                        </> : <>
+                          <td style={tdN}>{r.absent || "—"}</td>
+                          <td style={{ ...tdN, fontWeight: 800, color: r.noShow ? HR_VIZ.bad : "#4C1D95" }}>{r.noShow || "—"}</td>
+                          <td style={tdN}>{r.frl || "—"}</td>
+                          <td style={tdN}>{r.unpaid || "—"}</td>
+                        </>}
+                        <td style={{ ...tdN, fontWeight: 800 }}>{x.total}</td>
+                        <td style={{ ...tdN, color: rate > 0.1 ? HR_VIZ.bad : rate > 0.05 ? HR_VIZ.warn : HR_VIZ.good }}>{Math.round(rate * 100) + "%"}</td>
+                        <td style={td}>{r.flags.length ? r.flags.map((f, i) => chip(f, f === "Frequent no-note sick" ? "bad" : "warn", i)) : <span style={{ fontSize: 11, color: HR_VIZ.faint }}>no pattern</span>}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            {rowNote(absRows.length)}
+          </>
+        )}
+      </div>
+    );
+  };
+
+  // ══ C4 · Incidents & watch list ════════════════════════════════════════
+  const headOf = React.useCallback((name) => {
+    const s = (salonData || []).find(x => x.name === name);
+    if (s) return Math.max(1, s.active.length);
+    const off = (enrichedOffice || []).filter(p => p.branch === name);
+    return Math.max(1, off.length);
+  }, [salonData, enrichedOffice]);
+
+  const incStores = React.useMemo(() => {
+    const by = {};
+    incWin.forEach(r => {
+      const n = r.store || "—";
+      const s = by[n] = by[n] || { name: n, n: 0, buckets: {}, high: 0, mgmt: 0, open: 0, actioned: 0, resolveDays: [] };
+      s.n++;
+      const b = hrBucket(r.category); s.buckets[b] = (s.buckets[b] || 0) + 1;
+      if (hrSeverity(r) === "High") s.high++;
+      if (r.about_management) s.mgmt++;
+      if (r.status !== "resolved") s.open++;
+      if (hrActioned(r)) s.actioned++;
+      if (r.status === "resolved" && r.resolved_at && r.created_at) {
+        const d = Math.round((new Date(r.resolved_at) - new Date(r.created_at)) / 86400000);
+        if (isFinite(d) && d >= 0) s.resolveDays.push(d);
+      }
+    });
+    return Object.keys(by).map(k => {
+      const s = by[k];
+      s.head = headOf(s.name);
+      s.per10 = Math.round((s.n / s.head) * 100) / 10;
+      s.median = s.resolveDays.length ? s.resolveDays.slice().sort((a, b) => a - b)[Math.floor(s.resolveDays.length / 2)] : null;
+      return s;
+    }).sort((a, b) => b.n - a.n);
+  }, [incWin, headOf]);
+
+  // Watch list. The score is never shown bare — the breakdown always travels
+  // with it, so HR can see exactly what put someone here before acting.
+  const watch = React.useMemo(() => {
+    const byEc = {};
+    const cut = new Date(); cut.setMonth(cut.getMonth() - 6);
+    const cutYmd = ymdStr(cut);
+    scanRows.forEach(r => {
+      byEc[r.ec] = { ec: r.ec, name: r.name, branch: r.branch, roleKind: r.roleKind, rec: r, high: 0, other: 0, warns: 0, ul: 0, pat: 0, inc: [] };
+    });
+    Object.keys(byEc).forEach(ec => {
+      const w = byEc[ec];
+      const mine = (incByEc[ec] || []).filter(r => String(r.incident_date || (r.created_at || "").slice(0, 10)) >= cutYmd);
+      w.inc = mine;
+      mine.forEach(r => { if (hrSeverity(r) === "High") w.high++; else w.other++; if (hrActioned(r)) w.warns++; });
+      const ul = (unpaidLegalRecs || []).find(x => x && x.ec && String(x.ec).trim() === ec && x.status === "on_leave");
+      w.ul = ul ? 3 : 0; w.ulRec = ul || null;
+      w.pat = (w.rec.flags || []).length + (w.rec.lateFlags || []).length;
+      w.score = w.high * 2 + w.other + w.warns + w.ul + w.pat;
+    });
+    return Object.keys(byEc).map(k => byEc[k]).filter(w => w.score >= 4).sort((a, b) => b.score - a.score);
+  }, [scanRows, incByEc, unpaidLegalRecs]);
+
+  const renderInc = () => (
+    <div style={card}>
+      {cardHead("Store incident record & conduct",
+        "Incidents per store, as a raw count and per ten active staff so a big store is not automatically the worst. Severity is DERIVED from the urgent tick and the category — there is no severity field on the incident form — and “recorded outcomes” counts resolved reports whose notes actually mention an action, which is the closest honest proxy until a real disciplinary register exists.",
+        <div style={{ display: "flex", alignItems: "center", gap: 13, flexWrap: "wrap" }}>
+          {HR_INC_BUCKETS.map(b => swatch(b.colour, b.k))}
+        </div>)}
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(auto-fit,minmax(178px,1fr))", gap: 12, marginBottom: 18 }}>
+        <ReportKpi icon="📋" label="Incidents in window" value={incWin.length} sub="leave-expiry auto-files excluded" />
+        <ReportKpi icon="📂" label="Still open" value={incWin.filter(r => r.status !== "resolved").length}
+          tone={incWin.some(r => r.status !== "resolved") ? HR_VIZ.warn : HR_VIZ.good} sub="new or under review" />
+        <ReportKpi icon="🔺" label="High severity" value={incWin.filter(r => hrSeverity(r) === "High").length}
+          tone={incWin.some(r => hrSeverity(r) === "High") ? HR_VIZ.bad : HR_VIZ.good} sub="urgent, harassment, theft or safety" />
+        <ReportKpi icon="👁️" label="On the watch list" value={watch.length}
+          tone={watch.length ? HR_VIZ.bad : HR_VIZ.good} sub="scored 4+ over six months" />
+      </div>
+      <div style={{ marginBottom: 14 }}>{seg([{ k: "count", l: "Count" }, { k: "rate", l: "Per 10 staff" }], incMode, setIncMode, "Incident measure")}</div>
+      {incStores.length === 0 ? empty("No incidents in this window.") : (
+        <>
+          <div style={{ marginBottom: 16 }}>
+            <HrStackBars ariaLabel="Incidents by store and type" onTip={onTip} rows={incStores.map(s => {
+              const per = incMode === "rate" ? 10 / s.head : 1;
+              return {
+                label: s.name, valueLabel: incMode === "rate" ? Math.round(s.n * per * 10) / 10 : s.n,
+                tone: s.n >= 4 ? HR_VIZ.bad : HR_VIZ.ink,
+                segs: HR_INC_BUCKETS.map(b => ({ label: b.k, v: Math.round((s.buckets[b.k] || 0) * per * 10) / 10, colour: b.colour }))
+              };
+            })} />
+          </div>
+          <div style={{ ...scrollX, marginBottom: 24 }}>
+            <table style={tbl}>
+              <thead><tr>
+                <th style={th}>Store</th><th style={thN}>Incidents</th><th style={thN}>Per 10 staff</th><th style={thN}>High severity</th>
+                <th style={thN}>About management</th><th style={thN}>Open</th><th style={thN}>Median days to resolve</th><th style={thN}>Recorded outcomes</th>
+              </tr></thead>
+              <tbody>
+                {incStores.map(s => (
+                  <tr key={s.name}>
+                    <td style={{ ...td, fontWeight: 700, color: HR_VIZ.ink }}>{s.name}</td>
+                    <td style={{ ...tdN, fontWeight: 800 }}>{s.n}</td>
+                    <td style={tdN}>{s.per10}</td>
+                    <td style={tdN}>{s.high ? chip(s.high, "bad") : "—"}</td>
+                    <td style={tdN}>{s.mgmt ? chip(s.mgmt, "warn") : "—"}</td>
+                    <td style={tdN}>{s.open || "—"}</td>
+                    <td style={tdN}>{s.median != null ? s.median : "—"}</td>
+                    <td style={tdN}>{s.actioned || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+      <div style={{ borderTop: "1px solid " + HR_VIZ.hair, paddingTop: 18 }}>
+        {cardHead("⚠️ Watch list",
+          "Scored on the trailing six months: two points for a high-severity incident, one for any other, one per recorded outcome, three for an open unpaid-leave (legal) case, and one per attendance pattern flag. The breakdown is always shown — never a bare number.")}
+        {watch.length === 0 ? empty("Nobody is above the watch-list threshold under the current filters.") : (
+          <div style={scrollX}>
+            <table style={tbl}>
+              <thead><tr>
+                <th style={th}>Person</th><th style={th}>Store</th><th style={th}>Role</th><th style={th}>Score breakdown</th>
+                <th style={thN}>Score</th><th style={th}>Open items</th>
+              </tr></thead>
+              <tbody>
+                {watch.map(w => (
+                  <tr key={w.ec}>
+                    <td style={td}><div style={{ fontWeight: 700, color: HR_VIZ.ink }}>{w.name}</div><div style={{ fontSize: 11, color: HR_VIZ.faint }}>{w.ec}</div></td>
+                    <td style={td}>{w.branch}</td>
+                    <td style={td}>{chip(HR_ROLE[w.roleKind].label, "neutral")}</td>
+                    <td style={td}>
+                      {w.high ? chip(w.high + " × high-severity incident (×2)", "bad", "h") : null}
+                      {w.other ? chip(w.other + " × other incident", "warn", "o") : null}
+                      {w.warns ? chip(w.warns + " × recorded outcome", "bad", "w") : null}
+                      {w.ul ? chip("Unpaid leave (legal) (×3)", "bad", "u") : null}
+                      {w.pat ? chip(w.pat + " × attendance pattern flag", "warn", "p") : null}
+                    </td>
+                    <td style={{ ...tdN, fontWeight: 800, color: HR_VIZ.bad }}>{w.score}</td>
+                    <td style={td}>
+                      {w.ulRec ? chip("Hearing" + (w.ulRec.hearingDate ? " " + w.ulRec.hearingDate : ""), "bad")
+                        : (w.inc.filter(r => r.status !== "resolved").length ? chip(w.inc.filter(r => r.status !== "resolved").length + " open", "warn")
+                          : <span style={{ fontSize: 11, color: HR_VIZ.faint }}>—</span>)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  // ══ D1–D3 · Health & Safety ════════════════════════════════════════════
+  const hsWin = React.useMemo(() => incWin.map(r => ({ r, hs: hrHsType(r, hsOv) })).filter(x => !!x.hs), [incWin, hsOv]);
+
+  const renderHs = () => {
+    const byStore = {};
+    hsWin.forEach(x => {
+      const n = x.r.store || "—";
+      byStore[n] = byStore[n] || {};
+      byStore[n][x.hs] = (byStore[n][x.hs] || 0) + 1;
+    });
+    const rows = Object.keys(byStore).map(name => ({
+      label: name, segs: HR_HS_TYPES.map(t => ({ label: t.label, v: byStore[name][t.k] || 0, colour: t.colour }))
+    })).sort((a, b) => b.segs.reduce((m, s) => m + s.v, 0) - a.segs.reduce((m, s) => m + s.v, 0));
+    // Fortnightly buckets across the window — one series, so no legend needed.
+    const nb = 6, buckets = new Array(nb).fill(0);
+    hsWin.forEach(x => {
+      const d = hrDaysSince(String(x.r.incident_date || (x.r.created_at || "").slice(0, 10)), todayYmd);
+      if (d == null) return;
+      const b = nb - 1 - Math.min(nb - 1, Math.floor(d / (days / nb)));
+      buckets[b]++;
+    });
+    const open = hsWin.filter(x => x.r.status !== "resolved");
+    const oldest = open.length ? Math.max.apply(null, open.map(x => hrDaysSince(String(x.r.incident_date || (x.r.created_at || "").slice(0, 10)), todayYmd) || 0)) : 0;
+    return (
+      <div style={card}>
+        {cardHead("Health & Safety incidents by type",
+          "The incident form has no H&S sub-type, so type is inferred from the category plus the wording of the report — Health is a person harmed or unwell, Facilities is something broken, Hygiene is cleanliness. Every inference is overridable in the table below, and an unmatched safety report lands in Other H&S rather than disappearing.",
+          <div style={{ display: "flex", alignItems: "center", gap: 13, flexWrap: "wrap" }}>{HR_HS_TYPES.map(t => swatch(t.colour, t.label))}</div>)}
+        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(auto-fit,minmax(178px,1fr))", gap: 12, marginBottom: 18 }}>
+          <ReportKpi icon="🦺" label="Open H&S items" value={open.length} tone={open.length ? HR_VIZ.warn : HR_VIZ.good} sub={hsWin.length + " reported in window"} />
+          <ReportKpi icon="🚨" label="Urgent and open" value={open.filter(x => x.r.urgent).length} tone={open.some(x => x.r.urgent) ? HR_VIZ.bad : HR_VIZ.good} sub="flagged urgent by the reporter" />
+          <ReportKpi icon="⏱️" label="Oldest open item" value={oldest ? oldest + "d" : "—"} tone={oldest > 10 ? HR_VIZ.bad : HR_VIZ.ink} sub="days since it was reported" />
+        </div>
+        {hsWin.length === 0 ? empty("No H&S incidents in this window.") : (
+          <>
+            <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "minmax(280px,380px) 1fr", gap: 22, alignItems: "start", marginBottom: 16 }}>
+              <HrSpark onTip={onTip} vals={buckets} title="All H&S reports over the window" colour={HR_VIZ.c4} note={hsWin.length + " in window"} />
+              <HrStackBars onTip={onTip} rows={rows} labelW={170} ariaLabel="H&S incidents by store and type" />
+            </div>
+            <div style={scrollX}>
+              <table style={tbl}>
+                <thead><tr>
+                  <th style={th}>Ref</th><th style={th}>Date</th><th style={th}>Store</th><th style={th}>H&amp;S type</th>
+                  <th style={th}>Form category</th><th style={th}>Severity</th><th style={th}>Status</th><th style={th}>What happened</th>
+                </tr></thead>
+                <tbody>
+                  {hsWin.slice().sort((a, b) => String(b.r.incident_date || "").localeCompare(String(a.r.incident_date || ""))).map(x => {
+                    const r = x.r, sev = hrSeverity(r), st = INCIDENT_STATUS[r.status] || INCIDENT_STATUS.new;
+                    return (
+                      <tr key={r.id}>
+                        <td style={{ ...td, fontWeight: 700, color: HR_VIZ.ink }}>{r.ref_code}</td>
+                        <td style={td}>{r.incident_date || String(r.created_at || "").slice(0, 10)}</td>
+                        <td style={td}>{r.store}</td>
+                        <td style={td}>
+                          <select value={x.hs} onChange={(e) => saveHsOv(r.id, e.target.value)} style={{ ...ctrl, padding: "3px 7px", fontSize: 11 }} aria-label={"H&S type for " + r.ref_code}>
+                            {HR_HS_TYPES.map(t => <option key={t.k} value={t.k}>{t.label}</option>)}
+                          </select>
+                          {hsOv[r.id] ? <div style={{ fontSize: 10, color: HR_VIZ.faint, marginTop: 2 }}>set by hand</div> : null}
+                        </td>
+                        <td style={td}>{chip((INCIDENT_CAT[r.category] || {}).label || r.category, "neutral")}</td>
+                        <td style={td}>{chip(sev, sev === "High" ? "bad" : sev === "Medium" ? "warn" : "quiet")}</td>
+                        <td style={td}>{chip(st.label, r.status === "resolved" ? "good" : r.status === "reviewing" ? "warn" : "bad")}</td>
+                        <td style={{ ...td, maxWidth: 420 }}>{String(r.description || "").slice(0, 200)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </div>
+    );
+  };
+
+  const renderFac = () => {
+    const by = {};
+    hsWin.filter(x => x.hs === "Facilities" || x.hs === "Hygiene").forEach(x => {
+      const n = x.r.store || "—";
+      const s = by[n] = by[n] || { name: n, n: 0, types: {}, refs: [], open: 0 };
+      s.n++; s.refs.push(x.r); s.types[x.hs] = (s.types[x.hs] || 0) + 1;
+      if (x.r.status !== "resolved") s.open++;
+    });
+    const rows = Object.keys(by).map(k => {
+      const s = by[k];
+      s.chronic = Object.keys(s.types).filter(t => s.types[t] >= 2);
+      return s;
+    }).sort((a, b) => b.n - a.n || b.chronic.length - a.chronic.length);
+    return (
+      <div style={card}>
+        {cardHead("Facilities & hygiene — chronic issues",
+          "The same fault recurring at the same store is a maintenance problem, not an incident problem. Any H&S type logged twice or more inside the window is flagged chronic (⟳), with the reference numbers attached so it can be handed straight to the landlord or the contractor.",
+          <div style={{ display: "flex", alignItems: "center", gap: 13, flexWrap: "wrap" }}>
+            {swatch(HR_VIZ.c4, "Facilities")}{swatch(HR_VIZ.c3, "Hygiene")}
+          </div>)}
+        {rows.length === 0 ? empty("No facilities or hygiene reports in this window.") : (
+          <>
+            <div style={{ marginBottom: 16 }}>
+              <HrStackBars
+                ariaLabel="Facilities and hygiene reports by store"
+                labelW={220} onTip={onTip}
+                fmtTick={(t) => Math.round(t)}
+                rows={rows.map(s => ({
+                  label: (s.chronic.length ? "⟳ " : "") + hrShort(s.name, 22),
+                  valueLabel: s.n,
+                  tone: s.chronic.length ? HR_VIZ.bad : HR_VIZ.ink,
+                  segs: HR_HS_TYPES.filter(t => t.k === "Facilities" || t.k === "Hygiene").map(t => ({
+                    label: t.label, v: s.types[t.k] || 0, colour: t.colour,
+                    lead: (s.types[t.k] || 0) + " × " + t.label,
+                    note: [
+                      s.chronic.indexOf(t.k) >= 0 ? "Chronic — logged " + s.types[t.k] + " times in " + days + " days" : null,
+                      s.open ? s.open + " still open" : "All resolved"
+                    ].filter(Boolean)
+                  }))
+                }))} />
+            </div>
+            <div style={scrollX}>
+              <table style={tbl}>
+                <thead><tr>
+                  <th style={th}>Store</th><th style={thN}>Reports</th><th style={thN}>Still open</th><th style={th}>Chronic issue</th><th style={th}>References</th>
+                </tr></thead>
+                <tbody>
+                  {rows.map(s => (
+                    <tr key={s.name}>
+                      <td style={{ ...td, fontWeight: 700, color: HR_VIZ.ink }}>{s.name}</td>
+                      <td style={{ ...tdN, fontWeight: 800 }}>{s.n}</td>
+                      <td style={tdN}>{s.open || "—"}</td>
+                      <td style={td}>{s.chronic.length ? s.chronic.map(c => chip("⟳ " + c + " ×" + s.types[c], "bad", c)) : <span style={{ fontSize: 11, color: HR_VIZ.faint }}>one-off</span>}</td>
+                      <td style={td}>{s.refs.map(r => <div key={r.id} style={{ fontSize: 11, color: HR_VIZ.faint }}>{r.ref_code + " — " + String(r.description || "").slice(0, 90)}</div>)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </div>
+    );
+  };
+
+  const renderMat = () => {
+    const pool = (salonData || []).flatMap(s => s.active.concat(s.onMat || [])).concat(enrichedOffice || []);
+    const seen = {};
+    const rows = [];
+    pool.forEach(p => {
+      const ec = String(p.ec || "").trim();
+      if (!ec || seen[ec]) return;
+      if (fStore !== "all" && p.branch !== fStore) return;
+      const mr = matFor(p);
+      if (!mr) return;
+      if (mr.matStatus !== "pregnant" && mr.matStatus !== "dates_tbc") return;
+      seen[ec] = 1;
+      const start = mr.matStart ? hrDaysSince(todayYmd, mr.matStart) : null;
+      const end = mr.matEnd ? hrDaysSince(todayYmd, mr.matEnd) : null;
+      rows.push({
+        key: ec, p, mr,
+        tbc: mr.matStatus === "dates_tbc" || start == null,
+        start: start != null ? Math.max(start, 0) : 0,
+        end: end != null ? Math.max(end, 0) : 0,
+        label: p.name + " · " + (p.branch || "")
+      });
+    });
+    rows.sort((a, b) => (a.tbc === b.tbc) ? a.start - b.start : (a.tbc ? -1 : 1));
+    const tbc = rows.filter(r => r.tbc).length;
+    return (
+      <div style={card}>
+        {cardHead("Maternity — who is in store now",
+          "Pregnant employees still working, so cover can be planned before the leave starts rather than after it. A missing expected-start date is the thing to chase — those rows are flagged, because a person with no dates cannot be planned around at all.")}
+        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(auto-fit,minmax(178px,1fr))", gap: 12, marginBottom: 18 }}>
+          <ReportKpi icon="🤰" label="Pregnant, in store" value={rows.length} sub="still working, cover not yet needed" />
+          <ReportKpi icon="⏳" label="Dates not on file" value={tbc} tone={tbc ? HR_VIZ.warn : HR_VIZ.good} sub="chase these before planning cover" />
+          <ReportKpi icon="📅" label="Leave starts ≤ 60 days" value={rows.filter(r => !r.tbc && r.start <= 60).length} sub="cover needed inside two months" />
+        </div>
+        {rows.length === 0 ? empty("Nobody is recorded as pregnant or dates-TBC under this filter.") : (
+          <>
+            <div style={{ marginBottom: 16 }}><HrTimeline onTip={onTip} rows={rows} /></div>
+            <div style={scrollX}>
+              <table style={tbl}>
+                <thead><tr>
+                  <th style={th}>Person</th><th style={th}>Store</th><th style={th}>Status</th><th style={thN}>Leave starts</th>
+                  <th style={thN}>Weeks until leave</th><th style={th}>H&amp;S incidents at that store</th><th style={th}>Notes</th>
+                </tr></thead>
+                <tbody>
+                  {rows.map(r => {
+                    const linked = hsWin.filter(x => x.r.store === r.p.branch && x.hs === "Health");
+                    const ms = MAT_STATUS[r.mr.matStatus] || {};
+                    return (
+                      <tr key={r.key}>
+                        <td style={td}><div style={{ fontWeight: 700, color: HR_VIZ.ink }}>{r.p.name}</div><div style={{ fontSize: 11, color: HR_VIZ.faint }}>{r.p.ec}</div></td>
+                        <td style={td}>{r.p.branch}</td>
+                        <td style={td}>{chip((ms.icon || "") + " " + (ms.label || r.mr.matStatus), r.tbc ? "warn" : "neutral")}</td>
+                        <td style={tdN}>{r.tbc ? chip("not on file", "bad") : "in " + r.start + "d"}</td>
+                        <td style={tdN}>{r.tbc ? "—" : Math.round(r.start / 7)}</td>
+                        <td style={td}>{linked.length ? linked.map(x => <div key={x.r.id} style={{ fontSize: 11, color: HR_VIZ.faint }}>{x.r.ref_code + " — " + String(x.r.description || "").slice(0, 80)}</div>) : <span style={{ fontSize: 11, color: HR_VIZ.faint }}>none</span>}</td>
+                        <td style={{ ...td, fontSize: 11, color: HR_VIZ.faint }}>{r.tbc ? "Cannot be planned around — chase expected dates" : "Cover needed from week " + Math.round(r.start / 7)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </div>
+    );
+  };
+
+  // ── Shell ─────────────────────────────────────────────────────────────
+  return (
+    <div style={{ padding: isMobile ? "2px 0 28px" : "8px 10px 40px" }}>
+      <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 14, flexWrap: "wrap", marginBottom: 18 }}>
+        <div>
+          <div style={{ fontFamily: "'Playfair Display',serif", fontSize: isMobile ? 24 : 29, color: HR_VIZ.ink, fontWeight: 700, letterSpacing: "-0.01em" }}>📈 HR Reports</div>
+          <div style={{ fontSize: 13, color: HR_VIZ.sub, marginTop: 5, maxWidth: "80ch" }}>
+            Patterns of performance across stores, managers and nail techs — who we will need to recruit
+            before peak season, who is repeatedly late or absent, and what the incident record says about
+            each store. Last {days} days.
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          {seg([{ k: 30, l: "30d" }, { k: 60, l: "60d" }, { k: 90, l: "90d" }], days, setDays, "Reporting window")}
+          <button onClick={() => load(days)} disabled={loading}
+            style={{ background: loading ? "#A78BFA" : HR_VIZ.ink, color: "#fff", border: "none", borderRadius: 10, padding: "9px 15px", cursor: loading ? "default" : "pointer", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit" }}>
+            {loading ? "Loading…" : "↻ Refresh"}
+          </button>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 0, padding: 6, background: "#FCE7F3", borderRadius: 14, border: "1px solid #FBCFE8", maxWidth: 680, marginBottom: 22 }}>
+        {[{ k: "outlook", l: "🧭 HR Outlook" }, { k: "hs", l: "🦺 H&S Reports" }].map(t => (
+          <button key={t.k} onClick={() => setSub(t.k)} aria-pressed={sub === t.k}
+            style={{ flex: 1, padding: "14px 22px", borderRadius: 10, border: "none", background: sub === t.k ? "#BE185D" : "transparent", color: sub === t.k ? "#FFFFFF" : "#831843", cursor: "pointer", fontFamily: "inherit", fontSize: 15, fontWeight: 700, transition: "all .18s", boxShadow: sub === t.k ? "0 4px 12px rgba(190,24,93,0.32)" : "none", letterSpacing: "0.01em" }}>
+            {t.l}
+          </button>
+        ))}
+      </div>
+
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 16 }}>
+        <span style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700, color: HR_VIZ.faint }}>Store</span>
+        <select value={fStore} onChange={e => { setFStore(e.target.value); setOpenRow(null); }} style={ctrl}>
+          <option value="all">All stores</option>
+          {storeOptions.map(n => <option key={n} value={n}>{n}</option>)}
+        </select>
+        {sub === "outlook" && (
+          <>
+            <span style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700, color: HR_VIZ.faint, marginLeft: 6 }}>Role</span>
+            {seg([{ k: "all", l: "All" }, { k: "mgr", l: "Managers" }, { k: "tech", l: "Nail techs" }, { k: "office", l: "Office" }], fRole, (v) => { setFRole(v); setOpenRow(null); }, "Role filter")}
+          </>
+        )}
+      </div>
+
+      {err && <div style={{ ...card, color: "#9b1c1c", border: "1px solid #fecaca", background: "#fef2f2" }}>Couldn't load the attendance scan: {err}</div>}
+
+      {sub === "outlook" ? (
+        <>
+          {renderRecruit()}
+          {loading && !scan
+            ? <div style={{ ...card, color: HR_VIZ.sub }}>Reading attendance, clock-ins and schedules across every store…</div>
+            : <>{renderLate()}{renderAbs()}</>}
+          {renderInc()}
+        </>
+      ) : (
+        <>{renderHs()}{renderFac()}{renderMat()}</>
+      )}
+
+      {/* Shared chart tooltip. Sits above the cursor unless that would run off
+          the top of the viewport, and clamps to the right edge so a long list
+          of names is never cut off. */}
+      {tip && (() => {
+        const above = tip.y > 150;
+        const vw = typeof window !== "undefined" ? window.innerWidth : 1200;
+        return (
+          <div role="status" aria-live="polite" style={{
+            position: "fixed", zIndex: 90, pointerEvents: "none",
+            left: Math.max(10, Math.min(tip.x + 16, vw - 310)),
+            top: above ? tip.y - 12 : tip.y + 22,
+            transform: above ? "translateY(-100%)" : "none",
+            maxWidth: 300, background: "#2E1065", color: "#fff",
+            borderRadius: 12, padding: "10px 13px",
+            boxShadow: "0 14px 34px -12px rgba(46,16,101,0.6)",
+            fontSize: 11.5, lineHeight: 1.5, fontFamily: "'Outfit',system-ui,sans-serif"
+          }}>
+            <div style={{ fontWeight: 700, color: "#C4B5FD", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.07em" }}>{tip.title}</div>
+            {tip.lead != null && <div style={{ fontWeight: 700, fontSize: 14, marginTop: 3, letterSpacing: "-0.01em" }}>{tip.lead}</div>}
+            {(tip.lines || []).length > 0 && (
+              <div style={{ marginTop: 6, borderTop: "1px solid rgba(196,181,253,0.25)", paddingTop: 6 }}>
+                {tip.lines.map((l, i) => <div key={i} style={{ color: "#E9D5FF" }}>{l}</div>)}
+              </div>
+            )}
+          </div>
+        );
+      })()}
+    </div>
+  );
+}
+const HR_CYCLE_LABELS = (() => {
+  const out = []; let d = 25;
+  for (let i = 0; i < 31; i++) { out.push(String(d)); d = d === 31 ? 1 : d + 1; }
+  return out;
+})();
+
 function interviewStage(r) {
   if (!r) return "new";
   if (r.promotedToTrialId) return "to_trial";
@@ -22040,7 +23615,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", hoCheckins: "Operations", ccCheckins: "Operations", leave: "Operations", checkins: "Operations", freshaTodo: "Operations", storeOpenings: "Operations", storeHours: "Operations", movements: "Operations", cashups: "Operations", mgrCoverage: "Operations",
     attendance: "Payroll", payrollProgress: "Payroll", payrollReports: "Payroll", overtime: "Payroll", officeHours: "Payroll", payrollInbox: "Payroll", leaveBalances: "Payroll", frl: "Payroll",
     leaveRequests: "Operations", calledInSick: "Operations", extraDayRequests: "Operations",
-    alerts: "Insights", activity: "Insights", storeReports: "Insights", staffingReport: "Insights",
+    alerts: "Insights", activity: "Insights", storeReports: "Insights", hrReports: "Insights", staffingReport: "Insights",
     settings: "Admin", voucherAdmin: "Admin",
     bonusConfig: "Payroll"
   };
@@ -23186,47 +24761,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const ecT = String(lv.ec).trim();
         for (let cur = new Date(lv.startDate + "T00:00:00"); ymdOf(cur) <= lv.endDate; cur.setDate(cur.getDate() + 1)) leaveSet.add(ecT + "|" + ymdOf(cur));
       });
-      const blank = (s, role) => ({
-        ec: s.ec, name: s.name, branch: s.branch || "", role,
-        sickNoNote: 0, sickNote: 0, noShow: 0, absent: 0, frl: 0, unpaid: 0, late: 0, extra: 0,
-        worked: 0, missed: 0, monthEnd: 0, byDow: [0, 0, 0, 0, 0, 0, 0]
-      });
-      const markPattern = (rec, ymd) => {
-        const dow = new Date(ymd + "T00:00:00").getDay();
-        rec.byDow[dow]++;
-        const dom = parseInt(ymd.slice(8, 10), 10);
-        if (dom >= 26 || dom <= 3) rec.monthEnd++;     // around month boundary / payday
-      };
-      const classify = (rec, bare, ymd) => {
-        switch (bare) {
-          case "sick": rec.sickNoNote++; rec.missed++; markPattern(rec, ymd); break;
-          case "sick_n": rec.sickNote++; rec.missed++; markPattern(rec, ymd); break;
-          case "no": rec.noShow++; rec.missed++; markPattern(rec, ymd); break;
-          case "absent": rec.absent++; rec.missed++; markPattern(rec, ymd); break;
-          case "unpaid": rec.unpaid++; rec.missed++; markPattern(rec, ymd); break;
-          case "frl": rec.frl++; rec.missed++; break;                 // legitimate — counted, not pattern-flagged
-          case "late": rec.late++; rec.worked++; break;
-          case "ext": rec.extra++; rec.worked++; break;             // extra day worked (beyond schedule)
-          case "on": case "trial": case "swap_i": rec.worked++; break;
-          default: break;                                              // al / mat / ph / off / term / swap_o / loan_out / deduct → ignore
-        }
-      };
-      const finish = (rec) => {
-        const base = rec.sickNoNote + rec.sickNote + rec.noShow + rec.absent + rec.unpaid;   // missed excl. FRL → pattern denominator
-        const flags = [];
-        if (base >= 3) {
-          const mon = rec.byDow[1], fri = rec.byDow[5], wknd = rec.byDow[0] + rec.byDow[6];
-          if (mon >= 2 && mon / base >= 0.4) flags.push("Monday-heavy");
-          if (fri >= 2 && fri / base >= 0.4) flags.push("Friday-heavy");
-          if (wknd >= 2 && wknd / base >= 0.5) flags.push("Weekend-heavy");
-          if (rec.monthEnd >= 2 && rec.monthEnd / base >= 0.5) flags.push("Month-end cluster");
-          if (rec.sickNoNote >= 3 && rec.sickNoNote >= rec.sickNote) flags.push("Frequent no-note sick");
-        }
-        rec.flags = flags;
-        rec.concerning = rec.sickNoNote + rec.noShow + rec.absent;
-        rec.attendanceRate = (rec.worked + rec.missed) > 0 ? rec.worked / (rec.worked + rec.missed) : null;
-        return rec;
-      };
+      // The attendance vocabulary — which status counts as missed, as worked,
+      // and what trips a pattern flag — lives at module scope (attClassify &
+      // co., defined next to the HR Reports tab). This report and HR Reports
+      // call the SAME four functions, so a new status code can never mean one
+      // thing here and something else there. Output is unchanged: the HR tab's
+      // extra fields are additive and simply ignored below.
+      const blank = attBlankRec, markPattern = attMarkPattern, classify = attClassify, finish = attFinish;
       const MISSEDSET = { sick: 1, sick_n: 1, no: 1, absent: 1, unpaid: 1, frl: 1 };
       const techRecs = [], mgrRecs = [];
       (staff || []).forEach(s => {
@@ -27776,6 +29317,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t: "alerts", l: "🔔 Alerts" },
                   { t: "staffingReport", l: "📅 Staffing & Shifts" },
                   { t: "storeReports", l: "🏆 Store Reports" },
+                  // HR Reports carries incident, conduct and watch-list data, so
+                  // it rides the same gate as the Incidents tab rather than being
+                  // hideable per user like the other Insights entries.
+                  ...(canSeeIncidents(currentUser) ? [{ t: "hrReports", l: "📈 HR Reports" }] : []),
                   { t: "activity", l: "📜 Activity Log" }
                 ]
               },
@@ -44464,6 +46009,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
       {/* ── ACTIVITY LOG ── */}
       {tab === "storeReports" && <StoreReportsTab extraDayRequests={extraDayRequests} managers={managers} />}
+
+      {/* ── HR REPORTS (HR Outlook + H&S) ── */}
+      {tab === "hrReports" && (canSeeIncidents(currentUser) ? (
+        <HRReportsTab
+          salonData={salonData} recruitFuture={recruitFuture}
+          matRecs={matRecs} incidentReports={incidentReports}
+          complianceActions={complianceActions} unpaidLegalRecs={unpaidLegalRecs}
+          staff={staff} managers={managers} enrichedOffice={enrichedOffice}
+          onMatEcs={onMatEcs} offList={offList} leaveRecs={leaveRecs}
+          currentUser={currentUser} />
+      ) : (
+        <div style={{ background: "#fff", border: "1px solid #EDE9FE", borderRadius: 20, padding: "22px 24px", color: "#9d6a82", fontSize: 13 }}>
+          🔒 HR Reports isn't available for your account — it carries incident and conduct data.
+        </div>
+      ))}
 
       {tab === "activity" && (() => {
         const whoOpts = ["All", ...Array.from(new Set(activityRows.map(r => r.who).filter(Boolean)))];
