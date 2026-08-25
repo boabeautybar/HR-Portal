@@ -3341,7 +3341,7 @@ const VFS = { label: "VFS Application Submitted", short: "VFS", icon: "🛂", co
 // Sentinel used by the list filters, so "🛂 VFS application" can sit in the
 // same dropdown as the real COMPLIANCE keys without polluting the registry.
 const VFS_FILTER_KEY = "__vfs";
-const VFS_TYPES = ["Work visa", "Asylum renewal", "Permanent residence", "Critical skills visa", "Spousal / relative visa", "Appeal / review", "Other"];
+const VFS_TYPES = ["Work visa", "Asylum renewal", "Temporary residence", "Critical skills visa", "Spousal / relative visa", "Appeal / review", "Other"];
 const VFS_URL = "https://www.vfsglobal.com/southafrica/";
 // A compliance-action record carries a VFS application once a submission
 // date is on it — that date is the marker's existence key everywhere.
@@ -34447,6 +34447,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     <select value={m.vfsType || ""} onChange={e => set("vfsType", e.target.value)} style={{ ...fld, cursor: "pointer" }}>
                       <option value="">— Not specified —</option>
                       {VFS_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                      {/* A stored type that is no longer offered (the list has
+                          been edited since it was logged) is kept as its own
+                          option, so opening the record to change something else
+                          cannot silently blank the type that is already on it. */}
+                      {m.vfsType && !VFS_TYPES.includes(m.vfsType) && <option value={m.vfsType}>{m.vfsType} (retired)</option>}
                     </select>
 
                     <label style={lbl}>VFS reference number</label>
