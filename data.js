@@ -2445,7 +2445,11 @@
       p_about_management: !!p.about_management,
       p_reporter_name: p.reporter_name || null,
       p_reporter_contact: p.reporter_contact || null,
-      p_photo_b64: p.photo_b64 || null
+      p_photo_b64: p.photo_b64 || null,
+      // Auto-filed reports classify themselves. The leave-expiry radar is an HR
+      // matter, so it says so rather than being routed by its wording later.
+      p_domain: p.domain || "hr",
+      p_subcategory: p.subcategory || null
     });
     if (res.error) { console.error("submitIncidentReport:", res.error); throw res.error; }
     return res.data;   // ref code, e.g. INC-260717-A1B2

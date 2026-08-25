@@ -12462,17 +12462,39 @@ function DailyTasksAdmin({ tasks, onSave, appUsers, currentUser, readOnly }) {
 // Confidential reports filed by staff from their own phone via /report.html
 // (reached by the printed QR in the staff room). Only the Owner / HR / senior
 // ops see this tab — store managers use the kiosk, never the portal.
+// How a category LOOKS. What a category MEANS — which of the two inboxes it
+// belongs to, and what subcategories it offers — lives in incident-taxonomy.js,
+// shared byte-for-byte with the My BOA report form so the two can never
+// disagree. Labels come from there too; this map only adds colour and an emoji.
 const INCIDENT_CAT = {
-  Safety: { label: "Safety / injury", emoji: "⚠️", color: "#b45309", bg: "#fef3c7" },
-  Harassment: { label: "Harassment / bullying", emoji: "🚫", color: "#9d174d", bg: "#fce7f3" },
-  Management: { label: "Management conduct", emoji: "👔", color: "#6b21a8", bg: "#ede9fe" },
-  StaffConduct: { label: "Staff member's conduct", emoji: "🙍", color: "#9a3412", bg: "#ffedd5" },
-  Customer: { label: "Customer / client", emoji: "🧍", color: "#1d4ed8", bg: "#dbeafe" },
-  Theft: { label: "Theft / money / till", emoji: "💰", color: "#92400e", bg: "#fef3c7" },
-  Stock: { label: "Stock / equipment / damage", emoji: "📦", color: "#374151", bg: "#f3f4f6" },
-  Hygiene: { label: "Hygiene", emoji: "🧼", color: "#0e7490", bg: "#cffafe" },
-  Other: { label: "Other", emoji: "📋", color: "#374151", bg: "#f3f4f6" }
+  /* HR */
+  Harassment: { emoji: "🚫", color: "#9d174d", bg: "#fce7f3" },
+  Management: { emoji: "👔", color: "#6b21a8", bg: "#ede9fe" },
+  StaffConduct: { emoji: "🙍", color: "#9a3412", bg: "#ffedd5" },
+  Customer: { emoji: "🧍", color: "#1d4ed8", bg: "#dbeafe" },
+  Theft: { emoji: "💰", color: "#92400e", bg: "#fef3c7" },
+  OtherHR: { emoji: "📋", color: "#374151", bg: "#f3f4f6" },
+  /* H&S */
+  Injury: { emoji: "🩹", color: "#b91c1c", bg: "#fee2e2" },
+  Health: { emoji: "🩺", color: "#9d174d", bg: "#fce7f3" },
+  Facilities: { emoji: "🔧", color: "#b45309", bg: "#fef3c7" },
+  Hygiene: { emoji: "🧼", color: "#0e7490", bg: "#cffafe" },
+  Emergency: { emoji: "🚨", color: "#7f1d1d", bg: "#fee2e2" },
+  OtherHS: { emoji: "🦺", color: "#374151", bg: "#f3f4f6" },
+  /* Legacy keys — still worn by every report filed before the split */
+  Safety: { emoji: "⚠️", color: "#b45309", bg: "#fef3c7" },
+  Stock: { emoji: "📦", color: "#374151", bg: "#f3f4f6" },
+  Other: { emoji: "📋", color: "#374151", bg: "#f3f4f6" }
 };
+// The shared taxonomy, with a null-safe shim: index.html loads it before
+// app.jsx, but a stale cached page shouldn't take the whole tab down.
+const INC_TAX = (typeof window !== "undefined" && window.BOA_INCIDENT_TAX) || null;
+const incCatLabel = (k) => (INC_TAX ? INC_TAX.label(k) : (k || "Uncategorised"));
+const incDomainOf = (r) => (INC_TAX ? INC_TAX.domainOf(r) : "hr");
+const incHsTypeOf = (r) => (INC_TAX ? INC_TAX.hsTypeOf(r) : null);
+const INC_DOMAINS = INC_TAX ? INC_TAX.DOMAINS : [{ k: "hr", label: "HR" }, { k: "hs", label: "H&S" }];
+// A visual entry for every key, so an unknown/legacy category still renders.
+const incCatStyle = (k) => INCIDENT_CAT[k] || INCIDENT_CAT.Other;
 const INCIDENT_STATUS = {
   new: { label: "New", color: "#b91c1c", bg: "#fee2e2" },
   reviewing: { label: "Reviewing", color: "#b45309", bg: "#fef3c7" },
@@ -12535,6 +12557,7 @@ function IncidentReportsTab({ reports, setReports, currentUser, mode, people }) 
   // notes, resolution) is identical, so both share this one implementation.
   const leaveMode = mode === "leaveExpiry";
   const [statusFilter, setStatusFilter] = useState("open");   // open | all | new | reviewing | resolved
+  const [domainTab, setDomainTab] = useState("hr");           // hr | hs — the two inboxes
   const [storeFilter, setStoreFilter] = useState("");
   const [openId, setOpenId] = useState(null);
   const [noteDraft, setNoteDraft] = useState({});
@@ -12574,7 +12597,12 @@ function IncidentReportsTab({ reports, setReports, currentUser, mode, people }) 
     return (typeof window !== "undefined" ? window.location.origin : "") + "/myboa.html";
   })();
   // This inbox's slice of the shared incident_reports set.
-  const scoped = reports.filter(r => leaveMode ? isLeaveExpiryReport(r) : !isLeaveExpiryReport(r));
+  // Two inboxes over one table. Reports filed before the split carry no domain
+  // and are routed by incDomainOf() from their category (and, for the two
+  // genuinely ambiguous legacy categories, their wording) — so nothing is
+  // stranded in a tab nobody opens.
+  const domainScoped = reports.filter(r => leaveMode ? isLeaveExpiryReport(r) : !isLeaveExpiryReport(r));
+  const scoped = leaveMode ? domainScoped : domainScoped.filter(r => incDomainOf(r) === domainTab);
   const stores = Array.from(new Set(scoped.map(r => r.store).filter(Boolean))).sort();
 
   const patchLocal = (id, patch) => setReports(reports.map(r => r.id === id ? { ...r, ...patch } : r));
@@ -12681,6 +12709,34 @@ function IncidentReportsTab({ reports, setReports, currentUser, mode, people }) 
       </div>
       )}
 
+      {/* Two inboxes: people & conduct vs safety, health & premises. Hidden in
+          leave-expiry mode, which is a single machine-filed stream. */}
+      {!leaveMode && (
+        <div style={{ display: "flex", gap: 0, padding: 6, background: "#FCE7F3", borderRadius: 14, border: "1px solid #FBCFE8", maxWidth: 620, marginBottom: 14 }}>
+          {INC_DOMAINS.map(d => {
+            const active = domainTab === d.k;
+            const n = domainScoped.filter(r => incDomainOf(r) === d.k).length;
+            const unread = domainScoped.filter(r => incDomainOf(r) === d.k && !r.reviewed).length;
+            return (
+              <button key={d.k} onClick={() => { setDomainTab(d.k); setOpenId(null); }}
+                style={{ flex: 1, padding: "12px 18px", borderRadius: 10, border: "none", cursor: "pointer",
+                  background: active ? "#BE185D" : "transparent", color: active ? "#fff" : "#831843",
+                  fontFamily: "inherit", fontSize: 14.5, fontWeight: 700, transition: "all .18s",
+                  boxShadow: active ? "0 4px 12px rgba(190,24,93,0.32)" : "none",
+                  display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+                <span aria-hidden="true">{d.icon}</span>
+                <span>{d.label} Incidents</span>
+                <span style={{ fontSize: 12, fontWeight: 800, opacity: active ? 0.85 : 0.6 }}>{n}</span>
+                {unread > 0 && (
+                  <span style={{ background: active ? "#fff" : "#BE185D", color: active ? "#BE185D" : "#fff",
+                    borderRadius: 999, fontSize: 11, fontWeight: 800, padding: "1px 7px" }}>{unread} new</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {/* Filters */}
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
         <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
@@ -12704,7 +12760,7 @@ function IncidentReportsTab({ reports, setReports, currentUser, mode, people }) 
       )}
 
       {filtered.map(r => {
-        const cat = INCIDENT_CAT[r.category] || INCIDENT_CAT.Other;
+        const cat = incCatStyle(r.category);
         const st = INCIDENT_STATUS[r.status] || INCIDENT_STATUS.new;
         const open = openId === r.id;
         const notes = Array.isArray(r.internal_notes) ? r.internal_notes : [];
@@ -12713,7 +12769,8 @@ function IncidentReportsTab({ reports, setReports, currentUser, mode, people }) 
             <div onClick={() => onOpen(r)} style={{ display: "flex", gap: 10, alignItems: "center", cursor: "pointer", flexWrap: "wrap" }}>
               {r.urgent && <span style={chip(INCIDENT_STATUS.new)}>🚨 URGENT</span>}
               {!r.reviewed && <span style={{ width: 9, height: 9, borderRadius: 999, background: "#BE185D", display: "inline-block" }} title="Not yet opened" />}
-              <span style={chip(cat)}>{cat.emoji} {cat.label}</span>
+              <span style={chip(cat)}>{cat.emoji} {incCatLabel(r.category)}</span>
+              {r.subcategory && <span style={{ color: "#6b7280", fontSize: 12 }}>· {r.subcategory}</span>}
               <strong style={{ color: "#111827", fontSize: 14 }}>{r.store || "Unknown store"}</strong>
               <span style={{ color: "#9ca3af", fontSize: 12 }}>· incident {fmtIncidentDate(r.incident_date)}</span>
               <span style={{ marginLeft: "auto", ...chip(st) }}>{st.label}</span>
@@ -12921,7 +12978,7 @@ function IncidentPopup({ reports, onView, onDismiss }) {
               : <><strong>{unread.length}</strong> new report{unread.length > 1 ? "s" : ""} from staff {unread.length > 1 ? "are" : "is"} waiting to be reviewed.</>}
           </p>
           {unread.slice(0, 3).map(r => {
-            const cat = INCIDENT_CAT[r.category] || INCIDENT_CAT.Other;
+            const cat = incCatStyle(r.category);
             return (
               <div key={r.id} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13, padding: "6px 0", borderTop: "1px solid #f3f4f6" }}>
                 {r.urgent && <span style={{ color: "#dc2626", fontWeight: 800 }}>🚨</span>}
@@ -19924,11 +19981,13 @@ function hrRecruitRows(salonData, recruitFuture, hz, matByEc, actions) {
 // Severity is DERIVED — incident_reports has no severity column, only the
 // reporter's `urgent` tick. Documented on screen so nobody reads it as a
 // field somebody filled in.
+const HR_SEV_HIGH = { Harassment: 1, Theft: 1, Safety: 1, Injury: 1, Emergency: 1 };
+const HR_SEV_MED = { StaffConduct: 1, Customer: 1, Stock: 1, Health: 1, Facilities: 1, Management: 1 };
 function hrSeverity(r) {
   if (!r) return "Low";
   if (r.urgent) return "High";
-  if (r.category === "Harassment" || r.category === "Theft" || r.category === "Safety") return "High";
-  if (r.category === "StaffConduct" || r.category === "Customer" || r.category === "Stock") return "Medium";
+  if (HR_SEV_HIGH[r.category]) return "High";
+  if (HR_SEV_MED[r.category]) return "Medium";
   return "Low";
 }
 const HR_ACTION_RE = /(verbal|written|final|warning|hearing|dismiss|suspend)/i;
@@ -19941,12 +20000,15 @@ function hrActioned(r) {
   const notes = Array.isArray(r.internal_notes) ? r.internal_notes.map(n => (n && n.note) || "").join(" ") : "";
   return HR_ACTION_RE.test(String(r.resolution || "") + " " + notes);
 }
+// Five buckets, because twelve categories in one stacked bar is a colour key
+// nobody can read. Every taxonomy key — current and legacy — has a home here;
+// hrBucket() falls back to "Loss / other" so a new key can never vanish.
 const HR_INC_BUCKETS = [
   { k: "Conduct", colour: HR_VIZ.c2, cats: ["StaffConduct", "Harassment"] },
   { k: "Management", colour: HR_VIZ.c1, cats: ["Management"] },
-  { k: "Safety", colour: HR_VIZ.c4, cats: ["Safety"] },
-  { k: "Hygiene", colour: HR_VIZ.c3, cats: ["Hygiene"] },
-  { k: "Loss / other", colour: HR_VIZ.c5, cats: ["Theft", "Stock", "Customer", "Other"] }
+  { k: "Safety & health", colour: HR_VIZ.c4, cats: ["Safety", "Injury", "Health", "Emergency"] },
+  { k: "Hygiene & facilities", colour: HR_VIZ.c3, cats: ["Hygiene", "Facilities"] },
+  { k: "Loss / other", colour: HR_VIZ.c5, cats: ["Theft", "Stock", "Customer", "Other", "OtherHR", "OtherHS"] }
 ];
 function hrBucket(cat) {
   for (let i = 0; i < HR_INC_BUCKETS.length; i++) if (HR_INC_BUCKETS[i].cats.indexOf(cat) >= 0) return HR_INC_BUCKETS[i].k;
@@ -19961,20 +20023,16 @@ const HR_HS_TYPES = [
   { k: "Hygiene", colour: HR_VIZ.c3, label: "Hygiene" },
   { k: "Other", colour: HR_VIZ.c1, label: "Other H&S" }
 ];
-const HR_RE_HEALTH = /(faint|injur|burn|cut\b|bleed|blood|\bill\b|collapse|ambulance|first aid|dizz|sick on the floor|allerg|splash|eye)/i;
-const HR_RE_FACIL = /(broken|break|leak|blocked|block|plumb|\btap\b|pedi ?station|chair|smell|odour|odor|electric|aircon|air-con|geyser|water|toilet|basin|drain|light|door)/i;
-const HR_RE_HYG = /(dirty|mould|mold|pest|cockroach|rat\b|sanit|hygien|towel|unclean|contamin)/i;
+// H&S family for a report. Post-split this is simply the category; legacy rows
+// are resolved by the shared taxonomy from their wording. An HR-domain report
+// returns null and never appears in the H&S sub-tab.
+// The manual override (boa_hs_class_v1) still wins over both — a human
+// correcting a machine's guess must stay corrected.
 function hrHsType(r, overrides) {
   if (!r) return null;
   const ov = overrides && overrides[r.id];
   if (ov && ov.hsType) return ov.hsType;
-  const cat = r.category, txt = String(r.description || "");
-  if (cat === "Hygiene") return HR_RE_FACIL.test(txt) && !HR_RE_HYG.test(txt) ? "Facilities" : "Hygiene";
-  if (HR_RE_HEALTH.test(txt) && (cat === "Safety" || cat === "Other")) return "Health";
-  if (HR_RE_FACIL.test(txt) && (cat === "Safety" || cat === "Stock" || cat === "Other")) return "Facilities";
-  if (HR_RE_HYG.test(txt)) return "Hygiene";
-  if (cat === "Safety") return "Other";
-  return null;                                   // not an H&S matter
+  return incHsTypeOf(r);
 }
 function hrTagged(r) {
   const t = r && r.tagged_ecs;
@@ -20546,7 +20604,7 @@ function HRReportsTab(props) {
                                   <div style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.09em", color: HR_VIZ.faint, fontWeight: 700, marginBottom: 8 }}>Linked incidents</div>
                                   {linked.map(x => (
                                     <div key={x.id} style={{ marginBottom: 8 }}>
-                                      <span style={{ fontWeight: 700, color: HR_VIZ.ink }}>{x.ref_code}</span> {chip((INCIDENT_CAT[x.category] || {}).label || x.category, "neutral")}
+                                      <span style={{ fontWeight: 700, color: HR_VIZ.ink }}>{x.ref_code}</span> {chip(incCatLabel(x.category), "neutral")}
                                       <div style={{ fontSize: 11, color: HR_VIZ.faint }}>{String(x.description || "").slice(0, 160)}</div>
                                     </div>
                                   ))}
@@ -20857,7 +20915,7 @@ function HRReportsTab(props) {
                           </select>
                           {hsOv[r.id] ? <div style={{ fontSize: 10, color: HR_VIZ.faint, marginTop: 2 }}>set by hand</div> : null}
                         </td>
-                        <td style={td}>{chip((INCIDENT_CAT[r.category] || {}).label || r.category, "neutral")}</td>
+                        <td style={td}>{chip(incCatLabel(r.category), "neutral")}</td>
                         <td style={td}>{chip(sev, sev === "High" ? "bad" : sev === "Medium" ? "warn" : "quiet")}</td>
                         <td style={td}>{chip(st.label, r.status === "resolved" ? "good" : r.status === "reviewing" ? "warn" : "bad")}</td>
                         <td style={{ ...td, maxWidth: 420 }}>{String(r.description || "").slice(0, 200)}</td>

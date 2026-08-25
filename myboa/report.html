@@ -64,6 +64,21 @@ window.BOA_SUPABASE_CONFIG = {
     padding-right: 44px;
   }
   .date-input::-webkit-calendar-picker-indicator { opacity: 0; position: absolute; right: 0; width: 44px; height: 52px; cursor: pointer; }
+  /* Two big taps, not a dropdown: this is the answer that decides which HR
+     inbox the report reaches, and it is being answered on a phone. */
+  .field-lbl { display: block; font-weight: 700; font-size: 13px; color: var(--deep); margin-bottom: 6px; }
+  .domain-pick { display: grid; gap: 10px; grid-template-columns: 1fr; }
+  @media (min-width: 520px) { .domain-pick { grid-template-columns: 1fr 1fr; } }
+  .domain-btn {
+    width: 100%; text-align: left; font-family: inherit; cursor: pointer;
+    background: #fff; border: 2px solid #f0d9e4; border-radius: 14px;
+    padding: 14px 15px; color: var(--deep); transition: border-color .15s, background .15s;
+  }
+  .domain-btn b { display: block; font-size: 14.5px; font-weight: 800; }
+  .domain-btn small { display: block; font-weight: 600; font-size: 12.5px; opacity: .78; margin-top: 4px; line-height: 1.4; }
+  .domain-btn.on { border-color: var(--pink); background: #fdf2f7; }
+  .domain-btn:active { transform: scale(.99); }
+  label.field > span em { font-style: normal; font-weight: 600; opacity: .65; }
   .quickdates { display: flex; gap: 8px; margin-top: 9px; flex-wrap: wrap; }
   .quickdate {
     font-family: inherit; font-size: 13px; font-weight: 600;
@@ -132,6 +147,7 @@ window.BOA_SUPABASE_CONFIG = {
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+  <script src="incident-taxonomy.js"></script>
   <script src="stores.js"></script>
   <script src="report.js"></script>
   <script src="auto-refresh.js"></script>
