@@ -23,17 +23,21 @@
   var STORES = (window.BOA_STORES || []).slice();
   if (!STORES.length) console.error("[My BOA] stores.js missing or empty — store picker will be blank (stale page? reload)");
 
-  var CATEGORIES = [
-    { v: "Safety", l: "Safety / accident / injury" },
-    { v: "Harassment", l: "Harassment or bullying" },
-    { v: "Management", l: "A manager / management conduct" },
-    { v: "StaffConduct", l: "A staff member's conduct" },
-    { v: "Customer", l: "A customer / client incident" },
-    { v: "Theft", l: "Theft, money or till" },
-    { v: "Stock", l: "Stock, equipment or damage" },
-    { v: "Hygiene", l: "Hygiene / cleanliness" },
-    { v: "Other", l: "Something else" }
+  // Categories come from the shared taxonomy (incident-taxonomy.js), so the form
+  // and the HR portal can never disagree about what a category means. If the
+  // script somehow didn't load, fall back to a single free "Other" per domain
+  // rather than blocking the report — capturing it always beats classifying it.
+  var TAX = (typeof window !== "undefined" && window.BOA_INCIDENT_TAX) || null;
+  var DOMAINS = TAX ? TAX.DOMAINS : [
+    { k: "hr", formTitle: "People or conduct", formBlurb: "", icon: "\uD83E\uDDD1" },
+    { k: "hs", formTitle: "Safety, health or the premises", formBlurb: "", icon: "\uD83E\uDDBA" }
   ];
+  function catsFor(domain) {
+    if (!domain) return [];
+    if (!TAX) return [{ k: domain === "hs" ? "OtherHS" : "OtherHR", formLabel: "Something else", subs: [] }];
+    return TAX.offered(domain);
+  }
+  function subsFor(cat) { return TAX ? TAX.subsFor(cat) : []; }
 
   var TIMEFRAMES = [
     "Early morning (before 9am)",
@@ -45,7 +49,43 @@
     "Not sure"
   ];
 
-  var state = { urgent: false, photo: null, showName: false, busy: false };
+  var state = { urgent: false, photo: null, showName: false, busy: false, domain: "", category: "" };
+
+  // A re-render rebuilds the whole form, so anything already typed has to be
+  // carried across or picking a category would wipe the description someone
+  // just wrote. Stashed on `state` and read back by render().
+  var DRAFT_FIELDS = ["store", "storeOther", "when", "timeframe", "people", "desc", "witnesses", "rname", "rcontact"];
+  // `$` is a local inside wire()/submit(), so these module-scope helpers need
+  // their own accessor rather than borrowing one that isn't in scope here.
+  function byId(id) { return document.getElementById(id); }
+  function keepDraft() {
+    state.draft = state.draft || {};
+    DRAFT_FIELDS.forEach(function (id) {
+      var el = byId(id);
+      if (el) state.draft[id] = el.value;
+    });
+    var sub = byId("subcategory");
+    if (sub) state.subcategory = sub.value;
+  }
+  function restoreDraft() {
+    var d = state.draft || {};
+    DRAFT_FIELDS.forEach(function (id) {
+      var el = byId(id);
+      if (el && d[id] != null && d[id] !== "") el.value = d[id];
+    });
+    var store = byId("store"), wrap = byId("storeOtherWrap");
+    if (wrap && store && store.value === "__other") wrap.style.display = "block";
+    var nameBox = byId("nameBox");
+    if (nameBox && state.showName) nameBox.style.display = "block";
+    var prev = byId("photoPrev");
+    if (prev && state.photo) {
+      prev.src = state.photo; prev.style.display = "inline-block";
+      var clear = byId("photoClear");
+      if (clear) clear.style.display = "inline-block";
+    }
+    var sub = byId("subcategory");
+    if (sub && state.subcategory) sub.value = state.subcategory;
+  }
 
   // ── Render the form ──────────────────────────────────────────
   function render() {
@@ -83,12 +123,41 @@
         '<label class="field" id="storeOtherWrap" style="display:none"><span>Store name</span>',
           '<input type="text" id="storeOther" placeholder="Type the store name" /></label>',
 
-        // Category
-        '<label class="field"><span>What kind of issue is it?</span>',
-          '<select id="category"><option value="">— choose one —</option>',
-            CATEGORIES.map(function (c) { return '<option value="' + c.v + '">' + esc(c.l) + '</option>'; }).join(""),
-          '</select>',
-        '</label>',
+        // What kind of issue — asked in two steps. The first is two big taps
+        // (not a dropdown) because it is the one answer that decides which HR
+        // inbox the report lands in, and staff are filling this in on a phone.
+        '<div class="field"><span class="field-lbl">What is this about?</span>',
+          '<div class="domain-pick">',
+            DOMAINS.map(function (d) {
+              return '<button type="button" class="domain-btn' + (state.domain === d.k ? " on" : "") + '" data-domain="' + d.k + '">' +
+                '<b>' + (d.icon || "") + ' ' + esc(d.formTitle) + '</b>' +
+                (d.formBlurb ? '<small>' + esc(d.formBlurb) + '</small>' : "") +
+                '</button>';
+            }).join(""),
+          '</div>',
+        '</div>',
+
+        // Category — only appears once a domain is chosen, so the list is short
+        // and every option in it is relevant.
+        (state.domain
+          ? '<label class="field"><span>What kind of issue is it?</span>' +
+              '<select id="category"><option value="">— choose one —</option>' +
+                catsFor(state.domain).map(function (c) {
+                  return '<option value="' + c.k + '"' + (state.category === c.k ? " selected" : "") + '>' + esc(c.formLabel) + '</option>';
+                }).join("") +
+              '</select>' +
+            '</label>'
+          : ""),
+
+        // Subcategory — OPTIONAL, and only when the chosen category has one.
+        // Never required: nobody urgent should be stuck on a taxonomy.
+        ((state.category && subsFor(state.category).length)
+          ? '<label class="field"><span>Anything more specific? <em>(optional)</em></span>' +
+              '<select id="subcategory"><option value="">— skip this —</option>' +
+                subsFor(state.category).map(function (t) { return '<option>' + esc(t) + '</option>'; }).join("") +
+              '</select>' +
+            '</label>'
+          : ""),
 
         // Date of incident (required)
         '<label class="field"><span>Date of the incident</span>',
@@ -168,6 +237,25 @@
       $("storeOtherWrap").style.display = this.value === "__other" ? "block" : "none";
     };
 
+    // Picking a domain swaps the category list; picking a category swaps the
+    // optional subcategory list. Both re-render, so keep whatever has already
+    // been typed — render() reads these back out of the live DOM first.
+    Array.prototype.forEach.call(document.querySelectorAll(".domain-btn"), function (b) {
+      b.onclick = function () {
+        var next = b.getAttribute("data-domain");
+        if (next === state.domain) return;
+        state.domain = next;
+        state.category = "";          // categories differ per domain
+        keepDraft(); render();
+      };
+    });
+    if ($("category")) {
+      $("category").onchange = function () {
+        state.category = this.value;
+        keepDraft(); render();
+      };
+    }
+
     // Quick date buttons set the date field relative to today.
     Array.prototype.forEach.call(document.querySelectorAll(".quickdate"), function (b) {
       b.onclick = function () {
@@ -204,6 +292,10 @@
     };
 
     $("submit").onclick = submit;
+
+    // Last, so it wins over anything the markup set: put back whatever was
+    // already filled in before a domain/category change forced this re-render.
+    restoreDraft();
   }
 
   function setErr(msg) { var e = document.getElementById("err"); if (e) e.textContent = msg || ""; }
@@ -216,13 +308,15 @@
 
     var storeSel = $("store").value;
     var store = storeSel === "__other" ? ($("storeOther").value || "").trim() : storeSel;
-    var category = $("category").value;
+    var category = $("category") ? $("category").value : "";
+    var subcategory = $("subcategory") ? ($("subcategory").value || "").trim() : "";
     var when = ($("when").value || "").trim();
     var people = ($("people").value || "").trim();
     var desc = ($("desc").value || "").trim();
     var witnesses = ($("witnesses").value || "").trim();
 
     if (!store) { setErr("Please choose your store."); return; }
+    if (!state.domain) { setErr("Please tap what this is about — people, or safety and the premises."); return; }
     if (!category) { setErr("Please choose what kind of issue it is."); return; }
     if (!when) { setErr("Please pick the date of the incident."); $("when").focus(); return; }
     if (!people) { setErr("Please say who was involved."); $("people").focus(); return; }
@@ -237,7 +331,11 @@
       p_description: desc,
       p_witnesses: witnesses || null,
       p_urgent: !!state.urgent,
-      p_about_management: category === "Management",
+      p_domain: state.domain || null,
+      p_subcategory: subcategory || null,
+      p_about_management: (window.BOA_INCIDENT_TAX
+        ? window.BOA_INCIDENT_TAX.isAboutManagement(category)
+        : category === "Management"),
       p_reporter_name: state.showName ? (($("rname").value || "").trim() || null) : null,
       p_reporter_contact: state.showName ? (($("rcontact").value || "").trim() || null) : null,
       p_photo_b64: state.photo || null

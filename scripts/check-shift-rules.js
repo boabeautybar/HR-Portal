@@ -21,6 +21,14 @@ const COPIES = [
   path.join("myboa", "shift-rules.js"),
 ];
 
+// Same deal for the incident taxonomy: the portal and the My BOA report form
+// are separate sites that must agree on what a category means, so the file is
+// mirrored and drift is a build failure rather than a mystery in the reports.
+const TAXONOMY_COPIES = [
+  "incident-taxonomy.js",
+  path.join("myboa", "incident-taxonomy.js"),
+];
+
 let failed = false;
 
 const bufs = COPIES.map((rel) => {
@@ -61,3 +69,18 @@ if (failed) {
 }
 
 console.log("✓ shift-rules mirrors in sync — " + COPIES.join(" == "));
+
+// ---- incident-taxonomy mirrors --------------------------------------------
+const taxBufs = TAXONOMY_COPIES.map((rel) => {
+  const p = path.join(root, rel);
+  if (!fs.existsSync(p)) { console.error("✗ missing mirror: " + rel); process.exit(1); }
+  return fs.readFileSync(p);
+});
+for (let i = 1; i < TAXONOMY_COPIES.length; i++) {
+  if (!taxBufs[0].equals(taxBufs[i])) {
+    console.error("✗ " + TAXONOMY_COPIES[i] + " differs from " + TAXONOMY_COPIES[0]);
+    console.error("\nFix:  cp incident-taxonomy.js myboa/incident-taxonomy.js");
+    process.exit(1);
+  }
+}
+console.log("✓ incident-taxonomy mirrors in sync — " + TAXONOMY_COPIES.join(" == "));
