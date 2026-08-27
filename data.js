@@ -2984,6 +2984,10 @@
     saveSchedule: saveSchedule,
     loadScheduleHistory: loadScheduleHistory,
     loadApprovedSchedules: loadApprovedSchedules,
+    listHrTrackerRecords: listHrTrackerRecords,
+    saveHrTrackerRecord: saveHrTrackerRecord,
+    setHrTrackerPayroll: setHrTrackerPayroll,
+    deleteHrTrackerRecord: deleteHrTrackerRecord,
     saveApprovedSchedule: saveApprovedSchedule,
     deleteApprovedSchedule: deleteApprovedSchedule,
     loadCycleScheduleGrids: loadCycleScheduleGrids,
@@ -3228,6 +3232,37 @@
   // portal (window.BOA_INCIDENT_HR_KEY) — NOT in the kiosk — so a manager
   // holding the kiosk's anon key still can't read or alter these reports.
   function incidentKey() { return window.BOA_INCIDENT_HR_KEY || ""; }
+
+  // ── HR trackers (Terminations + Disciplinary) ───────────────────────────
+  // Same key-gated RPC shape as incident_reports: the table has RLS on and no
+  // direct grants, so every read/write goes through a SECURITY DEFINER function
+  // and the key never leaves the portal. The Off-boarding tab is additionally
+  // restricted to a named PIN list — this layer is the second lock, not the
+  // first.
+  async function listHrTrackerRecords(kind) {
+    var res = await sb.rpc("list_hr_tracker_records", { p_key: incidentKey(), p_kind: kind || null });
+    if (res.error) { console.error("listHrTrackerRecords:", res.error); throw res.error; }
+    return res.data || [];
+  }
+  async function saveHrTrackerRecord(rec, actor) {
+    var res = await sb.rpc("upsert_hr_tracker_record", {
+      p_key: incidentKey(), p_rec: rec || {}, p_actor: actor || ""
+    });
+    if (res.error) { console.error("saveHrTrackerRecord:", res.error); throw res.error; }
+    return res.data;                       // uuid
+  }
+  async function setHrTrackerPayroll(id, status, note, actor) {
+    var res = await sb.rpc("set_hr_tracker_payroll", {
+      p_key: incidentKey(), p_id: id, p_status: status, p_note: note || null, p_actor: actor || ""
+    });
+    if (res.error) { console.error("setHrTrackerPayroll:", res.error); throw res.error; }
+    return true;
+  }
+  async function deleteHrTrackerRecord(id, actor) {
+    var res = await sb.rpc("delete_hr_tracker_record", { p_key: incidentKey(), p_id: id, p_actor: actor || "" });
+    if (res.error) { console.error("deleteHrTrackerRecord:", res.error); throw res.error; }
+    return true;
+  }
 
   async function loadIncidentReports() {
     var res = await sb.rpc("list_incident_reports", { p_key: incidentKey() });

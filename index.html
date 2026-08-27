@@ -68,6 +68,74 @@
     70% { box-shadow: 0 0 0 6px rgba(220, 38, 38, 0); }
     100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0); }
   }
+
+  /* ── OFF-BOARDING TAB ────────────────────────────────────────────────────
+     Scoped to .boa-off on purpose. The app is inline-styled throughout and
+     has no global box-sizing reset, so every `width:100%` field was rendering
+     100% PLUS its own padding and border and spilling out of its card. Fixing
+     that globally would move layout in ~50k lines of unrelated screens; fixing
+     it for this subtree is the whole bug and nothing else.
+     ──────────────────────────────────────────────────────────────────────── */
+  .boa-off, .boa-off *, .boa-off *::before, .boa-off *::after { box-sizing: border-box; }
+
+  /* The wash the frosted panels blur. Painted as this element's own background
+     (not a pseudo-element or a fixed overlay) so it introduces no stacking
+     context — the quick-pick modal still layers above everything. Without
+     something behind it, backdrop-filter over a flat page just reads as grey. */
+  .boa-off {
+    background-image:
+      radial-gradient(880px circle at 4% -14%, rgba(236,72,153,0.24), transparent 56%),
+      radial-gradient(740px circle at 98% -2%, rgba(139,92,246,0.20), transparent 58%),
+      radial-gradient(980px circle at 56% 110%, rgba(219,39,119,0.16), transparent 60%);
+    background-attachment: fixed;
+  }
+
+  .boa-off input, .boa-off select, .boa-off textarea {
+    transition: border-color .16s ease, box-shadow .16s ease, background .16s ease;
+  }
+  .boa-off input:focus, .boa-off select:focus, .boa-off textarea:focus {
+    border-color: #D6246F;
+    background: rgba(255,255,255,0.94);
+    box-shadow: 0 0 0 3px rgba(214,36,111,0.15), inset 0 1px 2px rgba(131,24,67,0.05);
+  }
+  .boa-off input::placeholder, .boa-off textarea::placeholder { color: #c69bb2; }
+
+  .boa-off .boa-btn { transition: transform .14s ease, box-shadow .14s ease, filter .14s ease; }
+  .boa-off .boa-btn:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.05); }
+  .boa-off .boa-btn:active:not(:disabled) { transform: translateY(0); filter: brightness(0.96); }
+  .boa-off .boa-btn:disabled { opacity: 0.55; cursor: default; }
+  .boa-off .boa-pill:hover { background: rgba(255,255,255,0.55); }
+  .boa-off .boa-pill:hover[style*="linear-gradient"] { filter: brightness(1.06); }
+
+  .boa-off tr.boa-row:hover > td { background: rgba(253,242,248,0.72); }
+
+  /* Column headers are real buttons so the grid sorts from the keyboard too;
+     they inherit every bit of the th's typography so nothing shifts. */
+  .boa-off .boa-sort {
+    background: none; border: none; padding: 0; margin: 0; cursor: pointer;
+    font: inherit; color: inherit; letter-spacing: inherit; text-transform: inherit;
+    display: inline-flex; align-items: center; white-space: nowrap;
+    transition: color .14s ease;
+  }
+  .boa-off .boa-sort:hover { color: #BE185D; }
+  .boa-off .boa-sort:hover span { opacity: 0.85; }
+  .boa-off .boa-sort:focus-visible {
+    outline: 2px solid #D6246F; outline-offset: 3px; border-radius: 4px;
+  }
+
+  /* Slim scrollbars, so a wide grid does not sit under a chunky grey bar. */
+  .boa-off ::-webkit-scrollbar { width: 10px; height: 10px; }
+  .boa-off ::-webkit-scrollbar-track { background: transparent; }
+  .boa-off ::-webkit-scrollbar-thumb {
+    background: rgba(190,24,93,0.22); border-radius: 999px;
+    border: 3px solid transparent; background-clip: content-box;
+  }
+  .boa-off ::-webkit-scrollbar-thumb:hover { background: rgba(190,24,93,0.38); background-clip: content-box; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .boa-off .boa-btn, .boa-off input, .boa-off select, .boa-off textarea { transition: none; }
+    .boa-off .boa-btn:hover:not(:disabled) { transform: none; }
+  }
 </style>
 </head>
 <body>

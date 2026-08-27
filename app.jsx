@@ -3367,6 +3367,21 @@ function asylumDetail(p) {
 // Someone serving out notice — last day still in the FUTURE — is deliberately
 // kept: they are still on the floor, so their documents still matter. Anyone
 // past their last day is dropped.
+// A staff row that has been marked terminated / inactive outright. The live
+// lists hide these immediately, with no grace window.
+function isTerminatedRow(p) {
+  return !!p && (p.status === "terminated" || p.active === false || p.active === "false");
+}
+// Has this person left, by ANY of the three routes isStillOnBooks() weighs —
+// a terminated row, an off-boarding record, or a leftDate that has passed?
+// This is what the Staff List's "Terminated (Archive)" view selects on. Note it
+// deliberately ignores offHidden: the 31-day window keeps leavers out of the
+// LIVE views, and the archive is precisely where they are kept afterwards.
+function hasDeparted(p, todayYmd) {
+  if (!p) return false;
+  return isTerminatedRow(p) || !!p.offboarded || !!(p.leftDate && todayYmd && p.leftDate < todayYmd);
+}
+
 function isStillOnBooks(p, todayYmd) {
   if (!p || !p.ec) return false;
   if (p.status === "terminated" || p.active === false || p.active === "false") return false;
@@ -11056,6 +11071,44 @@ function canSeeCompliance(user) {
 // loosely: "recruiter"/"recruitment" for recruiters, and any "trainer" role
 // that is NOT a *manager* trainer for the nail-tech trainer — so Varonique
 // ("Nail Tech Trainer") qualifies but Farida ("Manager Trainer / LSM") doesn't.
+/* ── OFF-BOARDING ACCESS ──────────────────────────────────────────────────
+   The Off-boarding tab carries termination and disciplinary records, so it is
+   restricted to a named list of PINs and nothing else.
+
+   Deliberately NOT accessAllows(): that helper passes ANY owner and anyone
+   whose free-text role happens to contain "payroll", "wages" or "finance".
+   For this tab the instruction was these people and no one else, so the test
+   is pin membership only — an owner who is not on the list does not get in
+   either. More people can be added in Settings → Off-boarding access.
+
+   The stored list wins; the seeded default is the fallback when the key is
+   missing (a fresh install, or the row deleted), so the tab can never end up
+   silently open to everyone OR locked to nobody.                            */
+const OFFBOARD_ACCESS_KEY = "boa_offboard_access_v1";
+const OFFBOARD_DEFAULT_PINS = ["0864", "0992", "5589", "1401"];
+// Who is who on that list: 0864 owner, 0992 dev, 5589 HR, 1401 payroll.
+// Only payroll signs a record off, and only payroll is chased about it.
+const OFFBOARD_DEFAULT_PAYROLL_PINS = ["1401"];
+function offboardPins(cfg) {
+  const pins = cfg && Array.isArray(cfg.pins) ? cfg.pins.filter(Boolean) : null;
+  return (pins && pins.length) ? pins.map(String) : OFFBOARD_DEFAULT_PINS.slice();
+}
+function offboardPayrollPins(cfg) {
+  const pins = cfg && Array.isArray(cfg.payrollPins) ? cfg.payrollPins.filter(Boolean) : null;
+  return (pins && pins.length) ? pins.map(String) : OFFBOARD_DEFAULT_PAYROLL_PINS.slice();
+}
+function canSeeOffboarding(user, cfg) {
+  if (!user || !user.pin) return false;
+  return offboardPins(cfg).indexOf(String(user.pin)) >= 0;
+}
+// The sign-off is payroll's own confirmation that the dates and amounts are
+// right before the final payout, so it is theirs to give. Everyone else on the
+// tab sees the status read-only rather than a button they should not press.
+function canSignOffPayroll(user, cfg) {
+  if (!canSeeOffboarding(user, cfg)) return false;
+  return offboardPayrollPins(cfg).indexOf(String(user.pin)) >= 0;
+}
+
 function _isOwnerOrMaster(user) {
   if (!user) return false;
   if (user.isOwner) return true;
@@ -21313,6 +21366,533 @@ const HR_CYCLE_LABELS = (() => {
   return out;
 })();
 
+/* ═══════════════════════════════════════════════════════════════════════
+   HR TRACKER PANEL  ·  Terminations + Disciplinary
+   One component, two kinds — they share a table, a payroll sign-off and an
+   audit trail, and differ only in which columns are worth showing.
+
+   Blank stays blank. These rows came out of a spreadsheet with real gaps in
+   it, and Sagaree fills those in over time; nothing here requires a field
+   just because the column exists.
+   ═══════════════════════════════════════════════════════════════════════ */
+/* ── GLASS SURFACES (off-boarding) ────────────────────────────────────────
+   The tab paints a soft aurora onto its own background (.boa-off, in
+   index.html) so these panels have something real to blur — frosted glass
+   over a flat wash just reads as grey. Everything here is translucent
+   enough for that wash to move underneath as the page scrolls.
+   ─────────────────────────────────────────────────────────────────────── */
+const GLASS_SURFACE = {
+  background: "linear-gradient(158deg, rgba(255,255,255,0.82) 0%, rgba(253,242,248,0.56) 100%)",
+  backdropFilter: "blur(22px) saturate(180%)",
+  WebkitBackdropFilter: "blur(20px) saturate(170%)",
+  border: "1px solid rgba(255,255,255,0.70)",
+  borderRadius: 18,
+  boxShadow: "inset 0 1px 0 rgba(255,255,255,0.95), 0 1px 2px rgba(131,24,67,0.05), 0 20px 44px -24px rgba(131,24,67,0.50)"
+};
+const glassCard = (extra) => ({ ...GLASS_SURFACE, padding: "20px 22px", marginBottom: 18, ...(extra || {}) });
+// A lighter pane for the person tiles that sit inside a card.
+const glassTile = (extra) => ({
+  background: "linear-gradient(155deg, rgba(255,255,255,0.88) 0%, rgba(253,240,246,0.58) 100%)",
+  backdropFilter: "blur(10px) saturate(150%)", WebkitBackdropFilter: "blur(10px) saturate(150%)",
+  border: "1px solid rgba(255,255,255,0.82)", borderRadius: 14, padding: "15px 16px",
+  boxShadow: "inset 0 1px 0 rgba(255,255,255,0.92), 0 12px 26px -20px rgba(131,24,67,0.60)",
+  ...(extra || {})
+});
+const glassHeading = (color) => ({ fontFamily: "'Playfair Display',serif", fontSize: 17, fontWeight: 600, color: color || "#831843" });
+const GLASS_INPUT = {
+  fontFamily: "inherit", fontSize: 13, padding: "10px 12px", borderRadius: 10,
+  border: "1px solid rgba(190,24,93,0.18)", width: "100%", boxSizing: "border-box",
+  background: "rgba(255,255,255,0.72)", color: "#4A1230",
+  boxShadow: "inset 0 1px 2px rgba(131,24,67,0.05)", outline: "none"
+};
+const GLASS_LABEL = {
+  display: "block", fontSize: 10.5, fontWeight: 800, color: "#9d174d",
+  textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6
+};
+const BTN_BASE = {
+  border: "1px solid transparent", borderRadius: 10, padding: "10px 16px", cursor: "pointer",
+  fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, lineHeight: 1.2, whiteSpace: "nowrap"
+};
+const BTN_PRIMARY = { ...BTN_BASE, background: "linear-gradient(180deg,#D6246F,#A3134F)", color: "#fff",
+  boxShadow: "0 8px 18px -8px rgba(163,19,79,0.75), inset 0 1px 0 rgba(255,255,255,0.28)" };
+const BTN_GHOST = { ...BTN_BASE, background: "rgba(255,255,255,0.62)", color: "#831843",
+  border: "1px solid rgba(190,24,93,0.18)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)",
+  boxShadow: "inset 0 1px 0 rgba(255,255,255,0.85)" };
+const BTN_GO = { ...BTN_BASE, background: "linear-gradient(180deg,#1c9a52,#12703b)", color: "#fff",
+  boxShadow: "0 8px 18px -8px rgba(18,112,59,0.7), inset 0 1px 0 rgba(255,255,255,0.28)" };
+
+/* Columns marked `p` show in the table; the rest live in the expanded record
+   so the grid stays readable instead of scrolling sideways for a page and a
+   half. Nothing is dropped — the detail panel prints every field. */
+const HR_TRACK_COLS = {
+  termination: [
+    { k: "employee_code", l: "Employee ID", w: 92, p: true },
+    { k: "employee_name", l: "Full name", w: 200, strong: true, p: true },
+    { k: "role_title", l: "Position", w: 108, p: true },
+    { k: "location", l: "Branch / location", w: 142, p: true },
+    { k: "event_date", l: "Termination date", w: 132, date: true, p: true },
+    { k: "reason", l: "Reason for termination", w: 300, wrap: true, p: true },
+    { k: "exit_interview", l: "Exit interview", w: 120 },
+    { k: "notes", l: "Notes", w: 260, wrap: true }
+  ],
+  disciplinary: [
+    { k: "event_date", l: "Received on", w: 118, date: true, p: true },
+    { k: "employee_code", l: "Employee ID", w: 86, p: true },
+    { k: "employee_name", l: "Employee name", w: 178, strong: true, p: true },
+    { k: "location", l: "Location", w: 126, p: true },
+    { k: "manager", l: "Manager", w: 140, p: true },
+    { k: "findings", l: "Description and findings", w: 258, wrap: true, p: true },
+    { k: "action_taken", l: "Action taken", w: 152, p: true },
+    { k: "bonus", l: "Bonus", w: 92, p: true },
+    { k: "role_title", l: "Role", w: 90 },
+    { k: "investigation_end", l: "Investigation end", w: 132, date: true },
+    { k: "justin_to_action", l: "To action", w: 120 },
+    { k: "filed_by", l: "Filed by", w: 110 },
+    { k: "final_comments", l: "Final comments", w: 240, wrap: true }
+  ]
+};
+// Colour the outcome, because "First Written Warning" and "Dismissed" should
+// never scan the same on a page this long.
+function hrActionTone(v) {
+  const t = String(v || "").toLowerCase();
+  if (/dismiss|terminat|abscond/.test(t)) return { c: "#991b1b", bg: "#fee2e2", b: "#fca5a5" };
+  if (/final/.test(t)) return { c: "#9a3412", bg: "#ffedd5", b: "#fdba74" };
+  if (/second/.test(t)) return { c: "#b45309", bg: "#fef3c7", b: "#fde68a" };
+  if (/first|verbal|meeting/.test(t)) return { c: "#1d4ed8", bg: "#dbeafe", b: "#bfdbfe" };
+  if (/investigat|tbc/.test(t)) return { c: "#6b21a8", bg: "#ede9fe", b: "#ddd6fe" };
+  return { c: "#374151", bg: "#f3f4f6", b: "#e5e7eb" };
+}
+// Sagaree's spreadsheets were reconciled with payroll up to this date, so the
+// seeded backlog before it is already known-good and can be cleared in one go.
+// Editable in the panel — it is a default, not a rule.
+const HR_BULK_CUTOFF = "2026-07-15";
+function HrSortIcon({ active, dir }) {
+  return (
+    <span aria-hidden="true" style={{ marginLeft: 6, fontSize: 8.5, lineHeight: 1,
+      opacity: active ? 1 : 0.32, color: active ? "#BE185D" : "inherit" }}>
+      {active ? (dir === "asc" ? "\u25B2" : "\u25BC") : "\u21C5"}
+    </span>
+  );
+}
+const HR_TRACK_BLANK = (kind) => ({
+  kind, employee_code: "", employee_name: "", role_title: "", location: "", manager: "",
+  event_date: "", event_date_raw: "", investigation_end: "", investigation_raw: "",
+  reason: "", findings: "", action_taken: "", bonus: "", justin_to_action: "",
+  exit_interview: "", filed_by: "", final_comments: "", notes: ""
+});
+
+function HrTrackerPanel({ kind, currentUser, canSign, rows, loading, err, onReload, staffPool, logActivity }) {
+  const isTerm = kind === "termination";
+  const [q, setQ] = React.useState("");
+  const [payFilter, setPayFilter] = React.useState("all");   // all | pending | completed
+  const [openId, setOpenId] = React.useState(null);
+  const [draft, setDraft] = React.useState(null);            // add / edit form
+  const [busy, setBusy] = React.useState(false);
+  const [noteDraft, setNoteDraft] = React.useState({});
+  const [sort, setSort] = React.useState({ k: null, dir: "asc" });
+  const [bulkBefore, setBulkBefore] = React.useState(HR_BULK_CUTOFF);
+  const [bulkBusy, setBulkBusy] = React.useState(null);      // { done, total }
+  const allCols = HR_TRACK_COLS[kind];
+  const cols = allCols.filter(c => c.p);
+  const extraCols = allCols.filter(c => !c.p);
+  const actor = (currentUser && (currentUser.name || currentUser.pin)) || "";
+
+  const mine = React.useMemo(() => {
+    const ql = q.trim().toLowerCase();
+    return (rows || [])
+      .filter(r => r && r.kind === kind)
+      .filter(r => payFilter === "all" ? true : (r.payroll_status || "pending") === payFilter)
+      .filter(r => !ql || [r.employee_name, r.employee_code, r.location, r.role_title, r.manager,
+                           r.reason, r.findings, r.action_taken, r.final_comments, r.notes]
+                            .some(v => String(v || "").toLowerCase().includes(ql)));
+  }, [rows, kind, q, payFilter]);
+  const pending = mine.filter(r => (r.payroll_status || "pending") !== "completed").length;
+
+  const toggleSort = (k) => setSort(s0 => s0.k === k ? { k, dir: s0.dir === "asc" ? "desc" : "asc" } : { k, dir: "asc" });
+  const sorted = React.useMemo(() => {
+    if (!sort.k) return mine;
+    const col = allCols.find(c => c.k === sort.k);
+    const dir = sort.dir === "desc" ? -1 : 1;
+    const val = (r) => {
+      if (sort.k === "_payroll") return (r.payroll_status || "pending") === "completed" ? 1 : 0;
+      const raw = r[sort.k];
+      // Dates are stored ISO, so plain string order is date order.
+      if (col && col.date) return String(raw || "");
+      return String(raw == null ? "" : raw).trim().toLowerCase();
+    };
+    return mine.slice().sort((a, b) => {
+      const av = val(a), bv = val(b);
+      if (typeof av === "number") return (av - bv) * dir || 0;
+      // Blanks sink whichever way the arrow points. These rows came out of a
+      // spreadsheet with real gaps in them; sorting by a column should surface
+      // the rows that have an answer, not bury them under the ones that don't.
+      if (!av !== !bv) return av ? -1 : 1;
+      return av.localeCompare(bv, "en", { numeric: true, sensitivity: "base" }) * dir;
+    });
+  }, [mine, sort, allCols]);
+
+  // Payroll's backlog clearance: everything dated before a cut-off, signed off
+  // in one pass. Records whose date could not be read are deliberately left
+  // out — we cannot say which side of the cut-off they fall on.
+  const bulkAll = (rows || []).filter(r => r && r.kind === kind && (r.payroll_status || "pending") !== "completed");
+  const bulkTargets = bulkBefore ? bulkAll.filter(r => r.event_date && r.event_date < bulkBefore) : [];
+  const bulkUndated = bulkAll.filter(r => !r.event_date).length;
+  // Sum of the primary column widths, so the grid asks for exactly the room it
+  // needs and stops scrolling sideways the moment the window can hold it.
+  const tableMin = 148 + 88 + cols.reduce((n, c) => n + c.w, 0);
+
+  const th = { textAlign: "left", padding: "11px 14px", fontSize: 9.5, fontWeight: 800, color: "#9d174d",
+    textTransform: "uppercase", letterSpacing: "0.07em", whiteSpace: "nowrap",
+    background: "linear-gradient(180deg, rgba(253,242,248,0.97), rgba(252,231,243,0.92))",
+    backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)",
+    position: "sticky", top: 0, zIndex: 2, boxShadow: "inset 0 -1px 0 rgba(190,24,93,0.16)" };
+  const td = { padding: "13px 14px", fontSize: 12.5, lineHeight: 1.55, color: "#6B1739",
+    borderBottom: "1px solid rgba(190,24,93,0.09)", verticalAlign: "top" };
+  const inp = GLASS_INPUT;
+  const lbl = GLASS_LABEL;
+
+  const fmt = (v) => {
+    if (!v) return "";
+    const d = new Date(String(v) + "T00:00:00");
+    return isNaN(d) ? String(v) : d.toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" });
+  };
+  const save = async () => {
+    if (!draft.employee_name || !draft.employee_name.trim()) { window.alert("Please enter who this is about."); return; }
+    setBusy(true);
+    try {
+      await window.BOA_DB.saveHrTrackerRecord({ ...draft, kind, source: draft.id ? undefined : "manual" }, actor);
+      if (typeof logActivity === "function") {
+        try {
+          logActivity(draft.id ? "Updated " + kind + " record" : "Added " + kind + " record",
+            draft.employee_name + (draft.employee_code ? " (" + draft.employee_code + ")" : ""),
+            (draft.action_taken || draft.reason || ""), "People");
+        } catch (_e) { }
+      }
+      setDraft(null);
+      await onReload();
+    } catch (e) { window.alert("Could not save: " + ((e && e.message) || e)); }
+    setBusy(false);
+  };
+  // Payroll's sign-off. Only the payroll officer gets this button; HR adding or
+  // editing never can, and an edit to a date/action/bonus resets it server-side.
+  const setPayroll = async (r, status) => {
+    setBusy(true);
+    try {
+      await window.BOA_DB.setHrTrackerPayroll(r.id, status, noteDraft[r.id] || "", actor);
+      if (typeof logActivity === "function") {
+        try {
+          logActivity(status === "completed" ? "Payroll signed off " + kind : "Payroll re-opened " + kind,
+            r.employee_name + (r.employee_code ? " (" + r.employee_code + ")" : ""),
+            noteDraft[r.id] || "", "Payroll");
+        } catch (_e) { }
+      }
+      setNoteDraft(d => ({ ...d, [r.id]: "" }));
+      await onReload();
+    } catch (e) { window.alert("Could not update payroll status: " + ((e && e.message) || e)); }
+    setBusy(false);
+  };
+  const runBulkSignOff = async () => {
+    const targets = bulkTargets;
+    if (!targets.length) return;
+    const label = isTerm ? "termination" : "disciplinary";
+    if (!window.confirm(
+      "Mark " + targets.length + " " + label + " record" + (targets.length === 1 ? "" : "s") +
+      " dated before " + fmt(bulkBefore) + " as checked by payroll?\n\n" +
+      "This is the same sign-off as doing them one at a time, and any record can be re-opened afterwards." +
+      (bulkUndated ? "\n\n" + bulkUndated + " record" + (bulkUndated === 1 ? "" : "s") +
+        " with a date that could not be read will be left alone — confirm " +
+        (bulkUndated === 1 ? "it" : "them") + " by hand." : "")
+    )) return;
+    setBulkBusy({ done: 0, total: targets.length });
+    const note = "Bulk sign-off — everything dated before " + bulkBefore;
+    const queue = targets.slice();
+    let okCount = 0, failCount = 0, firstErr = "";
+    // Four at a time: fast enough for a hundred-odd records without opening a
+    // hundred-odd connections at once.
+    const worker = async () => {
+      while (queue.length) {
+        const r = queue.shift();
+        try { await window.BOA_DB.setHrTrackerPayroll(r.id, "completed", note, actor); okCount++; }
+        catch (e) { failCount++; if (!firstErr) firstErr = (e && e.message) || String(e); }
+        setBulkBusy(b => b ? { ...b, done: b.done + 1 } : b);
+      }
+    };
+    await Promise.all([worker(), worker(), worker(), worker()]);
+    setBulkBusy(null);
+    if (okCount && typeof logActivity === "function") {
+      try {
+        logActivity("Payroll bulk sign-off", label + " records dated before " + bulkBefore,
+          okCount + " record" + (okCount === 1 ? "" : "s") + " marked checked", "Payroll");
+      } catch (_e) { }
+    }
+    await onReload();
+    if (failCount) window.alert(failCount + " of " + targets.length + " could not be signed off: " + firstErr +
+      "\n\n" + okCount + " went through. Try the rest again.");
+  };
+  const remove = async (r) => {
+    if (!window.confirm("Delete this record for " + r.employee_name + "? This cannot be undone.")) return;
+    setBusy(true);
+    try { await window.BOA_DB.deleteHrTrackerRecord(r.id, actor); await onReload(); }
+    catch (e) { window.alert("Could not delete: " + ((e && e.message) || e)); }
+    setBusy(false);
+  };
+  const pickStaff = (name) => {
+    const hit = (staffPool || []).find(x => x.name === name);
+    if (!hit) return;
+    setDraft(d => ({ ...d, employee_name: hit.name, employee_code: hit.ec || d.employee_code,
+      location: hit.branch || d.location, role_title: hit.role || d.role_title }));
+  };
+
+  return (
+    <div>
+      <div style={{ ...glassCard({ padding: "14px 16px", marginBottom: 18 }), display: "flex", gap: 12,
+        flexWrap: "wrap", alignItems: "center" }}>
+        <input placeholder={"🔍  Search " + (isTerm ? "terminations" : "disciplinary records") + "…"} value={q}
+          onChange={e => setQ(e.target.value)} style={{ ...inp, flex: "1 1 240px", maxWidth: 360 }} />
+        <select value={payFilter} onChange={e => setPayFilter(e.target.value)} style={{ ...inp, width: "auto", flex: "0 0 auto" }}>
+          <option value="all">All records</option>
+          <option value="pending">Waiting on payroll</option>
+          <option value="completed">Payroll signed off</option>
+        </select>
+        <button className="boa-btn" onClick={() => setDraft(HR_TRACK_BLANK(kind))} style={BTN_PRIMARY}>
+          + Add {isTerm ? "termination" : "disciplinary record"}
+        </button>
+        <button className="boa-btn" onClick={onReload} disabled={loading} style={BTN_GHOST}>{loading ? "Loading…" : "↻ Refresh"}</button>
+        <span style={{ marginLeft: "auto", fontSize: 12.5, color: "#9d6a82" }}>
+          {mine.length} record{mine.length === 1 ? "" : "s"}
+          {pending > 0 && <> · <strong style={{ color: "#b45309" }}>{pending} waiting on payroll</strong></>}
+        </span>
+      </div>
+
+      {err && <div style={{ ...glassCard(), background: "rgba(254,242,242,0.9)", border: "1px solid #fecaca", color: "#9b1c1c" }}>Couldn't load: {err}</div>}
+
+      {/* Backlog clearance — payroll only, and only while there is a backlog. */}
+      {canSign && bulkAll.length > 0 && (
+        <div style={glassCard({ background: "linear-gradient(158deg, rgba(240,253,244,0.90) 0%, rgba(220,252,231,0.52) 100%)", border: "1px solid rgba(134,239,172,0.9)" })}>
+          <div style={{ ...glassHeading("#15803d"), marginBottom: 8 }}>✓ Sign off the backlog in one go</div>
+          <div style={{ fontSize: 12.5, color: "#3f6b4f", marginBottom: 16, lineHeight: 1.65, maxWidth: "78ch" }}>
+            Everything dated before the cut-off gets marked checked in one pass — for the records
+            already reconciled with payroll before the trackers moved into the hub. Records whose
+            date could not be read from the spreadsheet are left alone, and anything here can be
+            re-opened afterwards.
+          </div>
+          <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "flex-end" }}>
+            <label style={{ flex: "0 0 auto" }}>
+              <span style={{ ...lbl, color: "#15803d" }}>Cut-off — sign off everything before</span>
+              <input type="date" value={bulkBefore} onChange={e => setBulkBefore(e.target.value)}
+                style={{ ...inp, width: "auto", minWidth: 190 }} />
+            </label>
+            <button className="boa-btn" onClick={runBulkSignOff} disabled={!!bulkBusy || !bulkTargets.length}
+              style={{ ...BTN_GO, padding: "11px 20px" }}>
+              {bulkBusy
+                ? "Signing off… " + bulkBusy.done + " / " + bulkBusy.total
+                : bulkTargets.length
+                  ? "Mark " + bulkTargets.length + " record" + (bulkTargets.length === 1 ? "" : "s") + " as checked"
+                  : "Nothing before that date"}
+            </button>
+            <div style={{ fontSize: 11.5, color: "#3f6b4f", lineHeight: 1.6, paddingBottom: 2 }}>
+              {bulkAll.length} awaiting payroll in total
+              {bulkUndated > 0 && <><br /><strong style={{ color: "#b45309" }}>{bulkUndated} with an unreadable date — check {bulkUndated === 1 ? "it" : "those"} by hand</strong></>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {draft && (
+        <div style={{ ...glassCard({ padding: "22px 24px" }), border: "1px solid rgba(190,24,93,0.35)",
+          boxShadow: "inset 0 1px 0 rgba(255,255,255,0.95), 0 0 0 3px rgba(214,36,111,0.10), 0 22px 46px -24px rgba(131,24,67,0.55)" }}>
+          <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 18, fontWeight: 700, color: "#831843", marginBottom: 16 }}>
+            {draft.id ? "Edit record" : (isTerm ? "New termination record" : "New disciplinary record")}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(210px,1fr))", gap: 16 }}>
+            <label><span style={lbl}>Employee name</span>
+              <input list="_hrTrackStaff" style={inp} value={draft.employee_name}
+                onChange={e => { setDraft({ ...draft, employee_name: e.target.value }); pickStaff(e.target.value); }} />
+              <datalist id="_hrTrackStaff">{(staffPool || []).map(x => <option key={x.ec || x.name} value={x.name} />)}</datalist>
+            </label>
+            <label><span style={lbl}>Employee ID</span><input style={inp} value={draft.employee_code} onChange={e => setDraft({ ...draft, employee_code: e.target.value })} /></label>
+            <label><span style={lbl}>{isTerm ? "Position" : "Role"}</span><input style={inp} value={draft.role_title} onChange={e => setDraft({ ...draft, role_title: e.target.value })} /></label>
+            <label><span style={lbl}>{isTerm ? "Branch / location" : "Location"}</span><input style={inp} value={draft.location} onChange={e => setDraft({ ...draft, location: e.target.value })} /></label>
+            <label><span style={lbl}>{isTerm ? "Termination date" : "Received on"}</span><input type="date" style={inp} value={draft.event_date || ""} onChange={e => setDraft({ ...draft, event_date: e.target.value })} /></label>
+            {!isTerm && <label><span style={lbl}>Manager</span><input style={inp} value={draft.manager} onChange={e => setDraft({ ...draft, manager: e.target.value })} /></label>}
+            {!isTerm && <label><span style={lbl}>Investigation end</span><input type="date" style={inp} value={draft.investigation_end || ""} onChange={e => setDraft({ ...draft, investigation_end: e.target.value })} /></label>}
+            {!isTerm && <label><span style={lbl}>Action taken</span><input style={inp} value={draft.action_taken} onChange={e => setDraft({ ...draft, action_taken: e.target.value })} /></label>}
+            {!isTerm && <label><span style={lbl}>Bonus</span><input style={inp} value={draft.bonus} onChange={e => setDraft({ ...draft, bonus: e.target.value })} placeholder="50% Bonus / No Bonus" /></label>}
+            {!isTerm && <label><span style={lbl}>To action</span><input style={inp} value={draft.justin_to_action} onChange={e => setDraft({ ...draft, justin_to_action: e.target.value })} /></label>}
+            {!isTerm && <label><span style={lbl}>Filed by</span><input style={inp} value={draft.filed_by} onChange={e => setDraft({ ...draft, filed_by: e.target.value })} /></label>}
+            {isTerm && <label><span style={lbl}>Exit interview conducted</span><input style={inp} value={draft.exit_interview} onChange={e => setDraft({ ...draft, exit_interview: e.target.value })} /></label>}
+          </div>
+          <div style={{ marginTop: 16 }}>
+            <span style={lbl}>{isTerm ? "Reason for termination" : "Investigation description and findings"}</span>
+            <textarea rows={3} style={{ ...inp, resize: "vertical", minHeight: 84, lineHeight: 1.6 }}
+              value={isTerm ? draft.reason : draft.findings}
+              onChange={e => setDraft({ ...draft, [isTerm ? "reason" : "findings"]: e.target.value })} />
+          </div>
+          <div style={{ marginTop: 16 }}>
+            <span style={lbl}>{isTerm ? "Notes" : "Final comments"}</span>
+            <textarea rows={2} style={{ ...inp, resize: "vertical", minHeight: 64, lineHeight: 1.6 }}
+              value={isTerm ? draft.notes : draft.final_comments}
+              onChange={e => setDraft({ ...draft, [isTerm ? "notes" : "final_comments"]: e.target.value })} />
+          </div>
+          <div style={{ fontSize: 11.5, color: "#9d6a82", marginTop: 14, lineHeight: 1.6 }}>
+            Anything you don't have yet can be left blank and filled in later.
+            {draft.id && draft.payroll_status === "completed" && (
+              <strong style={{ color: "#b45309" }}> Changing the date, action or bonus will ask payroll to check it again.</strong>
+            )}
+          </div>
+          <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
+            <button className="boa-btn" onClick={save} disabled={busy} style={BTN_PRIMARY}>{busy ? "Saving…" : "Save record"}</button>
+            <button className="boa-btn" onClick={() => setDraft(null)} style={BTN_GHOST}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      <div style={{ ...glassCard({ padding: 0, marginBottom: 0 }), overflow: "hidden" }}>
+        <div style={{ overflow: "auto", maxHeight: mine.length > 18 ? 720 : "none" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: tableMin }}>
+            <thead><tr>
+              {[{ k: "_payroll", l: "Payroll", w: 148 }].concat(cols).map(c => {
+                const on = sort.k === c.k;
+                return (
+                  <th key={c.k} style={{ ...th, minWidth: c.w }}
+                    aria-sort={on ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}>
+                    <button className="boa-sort" onClick={() => toggleSort(c.k)}
+                      title={"Sort by " + c.l + (on && sort.dir === "asc" ? " — descending" : " — ascending")}>
+                      {c.l}<HrSortIcon active={on} dir={sort.dir} />
+                    </button>
+                  </th>
+                );
+              })}
+              <th style={{ ...th, minWidth: 88 }}></th>
+            </tr></thead>
+            <tbody>
+              {mine.length === 0 && (
+                <tr><td colSpan={cols.length + 2} style={{ ...td, color: "#B49DCB", padding: "28px 16px" }}>
+                  {loading ? "Loading…" : q || payFilter !== "all" ? "Nothing matches that filter." : "No records yet."}
+                </td></tr>
+              )}
+              {sorted.map(r => {
+                const done = (r.payroll_status || "pending") === "completed";
+                const open = openId === r.id;
+                return (
+                  <React.Fragment key={r.id}>
+                    <tr className="boa-row" style={{ background: open ? "rgba(253,242,248,0.85)" : done ? "rgba(240,253,244,0.55)" : "transparent" }}>
+                      <td style={td}>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 10.5, fontWeight: 800,
+                          borderRadius: 999, padding: "4px 10px", whiteSpace: "nowrap",
+                          color: done ? "#15803d" : "#b45309", background: done ? "rgba(220,252,231,0.85)" : "rgba(254,243,199,0.85)",
+                          border: "1px solid " + (done ? "#86efac" : "#fde68a") }}>
+                          {done ? "✓ Signed off" : "⏳ Awaiting payroll"}
+                        </span>
+                        {done && r.payroll_checked_by && (
+                          <div style={{ fontSize: 10.5, color: "#9d6a82", marginTop: 5 }}>{r.payroll_checked_by}</div>
+                        )}
+                      </td>
+                      {cols.map(c => {
+                        const raw = r[c.k];
+                        const val = c.date ? (fmt(raw) || r[c.k === "event_date" ? "event_date_raw" : "investigation_raw"] || "") : (raw || "");
+                        const suspect = c.date && !raw && r[c.k === "event_date" ? "event_date_raw" : "investigation_raw"];
+                        if (c.k === "action_taken" && val) {
+                          const t = hrActionTone(val);
+                          return <td key={c.k} style={td}><span style={{ display: "inline-block", fontSize: 10.5, fontWeight: 800, borderRadius: 7, padding: "4px 9px", color: t.c, background: t.bg, border: "1px solid " + t.b, lineHeight: 1.35 }}>{val}</span></td>;
+                        }
+                        return (
+                          <td key={c.k} style={{ ...td, fontWeight: c.strong ? 700 : 400,
+                            color: c.strong ? "#831843" : suspect ? "#b45309" : td.color,
+                            maxWidth: c.wrap ? c.w : undefined, whiteSpace: c.wrap ? "normal" : "nowrap" }}
+                            title={suspect ? "Date could not be read from the spreadsheet — please confirm" : undefined}>
+                            {c.wrap && String(val).length > 190
+                              ? <><span>{String(val).slice(0, 190).trimEnd()}…</span>
+                                  <button onClick={() => setOpenId(open ? null : r.id)}
+                                    style={{ background: "none", border: "none", padding: "0 0 0 4px", color: "#BE185D", fontWeight: 700, fontSize: 11.5, cursor: "pointer", fontFamily: "inherit" }}>more</button></>
+                              : (val || <span style={{ color: "#d8b4c6" }}>—</span>)}
+                            {suspect && " ⚠"}
+                          </td>
+                        );
+                      })}
+                      <td style={{ ...td, whiteSpace: "nowrap", textAlign: "right" }}>
+                        <button className="boa-btn" onClick={() => setOpenId(open ? null : r.id)}
+                          style={{ ...BTN_GHOST, padding: "6px 11px", fontSize: 11.5 }}>{open ? "Close" : "Open"}</button>
+                      </td>
+                    </tr>
+                    {open && (
+                      /* The detail sticks to the left edge of the scroller, so it
+                         stays readable even when the grid is scrolled sideways —
+                         otherwise the sign-off button sits off-screen. */
+                      <tr><td colSpan={cols.length + 2} style={{ background: "rgba(253,247,250,0.92)", borderBottom: "1px solid rgba(190,24,93,0.12)", padding: 0 }}>
+                        <div style={{ position: "sticky", left: 0, width: "min(100%, 1060px)", boxSizing: "border-box", padding: "20px 22px 22px" }}>
+                          <div style={{ display: "grid", gap: 20, gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))", alignItems: "start" }}>
+                            <div>
+                              <div style={lbl}>Payroll check</div>
+                              <div style={{ fontSize: 12.5, color: "#6B1739", marginBottom: 10, lineHeight: 1.6 }}>
+                                {done
+                                  ? <>Signed off by <strong>{r.payroll_checked_by || "—"}</strong>{r.payroll_checked_at ? " on " + new Date(r.payroll_checked_at).toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }) : ""}. Good for the final payout.</>
+                                  : <>Waiting on the payroll officer to confirm the dates and amounts before the last payout.</>}
+                              </div>
+                              {r.payroll_note && <div style={{ fontSize: 12, color: "#9d6a82", marginBottom: 10, fontStyle: "italic" }}>“{r.payroll_note}”</div>}
+                              {canSign ? (<>
+                                <input placeholder="Payroll note (optional)" style={{ ...inp, marginBottom: 10 }}
+                                  value={noteDraft[r.id] || ""} onChange={e => setNoteDraft(d => ({ ...d, [r.id]: e.target.value }))} />
+                                {done
+                                  ? <button className="boa-btn" onClick={() => setPayroll(r, "pending")} disabled={busy} style={{ ...BTN_GHOST, background: "rgba(254,243,199,0.9)", color: "#92400e", border: "1px solid #fde68a" }}>Re-open for checking</button>
+                                  : <button className="boa-btn" onClick={() => setPayroll(r, "completed")} disabled={busy} style={BTN_GO}>✓ Mark payroll complete</button>}
+                              </>) : (
+                                <div style={{ fontSize: 11.5, color: "#9d6a82", background: "rgba(255,255,255,0.6)", border: "1px dashed rgba(190,24,93,0.22)", borderRadius: 10, padding: "9px 12px", lineHeight: 1.55 }}>
+                                  Only the payroll officer can sign a record off — it is their confirmation that the final payout is safe to run.
+                                </div>
+                              )}
+                            </div>
+                            <div>
+                              <div style={lbl}>Full record</div>
+                              <div style={{ fontSize: 12, color: "#6B1739", lineHeight: 1.65 }}>
+                                {extraCols.map(c => {
+                                  const raw = r[c.k];
+                                  const val = c.date ? (fmt(raw) || r[c.k === "event_date" ? "event_date_raw" : "investigation_raw"] || "") : (raw || "");
+                                  return (
+                                    <div key={c.k} style={{ marginBottom: 7 }}>
+                                      <span style={{ color: "#9d6a82", fontWeight: 700 }}>{c.l}: </span>
+                                      {val || <span style={{ color: "#d8b4c6" }}>—</span>}
+                                    </div>
+                                  );
+                                })}
+                                {cols.filter(c => c.wrap && String(r[c.k] || "").length > 190).map(c => (
+                                  <div key={c.k} style={{ marginTop: 10, paddingTop: 10, borderTop: "1px dashed rgba(190,24,93,0.16)" }}>
+                                    <span style={{ color: "#9d6a82", fontWeight: 700 }}>{c.l}: </span>{r[c.k]}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                            <div>
+                              <div style={lbl}>Filing</div>
+                              <div style={{ fontSize: 12, color: "#9d6a82", lineHeight: 1.7, marginBottom: 12 }}>
+                                {r.event_date_raw && <>As written in the sheet: <strong style={{ color: "#6B1739" }}>{r.event_date_raw}</strong><br /></>}
+                                {r.month_band && <>Filed under: {r.month_band}<br /></>}
+                                {r.source && <>Source: {r.source}<br /></>}
+                                {r.created_by && <>Added by {r.created_by}<br /></>}
+                                {r.updated_by && <>Last edited by {r.updated_by}</>}
+                              </div>
+                              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                <button className="boa-btn" onClick={() => { setDraft({ ...HR_TRACK_BLANK(kind), ...r, event_date: r.event_date || "", investigation_end: r.investigation_end || "" }); setOpenId(null); }}
+                                  style={{ ...BTN_GHOST, background: "rgba(224,242,254,0.85)", color: "#0369a1", border: "1px solid #bae6fd" }}>✏️ Edit</button>
+                                <button className="boa-btn" onClick={() => remove(r)} disabled={busy}
+                                  style={{ ...BTN_GHOST, background: "rgba(254,226,226,0.85)", color: "#991b1b", border: "1px solid #fecaca" }}>Delete</button>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </td></tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function interviewStage(r) {
   if (!r) return "new";
   if (r.promotedToTrialId) return "to_trial";
@@ -24374,6 +24954,68 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // free-text portal role. None of the seeded users carry any of those words, so
   // until someone's role says "Payroll" (or their pin is ticked in Settings)
   // this queue is owner-only and the payroll officer will never see it.
+  // Off-boarding access — a named PIN list (boa_offboard_access_v1). This tab
+  // holds termination and disciplinary records, so it is gated in three places
+  // that all read this one answer: the nav item, tryChangeTab, and the render
+  // site. A render gate on its own is cosmetic.
+  // While the key is still loading this is null, and canSeeOffboarding falls
+  // back to the seeded PINs — so there is no window where the tab flashes open.
+  const [offboardAccess, setOffboardAccess] = useState(null);
+  useEffect(() => {
+    let dead = false;
+    (async () => {
+      try {
+        const v = window.BOA_DB.loadByKey ? await window.BOA_DB.loadByKey(OFFBOARD_ACCESS_KEY) : null;
+        if (!dead && v && typeof v === "object") setOffboardAccess(v);
+      } catch (_e) { }
+    })();
+    return () => { dead = true; };
+  }, []);
+  const canOffboard = canSeeOffboarding(currentUser, offboardAccess);
+  const isPayrollSigner = canSignOffPayroll(currentUser, offboardAccess);
+  const [offSubTab, setOffSubTab] = useState("list");     // list | term | disc
+  const [trackerRows, setTrackerRows] = useState([]);
+  const [trackerLoading, setTrackerLoading] = useState(false);
+  const [trackerErr, setTrackerErr] = useState("");
+  // Both trackers come back in one read and are split client-side — they are
+  // one table, and the payroll badge on the pill bar needs both counts anyway.
+  const loadTrackers = React.useCallback(async () => {
+    if (!canOffboard || !window.BOA_DB.listHrTrackerRecords) return;
+    setTrackerLoading(true); setTrackerErr("");
+    try { setTrackerRows(await window.BOA_DB.listHrTrackerRecords(null) || []); }
+    catch (e) { setTrackerErr((e && e.message) || String(e)); }
+    setTrackerLoading(false);
+  }, [canOffboard]);
+  useEffect(() => { if (tab === "offboard" && canOffboard) loadTrackers(); }, [tab, canOffboard, loadTrackers]);
+  // What payroll still has to sign off. This is the number that decides whether
+  // a final payout is safe to run, so it is surfaced on the pill bar and, for
+  // the payroll officer, on the dashboard.
+  const trackerPending = useMemo(() => {
+    const t = { term: 0, disc: 0 };
+    (trackerRows || []).forEach(r => {
+      if (!r || r.payroll_status === "completed") return;
+      if (r.kind === "termination") t.term++; else if (r.kind === "disciplinary") t.disc++;
+    });
+    return t;
+  }, [trackerRows]);
+  // Name/EC picker source for adding a record: everyone the portal knows,
+  // including people already off-boarded (a termination record is written
+  // about someone who has left).
+  const trackerStaffPool = useMemo(() => {
+    const seen = new Set(), out = [];
+    [].concat(staff || [], managers || [], hoStaff || []).forEach(x => {
+      const ec = String((x && x.ec) || "").trim();
+      if (!x || !x.name || (ec && seen.has(ec))) return;
+      if (ec) seen.add(ec);
+      out.push({ ec, name: x.name, branch: x.branch || "", role: x.role || "" });
+    });
+    return out.sort((a, b) => a.name.localeCompare(b.name));
+  }, [staff, managers, hoStaff]);
+  const saveOffboardAccess = async (next) => {
+    setOffboardAccess(next);
+    try { await window.BOA_DB.saveByKey(OFFBOARD_ACCESS_KEY, next); }
+    catch (e) { window.alert("Could not save off-boarding access: " + (e.message || e)); }
+  };
   const [officeHoursAccess, setOfficeHoursAccess] = useState({});
   const officeHoursCfg = useMemo(() => {
     const c = officeHoursAccess || {};
@@ -28073,12 +28715,23 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Departed staff (leftDate has passed) are pinned to the bottom for the 31-day
   // grace window so the active list stays clean.
   const filtered = useMemo(() => {
+    const _todayYmd = ymdStr(new Date());
     let list = enriched.filter(s => {
-      if (s.offHidden) return false;          // hide off-boarded staff after the 31-day display window
-
-      const isTerm = s.status === "terminated" || s.active === "false" || s.active === false;
-      if (fShow === "terminated" && !isTerm) return false;
-      if (fShow !== "terminated" && isTerm) return false; // Hide from 'all', 'active', 'on_mat' views
+      const isTerm = isTerminatedRow(s);
+      const hasGone = hasDeparted(s, _todayYmd);
+      // THE ARCHIVE. Someone can have left in three independent ways (the same
+      // three isStillOnBooks() weighs): a terminated / inactive staff row, an
+      // off-boarding record, or a leftDate that has simply passed. This view
+      // used to test only the first — and `offHidden` dropped the off-boarded
+      // before it got that far — so "Terminated (Archive)" was always empty.
+      // The 31-day window exists to keep leavers out of the LIVE views; it must
+      // not apply to the archive those records are kept in.
+      if (fShow === "terminated") {
+        if (!hasGone) return false;
+      } else {
+        if (s.offHidden) return false;        // hide off-boarded staff after the 31-day display window
+        if (isTerm) return false;             // hide from 'all', 'active', 'on_mat' views
+      }
 
       if (fShow === "on_mat" && !s.onMat) return false;
       if (fShow === "active_only" && s.onMat) return false;
@@ -28148,11 +28801,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const q = (search || "").toLowerCase();
     const list = (enrichedManagers || []).filter(m => {
       if (!m) return false;
-      if (m.offHidden) return false;          // hide off-boarded managers past the 31-day display window
-
-      const isTerm = m.status === "terminated" || m.active === "false" || m.active === false;
-      if (fShow === "terminated" && !isTerm) return false;
-      if (fShow !== "terminated" && isTerm) return false;
+      const _todayYmdM = ymdStr(new Date());
+      const isTerm = isTerminatedRow(m);
+      const hasGone = hasDeparted(m, _todayYmdM);
+      // Same three departure routes as the tech list above.
+      if (fShow === "terminated") {
+        if (!hasGone) return false;
+      } else {
+        if (m.offHidden) return false;        // hide off-boarded managers past the 31-day display window
+        if (isTerm) return false;
+      }
 
       if (fShow === "on_mat" && !m.onMat) return false;
       if (fShow === "active_only" && m.onMat) return false;
@@ -28192,6 +28850,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       return (a.name || "").localeCompare(b.name || "");
     });
   }, [enrichedManagers, fShow, fBranch, fPermit, fContract, fRole, search, complianceActions]);
+
+  // Today, stamped once for the Staff List rows so every row in a render judges
+  // "has this person left" against the same date.
+  const _archiveToday = ymdStr(new Date());
 
   // Pool for the Maternity modal lookup: every active tech + every manager,
   // minus anyone who already has a maternity record (no double-up). Role
@@ -29143,9 +29805,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     if (leaveSubTab !== "callcentre") setLeaveSubTab("callcentre");
     if (attBranch !== CALL_CENTRE) setAttBranch(CALL_CENTRE);
   }, [ccOnly, schedSubTab, leaveSubTab, attBranch]);
+  // Access revoked while sitting on the tab (Settings edited in another
+  // session): don't leave the records on screen.
+  useEffect(() => { if (tab === "offboard" && !canOffboard) setTab("dashboard"); }, [tab, canOffboard]);
+
   const tryChangeTab = (t) => {
     if (t === tab) return;
     if (currentUser && currentUser.ccOnly && !CC_ONLY_TABS.has(t)) return;   // CC&S-only guard
+    if (t === "offboard" && !canOffboard) return;   // named-PIN list only — see canSeeOffboarding
     if (tab === "scheduling" && schedSubTab === "managers" && mgrSchedDirty) {
       if (!window.confirm("Are you sure? The manager schedule has unsaved changes. They will be lost if you leave.")) return;
       setMgrSchedDirty(false);
@@ -29411,7 +30078,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t: "onboard", l: onboardLbl },
                   { t: "trialPeriod", l: trialLbl },
                   { t: "smTrial", l: smTrialLbl },
-                  { t: "offboard", l: offboardLbl },
+                  ...(canOffboard ? [{ t: "offboard", l: offboardLbl, forceShow: true }] : []),
                   { t: "staff", l: "💅 Salon Staff" },
                   // Office Staff List appears once there are office people —
                   // OR for anyone allowed to add them: this tab holds the only
@@ -30046,7 +30713,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
           const peopleActions = [
             { lbl: "Onboarding", icon: "🌱", to: "onboard" },
-            { lbl: "Off-boarding", icon: "👋", to: "offboard" },
+            ...(canOffboard ? [{ lbl: "Off-boarding", icon: "👋", to: "offboard" }] : []),
             { lbl: "Maternity", icon: "🤱", to: "maternity" },
             { lbl: "Locations", icon: "📍", to: "locations" }
           ];
@@ -30194,6 +30861,33 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   day, loan, day-off swap…) that hasn't been published yet.
                   Staff / kiosk / My BOA keep showing the OLD version until
                   someone reviews + publishes — this is the nudge to do it. */
+              /* Termination / disciplinary records waiting on the payroll
+                  officer's check before the final payout. The instruction was
+                  that this goes to the payroll officer ONLY, so the gate is
+                  the payroll pin, not the whole off-boarding list — HR filing
+                  a record should not nag the owner about checking it. */
+              dashAlert("offboardPayroll", "payroll", "warning",
+              isPayrollSigner && (trackerPending.term + trackerPending.disc) > 0 && (
+                <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 16, padding: "16px 20px", marginBottom: 20, boxShadow: "0 4px 14px rgba(180,83,9,0.10)", display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+                  <div style={{ flex: 1, minWidth: 280 }}>
+                    <div style={{ fontSize: 15, fontWeight: 800, color: "#92400e", letterSpacing: "0.04em", textTransform: "uppercase" }}>📄 Payroll check needed before the final payout</div>
+                    <div style={{ fontSize: 12.5, color: "#b45309", fontWeight: 700, marginTop: 4 }}>
+                      {trackerPending.term > 0 && <>{trackerPending.term} termination{trackerPending.term === 1 ? "" : "s"}</>}
+                      {trackerPending.term > 0 && trackerPending.disc > 0 && " · "}
+                      {trackerPending.disc > 0 && <>{trackerPending.disc} disciplinary record{trackerPending.disc === 1 ? "" : "s"}</>}
+                      {" waiting to be checked"}
+                    </div>
+                    <div style={{ fontSize: 11.5, color: "#b45309", marginTop: 3 }}>
+                      HR has captured these. Confirm the dates and amounts, then mark each one complete so the last payout can be run against it.
+                    </div>
+                  </div>
+                  <button onClick={() => { setOffSubTab(trackerPending.term > 0 ? "term" : "disc"); tryChangeTab("offboard"); }}
+                    title="Open the tracker and sign off the records waiting on payroll."
+                    style={{ background: "#b45309", color: "#fff", border: "none", borderRadius: 10, padding: "10px 18px", fontWeight: 800, fontSize: 13, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap", boxShadow: "0 4px 12px rgba(180,83,9,0.3)" }}>
+                    Check records →
+                  </button>
+                </div>
+              ));
               dashAlert("sageReanchor", "payroll", "warning",
               (currentUser?.isOwner || accessAllows(currentUser, leaveBalancesCfg)) && balAnchorAlert && balAnchorAlert.stale && (
                 <div style={{ background: "#f5f3ff", border: "1px solid #c4b5fd", borderRadius: 16, padding: "16px 20px", marginBottom: 20, boxShadow: "0 4px 14px rgba(109,40,217,0.10)", display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
@@ -32101,8 +32795,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
                     {filtered.map(s => {
                       const dBack = s.matRec?.returnDate ? daysDiff(s.matRec.returnDate) : null;
-                      const terminated = s.status === "terminated" || s.active === "false" || s.active === false;
-                      const departed = s.offboarded && s.offDaysSinceLeft != null && s.offDaysSinceLeft >= 0;
+                      const terminated = isTerminatedRow(s);
+                      // `departed` drives the greyed treatment. It has to cover every
+                      // route out — including a leftDate set on the staff modal with no
+                      // off-boarding record, which otherwise rendered as a live row
+                      // sitting in the archive.
+                      const departed = hasDeparted(s, _archiveToday) && !terminated;
+                      const archived = terminated || departed;
                       const rowBg = terminated ? "#f3f4f6" : departed ? "#f3f4f6" : s.onMat ? "#fdf4ff" : s.pregnant ? "#fffbeb" : isNonCompliantPermit(s) ? "#FAEEF1" : "#fff";
                       const rowOpacity = (departed || terminated) ? 0.5 : s.onMat ? 0.6 : 1;
                       return (
@@ -32160,8 +32859,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               : <span style={{ color: "#d1d5db" }}>—</span>}
                           </td>
                           <td style={{ padding: "10px 12px", whiteSpace: "nowrap" }}>
-                            <button onClick={() => setStaffModal(s)} style={{ background: "#f3f4f6", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontFamily: "inherit", fontWeight: 700, marginRight: 4 }}>Edit</button>
-                            {!s.isShadow && <button onClick={() => setTransferModal(s)} style={{ background: s.transferring ? "#bfdbfe" : "#e0f2fe", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontFamily: "inherit", fontWeight: 700, color: "#BE185D" }} title={s.transferring ? "Edit transfer" : "Transfer branch"}>🔄{s.transferring ? " Edit" : ""}</button>}
+                            <button onClick={() => { if (!archived) setStaffModal(s); }} disabled={archived}
+                              title={archived ? "Archived record — read only" : "Edit"}
+                              style={{ background: "#f3f4f6", border: "none", borderRadius: 6, padding: "4px 10px", cursor: archived ? "not-allowed" : "pointer", fontSize: 11, fontFamily: "inherit", fontWeight: 700, marginRight: 4, opacity: archived ? 0.45 : 1 }}>{archived ? "View" : "Edit"}</button>
+                            {!s.isShadow && !archived && <button onClick={() => setTransferModal(s)} style={{ background: s.transferring ? "#bfdbfe" : "#e0f2fe", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontFamily: "inherit", fontWeight: 700, color: "#BE185D" }} title={s.transferring ? "Edit transfer" : "Transfer branch"}>🔄{s.transferring ? " Edit" : ""}</button>}
                           </td>
                         </tr>
                       );
@@ -38611,7 +39312,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       })()}
 
       {/* ── OFF-BOARDING TAB ── */}
-      {tab === "offboard" && (() => {
+      {tab === "offboard" && canOffboard && (() => {
         const now = new Date();
         const p2 = z => String(z).padStart(2, "0");
         const todayStr = now.getFullYear() + "-" + p2(now.getMonth() + 1) + "-" + p2(now.getDate());
@@ -38745,26 +39446,67 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         };
 
         return (
-          <div style={{ padding: "0 24px" }}>
-            <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 26, color: "#831843", fontWeight: 700, marginBottom: 6, letterSpacing: "0.02em" }}>👋 Off-board Staff</div>
+          <div className="boa-off" style={{ padding: "4px 24px 40px" }}>
+            <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 28, color: "#831843", fontWeight: 700, marginBottom: 8, letterSpacing: "0.01em" }}>👋 Off-boarding</div>
+            <div style={{ fontSize: 13.5, color: "#9d6a82", marginBottom: 22, maxWidth: "72ch", lineHeight: 1.65 }}>
+              Who is leaving and when, the termination record payroll signs off, and the
+              disciplinary history behind it. Restricted to a named list of people (Settings).
+            </div>
+
+            {/* Three views over the same departure story. */}
+            <div style={{ display: "flex", gap: 4, padding: 6, borderRadius: 16, maxWidth: 800, marginBottom: 24, flexWrap: "wrap",
+              background: "linear-gradient(150deg, rgba(255,255,255,0.72), rgba(252,231,243,0.62))",
+              backdropFilter: "blur(16px) saturate(160%)", WebkitBackdropFilter: "blur(16px) saturate(160%)",
+              border: "1px solid rgba(255,255,255,0.72)",
+              boxShadow: "inset 0 1px 0 rgba(255,255,255,0.9), 0 12px 30px -18px rgba(131,24,67,0.45)" }}>
+              {[{ k: "list", l: "Off-boarding List", icon: "\uD83D\uDC4B" },
+                { k: "term", l: "Terminations Tracker", icon: "\uD83D\uDCC4" },
+                { k: "disc", l: "Disciplinary Tracker", icon: "\u2696\uFE0F" }].map(t => {
+                const active = offSubTab === t.k;
+                const pending = t.k === "term" ? trackerPending.term : t.k === "disc" ? trackerPending.disc : 0;
+                return (
+                  <button key={t.k} className="boa-pill" onClick={() => setOffSubTab(t.k)}
+                    style={{ flex: "1 1 208px", padding: "13px 18px", borderRadius: 12, border: "none", cursor: "pointer",
+                      background: active ? "linear-gradient(180deg,#D6246F,#A3134F)" : "transparent", color: active ? "#fff" : "#8a3a5f",
+                      fontFamily: "inherit", fontSize: 14.5, fontWeight: 700, transition: "all .18s",
+                      boxShadow: active ? "0 10px 22px -10px rgba(163,19,79,0.85), inset 0 1px 0 rgba(255,255,255,0.28)" : "none",
+                      display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+                    <span aria-hidden="true">{t.icon}</span><span>{t.l}</span>
+                    {pending > 0 && (
+                      <span title={pending + " waiting on payroll"}
+                        style={{ background: active ? "#fff" : "#BE185D", color: active ? "#BE185D" : "#fff",
+                          borderRadius: 999, fontSize: 11, fontWeight: 800, padding: "1px 7px" }}>{pending}</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+
+            {(offSubTab === "term" || offSubTab === "disc") && (
+              <HrTrackerPanel kind={offSubTab === "term" ? "termination" : "disciplinary"}
+                currentUser={currentUser} canSign={isPayrollSigner} rows={trackerRows} loading={trackerLoading} err={trackerErr}
+                onReload={loadTrackers} staffPool={trackerStaffPool} logActivity={logActivity} />
+            )}
+
+            {offSubTab === "list" && (<>
 
             {/* Bargaining-council deregistration — urgent to-do for any leaver
                 still flagged as a council member. */}
             {councilToDeregister.length > 0 && (
-              <div style={{ background: "#fee2e2", border: "1px solid #fca5a5", borderRadius: 13, padding: "14px 18px", marginBottom: 18, animation: "urgentPulse 2s infinite" }}>
-                <div style={{ fontSize: 13, fontWeight: 800, color: "#991b1b", marginBottom: 8 }}>🤝 Deregister from the bargaining council — urgent</div>
-                <div style={{ fontSize: 12, color: "#991b1b", marginBottom: 10 }}>{councilToDeregister.length} off-boarding {councilToDeregister.length === 1 ? "staff member is" : "staff members are"} signed up with the bargaining council. Notify the council that they've left, then mark them deregistered here — this clears their council flag so their sick days are no longer treated as council-covered.</div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(260px,1fr))", gap: 8 }}>
+              <div style={glassCard({ background: "linear-gradient(158deg, rgba(255,245,245,0.94) 0%, rgba(254,226,226,0.62) 100%)", border: "1px solid rgba(252,165,165,0.9)", animation: "urgentPulse 2s infinite" })}>
+                <div style={{ fontSize: 13.5, fontWeight: 800, color: "#991b1b", marginBottom: 10, letterSpacing: "0.01em" }}>🤝 Deregister from the bargaining council — urgent</div>
+                <div style={{ fontSize: 12.5, color: "#a52626", marginBottom: 14, lineHeight: 1.6, maxWidth: "78ch" }}>{councilToDeregister.length} off-boarding {councilToDeregister.length === 1 ? "staff member is" : "staff members are"} signed up with the bargaining council. Notify the council that they've left, then mark them deregistered here — this clears their council flag so their sick days are no longer treated as council-covered.</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 12 }}>
                   {councilToDeregister.map(p => {
                     const onNotice = p.leftDate && p.leftDate >= todayStr;
                     return (
-                      <div key={p._id} style={{ background: "#fff", borderRadius: 9, border: "1px solid #fca5a5", padding: "10px 12px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                      <div key={p._id} style={glassTile({ background: "linear-gradient(155deg, rgba(255,255,255,0.94) 0%, rgba(255,241,241,0.62) 100%)", border: "1px solid rgba(252,165,165,0.9)", padding: "13px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 })}>
                         <div>
                           <div style={{ fontSize: 13, fontWeight: 700, color: "#831843" }}>{p.name}</div>
                           <div style={{ fontSize: 10, fontFamily: "monospace", color: "#991b1b", fontWeight: 700 }}>{p.ec}{p.branch ? " · " + p.branch : ""}</div>
                           {p.leftDate && <div style={{ fontSize: 11, color: "#991b1b", marginTop: 3 }}>{onNotice ? "Last day " : "Left "}{fmt(p.leftDate)}</div>}
                         </div>
-                        <button onClick={() => deregisterCouncil(p)} style={{ padding: "6px 12px", borderRadius: 7, border: "none", background: "#dc2626", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>Mark deregistered</button>
+                        <button className="boa-btn" onClick={() => deregisterCouncil(p)} style={{ padding: "8px 14px", borderRadius: 9, border: "none", background: "linear-gradient(180deg,#e0393a,#b91c1c)", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap", boxShadow: "0 8px 18px -9px rgba(185,28,28,0.85)" }}>Mark deregistered</button>
                       </div>
                     );
                   })}
@@ -38774,18 +39516,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
             {/* Pending Terminations banner */}
             {pendingTerms.length > 0 && (
-              <div style={{ background: "#fef3c7", border: "1px solid #fde68a", borderRadius: 13, padding: "14px 18px", marginBottom: 18 }}>
-                <div style={{ fontSize: 13, fontWeight: 800, color: "#92400e", marginBottom: 8 }}>⚠ Pending Terminations from Attendance</div>
-                <div style={{ fontSize: 12, color: "#92400e", marginBottom: 10 }}>{pendingTerms.length} staff marked as terminated in the daily attendance grid but not yet added to off-boarding. Add them with one click.</div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(260px,1fr))", gap: 8 }}>
+              <div style={glassCard({ background: "linear-gradient(158deg, rgba(255,252,240,0.94) 0%, rgba(254,243,199,0.60) 100%)", border: "1px solid rgba(253,230,138,0.9)" })}>
+                <div style={{ fontSize: 13.5, fontWeight: 800, color: "#92400e", marginBottom: 10, letterSpacing: "0.01em" }}>⚠ Pending terminations from attendance</div>
+                <div style={{ fontSize: 12.5, color: "#b45309", marginBottom: 14, lineHeight: 1.6, maxWidth: "78ch" }}>{pendingTerms.length} staff marked as terminated in the daily attendance grid but not yet added to off-boarding. Add them with one click.</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 12 }}>
                   {pendingTerms.map(p => (
-                    <div key={p.ec} style={{ background: "#fff", borderRadius: 9, border: "1px solid #fde68a", padding: "10px 12px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                    <div key={p.ec} style={glassTile({ background: "linear-gradient(155deg, rgba(255,255,255,0.94) 0%, rgba(254,249,231,0.62) 100%)", border: "1px solid rgba(253,230,138,0.9)", padding: "13px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 })}>
                       <div>
                         <div style={{ fontSize: 13, fontWeight: 700, color: "#831843" }}>{p.name}</div>
                         <div style={{ fontSize: 10, fontFamily: "monospace", color: "#92400e", fontWeight: 700 }}>{p.ec} · {p.branch}</div>
                         <div style={{ fontSize: 11, color: "#92400e", marginTop: 3 }}>From {p.firstTermDate}</div>
                       </div>
-                      <button onClick={() => setQuickPick(p)} style={{ padding: "6px 12px", borderRadius: 7, border: "none", background: "#92400e", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700 }}>Add</button>
+                      <button className="boa-btn" onClick={() => setQuickPick(p)} style={{ padding: "8px 16px", borderRadius: 9, border: "none", background: "linear-gradient(180deg,#b06a12,#8a4d09)", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, boxShadow: "0 8px 18px -9px rgba(138,77,9,0.85)" }}>Add</button>
                     </div>
                   ))}
                 </div>
@@ -38794,34 +39536,34 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
             {/* Quick-pick modal */}
             {quickPick && (
-              <div onClick={() => setQuickPick(null)} style={{ position: "fixed", inset: 0, background: "rgba(131,24,67,0.35)", zIndex: 9000, display: "flex", alignItems: "center", justifyContent: "center", padding: "40px 20px" }}>
-                <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 14, maxWidth: 480, width: "100%", padding: "22px 26px" }}>
-                  <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 18, fontWeight: 700, color: "#831843", marginBottom: 6 }}>Confirm off-boarding for {quickPick.name}</div>
-                  <div style={{ fontSize: 12, color: "#831843", marginBottom: 14 }}>EC <strong>{quickPick.ec}</strong> · {quickPick.branch}<br />Attendance shows termination from <strong>{quickPick.firstTermDate}</strong>. Last day worked will be set to one day before that.</div>
-                  <label style={{ fontSize: 11, fontWeight: 700, color: "#831843", letterSpacing: "0.05em" }}>REASON</label>
-                  <select id="_qpReason" defaultValue="Terminated" style={{ width: "100%", padding: "8px 10px", border: "1px solid #FBCFE8", borderRadius: 8, fontSize: 13, fontFamily: "inherit", marginTop: 4, marginBottom: 12, background: "#fff" }}>
+              <div onClick={() => setQuickPick(null)} style={{ position: "fixed", inset: 0, background: "rgba(74,18,48,0.34)", backdropFilter: "blur(6px)", WebkitBackdropFilter: "blur(6px)", zIndex: 9000, display: "flex", alignItems: "center", justifyContent: "center", padding: "40px 20px" }}>
+                <div onClick={e => e.stopPropagation()} style={{ ...GLASS_SURFACE, background: "linear-gradient(158deg, rgba(255,255,255,0.97) 0%, rgba(253,242,248,0.92) 100%)", borderRadius: 20, maxWidth: 500, width: "100%", padding: "26px 28px", boxSizing: "border-box", boxShadow: "0 30px 70px -30px rgba(74,18,48,0.65)" }}>
+                  <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 19, fontWeight: 700, color: "#831843", marginBottom: 8 }}>Confirm off-boarding for {quickPick.name}</div>
+                  <div style={{ fontSize: 12.5, color: "#6B1739", marginBottom: 18, lineHeight: 1.65 }}>EC <strong>{quickPick.ec}</strong> · {quickPick.branch}<br />Attendance shows termination from <strong>{quickPick.firstTermDate}</strong>. Last day worked will be set to one day before that.</div>
+                  <label style={GLASS_LABEL}>Reason</label>
+                  <select id="_qpReason" defaultValue="Terminated" style={{ ...GLASS_INPUT, marginBottom: 16 }}>
                     <option value="Terminated">Terminated</option>
                     <option value="Resigned">Resigned</option>
                     <option value="Mutual agreement">Mutual agreement</option>
                     <option value="End of contract">End of contract</option>
                     <option value="Other">Other</option>
                   </select>
-                  <label style={{ fontSize: 11, fontWeight: 700, color: "#831843", letterSpacing: "0.05em" }}>NOTES (OPTIONAL)</label>
-                  <input id="_qpNotes" placeholder="e.g. final salary processed" style={{ width: "100%", padding: "8px 10px", border: "1px solid #FBCFE8", borderRadius: 8, fontSize: 13, fontFamily: "inherit", marginTop: 4, marginBottom: 14 }} />
-                  <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-                    <button onClick={() => setQuickPick(null)} style={{ padding: "8px 14px", borderRadius: 9, border: "1px solid #FBCFE8", background: "#fff", color: "#831843", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 600 }}>Cancel</button>
-                    <button onClick={submitQuickPick} style={{ padding: "8px 18px", borderRadius: 9, border: "none", background: "#BE185D", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 }}>Confirm Off-board</button>
+                  <label style={GLASS_LABEL}>Notes (optional)</label>
+                  <input id="_qpNotes" placeholder="e.g. final salary processed" style={{ ...GLASS_INPUT, marginBottom: 20 }} />
+                  <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                    <button className="boa-btn" onClick={() => setQuickPick(null)} style={BTN_GHOST}>Cancel</button>
+                    <button className="boa-btn" onClick={submitQuickPick} style={BTN_PRIMARY}>Confirm off-board</button>
                   </div>
                 </div>
               </div>
             )}
 
             {/* Off-board form */}
-            <div style={{ background: "#FFFFFF", borderRadius: 13, padding: "16px 18px", border: "1px solid #FBCFE8", marginBottom: 18 }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "#831843", marginBottom: 10 }}>Mark a staff member as off-boarded</div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 10, marginBottom: 10 }}>
+            <div style={glassCard()}>
+              <div style={{ ...glassHeading(), marginBottom: 16 }}>Mark a staff member as off-boarded</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(230px,1fr))", gap: 16, marginBottom: 16 }}>
                 <div>
-                  <label style={{ fontSize: 11, fontWeight: 700, color: "#831843", letterSpacing: "0.05em", display: "block", marginBottom: 4 }}>STAFF MEMBER</label>
+                  <label style={GLASS_LABEL}>Staff member</label>
                   <StaffPicker
                     people={activeStaffOpts}
                     valueEc={offEcInput}
@@ -38831,12 +39573,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   />
                 </div>
                 <div>
-                  <label style={{ fontSize: 11, fontWeight: 700, color: "#831843", letterSpacing: "0.05em" }}>LAST DAY WORKED</label>
-                  <input id="_offDate" type="date" defaultValue={todayStr} style={{ width: "100%", marginTop: 4, padding: "8px 10px", border: "1px solid #FBCFE8", borderRadius: 8, fontSize: 13, fontFamily: "inherit" }} />
+                  <label style={GLASS_LABEL}>Last day worked</label>
+                  <input id="_offDate" type="date" defaultValue={todayStr} style={GLASS_INPUT} />
                 </div>
                 <div>
-                  <label style={{ fontSize: 11, fontWeight: 700, color: "#831843", letterSpacing: "0.05em" }}>REASON</label>
-                  <select id="_offReason" defaultValue="Resigned" style={{ width: "100%", marginTop: 4, padding: "8px 10px", border: "1px solid #FBCFE8", borderRadius: 8, fontSize: 13, fontFamily: "inherit", background: "#fff" }}>
+                  <label style={GLASS_LABEL}>Reason</label>
+                  <select id="_offReason" defaultValue="Resigned" style={GLASS_INPUT}>
                     <option value="Resigned">Resigned</option>
                     <option value="Terminated">Terminated</option>
                     <option value="Mutual agreement">Mutual agreement</option>
@@ -38845,40 +39587,40 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   </select>
                 </div>
               </div>
-              <div style={{ marginBottom: 10 }}>
-                <label style={{ fontSize: 11, fontWeight: 700, color: "#831843", letterSpacing: "0.05em" }}>NOTES (OPTIONAL)</label>
-                <input id="_offNotes" placeholder="e.g. Moving to JHB" style={{ width: "100%", marginTop: 4, padding: "8px 10px", border: "1px solid #FBCFE8", borderRadius: 8, fontSize: 13, fontFamily: "inherit" }} />
+              <div style={{ marginBottom: 16 }}>
+                <label style={GLASS_LABEL}>Notes (optional)</label>
+                <input id="_offNotes" placeholder="e.g. Moving to JHB" style={GLASS_INPUT} />
               </div>
-              <button onClick={submitOff} style={{ padding: "8px 18px", borderRadius: 9, border: "none", background: "#BE185D", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 }}>OFF-BOARD</button>
+              <button className="boa-btn" onClick={submitOff} style={{ ...BTN_PRIMARY, fontSize: 13, padding: "11px 22px", letterSpacing: "0.04em" }}>Off-board</button>
             </div>
 
             {/* Working Notice card */}
             {notice.length > 0 && (
-              <div style={{ background: "#fffbeb", borderRadius: 13, padding: "16px 18px", border: "1px solid #fde68a", marginBottom: 14 }}>
-                <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
-                  <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 16, fontWeight: 600, color: "#92400e" }}>⏳ Working notice</div>
-                  <div style={{ fontSize: 11, color: "#92400e", fontWeight: 600 }}>· {notice.length} {notice.length === 1 ? "person" : "people"}</div>
+              <div style={glassCard({ background: "linear-gradient(158deg, rgba(255,252,240,0.92) 0%, rgba(254,243,199,0.55) 100%)", border: "1px solid rgba(253,230,138,0.85)" })}>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+                  <div style={glassHeading("#92400e")}>⏳ Working notice</div>
+                  <div style={{ fontSize: 11.5, color: "#b45309", fontWeight: 600 }}>· {notice.length} {notice.length === 1 ? "person" : "people"}</div>
                 </div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 10 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(290px,1fr))", gap: 14 }}>
                   {notice.map(o => {
                     const d = new Date(o.leftDate + "T00:00:00");
                     const dStr = d.toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" });
                     const t0n = new Date(now.getFullYear(), now.getMonth(), now.getDate());
                     const daysUntil = Math.floor((d - t0n) / 86400000);
                     return (
-                      <div key={o.ec} style={{ background: "#FFFFFF", borderRadius: 11, padding: "13px 14px", border: "1px solid #fde68a" }}>
+                      <div key={o.ec} style={glassTile({ background: "linear-gradient(155deg, rgba(255,255,255,0.92) 0%, rgba(254,249,231,0.62) 100%)", border: "1px solid rgba(253,230,138,0.9)" })}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 6, marginBottom: 6 }}>
                           <div>
-                            <div style={{ fontSize: 13, fontWeight: 700, color: "#831843" }}>{o.name}</div>
-                            <div style={{ fontSize: 10, fontFamily: "monospace", color: "#E84B9B", fontWeight: 700 }}>{o.ec} · {o.branch}</div>
+                            <div style={{ fontSize: 14, fontWeight: 700, color: "#831843", lineHeight: 1.35 }}>{o.name}</div>
+                            <div style={{ fontSize: 10.5, fontFamily: "monospace", color: "#C2447E", fontWeight: 700, marginTop: 3, letterSpacing: "0.02em" }}>{o.ec} · {o.branch}</div>
                           </div>
-                          <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 8px", borderRadius: 99, background: "#fef3c7", color: "#92400e", letterSpacing: "0.02em" }}>{o.reason}</span>
+                          <span style={{ fontSize: 9.5, fontWeight: 800, padding: "4px 10px", borderRadius: 99, background: "#fef3c7", color: "#92400e", letterSpacing: "0.03em", whiteSpace: "nowrap", border: "1px solid rgba(255,255,255,0.7)" }}>{o.reason}</span>
                         </div>
                         <div style={{ fontSize: 11, color: "#92400e", marginTop: 4 }}>
                           Last day {dStr}<span style={{ opacity: 0.75 }}> · {daysUntil === 0 ? "today" : daysUntil === 1 ? "tomorrow" : "in " + daysUntil + " days"}</span>
                         </div>
-                        {o.notes && <div style={{ fontSize: 11, color: "#831843", marginTop: 6, fontStyle: "italic", whiteSpace: "pre-wrap" }}>{o.notes}</div>}
-                        <button onClick={() => undoOff(o.ec)} style={{ marginTop: 8, background: "transparent", border: "1px solid #fde68a", color: "#92400e", padding: "4px 10px", borderRadius: 5, fontSize: 10, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>↺ Cancel</button>{renderExitBadge(o)}
+                        {o.notes && <div style={{ fontSize: 11.5, color: "#7d5068", marginTop: 9, fontStyle: "italic", whiteSpace: "pre-wrap", lineHeight: 1.55 }}>{o.notes}</div>}
+                        <button onClick={() => undoOff(o.ec)} className="boa-btn" style={{ marginTop: 12, marginRight: 8, background: "rgba(255,255,255,0.7)", border: "1px solid rgba(217,119,6,0.28)", color: "#92400e", padding: "6px 12px", borderRadius: 8, fontSize: 10.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>↺ Cancel</button>{renderExitBadge(o)}
                       </div>
                     );
                   })}
@@ -38887,15 +39629,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             )}
 
             {/* Recently Left card */}
-            <div style={{ background: "#FFFFFF", borderRadius: 13, padding: "16px 18px", border: "1px solid #FBCFE8" }}>
-              <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
-                <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 16, fontWeight: 600, color: "#831843" }}>Recently Left</div>
-                <div style={{ fontSize: 11, color: "#BE185D", fontWeight: 600 }}>· last 30 days · {recent.length} {recent.length === 1 ? "person" : "people"}</div>
+            <div style={glassCard()}>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+                <div style={glassHeading()}>Recently left</div>
+                <div style={{ fontSize: 11.5, color: "#BE185D", fontWeight: 600 }}>· last 30 days · {recent.length} {recent.length === 1 ? "person" : "people"}</div>
               </div>
               {recent.length === 0 ? (
-                <div style={{ fontSize: 12, color: "#9ca3af", padding: "20px 4px", textAlign: "center" }}>No staff have left in the last 30 days.</div>
+                <div style={{ fontSize: 12.5, color: "#a98ba0", padding: "26px 4px", textAlign: "center" }}>No staff have left in the last 30 days.</div>
               ) : (
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 10 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(290px,1fr))", gap: 14 }}>
                   {recent.map(o => {
                     const d = new Date(o.leftDate + "T00:00:00");
                     const dStr = d.toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" });
@@ -38903,19 +39645,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     const reasonBg = o.reason === "Terminated" ? "#fee2e2" : o.reason === "Resigned" ? "#dbeafe" : "#fef3c7";
                     const reasonColor = o.reason === "Terminated" ? "#991b1b" : o.reason === "Resigned" ? "#1e3a8a" : "#92400e";
                     return (
-                      <div key={o.ec} style={{ background: "#FDEEF5", borderRadius: 11, padding: "13px 14px", border: "1px solid #FBCFE8" }}>
+                      <div key={o.ec} style={glassTile()}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 6, marginBottom: 6 }}>
                           <div>
-                            <div style={{ fontSize: 13, fontWeight: 700, color: "#831843" }}>{o.name}</div>
-                            <div style={{ fontSize: 10, fontFamily: "monospace", color: "#E84B9B", fontWeight: 700 }}>{o.ec} · {o.branch}</div>
+                            <div style={{ fontSize: 14, fontWeight: 700, color: "#831843", lineHeight: 1.35 }}>{o.name}</div>
+                            <div style={{ fontSize: 10.5, fontFamily: "monospace", color: "#C2447E", fontWeight: 700, marginTop: 3, letterSpacing: "0.02em" }}>{o.ec} · {o.branch}</div>
                           </div>
-                          <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 8px", borderRadius: 99, background: reasonBg, color: reasonColor, letterSpacing: "0.02em" }}>{o.reason}</span>
+                          <span style={{ fontSize: 9.5, fontWeight: 800, padding: "4px 10px", borderRadius: 99, background: reasonBg, color: reasonColor, letterSpacing: "0.03em", whiteSpace: "nowrap", border: "1px solid rgba(255,255,255,0.7)" }}>{o.reason}</span>
                         </div>
                         <div style={{ fontSize: 11, color: "#BE185D", marginTop: 4 }}>
                           Left {dStr}<span style={{ opacity: 0.7 }}> · {daysAgo === 0 ? "today" : daysAgo === 1 ? "yesterday" : daysAgo + " days ago"}</span>
                         </div>
-                        {o.notes && <div style={{ fontSize: 11, color: "#831843", marginTop: 6, fontStyle: "italic", whiteSpace: "pre-wrap" }}>{o.notes}</div>}
-                        <button onClick={() => undoOff(o.ec)} style={{ marginTop: 8, background: "transparent", border: "1px solid #FBCFE8", color: "#831843", padding: "4px 10px", borderRadius: 5, fontSize: 10, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>↺ Restore</button>{renderExitBadge(o)}
+                        {o.notes && <div style={{ fontSize: 11.5, color: "#7d5068", marginTop: 9, fontStyle: "italic", whiteSpace: "pre-wrap", lineHeight: 1.55 }}>{o.notes}</div>}
+                        <button onClick={() => undoOff(o.ec)} className="boa-btn" style={{ marginTop: 12, marginRight: 8, background: "rgba(255,255,255,0.7)", border: "1px solid rgba(190,24,93,0.20)", color: "#9d174d", padding: "6px 12px", borderRadius: 8, fontSize: 10.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>↺ Restore</button>{renderExitBadge(o)}
                       </div>
                     );
                   })}
@@ -38925,22 +39667,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
             {/* Earlier departures archive — restore anyone who left >30 days ago */}
             {archiveAll.length > 0 && (
-              <div style={{ background: "#FFFFFF", borderRadius: 13, padding: "16px 18px", border: "1px solid #FBCFE8", marginTop: 14 }}>
-                <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
-                  <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 16, fontWeight: 600, color: "#831843" }}>Earlier departures</div>
-                  <div style={{ fontSize: 11, color: "#BE185D", fontWeight: 600 }}>· left over 30 days ago · {archiveAll.length} {archiveAll.length === 1 ? "person" : "people"}</div>
+              <div style={glassCard({ marginBottom: 0 })}>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
+                  <div style={glassHeading()}>Earlier departures</div>
+                  <div style={{ fontSize: 11.5, color: "#BE185D", fontWeight: 600 }}>· left over 30 days ago · {archiveAll.length} {archiveAll.length === 1 ? "person" : "people"}</div>
                 </div>
-                <div style={{ fontSize: 11, color: "#9ca3af", marginBottom: 12 }}>Off-boarded by mistake? Search and Restore to bring them back as active staff — their schedule and attendance history return automatically.</div>
+                <div style={{ fontSize: 12, color: "#a98ba0", marginBottom: 14, lineHeight: 1.6, maxWidth: "72ch" }}>Off-boarded by mistake? Search and Restore to bring them back as active staff — their schedule and attendance history return automatically.</div>
                 <input
                   value={offArchiveQuery}
                   onChange={(e) => setOffArchiveQuery(e.target.value)}
-                  placeholder="Search by name, EC or branch…"
-                  style={{ width: "100%", padding: "8px 10px", border: "1px solid #FBCFE8", borderRadius: 8, fontSize: 13, fontFamily: "inherit", marginBottom: 12 }}
+                  placeholder="🔍  Search by name, EC or branch…"
+                  style={{ ...GLASS_INPUT, maxWidth: 380, marginBottom: 16 }}
                 />
                 {archive.length === 0 ? (
-                  <div style={{ fontSize: 12, color: "#9ca3af", padding: "16px 4px", textAlign: "center" }}>No earlier departures match “{offArchiveQuery}”.</div>
+                  <div style={{ fontSize: 12.5, color: "#a98ba0", padding: "20px 4px", textAlign: "center" }}>No earlier departures match “{offArchiveQuery}”.</div>
                 ) : (
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 10 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(290px,1fr))", gap: 14 }}>
                     {archive.map(o => {
                       const d = new Date(o.leftDate + "T00:00:00");
                       const dStr = d.toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" });
@@ -38948,19 +39690,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       const reasonBg = o.reason === "Terminated" ? "#fee2e2" : o.reason === "Resigned" ? "#dbeafe" : "#fef3c7";
                       const reasonColor = o.reason === "Terminated" ? "#991b1b" : o.reason === "Resigned" ? "#1e3a8a" : "#92400e";
                       return (
-                        <div key={o.ec} style={{ background: "#F9FAFB", borderRadius: 11, padding: "13px 14px", border: "1px solid #e5e7eb" }}>
+                        <div key={o.ec} style={glassTile({ background: "linear-gradient(155deg, rgba(255,255,255,0.80) 0%, rgba(246,244,247,0.58) 100%)", border: "1px solid rgba(255,255,255,0.78)" })}>
                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 6, marginBottom: 6 }}>
                             <div>
-                              <div style={{ fontSize: 13, fontWeight: 700, color: "#831843" }}>{o.name}</div>
-                              <div style={{ fontSize: 10, fontFamily: "monospace", color: "#E84B9B", fontWeight: 700 }}>{o.ec} · {o.branch}</div>
+                              <div style={{ fontSize: 14, fontWeight: 700, color: "#831843", lineHeight: 1.35 }}>{o.name}</div>
+                              <div style={{ fontSize: 10.5, fontFamily: "monospace", color: "#C2447E", fontWeight: 700, marginTop: 3, letterSpacing: "0.02em" }}>{o.ec} · {o.branch}</div>
                             </div>
-                            {o.reason && <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 8px", borderRadius: 99, background: reasonBg, color: reasonColor, letterSpacing: "0.02em" }}>{o.reason}</span>}
+                            {o.reason && <span style={{ fontSize: 9.5, fontWeight: 800, padding: "4px 10px", borderRadius: 99, background: reasonBg, color: reasonColor, letterSpacing: "0.03em", whiteSpace: "nowrap", border: "1px solid rgba(255,255,255,0.7)" }}>{o.reason}</span>}
                           </div>
                           <div style={{ fontSize: 11, color: "#BE185D", marginTop: 4 }}>
                             Left {dStr}<span style={{ opacity: 0.7 }}> · {daysAgo} days ago</span>
                           </div>
-                          {o.notes && <div style={{ fontSize: 11, color: "#831843", marginTop: 6, fontStyle: "italic", whiteSpace: "pre-wrap" }}>{o.notes}</div>}
-                          <button onClick={() => undoOff(o.ec)} style={{ marginTop: 8, background: "transparent", border: "1px solid #FBCFE8", color: "#831843", padding: "4px 10px", borderRadius: 5, fontSize: 10, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>↺ Restore</button>{renderExitBadge(o)}
+                          {o.notes && <div style={{ fontSize: 11.5, color: "#7d5068", marginTop: 9, fontStyle: "italic", whiteSpace: "pre-wrap", lineHeight: 1.55 }}>{o.notes}</div>}
+                          <button onClick={() => undoOff(o.ec)} className="boa-btn" style={{ marginTop: 12, marginRight: 8, background: "rgba(255,255,255,0.7)", border: "1px solid rgba(190,24,93,0.20)", color: "#9d174d", padding: "6px 12px", borderRadius: 8, fontSize: 10.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>↺ Restore</button>{renderExitBadge(o)}
                         </div>
                       );
                     })}
@@ -38968,6 +39710,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 )}
               </div>
             )}
+            </>)}
           </div>
         );
       })()}
