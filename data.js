@@ -131,6 +131,12 @@
       contract: r.contract || null,
       permit: r.permit || null,
       permitExpiry: r.permit_expiry || null,
+      // Asylum / DHA sub-flow (see the DHA_STATUS block in app.jsx). Null
+      // until sql/staff_asylum_dha.sql has run; the save path below strips
+      // unknown columns and retries, so the rest of the record still saves.
+      asylumDhaChecked: r.asylum_dha_checked || null,
+      asylumDhaStatus: r.asylum_dha_status || null,
+      asylumRef: r.asylum_ref || null,
       notes: r.notes || "",
       isShadow: !!r.is_shadow,
       transferring: !!r.transferring,
@@ -168,6 +174,9 @@
       contract: s.contract || null,
       permit: s.permit || null,
       permit_expiry: s.permitExpiry || null,
+      asylum_dha_checked: s.asylumDhaChecked || null,
+      asylum_dha_status: s.asylumDhaStatus || null,
+      asylum_ref: s.asylumRef || null,
       notes: s.notes || null,
       is_shadow: !!s.isShadow,
       transferring: !!s.transferring,
@@ -214,6 +223,12 @@
       contract: r.contract || null,
       permit: r.permit || null,
       permitExpiry: r.permit_expiry || null,
+      // Asylum / DHA sub-flow (see the DHA_STATUS block in app.jsx). Null
+      // until sql/staff_asylum_dha.sql has run; the save path below strips
+      // unknown columns and retries, so the rest of the record still saves.
+      asylumDhaChecked: r.asylum_dha_checked || null,
+      asylumDhaStatus: r.asylum_dha_status || null,
+      asylumRef: r.asylum_ref || null,
       transferring: !!r.transferring,
       transferTo: r.transfer_to || null,
       transferDate: r.transfer_date || null,
@@ -242,6 +257,9 @@
       contract: m.contract || null,
       permit: m.permit || null,
       permit_expiry: m.permitExpiry || null,
+      asylum_dha_checked: m.asylumDhaChecked || null,
+      asylum_dha_status: m.asylumDhaStatus || null,
+      asylum_ref: m.asylumRef || null,
       transferring: !!m.transferring,
       transfer_to: m.transferTo || null,
       transfer_date: m.transferDate || null,

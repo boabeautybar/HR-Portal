@@ -3200,7 +3200,7 @@ function parseShiftRange(s) {
 //   • employee_code must start with "B" (the production EC prefix)
 //   • rows in "Induction" or with a date-style EC (not started yet) skipped
 // Permit values map the sheet's text to the COMPLIANCE keys (sa_citizen,
-// asylum, verified_dha, z_na). Contract is kept as-is, since the schedule
+// asylum, refugee, z_na). Contract is kept as-is, since the schedule
 // + maternity UI both read free-text contract labels (Permanent, 3 Month,
 // Maternity, etc.). The Locations tab exposes a one-click "Import …"
 // button that calls saveCustomSalons + saveStaff in sequence.
@@ -3260,7 +3260,7 @@ const JHB_IMPORT_STAFF = [
   { ec: "B841", name: "Helen Mthembu", branch: "Mushroom Farm", contract: "Permanent", permit: "sa_citizen", level: "Two" },
   { ec: "B875", name: "Mohau Mothepu", branch: "Mushroom Farm", contract: "Permanent", permit: "sa_citizen", level: "One" },
   { ec: "B685", name: "Zinhle", branch: "Mushroom Farm", contract: "3 Month", permit: "sa_citizen", level: "Two" },
-  { ec: "B803", name: "Marie-Claie Kwizera", branch: "Mushroom Farm", contract: "Fixed Term", permit: "verified_dha", level: "Two" },
+  { ec: "B803", name: "Marie-Claie Kwizera", branch: "Mushroom Farm", contract: "Fixed Term", permit: "asylum", asylumDhaChecked: "yes", asylumDhaStatus: "on_file", level: "Two" },
   { ec: "B852", name: "Dimakatso Marako", branch: "Mushroom Farm", contract: "Permanent", permit: "sa_citizen", level: "" },
   { ec: "B485", name: "Shaine Mtazu", branch: "Mushroom Farm", contract: "Maternity", permit: "", level: "One" },
   // Verdi
@@ -3288,9 +3288,64 @@ const COMPLIANCE = {
   sa_citizen: { label: "SA Citizen", icon: "🇿🇦", color: "#14532d", bg: "#dcfce7", border: "#86efac" },
   work_permit: { label: "Valid Work Permit", icon: "✅", color: "#8E5570", bg: "#dbeafe", border: "#93c5fd" },
   asylum: { label: "Asylum on File", icon: "📋", color: "#4c1d95", bg: "#ede9fe", border: "#a78bfa" },
-  verified_dha: { label: "Verified by DHA", icon: "🔵", color: "#0c4a6e", bg: "#e0f2fe", border: "#7dd3fc" },
+  // Was "Verified by DHA". DHA verification is a property of an ASYLUM
+  // document, not a status of its own, so it moved into the asylum sub-flow
+  // below and this slot now holds the distinct legal status it was being
+  // used as a stand-in for. Legacy `verified_dha` rows are rewritten to
+  // asylum + DHA-on-file by sql/staff_asylum_dha.sql.
+  refugee: { label: "Refugee on File", icon: "🛡️", color: "#0c4a6e", bg: "#e0f2fe", border: "#7dd3fc" },
   z_na: { label: "Z/NA – No Valid Permit", icon: "🚨", color: "#831843", bg: "#fee2e2", border: "#fca5a5" },
 };
+
+// ── ASYLUM / DHA SUB-FLOW ────────────────────────────────────────────────
+// "Asylum on File" alone says nothing about whether the document is real.
+// Home Affairs either has it or does not, so selecting asylum asks whether
+// DHA verified it, and a DHA check that came back ON FILE asks for the
+// unique asylum reference and the expiry.
+//
+//   permit = "asylum"
+//     └─ asylumDhaChecked  "yes" | "no" | null(not asked yet)
+//          └─ (yes) asylumDhaStatus  "on_file"(valid) | "not_on_system"(invalid)
+//               └─ (on_file) asylumRef + permitExpiry
+//
+// NOT ON SYSTEM means the document does not exist as far as DHA is
+// concerned, so it is treated as non-compliant everywhere a Z/NA is —
+// see isNonCompliantPermit below.
+const DHA_STATUS = {
+  on_file:       { label: "On file — valid",        short: "DHA ✓ on file",     icon: "🔵", color: "#0c4a6e", bg: "#e0f2fe", border: "#7dd3fc", valid: true },
+  not_on_system: { label: "Not on system — invalid", short: "DHA ✗ not on system", icon: "🚨", color: "#831843", bg: "#fee2e2", border: "#fca5a5", valid: false },
+};
+// Permits that carry an expiry date. Refugee joins asylum / work permit so
+// the Compliance tab's "Expiring soon" panel can chase it like the rest.
+const PERMITS_WITH_EXPIRY = ["asylum", "work_permit", "refugee"];
+function permitHasExpiry(permit) { return PERMITS_WITH_EXPIRY.includes(permit); }
+function permitExpiryLabel(permit) {
+  return permit === "asylum" ? "Asylum document expiry"
+    : permit === "refugee" ? "Refugee status expiry"
+      : "Work permit expiry";
+}
+// An asylum document DHA could not find is not a valid document.
+function asylumFailedDha(p) {
+  return !!p && p.permit === "asylum" && p.asylumDhaStatus === "not_on_system";
+}
+// The single non-compliance test. Every count, tile, alert and follow-up
+// list runs through this so they cannot drift apart.
+function isNonCompliantPermit(p) {
+  if (!p) return true;
+  if (!p.permit || p.permit === "z_na") return true;
+  return asylumFailedDha(p);
+}
+// Short human summary of the asylum sub-flow, for row chips and tooltips.
+// Returns null when there is nothing extra to say.
+function asylumDetail(p) {
+  if (!p || p.permit !== "asylum") return null;
+  if (p.asylumDhaChecked !== "yes") {
+    return { text: p.asylumDhaChecked === "no" ? "Not DHA-verified" : "DHA check outstanding", pending: true };
+  }
+  const st = DHA_STATUS[p.asylumDhaStatus];
+  if (!st) return { text: "DHA check outstanding", pending: true };
+  return { text: st.short, valid: st.valid, ref: p.asylumRef || "", st };
+}
 
 // ── STILL ON THE BOOKS ───────────────────────────────────────────────────
 // One departure test for the compliance surfaces, which were re-deriving it
@@ -3772,8 +3827,8 @@ const STAFF_INIT = [
   { ec: "B856", name: "Tariro Makore", branch: "Cape Gate", contract: "NO CONTRACT", permit: "asylum", level: "" },
   { ec: "B857", name: "Valentine Murambiza", branch: "Somerset West", contract: "Permanent", permit: "z_na", level: "" },
   { ec: "B858", name: "Gorgenia Mugomesa", branch: "Plumstead", contract: "Permanent", permit: "asylum", level: "" },
-  { ec: "B859", name: "Kimberly Makuyana", branch: "Plumstead", contract: "Permanent", permit: "verified_dha", level: "" },
-  { ec: "B860", name: "Blessing Nyamadzawa", branch: "Plumstead", contract: "Permanent", permit: "verified_dha", level: "One" },
+  { ec: "B859", name: "Kimberly Makuyana", branch: "Plumstead", contract: "Permanent", permit: "asylum", asylumDhaChecked: "yes", asylumDhaStatus: "on_file", level: "" },
+  { ec: "B860", name: "Blessing Nyamadzawa", branch: "Plumstead", contract: "Permanent", permit: "asylum", asylumDhaChecked: "yes", asylumDhaStatus: "on_file", level: "One" },
   { ec: "B861", name: "Florence Svinurayi", branch: "Somerset West", contract: "Permanent", permit: "asylum", level: "" },
   { ec: "B876", name: "Dorcas Likibi", branch: "Cape Gate", contract: "NO CONTRACT", permit: "asylum", level: "" },
   // Trials / inductions
@@ -3805,7 +3860,7 @@ const STAFF_INIT = [
   { ec: "T030", name: "Olona Jekwa", branch: "Cape Gate", contract: "Induction", permit: "sa_citizen", level: "" },
   { ec: "T031", name: "Khasha Malgas", branch: "Winelands", contract: "Induction", permit: "sa_citizen", level: "" },
   { ec: "T032", name: "Dorrine Galant", branch: "Winelands", contract: "Induction", permit: "sa_citizen", level: "" },
-  { ec: "T033", name: "Consetar Moyo", branch: "Winelands", contract: "Induction", permit: "verified_dha", level: "" },
+  { ec: "T033", name: "Consetar Moyo", branch: "Winelands", contract: "Induction", permit: "asylum", asylumDhaChecked: "yes", asylumDhaStatus: "on_file", level: "" },
   { ec: "T036", name: "Lindelwa", branch: "Betty", contract: "2 Weeks", permit: "sa_citizen", level: "" },
 ];
 
@@ -3813,7 +3868,141 @@ const STAFF_INIT = [
 function Chip({ bg, color, border, children }) {
   return <span style={{ background: bg, color, border: `1px solid ${border}`, borderRadius: 20, padding: "3px 10px", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap", display: "inline-flex", alignItems: "center", gap: 4 }}>{children}</span>;
 }
+// ── COMPLIANCE PICKER ────────────────────────────────────────────────────
+// The ONE permit editor. StaffModal, ManagerModal, OfficeStaffModal and the
+// Compliance tab each used to carry their own copy of the radio grid and the
+// expiry input, which is exactly how the Compliance tab and the staff lists
+// drifted apart. They all render this instead now, so a field added here
+// appears on every surface at once.
+//
+// `f` is the form state, `set(key, value)` writes one field. `compact` is the
+// narrower single-column layout used by the manager / office modals.
+function CompliancePicker({ f, set, compact }) {
+  const lbl = { display: "block", fontSize: 11, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 };
+  // boxSizing is load-bearing: index.html has NO global box-sizing reset, so
+  // width:100% + padding + border overflows the parent without it. maxWidth
+  // caps <input type="date">, whose intrinsic width is wider than the track it
+  // sits in and which pushes the grid open otherwise.
+  const fld = { width: "100%", maxWidth: "100%", padding: "8px 11px", border: "1px solid #FBCFE8", borderRadius: 8, fontSize: 13, fontFamily: "inherit", background: "#fff", boxSizing: "border-box" };
+  // Grid children default to min-width:auto, so a wide intrinsic input refuses
+  // to shrink and bleeds out of its column. minWidth:0 lets the track win.
+  const cell = { minWidth: 0 };
+  const isAsylum = f.permit === "asylum";
+  const dhaChecked = f.asylumDhaChecked || "";
+  // Clearing the trail matters: leaving a stale reference or DHA verdict on
+  // a record whose permit moved to SA Citizen would keep showing asylum
+  // detail against someone who no longer has an asylum document.
+  const pickPermit = (k) => {
+    if (k === f.permit) return;
+    set("permit", k);
+    if (k !== "asylum") { set("asylumDhaChecked", null); set("asylumDhaStatus", null); set("asylumRef", null); }
+    if (!permitHasExpiry(k)) set("permitExpiry", null);
+  };
+  const pickDhaChecked = (v) => {
+    set("asylumDhaChecked", v);
+    // "Not DHA-verified" has no verdict and no reference to speak of.
+    if (v !== "yes") { set("asylumDhaStatus", null); set("asylumRef", null); }
+  };
+  const pickDhaStatus = (v) => {
+    set("asylumDhaStatus", v);
+    // A document DHA cannot find has no reference number or expiry worth keeping.
+    if (v !== "on_file") { set("asylumRef", null); set("permitExpiry", null); }
+  };
+  // onChange on the INPUT, not onClick on the label: a label wrapping its own
+  // input forwards the click to it, and that synthetic click bubbles back to
+  // the label — an onClick here would fire twice per selection.
+  const choice = (active, pick, icon, text, c, key) => (
+    <label key={key}
+      style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 11px", borderRadius: 9, border: `2px solid ${active ? (c.border || "#F472B6") : "#e5e7eb"}`, background: active ? (c.bg || "#fdf2f8") : "#fff", cursor: "pointer", minWidth: 0, boxSizing: "border-box" }}>
+      <input type="radio" checked={!!active} onChange={pick} style={{ display: "none" }} />
+      <span style={{ fontSize: 16, flex: "0 0 auto" }}>{icon}</span>
+      <span style={{ fontSize: 11, fontWeight: 700, color: active ? (c.color || "#831843") : "#831843", minWidth: 0, overflowWrap: "anywhere" }}>{text}</span>
+    </label>
+  );
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 7 }}>
+        {compact && choice(!f.permit, () => pickPermit(null), "❔", "Not set", {}, "_unset")}
+        {Object.entries(COMPLIANCE).map(([k, c]) => choice(f.permit === k, () => pickPermit(k), c.icon, c.label, c, k))}
+      </div>
+
+      {/* ── Asylum → was it verified by DHA? ── */}
+      {isAsylum && (
+        <div style={{ marginTop: 10, padding: "11px 13px", borderRadius: 10, background: "#fff", border: "1px solid #FBCFE8", boxSizing: "border-box", minWidth: 0 }}>
+          <label style={lbl}>Verified by Home Affairs (DHA)?</label>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 7 }}>
+            {choice(dhaChecked === "yes", () => pickDhaChecked("yes"), "🔍", "Yes — DHA checked", { border: "#7dd3fc", bg: "#e0f2fe", color: "#0c4a6e" }, "y")}
+            {choice(dhaChecked === "no", () => pickDhaChecked("no"), "⏳", "Not verified yet", { border: "#fde68a", bg: "#fef3c7", color: "#92400e" }, "n")}
+          </div>
+
+          {/* ── DHA said what? ── */}
+          {dhaChecked === "yes" && (
+            <div style={{ marginTop: 10 }}>
+              <label style={lbl}>DHA status</label>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 7 }}>
+                {Object.entries(DHA_STATUS).map(([k, st]) => choice(f.asylumDhaStatus === k, () => pickDhaStatus(k), st.icon, st.label, st, k))}
+              </div>
+              {f.asylumDhaStatus === "not_on_system" && (
+                <div style={{ marginTop: 8, padding: "8px 11px", borderRadius: 8, background: "#fee2e2", border: "1px solid #fca5a5", fontSize: 11.5, color: "#831843" }}>
+                  🚨 Home Affairs has no record of this document, so it counts as <b>non-compliant</b> — same as Z/NA. They will appear in the Compliance follow-up list.
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── Valid → reference + expiry ── */}
+          {dhaChecked === "yes" && f.asylumDhaStatus === "on_file" && (
+            <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: compact ? "1fr" : "repeat(auto-fit,minmax(190px,1fr))", gap: 10 }}>
+              <div style={cell}>
+                <label style={lbl}>Unique asylum reference *</label>
+                <input type="text" value={f.asylumRef || ""} onChange={e => set("asylumRef", e.target.value || null)}
+                  placeholder="e.g. CTRRO/1234567/2026" style={fld} />
+              </div>
+              <div style={cell}>
+                <label style={lbl}>Asylum document expiry *</label>
+                <input type="date" value={f.permitExpiry || ""} onChange={e => set("permitExpiry", e.target.value || null)} style={fld} />
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Expiry for the permits that carry one on their own. Asylum's expiry
+          is asked inside the sub-flow above, once DHA confirms it exists. */}
+      {permitHasExpiry(f.permit) && !isAsylum && (
+        <div style={{ marginTop: 10 }}>
+          <label style={lbl}>{permitExpiryLabel(f.permit)}</label>
+          <input type="date" value={f.permitExpiry || ""} onChange={e => set("permitExpiry", e.target.value || null)} style={fld} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 const CompBadge = ({ permit }) => { const c = COMPLIANCE[permit] || COMPLIANCE.z_na; return <Chip bg={c.bg} color={c.color} border={c.border}>{c.icon} {c.label}</Chip>; };
+// Asylum / DHA detail, shown NEXT TO the compliance chip wherever a permit
+// is rendered. This is what stopped the staff lists and the Compliance tab
+// from agreeing: the permit chip alone cannot say whether Home Affairs ever
+// confirmed the document. Renders nothing for non-asylum permits.
+// `compact` is the bare icon for tight rows (Locations cards).
+const DhaBadge = ({ p, compact }) => {
+  const d = asylumDetail(p);
+  if (!d) return null;
+  const title = d.pending
+    ? d.text + " — Home Affairs has not confirmed this asylum document"
+    : d.st.label + (d.ref ? " · ref " + d.ref : "") + (p.permitExpiry ? " · expires " + p.permitExpiry : "");
+  const icon = d.pending ? "⏳" : d.st.icon;
+  if (compact) return <span title={title} style={{ fontSize: 12 }}>{icon}</span>;
+  const c = d.pending
+    ? { bg: "#fef3c7", fg: "#92400e", bd: "#fde68a" }
+    : { bg: d.st.bg, fg: d.st.color, bd: d.st.border };
+  return (
+    <span title={title} style={{ display: "inline-block", background: c.bg, color: c.fg, border: `1px solid ${c.bd}`, fontSize: 10, fontWeight: 800, padding: "3px 8px", borderRadius: 99, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>
+      {icon} {d.text}
+    </span>
+  );
+};
+
 // 🛂 marker for a lodged VFS application. Rides NEXT TO the compliance chip
 // rather than replacing it — see the VFS block above. `compact` renders the
 // bare icon (tight rows: Locations cards), otherwise a chip with the
@@ -4095,27 +4284,7 @@ function StaffModal({ s, onClose, onSave, onTransfer, allStaff, isOwner, onHardD
           </div>
           <div style={{ gridColumn: "1/-1", background: "#FCE7F3", borderRadius: 12, padding: "14px 16px", border: "1px solid #FBCFE8" }}>
             <div style={{ fontSize: 10, fontWeight: 700, color: "#BE185D", marginBottom: 10, textTransform: "uppercase", letterSpacing: "0.08em" }}>Compliance / Work Status</div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 7 }}>
-              {Object.entries(COMPLIANCE).map(([k, c]) => (
-                <label key={k} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 11px", borderRadius: 9, border: `2px solid ${f.permit === k ? c.border : "#e5e7eb"}`, background: f.permit === k ? c.bg : "#fff", cursor: "pointer" }}>
-                  <input type="radio" checked={f.permit === k} onChange={() => set("permit", k)} style={{ display: "none" }} />
-                  <span style={{ fontSize: 16 }}>{c.icon}</span>
-                  <span style={{ fontSize: 11, fontWeight: 700, color: f.permit === k ? c.color : "#831843" }}>{c.label}</span>
-                </label>
-              ))}
-            </div>
-            {/* Expiry date - only relevant for asylum / work permit. Lets HR
-                surface anyone whose doc is about to lapse via the Compliance
-                'Expiring soon' panel. */}
-            {(f.permit === "asylum" || f.permit === "work_permit") && (
-              <div style={{ marginTop: 10 }}>
-                <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>
-                  {f.permit === "asylum" ? "Asylum document expiry" : "Work permit expiry"}
-                </label>
-                <input type="date" value={f.permitExpiry || ""} onChange={e => set("permitExpiry", e.target.value || null)}
-                  style={{ width: "100%", padding: "8px 11px", border: "1px solid #FBCFE8", borderRadius: 8, fontSize: 13, fontFamily: "inherit", background: "#FCE7F3" }} />
-              </div>
-            )}
+            <CompliancePicker f={f} set={set} />
           </div>
           {/* BOA Pathways — flags staff recruited through the BOA Pathways
               programme for unemployed South Africans. Drives the 🎓 badge on
@@ -4376,28 +4545,7 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete, smTrialActive, smTria
               uses; persists to the same `permit` column on the staff row. */}
           <div>
             <label style={lbl}>Compliance / Work Permit</label>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 8 }}>
-              <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, border: `1.5px solid ${!f.permit ? "#F472B6" : "#e5e7eb"}`, background: !f.permit ? "#fdf2f8" : "#f9fafb", cursor: "pointer" }}>
-                <input type="radio" checked={!f.permit} onChange={() => set("permit", null)} style={{ display: "none" }} />
-                <span style={{ fontSize: 16 }}>❔</span>
-                <span style={{ fontSize: 11, fontWeight: 700, color: !f.permit ? "#831843" : "#6b7280" }}>Not set</span>
-              </label>
-              {Object.entries(COMPLIANCE).map(([k, c]) => (
-                <label key={k} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, border: `1.5px solid ${f.permit === k ? c.border : "#e5e7eb"}`, background: f.permit === k ? c.bg : "#f9fafb", cursor: "pointer" }}>
-                  <input type="radio" checked={f.permit === k} onChange={() => set("permit", k)} style={{ display: "none" }} />
-                  <span style={{ fontSize: 16 }}>{c.icon}</span>
-                  <span style={{ fontSize: 11, fontWeight: 700, color: f.permit === k ? c.color : "#831843" }}>{c.label}</span>
-                </label>
-              ))}
-            </div>
-            {/* Expiry date - only relevant for asylum / work permit. Feeds
-                the Compliance tab's 'Expiring soon' panel. */}
-            {(f.permit === "asylum" || f.permit === "work_permit") && (
-              <div style={{ marginTop: 10 }}>
-                <label style={lbl}>{f.permit === "asylum" ? "Asylum document expiry" : "Work permit expiry"}</label>
-                <input type="date" value={f.permitExpiry || ""} onChange={e => set("permitExpiry", e.target.value || null)} style={inp} />
-              </div>
-            )}
+            <CompliancePicker f={f} set={set} compact />
           </div>
 
           {/* BOA Pathways — same flag as the staff modal; shows the 🎓 badge
@@ -4690,26 +4838,7 @@ function OfficeStaffModal({ s, pin, dept, onClose, onSave, onDelete }) {
               staff and manager modals. */}
           <div>
             <label style={lbl}>Compliance / Work Permit</label>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 8 }}>
-              <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, border: `1.5px solid ${!f.permit ? "#F472B6" : "#e5e7eb"}`, background: !f.permit ? "#fdf2f8" : "#f9fafb", cursor: "pointer" }}>
-                <input type="radio" checked={!f.permit} onChange={() => set("permit", null)} style={{ display: "none" }} />
-                <span style={{ fontSize: 16 }}>❔</span>
-                <span style={{ fontSize: 11, fontWeight: 700, color: !f.permit ? "#831843" : "#6b7280" }}>Not set</span>
-              </label>
-              {Object.entries(COMPLIANCE).map(([k, c]) => (
-                <label key={k} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, border: `1.5px solid ${f.permit === k ? c.border : "#e5e7eb"}`, background: f.permit === k ? c.bg : "#f9fafb", cursor: "pointer" }}>
-                  <input type="radio" checked={f.permit === k} onChange={() => set("permit", k)} style={{ display: "none" }} />
-                  <span style={{ fontSize: 16 }}>{c.icon}</span>
-                  <span style={{ fontSize: 11, fontWeight: 700, color: f.permit === k ? c.color : "#831843" }}>{c.label}</span>
-                </label>
-              ))}
-            </div>
-            {(f.permit === "asylum" || f.permit === "work_permit") && (
-              <div style={{ marginTop: 10 }}>
-                <label style={lbl}>{f.permit === "asylum" ? "Asylum document expiry" : "Work permit expiry"}</label>
-                <input type="date" value={f.permitExpiry || ""} onChange={e => set("permitExpiry", e.target.value || null)} style={inp} />
-              </div>
-            )}
+            <CompliancePicker f={f} set={set} compact />
           </div>
 
           <label style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 14px", borderRadius: 10, border: `2px solid ${f.boaPathways ? "#6EE7B7" : "#e5e7eb"}`, background: f.boaPathways ? "#ECFDF5" : "#fff", cursor: "pointer" }}>
@@ -10893,6 +11022,30 @@ function canSeeIncidents(user) {
   return r === "master admin" ||
     r.includes("hr") || r.includes("human res") ||
     r.includes("national") || isRomRole(user.role);
+}
+
+// Who may see permit / asylum / DHA status. Narrower than canSeeIncidents on
+// purpose: this is immigration status, and the roles that act on it are the
+// Owner, National Ops, HR, Recruitment, Payroll, Project Management and the
+// devs who maintain the portal. Regional Ops sit OUTSIDE this gate even though
+// they can see incidents — they manage stores, they do not chase documents.
+//
+// Roles are free text (Settings → Users), so match loosely but on word
+// boundaries: a bare .includes("hr") would fire on unrelated role names.
+// Gates BOTH the Compliance tab and the Compliance column on every staff list,
+// so there is no back door into the same data.
+function canSeeCompliance(user) {
+  if (!user) return false;
+  if (user.isOwner) return true;
+  const r = String(user.role || "").toLowerCase().trim();
+  if (!r) return false;
+  return r === "master admin"
+    || /\bhr\b/.test(r) || /human\s*res/.test(r)   // HR, HR Manager, HR / Payroll, Human Resources
+    || /national/.test(r)                          // National Ops
+    || /recruit/.test(r)                           // Recruiter, Recruitment
+    || /payroll/.test(r)                           // Payroll, Payroll Manager
+    || /project/.test(r)                           // Project Manager
+    || /\bdev(eloper|ops)?\b/.test(r);              // Dev, Developer, DevOps
 }
 
 // ─── RECRUITMENT / INTERVIEW ROLE GATES ──────────────────────────────────────
@@ -19948,9 +20101,12 @@ function hrRecruitRows(salonData, recruitFuture, hz, matByEc, actions) {
     (s.active || []).forEach(p => {
       if (actions && hasVfs(actions[p.ec])) vfs++;
       // Undated risk first — no permit on file is exposure with no clock on it.
-      if (!p.permit || p.permit === "z_na") { zna.push({ p, why: "No valid permit on file", when: "undated" }); return; }
+      if (isNonCompliantPermit(p)) {
+        zna.push({ p, why: asylumFailedDha(p) ? "Asylum document not on the DHA system" : "No valid permit on file", when: "undated" });
+        return;
+      }
       const pe = daysTo(p.permitExpiry);
-      if ((p.permit === "work_permit" || p.permit === "asylum") && pe != null && pe <= hz) {
+      if (permitHasExpiry(p.permit) && pe != null && pe <= hz) {
         permit.push({ p, why: (COMPLIANCE[p.permit] ? COMPLIANCE[p.permit].label : p.permit) + " expires", when: pe < 0 ? "expired" : "in " + pe + "d" });
         return;
       }
@@ -22282,6 +22438,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // application can be logged against anyone, not just the people who
   // happen to appear in the non-compliant follow-up list.
   const [vfsModal, setVfsModal] = useState(null);
+  // Permit editor opened from the Compliance tab. Renders the SAME
+  // CompliancePicker the staff / manager / office modals use, so the asylum
+  // → DHA → reference sub-flow is reachable from the Compliance tab too
+  // rather than only from the staff record.
+  // null | { _id, ec, name, branch, role, permit, permitExpiry, asylum* }
+  const [permitModal, setPermitModal] = useState(null);
   // Compliance directory filters (used in the bottom section of the
   // Compliance tab so the user can search + slice by role / branch).
   const [compSearch, setCompSearch] = useState("");
@@ -24279,6 +24441,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // balances need them. This deliberately does NOT reveal the genuine Incident
   // Reports tab (still canSeeIncidents-only). leavePayrollCfg defaults to the
   // Payroll roles, so a payroll officer matches on the first render.
+  // Permit / asylum / DHA status is restricted — see canSeeCompliance. Gates
+  // the Compliance TAB and the Compliance COLUMN together; hiding one without
+  // the other would leave the same data a click away.
+  const canCompliance = canSeeCompliance(currentUser);
   const canSeeLeaveExpiry = canSeeIncidents(currentUser) || accessAllows(currentUser, leavePayrollCfg);
   const saveLeaveOpsCfg = async (next) => {
     setLeaveOpsAccess(next);
@@ -28083,7 +28249,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       total: staff.length, active: active.length, onMat: onMatEcs.size,
       pregnant: pregnantEcs.size,
       onUnpaidLegal: onUnpaidLegalEcs.size,
-      zna: active.filter(s => s.permit === "z_na").length,
+      zna: active.filter(isNonCompliantPermit).length,
       noContract: active.filter(s => s.contract === "NO CONTRACT").length,
       // Vacancies and understaffed treat off-boarded AND unpaid-legal staff as gone,
       // so they immediately surface as open positions in the Recruitment tab.
@@ -29265,7 +29431,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   ] : []),
                   { t: "maternity", l: matLbl },
                   { t: "unpaidLegal", l: "⏸️ Unpaid Leave (Legal)" },
-                  { t: "compliance", l: "📋 Compliance" },
+                  ...(canCompliance ? [{ t: "compliance", l: "📋 Compliance" }] : []),
                   ...(canSeeIncidents(currentUser) ? [(() => {
                     const unread = incidentReports.filter(r => !r.reviewed && !isLeaveExpiryReport(r)).length;
                     return { t: "incidents", l: "🛡️ Incident Reports" + (unread ? "  (" + unread + ")" : "") };
@@ -29748,7 +29914,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             understaffed: _scopedUnderstaffed
           };
           const scopedAttn = {
-            zna: enriched.filter(s => !s.onMat && !s.onUnpaidLegal && !s.offboarded && s.permit === "z_na" && scopedBranchSet.has(s.branch)).length,
+            zna: enriched.filter(s => !s.onMat && !s.onUnpaidLegal && !s.offboarded && isNonCompliantPermit(s) && scopedBranchSet.has(s.branch)).length,
             noContract: enriched.filter(s => !s.onMat && !s.onUnpaidLegal && !s.offboarded && s.contract === "NO CONTRACT" && scopedBranchSet.has(s.branch)).length
           };
           const understaffedBranches = scopedSalons
@@ -31586,7 +31752,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     }
                     return [
                       schedAlert,
-                      scopedAttn.zna > 0 && { i: "🚨", l: scopedAttn.zna + " staff with Z/NA risk", sub: "compliance issue", c: "#7f1d1d", bg: "#fee2e2", to: "staff" },
+                      canCompliance && scopedAttn.zna > 0 && { i: "🚨", l: scopedAttn.zna + " staff with Z/NA risk", sub: "compliance issue", c: "#7f1d1d", bg: "#fee2e2", to: "staff" },
                       scopedAttn.noContract > 0 && { i: "📄", l: scopedAttn.noContract + " staff with no contract", sub: "upload contracts", c: "#7f1d1d", bg: "#fee2e2", to: "staff" },
                       recentDepartures.length > 0 && { i: "👋", l: recentDepartures.length + " departure" + (recentDepartures.length !== 1 ? "s" : "") + " this week", sub: "in last 7 days", c: "#374151", bg: "#f3f4f6", to: "offboard" }
                     ];
@@ -31665,9 +31831,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   {CC_ROLES.map(r => <option key={r.key} value={r.key}>{r.icon} {r.label}</option>)}
                 </optgroup>
               </select>
+              {canCompliance && (
               <select value={oPermit} onChange={e => setOPermit(e.target.value)} style={{ padding: "7px 11px", borderRadius: 7, border: `1px solid ${bdr}`, fontFamily: "inherit", fontSize: 13, background: cream }}>
                 <option value="All">All Compliance</option>{Object.entries(COMPLIANCE).map(([k, c]) => <option key={k} value={k}>{c.icon} {c.label}</option>)}<option value={VFS_FILTER_KEY}>{VFS.icon} {VFS.label}</option>
               </select>
+              )}
               <select value={oContract} onChange={e => setOContract(e.target.value)} style={{ padding: "7px 11px", borderRadius: 7, border: `1px solid ${bdr}`, fontFamily: "inherit", fontSize: 13, background: cream }}>
                 <option value="All">All Contracts</option>{["Permanent", "Fixed Term", "3 Month", "NO CONTRACT"].map(c => <option key={c}>{c}</option>)}
               </select>
@@ -31698,19 +31866,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
                   <thead>
                     <tr style={{ background: "#831843", color: "#FFFFFF" }}>
-                      {["EC ↑", "First Name", "Surname", "Role", "Compliance", "Start Date", "Status", "Return Date", ""].map(h => (
+                      {["EC ↑", "First Name", "Surname", "Role", ...(canCompliance ? ["Compliance"] : []), "Start Date", "Status", "Return Date", ""].map(h => (
                         <th key={h} style={{ padding: "11px 12px", textAlign: "left", fontWeight: 600, fontSize: 9.5, letterSpacing: "0.07em", whiteSpace: "nowrap" }}>{h.toUpperCase()}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
-                    {officeFiltered.length === 0 && <tr><td colSpan={9} style={{ textAlign: "center", padding: 40, color: "#9ca3af" }}>No results.</td></tr>}
+                    {officeFiltered.length === 0 && <tr><td colSpan={canCompliance ? 9 : 8} style={{ textAlign: "center", padding: 40, color: "#9ca3af" }}>No results.</td></tr>}
                     {[
                       { key: "ho", rows: officeHo, label: "🏢 " + HEAD_OFFICE, bg: "#EEF2FF", ink: "#3730a3", bd: "#C7D2FE" },
                       { key: "cc", rows: officeCc, label: "📞 " + CALL_CENTRE, bg: "#FDEEF5", ink: "#831843", bd: "#FBCFE8" }
                     ].map(sec => sec.rows.length === 0 ? null : (
                       <React.Fragment key={sec.key}>
-                        <tr><td colSpan={9} style={{ background: sec.bg, padding: "8px 14px", fontSize: 11, fontWeight: 800, letterSpacing: "0.12em", color: sec.ink, textTransform: "uppercase", borderTop: `2px solid ${sec.bd}`, borderBottom: `1px solid ${sec.bd}` }}>
+                        <tr><td colSpan={canCompliance ? 9 : 8} style={{ background: sec.bg, padding: "8px 14px", fontSize: 11, fontWeight: 800, letterSpacing: "0.12em", color: sec.ink, textTransform: "uppercase", borderTop: `2px solid ${sec.bd}`, borderBottom: `1px solid ${sec.bd}` }}>
                           {sec.label} · {sec.rows.length}
                         </td></tr>
                         {sec.rows.map(p => {
@@ -31744,12 +31912,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                     style={{ marginLeft: 6, fontSize: 9, background: "#FED7AA", color: "#9A3412", border: "1px solid #FDBA74", borderRadius: 4, padding: "1px 6px", fontWeight: 800, letterSpacing: "0.04em" }}>⚠ DEPT MISMATCH</span>
                                 )}
                               </td>
-                              <td style={{ padding: "10px 12px" }}>
+                              {canCompliance && <td style={{ padding: "10px 12px" }}>
                                 <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
                                   {p.permit ? <Chip {...(COMPLIANCE[p.permit] || { icon: "❔", color: "#6b7280", bg: "#f3f4f6", border: "#d1d5db", label: p.permit })}>{(COMPLIANCE[p.permit] || {}).label || p.permit}</Chip> : <span style={{ color: "#9ca3af" }}>—</span>}
+                                  <DhaBadge p={p} />
                                   <VfsBadge act={complianceActions[p.ec]} />
                                 </div>
-                              </td>
+                              </td>}
                               <td style={{ padding: "10px 12px", fontSize: 11, color: "#831843", fontWeight: 600, whiteSpace: "nowrap" }}>{p.startDate ? _fmt(p.startDate) : <span style={{ color: "#d1d5db" }}>—</span>}</td>
                               <td style={{ padding: "10px 12px" }}>
                                 {departed
@@ -31817,9 +31986,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <select value={fBranch} onChange={e => setFBranch(e.target.value)} style={{ padding: "7px 11px", borderRadius: 7, border: `1px solid ${bdr}`, fontFamily: "inherit", fontSize: 13, background: cream }}>
                 <option value="All">All Branches</option>{SALONS.map(s => <option key={s.name}>{s.name}</option>)}
               </select>
+              {canCompliance && (
               <select value={fPermit} onChange={e => setFPermit(e.target.value)} style={{ padding: "7px 11px", borderRadius: 7, border: `1px solid ${bdr}`, fontFamily: "inherit", fontSize: 13, background: cream }}>
                 <option value="All">All Compliance</option>{Object.entries(COMPLIANCE).map(([k, c]) => <option key={k} value={k}>{c.icon} {c.label}</option>)}<option value={VFS_FILTER_KEY}>{VFS.icon} {VFS.label}</option>
               </select>
+              )}
               <select value={fContract} onChange={e => setFContract(e.target.value)} style={{ padding: "7px 11px", borderRadius: 7, border: `1px solid ${bdr}`, fontFamily: "inherit", fontSize: 13, background: cream }}>
                 <option value="All">All Contracts</option>{["Permanent", "Fixed Term", "NO CONTRACT", "2 Weeks", "Induction"].map(c => <option key={c}>{c}</option>)}
               </select>
@@ -31849,17 +32020,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
                   <thead>
                     <tr style={{ background: "#831843", color: "#FFFFFF" }}>
-                      {["EC ↑", "First Name", "Surname", "Branch", "Level", "Role", "Compliance", "Start Date", "Status", "Return Date", ""].map(h => (
+                      {["EC ↑", "First Name", "Surname", "Branch", "Level", "Role", ...(canCompliance ? ["Compliance"] : []), "Start Date", "Status", "Return Date", ""].map(h => (
                         <th key={h} style={{ padding: "11px 12px", textAlign: "left", fontWeight: 600, fontSize: 9.5, letterSpacing: "0.07em", whiteSpace: "nowrap" }}>{h.toUpperCase()}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
-                    {filtered.length === 0 && filteredMgrs.length === 0 && <tr><td colSpan={11} style={{ textAlign: "center", padding: 40, color: "#9ca3af" }}>No results.</td></tr>}
+                    {filtered.length === 0 && filteredMgrs.length === 0 && <tr><td colSpan={canCompliance ? 11 : 10} style={{ textAlign: "center", padding: 40, color: "#9ca3af" }}>No results.</td></tr>}
 
                     {/* Managers section header */}
                     {filteredMgrs.length > 0 && (
-                      <tr><td colSpan={11} style={{ background: "#FDEEF5", padding: "8px 14px", fontSize: 11, fontWeight: 800, letterSpacing: "0.12em", color: "#831843", textTransform: "uppercase", borderTop: "2px solid #FBCFE8", borderBottom: "1px solid #FBCFE8" }}>
+                      <tr><td colSpan={canCompliance ? 11 : 10} style={{ background: "#FDEEF5", padding: "8px 14px", fontSize: 11, fontWeight: 800, letterSpacing: "0.12em", color: "#831843", textTransform: "uppercase", borderTop: "2px solid #FBCFE8", borderBottom: "1px solid #FBCFE8" }}>
                         👑 Managers · {filteredMgrs.length}
                       </td></tr>
                     )}
@@ -31897,12 +32068,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 style={{ marginLeft: 6, fontSize: 9, background: "#FED7AA", color: "#9A3412", border: "1px solid #FDBA74", borderRadius: 4, padding: "1px 6px", fontWeight: 800, letterSpacing: "0.04em" }}>⭐ SM TRIAL</span>
                             )}
                           </td>
-                          <td style={{ padding: "10px 12px" }}>
+                          {canCompliance && <td style={{ padding: "10px 12px" }}>
                             <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
                               {m.permit ? <Chip {...(COMPLIANCE[m.permit] || { icon: "❔", color: "#6b7280", bg: "#f3f4f6", border: "#d1d5db", label: m.permit })}>{(COMPLIANCE[m.permit] || {}).label || m.permit}</Chip> : <span style={{ color: "#9ca3af" }}>—</span>}
+                              <DhaBadge p={m} />
                               <VfsBadge act={complianceActions[m.ec]} />
                             </div>
-                          </td>
+                          </td>}
                           <td style={{ padding: "10px 12px", fontSize: 11, color: "#831843", fontWeight: 600, whiteSpace: "nowrap" }}>{m.startDate ? new Date(m.startDate.replace(/\//g, "-") + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }) : <span style={{ color: "#d1d5db" }}>—</span>}</td>
                           <td style={{ padding: "10px 12px" }}>
                             {mgrDeparted
@@ -31922,7 +32094,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
                     {/* Nail Techs section header */}
                     {filteredMgrs.length > 0 && filtered.length > 0 && (
-                      <tr><td colSpan={11} style={{ background: "#FDEEF5", padding: "8px 14px", fontSize: 11, fontWeight: 800, letterSpacing: "0.12em", color: "#831843", textTransform: "uppercase", borderTop: "2px solid #FBCFE8", borderBottom: "1px solid #FBCFE8" }}>
+                      <tr><td colSpan={canCompliance ? 11 : 10} style={{ background: "#FDEEF5", padding: "8px 14px", fontSize: 11, fontWeight: 800, letterSpacing: "0.12em", color: "#831843", textTransform: "uppercase", borderTop: "2px solid #FBCFE8", borderBottom: "1px solid #FBCFE8" }}>
                         💅 Nail Techs · {filtered.length}
                       </td></tr>
                     )}
@@ -31931,7 +32103,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       const dBack = s.matRec?.returnDate ? daysDiff(s.matRec.returnDate) : null;
                       const terminated = s.status === "terminated" || s.active === "false" || s.active === false;
                       const departed = s.offboarded && s.offDaysSinceLeft != null && s.offDaysSinceLeft >= 0;
-                      const rowBg = terminated ? "#f3f4f6" : departed ? "#f3f4f6" : s.onMat ? "#fdf4ff" : s.pregnant ? "#fffbeb" : s.permit === "z_na" ? "#FAEEF1" : "#fff";
+                      const rowBg = terminated ? "#f3f4f6" : departed ? "#f3f4f6" : s.onMat ? "#fdf4ff" : s.pregnant ? "#fffbeb" : isNonCompliantPermit(s) ? "#FAEEF1" : "#fff";
                       const rowOpacity = (departed || terminated) ? 0.5 : s.onMat ? 0.6 : 1;
                       return (
                         <tr key={s._id} style={{ background: rowBg, borderTop: `1px solid ${bdr}`, opacity: rowOpacity }}>
@@ -31947,12 +32119,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           <td style={{ padding: "10px 12px", fontSize: 11, color: "#831843", whiteSpace: "nowrap" }}>📍 {s.branch}</td>
                           <td style={{ padding: "10px 12px" }}><LevelBadge level={s.level} /></td>
                           <td style={{ padding: "10px 12px", fontSize: 11, fontWeight: 600 }}>{s.role || s.roleType || "Nail Tech"}</td>
-                          <td style={{ padding: "10px 12px" }}>
+                          {canCompliance && <td style={{ padding: "10px 12px" }}>
                             <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
                               <CompBadge permit={s.permit} />
+                              <DhaBadge p={s} />
                               <VfsBadge act={complianceActions[s.ec]} />
                             </div>
-                          </td>
+                          </td>}
                           <td style={{ padding: "10px 12px", fontSize: 11, whiteSpace: "nowrap" }}>
                             {s.startDate ? (() => {
                               const d = new Date(s.startDate.replace(/\//g, "-") + "T00:00:00");
@@ -32665,7 +32838,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 270, overflowY: "auto" }}>
                         {/* Active staff */}
                         {salon.active.map(m => (
-                          <div key={m._id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 7px", borderRadius: 7, background: m.isShadow ? "#eff6ff" : m.transferring ? "#eff6ff" : m.pregnant ? "#fffbeb" : m.permit === "z_na" ? "#FAEEF1" : "#f9fafb", border: `1px solid ${m.isShadow || m.transferring ? "#bfdbfe" : m.pregnant ? "#fde68a" : m.permit === "z_na" ? "#fecaca" : "#e5e7eb"}` }}>
+                          <div key={m._id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 7px", borderRadius: 7, background: m.isShadow ? "#eff6ff" : m.transferring ? "#eff6ff" : m.pregnant ? "#fffbeb" : isNonCompliantPermit(m) ? "#FAEEF1" : "#f9fafb", border: `1px solid ${m.isShadow || m.transferring ? "#bfdbfe" : m.pregnant ? "#fde68a" : isNonCompliantPermit(m) ? "#fecaca" : "#e5e7eb"}` }}>
                             <span style={{ fontSize: 9, color: "#9ca3af", fontFamily: "monospace", minWidth: 34 }}>{m.ec}</span>
                             <span style={{ flex: 1, fontSize: 11, fontWeight: 600, color: m.isShadow || m.transferring ? "#1d4ed8" : "#111827", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                               {m.pregnant ? "🤰 " : m.isShadow ? "🔄 " : m.transferring ? "🔄 " : ""}{m.name}{m.boaPathways && <> <BoaPathwaysBadge size={11} /></>}
@@ -32673,6 +32846,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               {m.isShadow && <span style={{ fontSize: 9, marginLeft: 4, color: "#BE185D" }}>from {m.transferFrom} {m.transferDate ? new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>}
                             </span>
                             {m.level && <LevelBadge level={m.level} />}
+                            <DhaBadge p={m} compact />
                             <VfsBadge act={complianceActions[m.ec]} compact />
                             <span title={(COMPLIANCE[m.permit] || COMPLIANCE.z_na).label} style={{ fontSize: 13 }}>{(COMPLIANCE[m.permit] || COMPLIANCE.z_na).icon}</span>
                           </div>
@@ -33663,7 +33837,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             people (Z/NA or no permit on file). Tracking lives in
             app_state['boa_compliance_actions_v1'] so requests survive page
             reloads and other users. */}
-        {tab === "compliance" && (() => {
+        {tab === "compliance" && canCompliance && (() => {
           // A transferred person belongs to their destination store once the
           // transfer has taken effect (transfer_date reached) — same rule the
           // schedule, check-in and Locations views use. Until then, and when
@@ -33683,22 +33857,30 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const pool = [
             ...enriched
               .filter(stillOnBooks)
-              .map(s => ({ ec: s.ec, name: s.name, branch: effBranch(s), permit: s.permit, role: "NT", onMat: s.onMat })),
+              .map(s => ({ ec: s.ec, name: s.name, branch: effBranch(s), permit: s.permit, asylumDhaChecked: s.asylumDhaChecked, asylumDhaStatus: s.asylumDhaStatus, asylumRef: s.asylumRef, permitExpiry: s.permitExpiry, role: "NT", onMat: s.onMat })),
             ...(enrichedManagers || [])
               .filter(stillOnBooks)
-              .map(m => ({ ec: m.ec, name: m.name, branch: effBranch(m), permit: m.permit, role: m.role || "AM", onMat: !!m.onMat }))
+              .map(m => ({ ec: m.ec, name: m.name, branch: effBranch(m), permit: m.permit, asylumDhaChecked: m.asylumDhaChecked, asylumDhaStatus: m.asylumDhaStatus, asylumRef: m.asylumRef, permitExpiry: m.permitExpiry, role: m.role || "AM", onMat: !!m.onMat }))
           ].filter(p => p && p.ec);
 
-          // Bucket by permit. Non-compliant = explicit z_na OR no permit set.
-          const isNonCompliant = (p) => !p.permit || p.permit === "z_na";
-          const byPermit = { sa_citizen: [], work_permit: [], asylum: [], verified_dha: [], z_na: [], unset: [] };
+          // Non-compliant = no permit, Z/NA, or an asylum document Home
+          // Affairs has no record of. Shared with every other surface via
+          // isNonCompliantPermit so the tiles, the per-store column, the
+          // dashboard alert and the follow-up list cannot disagree.
+          const isNonCompliant = isNonCompliantPermit;
+          const byPermit = { sa_citizen: [], work_permit: [], asylum: [], refugee: [], z_na: [], unset: [] };
           pool.forEach(p => {
             if (!p.permit) byPermit.unset.push(p);
             else if (byPermit[p.permit]) byPermit[p.permit].push(p);
             else byPermit.unset.push(p);
           });
-          const totalCompliant = byPermit.sa_citizen.length + byPermit.work_permit.length + byPermit.verified_dha.length;
-          const nonCompliant = [...byPermit.z_na, ...byPermit.unset]
+          // Asylum splits: DHA said no => chase them like a Z/NA; everyone
+          // else stays under asylum. asylumOpen is the DHA check nobody has
+          // done yet, which is its own piece of outstanding work.
+          const asylumFailed = byPermit.asylum.filter(asylumFailedDha);
+          const asylumOpen = byPermit.asylum.filter(p => p.asylumDhaChecked !== "yes");
+          const totalCompliant = byPermit.sa_citizen.length + byPermit.work_permit.length + byPermit.refugee.length;
+          const nonCompliant = [...byPermit.z_na, ...byPermit.unset, ...asylumFailed]
             .sort((a, b) => (a.branch || "").localeCompare(b.branch || "") || (a.name || "").localeCompare(b.name || ""));
           // Helpers for the action panel.
           const today = new Date();
@@ -33737,7 +33919,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             { l: "🇿🇦 SA Citizens", v: byPermit.sa_citizen.length, c: "#14532d", bg: "#dcfce7" },
             { l: "📋 Asylum on file", v: byPermit.asylum.length, c: "#4c1d95", bg: "#ede9fe" },
             { l: "✅ Valid Work Permit", v: byPermit.work_permit.length, c: "#8E5570", bg: "#dbeafe" },
-            { l: "🔵 Verified by DHA", v: byPermit.verified_dha.length, c: "#0c4a6e", bg: "#e0f2fe" },
+            { l: "🛡️ Refugee on File", v: byPermit.refugee.length, c: "#0c4a6e", bg: "#e0f2fe" },
+            // Overlaps the asylum tile rather than adding to it: these people
+            // hold an asylum document nobody has put to Home Affairs yet.
+            { l: "⏳ DHA check outstanding", v: asylumOpen.length, c: "#92400e", bg: "#fef3c7" },
             { l: "⚠ Not compliant", v: nonCompliant.length, c: "#7f1d1d", bg: "#fee2e2" },
             // Informational overlay — these people are ALSO counted in the
             // tiles above under their real status, so this one does not add
@@ -33832,7 +34017,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   const inBr = pool.filter(p => (p.branch || "") === brName);
                   const red = inBr.filter(isNonCompliant).length;
                   const sa = inBr.filter(p => p.permit === "sa_citizen").length;
-                  const docs = inBr.filter(p => p.permit === "asylum" || p.permit === "work_permit" || p.permit === "verified_dha").length;
+                  const docs = inBr.filter(p => !isNonCompliant(p) && (p.permit === "asylum" || p.permit === "work_permit" || p.permit === "refugee")).length;
                   // 🛂 cuts across the other three columns, so this row does
                   // not add up to `total` — it is an overlay, not a bucket.
                   const vfs = inBr.filter(p => hasVfs(complianceActions[p.ec])).length;
@@ -34011,11 +34196,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 const expPool = [
                   ...(enriched || [])
                     .filter(stillOnBooks)
-                    .filter(s => (s.permit === "asylum" || s.permit === "work_permit") && s.permitExpiry)
+                    .filter(s => permitHasExpiry(s.permit) && s.permitExpiry && !asylumFailedDha(s))
                     .map(s => ({ _id: s._id, ec: s.ec, name: s.name, branch: effBranch(s), permit: s.permit, permitExpiry: s.permitExpiry, role: "NT", onMat: s.onMat })),
                   ...(enrichedManagers || [])
                     .filter(stillOnBooks)
-                    .filter(m => (m.permit === "asylum" || m.permit === "work_permit") && m.permitExpiry)
+                    .filter(m => permitHasExpiry(m.permit) && m.permitExpiry && !asylumFailedDha(m))
                     .map(m => ({ _id: m._id, ec: m.ec, name: m.name, branch: effBranch(m), permit: m.permit, permitExpiry: m.permitExpiry, role: m.role || "AM", onMat: !!m.onMat }))
                 ];
                 // Within next 90 days OR already expired.
@@ -34040,9 +34225,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   const pillFg = overdue ? "#7f1d1d" : veryClose ? "#92400e" : "#1e40af";
                   const pillTxt = overdue ? Math.abs(d) + "d overdue" : d === 0 ? "EXPIRES TODAY" : "in " + d + "d";
                   const roleIcon = p.role === "SSM" ? "💎" : p.role === "SM" ? "👑" : p.role === "AM" ? "⭐" : "💅";
-                  const permitChip = p.permit === "asylum"
-                    ? { lbl: "📋 Asylum", bg: "#ede9fe", fg: "#4c1d95" }
-                    : { lbl: "✅ Work permit", bg: "#dbeafe", fg: "#1e40af" };
+                  const _pc = COMPLIANCE[p.permit] || {};
+                  const permitChip = { lbl: (_pc.icon || "❔") + " " + (_pc.label || p.permit), bg: _pc.bg || "#f3f4f6", fg: _pc.color || "#374151" };
                   return (
                     <tr key={"exp-" + p._id} style={{ borderTop: "1px solid #FEF3C7" }}>
                       <td style={{ padding: "8px 14px", fontFamily: "monospace", fontSize: 11, color: "#9ca3af", width: 60 }}>{p.ec}</td>
@@ -34119,24 +34303,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   button so the manager can record the document letter
                   without leaving the page. */}
               {(() => {
-                const updatePermit = async (person, newPermit) => {
-                  try {
-                    const isMgr = person.role !== "NT";
-                    if (isMgr) {
-                      const live = (managers || []).find(m => m && m._id === person._id);
-                      if (!live) return;
-                      await saveMgr({ ...live, permit: newPermit || null });
-                    } else {
-                      const live = (staff || []).find(s => s && s._id === person._id);
-                      if (!live) return;
-                      await saveStaff({ ...live, permit: newPermit || null });
-                    }
-                    if (window.BOA_LOG_ACTIVITY) {
-                      const lbl = newPermit ? ((COMPLIANCE[newPermit] && COMPLIANCE[newPermit].label) || newPermit) : "Not set";
-                      window.BOA_LOG_ACTIVITY("Updated compliance permit", (person.name || "") + " · " + person.ec, "→ " + lbl + " · " + (person.branch || "—"), "Compliance");
-                    }
-                  } catch (e) { alert("Could not save permit: " + (e.message || e)); }
+                // Opens the shared CompliancePicker for one person, seeded from
+                // their LIVE record (not the flattened pool row) so nothing
+                // outside the compliance fields is lost on save.
+                const openPermitEditor = (person) => {
+                  const live = person.role !== "NT"
+                    ? (managers || []).find(m => m && m._id === person._id)
+                    : (staff || []).find(x => x && x._id === person._id);
+                  if (!live) { alert("Could not find that person's record."); return; }
+                  setPermitModal({
+                    _id: live._id, ec: live.ec, name: live.name, branch: person.branch, role: person.role,
+                    permit: live.permit || null,
+                    permitExpiry: live.permitExpiry || null,
+                    asylumDhaChecked: live.asylumDhaChecked || null,
+                    asylumDhaStatus: live.asylumDhaStatus || null,
+                    asylumRef: live.asylumRef || null,
+                  });
                 };
+
                 // Build the directory pool with _id so we can route the
                 // update to saveStaff / saveMgr cleanly. ONLY include
                 // non-compliant people (Z/NA permit or no permit set) -
@@ -34144,11 +34328,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 const dirPool = [
                   ...(enriched || [])
                     .filter(stillOnBooks)
-                    .filter(s => !s.permit || s.permit === "z_na")
+                    .filter(isNonCompliantPermit)
                     .map(s => ({ _id: s._id, ec: s.ec, name: s.name, branch: effBranch(s), permit: s.permit, role: "NT", onMat: s.onMat })),
                   ...(enrichedManagers || [])
                     .filter(stillOnBooks)
-                    .filter(m => !m.permit || m.permit === "z_na")
+                    .filter(isNonCompliantPermit)
                     .map(m => ({ _id: m._id, ec: m.ec, name: m.name, branch: effBranch(m), permit: m.permit, role: m.role || "AM", onMat: !!m.onMat }))
                 ];
                 const q = (compSearch || "").trim().toLowerCase();
@@ -34239,7 +34423,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                             <td style={{ padding: "8px 14px", fontFamily: "monospace", fontSize: 11, color: "#9ca3af", width: 60 }}>{p.ec}</td>
                                             <td style={{ padding: "8px 14px", fontWeight: 600, color: "#111827" }}>{roleIcon} {p.name || "(no name)"}{p.onMat && <span style={{ marginLeft: 6, fontSize: 10, background: "#FBCFE8", color: "#8E5570", padding: "1px 6px", borderRadius: 99, fontWeight: 700 }}>🤱 mat.</span>}</td>
                                             <td style={{ padding: "8px 14px" }}>
-                                              <span style={{ display: "inline-block", background: chip.bg, color: chip.fg, border: `1px solid ${chip.border}`, fontSize: 10, fontWeight: 800, padding: "3px 9px", borderRadius: 99, letterSpacing: "0.04em" }}>{chip.lbl}</span>
+                                              <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
+                                                <span style={{ display: "inline-block", background: chip.bg, color: chip.fg, border: `1px solid ${chip.border}`, fontSize: 10, fontWeight: 800, padding: "3px 9px", borderRadius: 99, letterSpacing: "0.04em" }}>{chip.lbl}</span>
+                                                <DhaBadge p={p} />
+                                              </div>
                                             </td>
                                             <td style={{ padding: "8px 14px", fontSize: 11 }}>
                                               {hasReq ? (
@@ -34258,12 +34445,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                               {hasVfs(act) && <div style={{ marginTop: hasReq ? 5 : 0, paddingTop: hasReq ? 5 : 0, borderTop: hasReq ? "1px dashed #e5e7eb" : "none" }}>{vfsCell(p)}</div>}
                                             </td>
                                             <td style={{ padding: "8px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
-                                              <select value={p.permit || ""} onChange={e => updatePermit(p, e.target.value || null)}
-                                                style={{ padding: "6px 10px", border: "1px solid #FBCFE8", borderRadius: 7, fontFamily: "inherit", fontSize: 12, background: "#fff", cursor: "pointer", marginRight: 6 }}
-                                                title="Change compliance status">
-                                                <option value="">Not set</option>
-                                                {Object.entries(COMPLIANCE).map(([k, c]) => <option key={k} value={k}>{c.icon} {c.label}</option>)}
-                                              </select>
+                                              <button onClick={() => openPermitEditor(p)}
+                                                title="Change compliance status, including the asylum / DHA detail"
+                                                style={{ padding: "6px 11px", border: "1px solid #FBCFE8", borderRadius: 7, fontFamily: "inherit", fontSize: 11, fontWeight: 700, background: "#fff", color: "#BE185D", cursor: "pointer", marginRight: 6 }}
+                                              >✏️ Status</button>
                                               {vfsBtn(p)}
                                               {hasReq ? (
                                                 <button onClick={() => setComplianceModal({ ...p, ...act, _edit: true })}
@@ -34299,7 +34484,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                             <td style={{ padding: "8px 14px", fontFamily: "monospace", fontSize: 11, color: "#9ca3af", width: 60 }}>{p.ec}</td>
                                             <td style={{ padding: "8px 14px", fontWeight: 600, color: "#111827" }}>💅 {p.name || "(no name)"}{p.onMat && <span style={{ marginLeft: 6, fontSize: 10, background: "#FBCFE8", color: "#8E5570", padding: "1px 6px", borderRadius: 99, fontWeight: 700 }}>🤱 mat.</span>}</td>
                                             <td style={{ padding: "8px 14px" }}>
-                                              <span style={{ display: "inline-block", background: chip.bg, color: chip.fg, border: `1px solid ${chip.border}`, fontSize: 10, fontWeight: 800, padding: "3px 9px", borderRadius: 99, letterSpacing: "0.04em" }}>{chip.lbl}</span>
+                                              <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
+                                                <span style={{ display: "inline-block", background: chip.bg, color: chip.fg, border: `1px solid ${chip.border}`, fontSize: 10, fontWeight: 800, padding: "3px 9px", borderRadius: 99, letterSpacing: "0.04em" }}>{chip.lbl}</span>
+                                                <DhaBadge p={p} />
+                                              </div>
                                             </td>
                                             <td style={{ padding: "8px 14px", fontSize: 11 }}>
                                               {hasReq ? (
@@ -34318,12 +34506,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                               {hasVfs(act) && <div style={{ marginTop: hasReq ? 5 : 0, paddingTop: hasReq ? 5 : 0, borderTop: hasReq ? "1px dashed #e5e7eb" : "none" }}>{vfsCell(p)}</div>}
                                             </td>
                                             <td style={{ padding: "8px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
-                                              <select value={p.permit || ""} onChange={e => updatePermit(p, e.target.value || null)}
-                                                style={{ padding: "6px 10px", border: "1px solid #FBCFE8", borderRadius: 7, fontFamily: "inherit", fontSize: 12, background: "#fff", cursor: "pointer", marginRight: 6 }}
-                                                title="Change compliance status">
-                                                <option value="">Not set</option>
-                                                {Object.entries(COMPLIANCE).map(([k, c]) => <option key={k} value={k}>{c.icon} {c.label}</option>)}
-                                              </select>
+                                              <button onClick={() => openPermitEditor(p)}
+                                                title="Change compliance status, including the asylum / DHA detail"
+                                                style={{ padding: "6px 11px", border: "1px solid #FBCFE8", borderRadius: 7, fontFamily: "inherit", fontSize: 11, fontWeight: 700, background: "#fff", color: "#BE185D", cursor: "pointer", marginRight: 6 }}
+                                              >✏️ Status</button>
                                               {vfsBtn(p)}
                                               {hasReq ? (
                                                 <button onClick={() => setComplianceModal({ ...p, ...act, _edit: true })}
@@ -34568,6 +34754,62 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           );
         })()}
 
+        {/* ── PERMIT EDITOR ── the Compliance tab's route into the same
+            CompliancePicker the staff / manager / office modals render, so
+            asylum → DHA → reference can be captured from either side and the
+            two surfaces cannot show different things. */}
+        {permitModal && (() => {
+          const m = permitModal;
+          const set = (k, v) => setPermitModal(prev => ({ ...prev, [k]: v }));
+          // Mirrors the picker's own required fields: a DHA-confirmed asylum
+          // document is only useful with its reference and expiry.
+          const needsRef = m.permit === "asylum" && m.asylumDhaChecked === "yes" && m.asylumDhaStatus === "on_file";
+          const save = async () => {
+            if (needsRef && !(m.asylumRef || "").trim()) { alert("Enter the unique asylum reference number."); return; }
+            if (needsRef && !m.permitExpiry) { alert("Pick the asylum document expiry date."); return; }
+            const isMgr = m.role !== "NT";
+            const live = isMgr
+              ? (managers || []).find(x => x && x._id === m._id)
+              : (staff || []).find(x => x && x._id === m._id);
+            if (!live) { alert("Could not find that person's record."); return; }
+            const patch = {
+              ...live,
+              permit: m.permit || null,
+              permitExpiry: m.permitExpiry || null,
+              asylumDhaChecked: m.asylumDhaChecked || null,
+              asylumDhaStatus: m.asylumDhaStatus || null,
+              asylumRef: (m.asylumRef || "").trim() || null,
+            };
+            try {
+              if (isMgr) await saveMgr(patch); else await saveStaff(patch);
+              if (window.BOA_LOG_ACTIVITY) {
+                const lbl = m.permit ? ((COMPLIANCE[m.permit] && COMPLIANCE[m.permit].label) || m.permit) : "Not set";
+                const d = asylumDetail(patch);
+                window.BOA_LOG_ACTIVITY("Updated compliance permit", (m.name || "") + " · " + m.ec,
+                  "→ " + lbl + (d ? " · " + d.text : "") + " · " + (m.branch || "—"), "Compliance");
+              }
+              setPermitModal(null);
+            } catch (e) { alert("Could not save permit: " + (e.message || e)); }
+          };
+          return (
+            <div onClick={() => setPermitModal(null)} style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 120 }}>
+              <div onClick={e => e.stopPropagation()} style={{ background: "#FCE7F3", borderRadius: 16, padding: "22px 26px", width: "min(560px, 94vw)", maxHeight: "90vh", overflowY: "auto", boxShadow: "0 10px 40px rgba(0,0,0,0.25)" }}>
+                <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 20, fontWeight: 700, color: "#831843", marginBottom: 4 }}>📋 Compliance / work status</div>
+                <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 16 }}><b>{m.name}</b> · 📍 {m.branch || "—"} · <span style={{ fontFamily: "monospace" }}>{m.ec}</span></div>
+                <CompliancePicker f={m} set={set} compact />
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
+                  <button onClick={() => setPermitModal(null)}
+                    style={{ background: "#fff", color: "#374151", border: "none", borderRadius: 8, padding: "9px 16px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}
+                  >Cancel</button>
+                  <button onClick={save}
+                    style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 8, padding: "9px 18px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}
+                  >Save status</button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
         {/* ── INCIDENT REPORTS TAB ── */}
         {tab === "incidents" && canSeeIncidents(currentUser) && (
           <IncidentReportsTab reports={incidentReports} setReports={setIncidentReports} currentUser={currentUser} people={taggablePeople} />
@@ -34657,7 +34899,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             ...councilLeavers.map(p => ({ type: "critical", msg: `${p.name} (${p.branch || "—"}) — off-boarding a bargaining-council member. Deregister her with the council${p.leftDate ? " — last day " + fmt(p.leftDate) : ""}.`, council: p })),
             ...matRecs.filter(r => r.matStatus === "on_mat" && r.returnDate && daysDiff(r.returnDate) < 0).map(r => ({ type: "warning", msg: `${r.name} (${r.branch}) — return date ${fmt(r.returnDate)} was ${Math.abs(daysDiff(r.returnDate))} days ago. Confirm return or update dates.`, rec: r })),
             ...matRecs.filter(r => r.matStatus === "on_mat" && r.returnDate && daysDiff(r.returnDate) >= 0 && daysDiff(r.returnDate) <= 14).map(r => ({ type: "info", msg: `${r.name} (${r.branch}) — returning in ${daysDiff(r.returnDate)} day(s) on ${fmt(r.returnDate)}`, rec: r })),
-            ...active.filter(s => s.permit === "z_na").map(s => ({ type: "critical", msg: `${s.name} (${s.branch}) — Z/NA: no valid work permit`, s })),
+            ...(canCompliance ? active.filter(isNonCompliantPermit).map(s => ({ type: "critical", msg: `${s.name} (${s.branch}) — ${asylumFailedDha(s) ? "asylum document NOT on the DHA system" : "Z/NA: no valid work permit"}`, s })) : []),
             ...active.filter(s => s.contract === "NO CONTRACT").map(s => ({ type: "warning", msg: `${s.name} (${s.branch}) — no employment contract on file`, s })),
             ...SALONS.filter(sl => active.filter(s => s.branch === sl.name).length === 0).map(sl => ({ type: "critical", msg: `${sl.name} — NO active staff assigned`, s: null })),
           ];

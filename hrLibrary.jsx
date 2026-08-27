@@ -4,6 +4,10 @@ const HR_LIBRARY_COMPLIANCE = {
   sa_citizen:   { label:"SA Citizen",            icon:"🇿🇦", color:"#14532d", bg:"#dcfce7", border:"#86efac" },
   work_permit:  { label:"Valid Work Permit",      icon:"✅",  color:"#8E5570", bg:"#dbeafe", border:"#93c5fd" },
   asylum:       { label:"Asylum on File",         icon:"📋",  color:"#4c1d95", bg:"#ede9fe", border:"#a78bfa" },
+  refugee:      { label:"Refugee on File",        icon:"🛡️",  color:"#0c4a6e", bg:"#e0f2fe", border:"#7dd3fc" },
+  // Retired: DHA verification is now a property of an asylum document, not a
+  // status. Kept so any row not yet migrated by sql/staff_asylum_dha.sql still
+  // renders a label instead of falling through to "N/A".
   verified_dha: { label:"Verified by DHA",        icon:"🔵",  color:"#0c4a6e", bg:"#e0f2fe", border:"#7dd3fc" },
   z_na:         { label:"Z/NA – No Valid Permit", icon:"🚨",  color:"#831843", bg:"#fee2e2", border:"#fca5a5" },
 };
