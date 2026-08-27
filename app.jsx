@@ -3200,7 +3200,7 @@ function parseShiftRange(s) {
 //   • employee_code must start with "B" (the production EC prefix)
 //   • rows in "Induction" or with a date-style EC (not started yet) skipped
 // Permit values map the sheet's text to the COMPLIANCE keys (sa_citizen,
-// asylum, verified_dha, z_na). Contract is kept as-is, since the schedule
+// asylum, refugee, z_na). Contract is kept as-is, since the schedule
 // + maternity UI both read free-text contract labels (Permanent, 3 Month,
 // Maternity, etc.). The Locations tab exposes a one-click "Import …"
 // button that calls saveCustomSalons + saveStaff in sequence.
@@ -3260,7 +3260,7 @@ const JHB_IMPORT_STAFF = [
   { ec: "B841", name: "Helen Mthembu", branch: "Mushroom Farm", contract: "Permanent", permit: "sa_citizen", level: "Two" },
   { ec: "B875", name: "Mohau Mothepu", branch: "Mushroom Farm", contract: "Permanent", permit: "sa_citizen", level: "One" },
   { ec: "B685", name: "Zinhle", branch: "Mushroom Farm", contract: "3 Month", permit: "sa_citizen", level: "Two" },
-  { ec: "B803", name: "Marie-Claie Kwizera", branch: "Mushroom Farm", contract: "Fixed Term", permit: "verified_dha", level: "Two" },
+  { ec: "B803", name: "Marie-Claie Kwizera", branch: "Mushroom Farm", contract: "Fixed Term", permit: "asylum", asylumDhaChecked: "yes", asylumDhaStatus: "on_file", level: "Two" },
   { ec: "B852", name: "Dimakatso Marako", branch: "Mushroom Farm", contract: "Permanent", permit: "sa_citizen", level: "" },
   { ec: "B485", name: "Shaine Mtazu", branch: "Mushroom Farm", contract: "Maternity", permit: "", level: "One" },
   // Verdi
@@ -3288,9 +3288,64 @@ const COMPLIANCE = {
   sa_citizen: { label: "SA Citizen", icon: "🇿🇦", color: "#14532d", bg: "#dcfce7", border: "#86efac" },
   work_permit: { label: "Valid Work Permit", icon: "✅", color: "#8E5570", bg: "#dbeafe", border: "#93c5fd" },
   asylum: { label: "Asylum on File", icon: "📋", color: "#4c1d95", bg: "#ede9fe", border: "#a78bfa" },
-  verified_dha: { label: "Verified by DHA", icon: "🔵", color: "#0c4a6e", bg: "#e0f2fe", border: "#7dd3fc" },
+  // Was "Verified by DHA". DHA verification is a property of an ASYLUM
+  // document, not a status of its own, so it moved into the asylum sub-flow
+  // below and this slot now holds the distinct legal status it was being
+  // used as a stand-in for. Legacy `verified_dha` rows are rewritten to
+  // asylum + DHA-on-file by sql/staff_asylum_dha.sql.
+  refugee: { label: "Refugee on File", icon: "🛡️", color: "#0c4a6e", bg: "#e0f2fe", border: "#7dd3fc" },
   z_na: { label: "Z/NA – No Valid Permit", icon: "🚨", color: "#831843", bg: "#fee2e2", border: "#fca5a5" },
 };
+
+// ── ASYLUM / DHA SUB-FLOW ────────────────────────────────────────────────
+// "Asylum on File" alone says nothing about whether the document is real.
+// Home Affairs either has it or does not, so selecting asylum asks whether
+// DHA verified it, and a DHA check that came back ON FILE asks for the
+// unique asylum reference and the expiry.
+//
+//   permit = "asylum"
+//     └─ asylumDhaChecked  "yes" | "no" | null(not asked yet)
+//          └─ (yes) asylumDhaStatus  "on_file"(valid) | "not_on_system"(invalid)
+//               └─ (on_file) asylumRef + permitExpiry
+//
+// NOT ON SYSTEM means the document does not exist as far as DHA is
+// concerned, so it is treated as non-compliant everywhere a Z/NA is —
+// see isNonCompliantPermit below.
+const DHA_STATUS = {
+  on_file:       { label: "On file — valid",        short: "DHA ✓ on file",     icon: "🔵", color: "#0c4a6e", bg: "#e0f2fe", border: "#7dd3fc", valid: true },
+  not_on_system: { label: "Not on system — invalid", short: "DHA ✗ not on system", icon: "🚨", color: "#831843", bg: "#fee2e2", border: "#fca5a5", valid: false },
+};
+// Permits that carry an expiry date. Refugee joins asylum / work permit so
+// the Compliance tab's "Expiring soon" panel can chase it like the rest.
+const PERMITS_WITH_EXPIRY = ["asylum", "work_permit", "refugee"];
+function permitHasExpiry(permit) { return PERMITS_WITH_EXPIRY.includes(permit); }
+function permitExpiryLabel(permit) {
+  return permit === "asylum" ? "Asylum document expiry"
+    : permit === "refugee" ? "Refugee status expiry"
+      : "Work permit expiry";
+}
+// An asylum document DHA could not find is not a valid document.
+function asylumFailedDha(p) {
+  return !!p && p.permit === "asylum" && p.asylumDhaStatus === "not_on_system";
+}
+// The single non-compliance test. Every count, tile, alert and follow-up
+// list runs through this so they cannot drift apart.
+function isNonCompliantPermit(p) {
+  if (!p) return true;
+  if (!p.permit || p.permit === "z_na") return true;
+  return asylumFailedDha(p);
+}
+// Short human summary of the asylum sub-flow, for row chips and tooltips.
+// Returns null when there is nothing extra to say.
+function asylumDetail(p) {
+  if (!p || p.permit !== "asylum") return null;
+  if (p.asylumDhaChecked !== "yes") {
+    return { text: p.asylumDhaChecked === "no" ? "Not DHA-verified" : "DHA check outstanding", pending: true };
+  }
+  const st = DHA_STATUS[p.asylumDhaStatus];
+  if (!st) return { text: "DHA check outstanding", pending: true };
+  return { text: st.short, valid: st.valid, ref: p.asylumRef || "", st };
+}
 
 // ── STILL ON THE BOOKS ───────────────────────────────────────────────────
 // One departure test for the compliance surfaces, which were re-deriving it
@@ -3312,6 +3367,21 @@ const COMPLIANCE = {
 // Someone serving out notice — last day still in the FUTURE — is deliberately
 // kept: they are still on the floor, so their documents still matter. Anyone
 // past their last day is dropped.
+// A staff row that has been marked terminated / inactive outright. The live
+// lists hide these immediately, with no grace window.
+function isTerminatedRow(p) {
+  return !!p && (p.status === "terminated" || p.active === false || p.active === "false");
+}
+// Has this person left, by ANY of the three routes isStillOnBooks() weighs —
+// a terminated row, an off-boarding record, or a leftDate that has passed?
+// This is what the Staff List's "Terminated (Archive)" view selects on. Note it
+// deliberately ignores offHidden: the 31-day window keeps leavers out of the
+// LIVE views, and the archive is precisely where they are kept afterwards.
+function hasDeparted(p, todayYmd) {
+  if (!p) return false;
+  return isTerminatedRow(p) || !!p.offboarded || !!(p.leftDate && todayYmd && p.leftDate < todayYmd);
+}
+
 function isStillOnBooks(p, todayYmd) {
   if (!p || !p.ec) return false;
   if (p.status === "terminated" || p.active === false || p.active === "false") return false;
@@ -3772,8 +3842,8 @@ const STAFF_INIT = [
   { ec: "B856", name: "Tariro Makore", branch: "Cape Gate", contract: "NO CONTRACT", permit: "asylum", level: "" },
   { ec: "B857", name: "Valentine Murambiza", branch: "Somerset West", contract: "Permanent", permit: "z_na", level: "" },
   { ec: "B858", name: "Gorgenia Mugomesa", branch: "Plumstead", contract: "Permanent", permit: "asylum", level: "" },
-  { ec: "B859", name: "Kimberly Makuyana", branch: "Plumstead", contract: "Permanent", permit: "verified_dha", level: "" },
-  { ec: "B860", name: "Blessing Nyamadzawa", branch: "Plumstead", contract: "Permanent", permit: "verified_dha", level: "One" },
+  { ec: "B859", name: "Kimberly Makuyana", branch: "Plumstead", contract: "Permanent", permit: "asylum", asylumDhaChecked: "yes", asylumDhaStatus: "on_file", level: "" },
+  { ec: "B860", name: "Blessing Nyamadzawa", branch: "Plumstead", contract: "Permanent", permit: "asylum", asylumDhaChecked: "yes", asylumDhaStatus: "on_file", level: "One" },
   { ec: "B861", name: "Florence Svinurayi", branch: "Somerset West", contract: "Permanent", permit: "asylum", level: "" },
   { ec: "B876", name: "Dorcas Likibi", branch: "Cape Gate", contract: "NO CONTRACT", permit: "asylum", level: "" },
   // Trials / inductions
@@ -3805,7 +3875,7 @@ const STAFF_INIT = [
   { ec: "T030", name: "Olona Jekwa", branch: "Cape Gate", contract: "Induction", permit: "sa_citizen", level: "" },
   { ec: "T031", name: "Khasha Malgas", branch: "Winelands", contract: "Induction", permit: "sa_citizen", level: "" },
   { ec: "T032", name: "Dorrine Galant", branch: "Winelands", contract: "Induction", permit: "sa_citizen", level: "" },
-  { ec: "T033", name: "Consetar Moyo", branch: "Winelands", contract: "Induction", permit: "verified_dha", level: "" },
+  { ec: "T033", name: "Consetar Moyo", branch: "Winelands", contract: "Induction", permit: "asylum", asylumDhaChecked: "yes", asylumDhaStatus: "on_file", level: "" },
   { ec: "T036", name: "Lindelwa", branch: "Betty", contract: "2 Weeks", permit: "sa_citizen", level: "" },
 ];
 
@@ -3813,7 +3883,141 @@ const STAFF_INIT = [
 function Chip({ bg, color, border, children }) {
   return <span style={{ background: bg, color, border: `1px solid ${border}`, borderRadius: 20, padding: "3px 10px", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap", display: "inline-flex", alignItems: "center", gap: 4 }}>{children}</span>;
 }
+// ── COMPLIANCE PICKER ────────────────────────────────────────────────────
+// The ONE permit editor. StaffModal, ManagerModal, OfficeStaffModal and the
+// Compliance tab each used to carry their own copy of the radio grid and the
+// expiry input, which is exactly how the Compliance tab and the staff lists
+// drifted apart. They all render this instead now, so a field added here
+// appears on every surface at once.
+//
+// `f` is the form state, `set(key, value)` writes one field. `compact` is the
+// narrower single-column layout used by the manager / office modals.
+function CompliancePicker({ f, set, compact }) {
+  const lbl = { display: "block", fontSize: 11, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 };
+  // boxSizing is load-bearing: index.html has NO global box-sizing reset, so
+  // width:100% + padding + border overflows the parent without it. maxWidth
+  // caps <input type="date">, whose intrinsic width is wider than the track it
+  // sits in and which pushes the grid open otherwise.
+  const fld = { width: "100%", maxWidth: "100%", padding: "8px 11px", border: "1px solid #FBCFE8", borderRadius: 8, fontSize: 13, fontFamily: "inherit", background: "#fff", boxSizing: "border-box" };
+  // Grid children default to min-width:auto, so a wide intrinsic input refuses
+  // to shrink and bleeds out of its column. minWidth:0 lets the track win.
+  const cell = { minWidth: 0 };
+  const isAsylum = f.permit === "asylum";
+  const dhaChecked = f.asylumDhaChecked || "";
+  // Clearing the trail matters: leaving a stale reference or DHA verdict on
+  // a record whose permit moved to SA Citizen would keep showing asylum
+  // detail against someone who no longer has an asylum document.
+  const pickPermit = (k) => {
+    if (k === f.permit) return;
+    set("permit", k);
+    if (k !== "asylum") { set("asylumDhaChecked", null); set("asylumDhaStatus", null); set("asylumRef", null); }
+    if (!permitHasExpiry(k)) set("permitExpiry", null);
+  };
+  const pickDhaChecked = (v) => {
+    set("asylumDhaChecked", v);
+    // "Not DHA-verified" has no verdict and no reference to speak of.
+    if (v !== "yes") { set("asylumDhaStatus", null); set("asylumRef", null); }
+  };
+  const pickDhaStatus = (v) => {
+    set("asylumDhaStatus", v);
+    // A document DHA cannot find has no reference number or expiry worth keeping.
+    if (v !== "on_file") { set("asylumRef", null); set("permitExpiry", null); }
+  };
+  // onChange on the INPUT, not onClick on the label: a label wrapping its own
+  // input forwards the click to it, and that synthetic click bubbles back to
+  // the label — an onClick here would fire twice per selection.
+  const choice = (active, pick, icon, text, c, key) => (
+    <label key={key}
+      style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 11px", borderRadius: 9, border: `2px solid ${active ? (c.border || "#F472B6") : "#e5e7eb"}`, background: active ? (c.bg || "#fdf2f8") : "#fff", cursor: "pointer", minWidth: 0, boxSizing: "border-box" }}>
+      <input type="radio" checked={!!active} onChange={pick} style={{ display: "none" }} />
+      <span style={{ fontSize: 16, flex: "0 0 auto" }}>{icon}</span>
+      <span style={{ fontSize: 11, fontWeight: 700, color: active ? (c.color || "#831843") : "#831843", minWidth: 0, overflowWrap: "anywhere" }}>{text}</span>
+    </label>
+  );
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 7 }}>
+        {compact && choice(!f.permit, () => pickPermit(null), "❔", "Not set", {}, "_unset")}
+        {Object.entries(COMPLIANCE).map(([k, c]) => choice(f.permit === k, () => pickPermit(k), c.icon, c.label, c, k))}
+      </div>
+
+      {/* ── Asylum → was it verified by DHA? ── */}
+      {isAsylum && (
+        <div style={{ marginTop: 10, padding: "11px 13px", borderRadius: 10, background: "#fff", border: "1px solid #FBCFE8", boxSizing: "border-box", minWidth: 0 }}>
+          <label style={lbl}>Verified by Home Affairs (DHA)?</label>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 7 }}>
+            {choice(dhaChecked === "yes", () => pickDhaChecked("yes"), "🔍", "Yes — DHA checked", { border: "#7dd3fc", bg: "#e0f2fe", color: "#0c4a6e" }, "y")}
+            {choice(dhaChecked === "no", () => pickDhaChecked("no"), "⏳", "Not verified yet", { border: "#fde68a", bg: "#fef3c7", color: "#92400e" }, "n")}
+          </div>
+
+          {/* ── DHA said what? ── */}
+          {dhaChecked === "yes" && (
+            <div style={{ marginTop: 10 }}>
+              <label style={lbl}>DHA status</label>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 7 }}>
+                {Object.entries(DHA_STATUS).map(([k, st]) => choice(f.asylumDhaStatus === k, () => pickDhaStatus(k), st.icon, st.label, st, k))}
+              </div>
+              {f.asylumDhaStatus === "not_on_system" && (
+                <div style={{ marginTop: 8, padding: "8px 11px", borderRadius: 8, background: "#fee2e2", border: "1px solid #fca5a5", fontSize: 11.5, color: "#831843" }}>
+                  🚨 Home Affairs has no record of this document, so it counts as <b>non-compliant</b> — same as Z/NA. They will appear in the Compliance follow-up list.
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── Valid → reference + expiry ── */}
+          {dhaChecked === "yes" && f.asylumDhaStatus === "on_file" && (
+            <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: compact ? "1fr" : "repeat(auto-fit,minmax(190px,1fr))", gap: 10 }}>
+              <div style={cell}>
+                <label style={lbl}>Unique asylum reference *</label>
+                <input type="text" value={f.asylumRef || ""} onChange={e => set("asylumRef", e.target.value || null)}
+                  placeholder="e.g. CTRRO/1234567/2026" style={fld} />
+              </div>
+              <div style={cell}>
+                <label style={lbl}>Asylum document expiry *</label>
+                <input type="date" value={f.permitExpiry || ""} onChange={e => set("permitExpiry", e.target.value || null)} style={fld} />
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Expiry for the permits that carry one on their own. Asylum's expiry
+          is asked inside the sub-flow above, once DHA confirms it exists. */}
+      {permitHasExpiry(f.permit) && !isAsylum && (
+        <div style={{ marginTop: 10 }}>
+          <label style={lbl}>{permitExpiryLabel(f.permit)}</label>
+          <input type="date" value={f.permitExpiry || ""} onChange={e => set("permitExpiry", e.target.value || null)} style={fld} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 const CompBadge = ({ permit }) => { const c = COMPLIANCE[permit] || COMPLIANCE.z_na; return <Chip bg={c.bg} color={c.color} border={c.border}>{c.icon} {c.label}</Chip>; };
+// Asylum / DHA detail, shown NEXT TO the compliance chip wherever a permit
+// is rendered. This is what stopped the staff lists and the Compliance tab
+// from agreeing: the permit chip alone cannot say whether Home Affairs ever
+// confirmed the document. Renders nothing for non-asylum permits.
+// `compact` is the bare icon for tight rows (Locations cards).
+const DhaBadge = ({ p, compact }) => {
+  const d = asylumDetail(p);
+  if (!d) return null;
+  const title = d.pending
+    ? d.text + " — Home Affairs has not confirmed this asylum document"
+    : d.st.label + (d.ref ? " · ref " + d.ref : "") + (p.permitExpiry ? " · expires " + p.permitExpiry : "");
+  const icon = d.pending ? "⏳" : d.st.icon;
+  if (compact) return <span title={title} style={{ fontSize: 12 }}>{icon}</span>;
+  const c = d.pending
+    ? { bg: "#fef3c7", fg: "#92400e", bd: "#fde68a" }
+    : { bg: d.st.bg, fg: d.st.color, bd: d.st.border };
+  return (
+    <span title={title} style={{ display: "inline-block", background: c.bg, color: c.fg, border: `1px solid ${c.bd}`, fontSize: 10, fontWeight: 800, padding: "3px 8px", borderRadius: 99, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>
+      {icon} {d.text}
+    </span>
+  );
+};
+
 // 🛂 marker for a lodged VFS application. Rides NEXT TO the compliance chip
 // rather than replacing it — see the VFS block above. `compact` renders the
 // bare icon (tight rows: Locations cards), otherwise a chip with the
@@ -4095,27 +4299,7 @@ function StaffModal({ s, onClose, onSave, onTransfer, allStaff, isOwner, onHardD
           </div>
           <div style={{ gridColumn: "1/-1", background: "#FCE7F3", borderRadius: 12, padding: "14px 16px", border: "1px solid #FBCFE8" }}>
             <div style={{ fontSize: 10, fontWeight: 700, color: "#BE185D", marginBottom: 10, textTransform: "uppercase", letterSpacing: "0.08em" }}>Compliance / Work Status</div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 7 }}>
-              {Object.entries(COMPLIANCE).map(([k, c]) => (
-                <label key={k} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 11px", borderRadius: 9, border: `2px solid ${f.permit === k ? c.border : "#e5e7eb"}`, background: f.permit === k ? c.bg : "#fff", cursor: "pointer" }}>
-                  <input type="radio" checked={f.permit === k} onChange={() => set("permit", k)} style={{ display: "none" }} />
-                  <span style={{ fontSize: 16 }}>{c.icon}</span>
-                  <span style={{ fontSize: 11, fontWeight: 700, color: f.permit === k ? c.color : "#831843" }}>{c.label}</span>
-                </label>
-              ))}
-            </div>
-            {/* Expiry date - only relevant for asylum / work permit. Lets HR
-                surface anyone whose doc is about to lapse via the Compliance
-                'Expiring soon' panel. */}
-            {(f.permit === "asylum" || f.permit === "work_permit") && (
-              <div style={{ marginTop: 10 }}>
-                <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>
-                  {f.permit === "asylum" ? "Asylum document expiry" : "Work permit expiry"}
-                </label>
-                <input type="date" value={f.permitExpiry || ""} onChange={e => set("permitExpiry", e.target.value || null)}
-                  style={{ width: "100%", padding: "8px 11px", border: "1px solid #FBCFE8", borderRadius: 8, fontSize: 13, fontFamily: "inherit", background: "#FCE7F3" }} />
-              </div>
-            )}
+            <CompliancePicker f={f} set={set} />
           </div>
           {/* BOA Pathways — flags staff recruited through the BOA Pathways
               programme for unemployed South Africans. Drives the 🎓 badge on
@@ -4376,28 +4560,7 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete, smTrialActive, smTria
               uses; persists to the same `permit` column on the staff row. */}
           <div>
             <label style={lbl}>Compliance / Work Permit</label>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 8 }}>
-              <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, border: `1.5px solid ${!f.permit ? "#F472B6" : "#e5e7eb"}`, background: !f.permit ? "#fdf2f8" : "#f9fafb", cursor: "pointer" }}>
-                <input type="radio" checked={!f.permit} onChange={() => set("permit", null)} style={{ display: "none" }} />
-                <span style={{ fontSize: 16 }}>❔</span>
-                <span style={{ fontSize: 11, fontWeight: 700, color: !f.permit ? "#831843" : "#6b7280" }}>Not set</span>
-              </label>
-              {Object.entries(COMPLIANCE).map(([k, c]) => (
-                <label key={k} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, border: `1.5px solid ${f.permit === k ? c.border : "#e5e7eb"}`, background: f.permit === k ? c.bg : "#f9fafb", cursor: "pointer" }}>
-                  <input type="radio" checked={f.permit === k} onChange={() => set("permit", k)} style={{ display: "none" }} />
-                  <span style={{ fontSize: 16 }}>{c.icon}</span>
-                  <span style={{ fontSize: 11, fontWeight: 700, color: f.permit === k ? c.color : "#831843" }}>{c.label}</span>
-                </label>
-              ))}
-            </div>
-            {/* Expiry date - only relevant for asylum / work permit. Feeds
-                the Compliance tab's 'Expiring soon' panel. */}
-            {(f.permit === "asylum" || f.permit === "work_permit") && (
-              <div style={{ marginTop: 10 }}>
-                <label style={lbl}>{f.permit === "asylum" ? "Asylum document expiry" : "Work permit expiry"}</label>
-                <input type="date" value={f.permitExpiry || ""} onChange={e => set("permitExpiry", e.target.value || null)} style={inp} />
-              </div>
-            )}
+            <CompliancePicker f={f} set={set} compact />
           </div>
 
           {/* BOA Pathways — same flag as the staff modal; shows the 🎓 badge
@@ -4690,26 +4853,7 @@ function OfficeStaffModal({ s, pin, dept, onClose, onSave, onDelete }) {
               staff and manager modals. */}
           <div>
             <label style={lbl}>Compliance / Work Permit</label>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 8 }}>
-              <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, border: `1.5px solid ${!f.permit ? "#F472B6" : "#e5e7eb"}`, background: !f.permit ? "#fdf2f8" : "#f9fafb", cursor: "pointer" }}>
-                <input type="radio" checked={!f.permit} onChange={() => set("permit", null)} style={{ display: "none" }} />
-                <span style={{ fontSize: 16 }}>❔</span>
-                <span style={{ fontSize: 11, fontWeight: 700, color: !f.permit ? "#831843" : "#6b7280" }}>Not set</span>
-              </label>
-              {Object.entries(COMPLIANCE).map(([k, c]) => (
-                <label key={k} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, border: `1.5px solid ${f.permit === k ? c.border : "#e5e7eb"}`, background: f.permit === k ? c.bg : "#f9fafb", cursor: "pointer" }}>
-                  <input type="radio" checked={f.permit === k} onChange={() => set("permit", k)} style={{ display: "none" }} />
-                  <span style={{ fontSize: 16 }}>{c.icon}</span>
-                  <span style={{ fontSize: 11, fontWeight: 700, color: f.permit === k ? c.color : "#831843" }}>{c.label}</span>
-                </label>
-              ))}
-            </div>
-            {(f.permit === "asylum" || f.permit === "work_permit") && (
-              <div style={{ marginTop: 10 }}>
-                <label style={lbl}>{f.permit === "asylum" ? "Asylum document expiry" : "Work permit expiry"}</label>
-                <input type="date" value={f.permitExpiry || ""} onChange={e => set("permitExpiry", e.target.value || null)} style={inp} />
-              </div>
-            )}
+            <CompliancePicker f={f} set={set} compact />
           </div>
 
           <label style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 14px", borderRadius: 10, border: `2px solid ${f.boaPathways ? "#6EE7B7" : "#e5e7eb"}`, background: f.boaPathways ? "#ECFDF5" : "#fff", cursor: "pointer" }}>
@@ -10895,6 +11039,30 @@ function canSeeIncidents(user) {
     r.includes("national") || isRomRole(user.role);
 }
 
+// Who may see permit / asylum / DHA status. Narrower than canSeeIncidents on
+// purpose: this is immigration status, and the roles that act on it are the
+// Owner, National Ops, HR, Recruitment, Payroll, Project Management and the
+// devs who maintain the portal. Regional Ops sit OUTSIDE this gate even though
+// they can see incidents — they manage stores, they do not chase documents.
+//
+// Roles are free text (Settings → Users), so match loosely but on word
+// boundaries: a bare .includes("hr") would fire on unrelated role names.
+// Gates BOTH the Compliance tab and the Compliance column on every staff list,
+// so there is no back door into the same data.
+function canSeeCompliance(user) {
+  if (!user) return false;
+  if (user.isOwner) return true;
+  const r = String(user.role || "").toLowerCase().trim();
+  if (!r) return false;
+  return r === "master admin"
+    || /\bhr\b/.test(r) || /human\s*res/.test(r)   // HR, HR Manager, HR / Payroll, Human Resources
+    || /national/.test(r)                          // National Ops
+    || /recruit/.test(r)                           // Recruiter, Recruitment
+    || /payroll/.test(r)                           // Payroll, Payroll Manager
+    || /project/.test(r)                           // Project Manager
+    || /\bdev(eloper|ops)?\b/.test(r);              // Dev, Developer, DevOps
+}
+
 // ─── RECRUITMENT / INTERVIEW ROLE GATES ──────────────────────────────────────
 // The interview pipeline is split by responsibility: the RECRUITER (e.g. Siphe)
 // logs candidates, schedules interviews and books inductions; the NAIL-TECH
@@ -10903,6 +11071,44 @@ function canSeeIncidents(user) {
 // loosely: "recruiter"/"recruitment" for recruiters, and any "trainer" role
 // that is NOT a *manager* trainer for the nail-tech trainer — so Varonique
 // ("Nail Tech Trainer") qualifies but Farida ("Manager Trainer / LSM") doesn't.
+/* ── OFF-BOARDING ACCESS ──────────────────────────────────────────────────
+   The Off-boarding tab carries termination and disciplinary records, so it is
+   restricted to a named list of PINs and nothing else.
+
+   Deliberately NOT accessAllows(): that helper passes ANY owner and anyone
+   whose free-text role happens to contain "payroll", "wages" or "finance".
+   For this tab the instruction was these people and no one else, so the test
+   is pin membership only — an owner who is not on the list does not get in
+   either. More people can be added in Settings → Off-boarding access.
+
+   The stored list wins; the seeded default is the fallback when the key is
+   missing (a fresh install, or the row deleted), so the tab can never end up
+   silently open to everyone OR locked to nobody.                            */
+const OFFBOARD_ACCESS_KEY = "boa_offboard_access_v1";
+const OFFBOARD_DEFAULT_PINS = ["0864", "0992", "5589", "1401"];
+// Who is who on that list: 0864 owner, 0992 dev, 5589 HR, 1401 payroll.
+// Only payroll signs a record off, and only payroll is chased about it.
+const OFFBOARD_DEFAULT_PAYROLL_PINS = ["1401"];
+function offboardPins(cfg) {
+  const pins = cfg && Array.isArray(cfg.pins) ? cfg.pins.filter(Boolean) : null;
+  return (pins && pins.length) ? pins.map(String) : OFFBOARD_DEFAULT_PINS.slice();
+}
+function offboardPayrollPins(cfg) {
+  const pins = cfg && Array.isArray(cfg.payrollPins) ? cfg.payrollPins.filter(Boolean) : null;
+  return (pins && pins.length) ? pins.map(String) : OFFBOARD_DEFAULT_PAYROLL_PINS.slice();
+}
+function canSeeOffboarding(user, cfg) {
+  if (!user || !user.pin) return false;
+  return offboardPins(cfg).indexOf(String(user.pin)) >= 0;
+}
+// The sign-off is payroll's own confirmation that the dates and amounts are
+// right before the final payout, so it is theirs to give. Everyone else on the
+// tab sees the status read-only rather than a button they should not press.
+function canSignOffPayroll(user, cfg) {
+  if (!canSeeOffboarding(user, cfg)) return false;
+  return offboardPayrollPins(cfg).indexOf(String(user.pin)) >= 0;
+}
+
 function _isOwnerOrMaster(user) {
   if (!user) return false;
   if (user.isOwner) return true;
@@ -19948,9 +20154,12 @@ function hrRecruitRows(salonData, recruitFuture, hz, matByEc, actions) {
     (s.active || []).forEach(p => {
       if (actions && hasVfs(actions[p.ec])) vfs++;
       // Undated risk first — no permit on file is exposure with no clock on it.
-      if (!p.permit || p.permit === "z_na") { zna.push({ p, why: "No valid permit on file", when: "undated" }); return; }
+      if (isNonCompliantPermit(p)) {
+        zna.push({ p, why: asylumFailedDha(p) ? "Asylum document not on the DHA system" : "No valid permit on file", when: "undated" });
+        return;
+      }
       const pe = daysTo(p.permitExpiry);
-      if ((p.permit === "work_permit" || p.permit === "asylum") && pe != null && pe <= hz) {
+      if (permitHasExpiry(p.permit) && pe != null && pe <= hz) {
         permit.push({ p, why: (COMPLIANCE[p.permit] ? COMPLIANCE[p.permit].label : p.permit) + " expires", when: pe < 0 ? "expired" : "in " + pe + "d" });
         return;
       }
@@ -21157,6 +21366,533 @@ const HR_CYCLE_LABELS = (() => {
   return out;
 })();
 
+/* ═══════════════════════════════════════════════════════════════════════
+   HR TRACKER PANEL  ·  Terminations + Disciplinary
+   One component, two kinds — they share a table, a payroll sign-off and an
+   audit trail, and differ only in which columns are worth showing.
+
+   Blank stays blank. These rows came out of a spreadsheet with real gaps in
+   it, and Sagaree fills those in over time; nothing here requires a field
+   just because the column exists.
+   ═══════════════════════════════════════════════════════════════════════ */
+/* ── GLASS SURFACES (off-boarding) ────────────────────────────────────────
+   The tab paints a soft aurora onto its own background (.boa-off, in
+   index.html) so these panels have something real to blur — frosted glass
+   over a flat wash just reads as grey. Everything here is translucent
+   enough for that wash to move underneath as the page scrolls.
+   ─────────────────────────────────────────────────────────────────────── */
+const GLASS_SURFACE = {
+  background: "linear-gradient(158deg, rgba(255,255,255,0.82) 0%, rgba(253,242,248,0.56) 100%)",
+  backdropFilter: "blur(22px) saturate(180%)",
+  WebkitBackdropFilter: "blur(20px) saturate(170%)",
+  border: "1px solid rgba(255,255,255,0.70)",
+  borderRadius: 18,
+  boxShadow: "inset 0 1px 0 rgba(255,255,255,0.95), 0 1px 2px rgba(131,24,67,0.05), 0 20px 44px -24px rgba(131,24,67,0.50)"
+};
+const glassCard = (extra) => ({ ...GLASS_SURFACE, padding: "20px 22px", marginBottom: 18, ...(extra || {}) });
+// A lighter pane for the person tiles that sit inside a card.
+const glassTile = (extra) => ({
+  background: "linear-gradient(155deg, rgba(255,255,255,0.88) 0%, rgba(253,240,246,0.58) 100%)",
+  backdropFilter: "blur(10px) saturate(150%)", WebkitBackdropFilter: "blur(10px) saturate(150%)",
+  border: "1px solid rgba(255,255,255,0.82)", borderRadius: 14, padding: "15px 16px",
+  boxShadow: "inset 0 1px 0 rgba(255,255,255,0.92), 0 12px 26px -20px rgba(131,24,67,0.60)",
+  ...(extra || {})
+});
+const glassHeading = (color) => ({ fontFamily: "'Playfair Display',serif", fontSize: 17, fontWeight: 600, color: color || "#831843" });
+const GLASS_INPUT = {
+  fontFamily: "inherit", fontSize: 13, padding: "10px 12px", borderRadius: 10,
+  border: "1px solid rgba(190,24,93,0.18)", width: "100%", boxSizing: "border-box",
+  background: "rgba(255,255,255,0.72)", color: "#4A1230",
+  boxShadow: "inset 0 1px 2px rgba(131,24,67,0.05)", outline: "none"
+};
+const GLASS_LABEL = {
+  display: "block", fontSize: 10.5, fontWeight: 800, color: "#9d174d",
+  textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6
+};
+const BTN_BASE = {
+  border: "1px solid transparent", borderRadius: 10, padding: "10px 16px", cursor: "pointer",
+  fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, lineHeight: 1.2, whiteSpace: "nowrap"
+};
+const BTN_PRIMARY = { ...BTN_BASE, background: "linear-gradient(180deg,#D6246F,#A3134F)", color: "#fff",
+  boxShadow: "0 8px 18px -8px rgba(163,19,79,0.75), inset 0 1px 0 rgba(255,255,255,0.28)" };
+const BTN_GHOST = { ...BTN_BASE, background: "rgba(255,255,255,0.62)", color: "#831843",
+  border: "1px solid rgba(190,24,93,0.18)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)",
+  boxShadow: "inset 0 1px 0 rgba(255,255,255,0.85)" };
+const BTN_GO = { ...BTN_BASE, background: "linear-gradient(180deg,#1c9a52,#12703b)", color: "#fff",
+  boxShadow: "0 8px 18px -8px rgba(18,112,59,0.7), inset 0 1px 0 rgba(255,255,255,0.28)" };
+
+/* Columns marked `p` show in the table; the rest live in the expanded record
+   so the grid stays readable instead of scrolling sideways for a page and a
+   half. Nothing is dropped — the detail panel prints every field. */
+const HR_TRACK_COLS = {
+  termination: [
+    { k: "employee_code", l: "Employee ID", w: 92, p: true },
+    { k: "employee_name", l: "Full name", w: 200, strong: true, p: true },
+    { k: "role_title", l: "Position", w: 108, p: true },
+    { k: "location", l: "Branch / location", w: 142, p: true },
+    { k: "event_date", l: "Termination date", w: 132, date: true, p: true },
+    { k: "reason", l: "Reason for termination", w: 300, wrap: true, p: true },
+    { k: "exit_interview", l: "Exit interview", w: 120 },
+    { k: "notes", l: "Notes", w: 260, wrap: true }
+  ],
+  disciplinary: [
+    { k: "event_date", l: "Received on", w: 118, date: true, p: true },
+    { k: "employee_code", l: "Employee ID", w: 86, p: true },
+    { k: "employee_name", l: "Employee name", w: 178, strong: true, p: true },
+    { k: "location", l: "Location", w: 126, p: true },
+    { k: "manager", l: "Manager", w: 140, p: true },
+    { k: "findings", l: "Description and findings", w: 258, wrap: true, p: true },
+    { k: "action_taken", l: "Action taken", w: 152, p: true },
+    { k: "bonus", l: "Bonus", w: 92, p: true },
+    { k: "role_title", l: "Role", w: 90 },
+    { k: "investigation_end", l: "Investigation end", w: 132, date: true },
+    { k: "justin_to_action", l: "To action", w: 120 },
+    { k: "filed_by", l: "Filed by", w: 110 },
+    { k: "final_comments", l: "Final comments", w: 240, wrap: true }
+  ]
+};
+// Colour the outcome, because "First Written Warning" and "Dismissed" should
+// never scan the same on a page this long.
+function hrActionTone(v) {
+  const t = String(v || "").toLowerCase();
+  if (/dismiss|terminat|abscond/.test(t)) return { c: "#991b1b", bg: "#fee2e2", b: "#fca5a5" };
+  if (/final/.test(t)) return { c: "#9a3412", bg: "#ffedd5", b: "#fdba74" };
+  if (/second/.test(t)) return { c: "#b45309", bg: "#fef3c7", b: "#fde68a" };
+  if (/first|verbal|meeting/.test(t)) return { c: "#1d4ed8", bg: "#dbeafe", b: "#bfdbfe" };
+  if (/investigat|tbc/.test(t)) return { c: "#6b21a8", bg: "#ede9fe", b: "#ddd6fe" };
+  return { c: "#374151", bg: "#f3f4f6", b: "#e5e7eb" };
+}
+// Sagaree's spreadsheets were reconciled with payroll up to this date, so the
+// seeded backlog before it is already known-good and can be cleared in one go.
+// Editable in the panel — it is a default, not a rule.
+const HR_BULK_CUTOFF = "2026-07-15";
+function HrSortIcon({ active, dir }) {
+  return (
+    <span aria-hidden="true" style={{ marginLeft: 6, fontSize: 8.5, lineHeight: 1,
+      opacity: active ? 1 : 0.32, color: active ? "#BE185D" : "inherit" }}>
+      {active ? (dir === "asc" ? "\u25B2" : "\u25BC") : "\u21C5"}
+    </span>
+  );
+}
+const HR_TRACK_BLANK = (kind) => ({
+  kind, employee_code: "", employee_name: "", role_title: "", location: "", manager: "",
+  event_date: "", event_date_raw: "", investigation_end: "", investigation_raw: "",
+  reason: "", findings: "", action_taken: "", bonus: "", justin_to_action: "",
+  exit_interview: "", filed_by: "", final_comments: "", notes: ""
+});
+
+function HrTrackerPanel({ kind, currentUser, canSign, rows, loading, err, onReload, staffPool, logActivity }) {
+  const isTerm = kind === "termination";
+  const [q, setQ] = React.useState("");
+  const [payFilter, setPayFilter] = React.useState("all");   // all | pending | completed
+  const [openId, setOpenId] = React.useState(null);
+  const [draft, setDraft] = React.useState(null);            // add / edit form
+  const [busy, setBusy] = React.useState(false);
+  const [noteDraft, setNoteDraft] = React.useState({});
+  const [sort, setSort] = React.useState({ k: null, dir: "asc" });
+  const [bulkBefore, setBulkBefore] = React.useState(HR_BULK_CUTOFF);
+  const [bulkBusy, setBulkBusy] = React.useState(null);      // { done, total }
+  const allCols = HR_TRACK_COLS[kind];
+  const cols = allCols.filter(c => c.p);
+  const extraCols = allCols.filter(c => !c.p);
+  const actor = (currentUser && (currentUser.name || currentUser.pin)) || "";
+
+  const mine = React.useMemo(() => {
+    const ql = q.trim().toLowerCase();
+    return (rows || [])
+      .filter(r => r && r.kind === kind)
+      .filter(r => payFilter === "all" ? true : (r.payroll_status || "pending") === payFilter)
+      .filter(r => !ql || [r.employee_name, r.employee_code, r.location, r.role_title, r.manager,
+                           r.reason, r.findings, r.action_taken, r.final_comments, r.notes]
+                            .some(v => String(v || "").toLowerCase().includes(ql)));
+  }, [rows, kind, q, payFilter]);
+  const pending = mine.filter(r => (r.payroll_status || "pending") !== "completed").length;
+
+  const toggleSort = (k) => setSort(s0 => s0.k === k ? { k, dir: s0.dir === "asc" ? "desc" : "asc" } : { k, dir: "asc" });
+  const sorted = React.useMemo(() => {
+    if (!sort.k) return mine;
+    const col = allCols.find(c => c.k === sort.k);
+    const dir = sort.dir === "desc" ? -1 : 1;
+    const val = (r) => {
+      if (sort.k === "_payroll") return (r.payroll_status || "pending") === "completed" ? 1 : 0;
+      const raw = r[sort.k];
+      // Dates are stored ISO, so plain string order is date order.
+      if (col && col.date) return String(raw || "");
+      return String(raw == null ? "" : raw).trim().toLowerCase();
+    };
+    return mine.slice().sort((a, b) => {
+      const av = val(a), bv = val(b);
+      if (typeof av === "number") return (av - bv) * dir || 0;
+      // Blanks sink whichever way the arrow points. These rows came out of a
+      // spreadsheet with real gaps in them; sorting by a column should surface
+      // the rows that have an answer, not bury them under the ones that don't.
+      if (!av !== !bv) return av ? -1 : 1;
+      return av.localeCompare(bv, "en", { numeric: true, sensitivity: "base" }) * dir;
+    });
+  }, [mine, sort, allCols]);
+
+  // Payroll's backlog clearance: everything dated before a cut-off, signed off
+  // in one pass. Records whose date could not be read are deliberately left
+  // out — we cannot say which side of the cut-off they fall on.
+  const bulkAll = (rows || []).filter(r => r && r.kind === kind && (r.payroll_status || "pending") !== "completed");
+  const bulkTargets = bulkBefore ? bulkAll.filter(r => r.event_date && r.event_date < bulkBefore) : [];
+  const bulkUndated = bulkAll.filter(r => !r.event_date).length;
+  // Sum of the primary column widths, so the grid asks for exactly the room it
+  // needs and stops scrolling sideways the moment the window can hold it.
+  const tableMin = 148 + 88 + cols.reduce((n, c) => n + c.w, 0);
+
+  const th = { textAlign: "left", padding: "11px 14px", fontSize: 9.5, fontWeight: 800, color: "#9d174d",
+    textTransform: "uppercase", letterSpacing: "0.07em", whiteSpace: "nowrap",
+    background: "linear-gradient(180deg, rgba(253,242,248,0.97), rgba(252,231,243,0.92))",
+    backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)",
+    position: "sticky", top: 0, zIndex: 2, boxShadow: "inset 0 -1px 0 rgba(190,24,93,0.16)" };
+  const td = { padding: "13px 14px", fontSize: 12.5, lineHeight: 1.55, color: "#6B1739",
+    borderBottom: "1px solid rgba(190,24,93,0.09)", verticalAlign: "top" };
+  const inp = GLASS_INPUT;
+  const lbl = GLASS_LABEL;
+
+  const fmt = (v) => {
+    if (!v) return "";
+    const d = new Date(String(v) + "T00:00:00");
+    return isNaN(d) ? String(v) : d.toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" });
+  };
+  const save = async () => {
+    if (!draft.employee_name || !draft.employee_name.trim()) { window.alert("Please enter who this is about."); return; }
+    setBusy(true);
+    try {
+      await window.BOA_DB.saveHrTrackerRecord({ ...draft, kind, source: draft.id ? undefined : "manual" }, actor);
+      if (typeof logActivity === "function") {
+        try {
+          logActivity(draft.id ? "Updated " + kind + " record" : "Added " + kind + " record",
+            draft.employee_name + (draft.employee_code ? " (" + draft.employee_code + ")" : ""),
+            (draft.action_taken || draft.reason || ""), "People");
+        } catch (_e) { }
+      }
+      setDraft(null);
+      await onReload();
+    } catch (e) { window.alert("Could not save: " + ((e && e.message) || e)); }
+    setBusy(false);
+  };
+  // Payroll's sign-off. Only the payroll officer gets this button; HR adding or
+  // editing never can, and an edit to a date/action/bonus resets it server-side.
+  const setPayroll = async (r, status) => {
+    setBusy(true);
+    try {
+      await window.BOA_DB.setHrTrackerPayroll(r.id, status, noteDraft[r.id] || "", actor);
+      if (typeof logActivity === "function") {
+        try {
+          logActivity(status === "completed" ? "Payroll signed off " + kind : "Payroll re-opened " + kind,
+            r.employee_name + (r.employee_code ? " (" + r.employee_code + ")" : ""),
+            noteDraft[r.id] || "", "Payroll");
+        } catch (_e) { }
+      }
+      setNoteDraft(d => ({ ...d, [r.id]: "" }));
+      await onReload();
+    } catch (e) { window.alert("Could not update payroll status: " + ((e && e.message) || e)); }
+    setBusy(false);
+  };
+  const runBulkSignOff = async () => {
+    const targets = bulkTargets;
+    if (!targets.length) return;
+    const label = isTerm ? "termination" : "disciplinary";
+    if (!window.confirm(
+      "Mark " + targets.length + " " + label + " record" + (targets.length === 1 ? "" : "s") +
+      " dated before " + fmt(bulkBefore) + " as checked by payroll?\n\n" +
+      "This is the same sign-off as doing them one at a time, and any record can be re-opened afterwards." +
+      (bulkUndated ? "\n\n" + bulkUndated + " record" + (bulkUndated === 1 ? "" : "s") +
+        " with a date that could not be read will be left alone — confirm " +
+        (bulkUndated === 1 ? "it" : "them") + " by hand." : "")
+    )) return;
+    setBulkBusy({ done: 0, total: targets.length });
+    const note = "Bulk sign-off — everything dated before " + bulkBefore;
+    const queue = targets.slice();
+    let okCount = 0, failCount = 0, firstErr = "";
+    // Four at a time: fast enough for a hundred-odd records without opening a
+    // hundred-odd connections at once.
+    const worker = async () => {
+      while (queue.length) {
+        const r = queue.shift();
+        try { await window.BOA_DB.setHrTrackerPayroll(r.id, "completed", note, actor); okCount++; }
+        catch (e) { failCount++; if (!firstErr) firstErr = (e && e.message) || String(e); }
+        setBulkBusy(b => b ? { ...b, done: b.done + 1 } : b);
+      }
+    };
+    await Promise.all([worker(), worker(), worker(), worker()]);
+    setBulkBusy(null);
+    if (okCount && typeof logActivity === "function") {
+      try {
+        logActivity("Payroll bulk sign-off", label + " records dated before " + bulkBefore,
+          okCount + " record" + (okCount === 1 ? "" : "s") + " marked checked", "Payroll");
+      } catch (_e) { }
+    }
+    await onReload();
+    if (failCount) window.alert(failCount + " of " + targets.length + " could not be signed off: " + firstErr +
+      "\n\n" + okCount + " went through. Try the rest again.");
+  };
+  const remove = async (r) => {
+    if (!window.confirm("Delete this record for " + r.employee_name + "? This cannot be undone.")) return;
+    setBusy(true);
+    try { await window.BOA_DB.deleteHrTrackerRecord(r.id, actor); await onReload(); }
+    catch (e) { window.alert("Could not delete: " + ((e && e.message) || e)); }
+    setBusy(false);
+  };
+  const pickStaff = (name) => {
+    const hit = (staffPool || []).find(x => x.name === name);
+    if (!hit) return;
+    setDraft(d => ({ ...d, employee_name: hit.name, employee_code: hit.ec || d.employee_code,
+      location: hit.branch || d.location, role_title: hit.role || d.role_title }));
+  };
+
+  return (
+    <div>
+      <div style={{ ...glassCard({ padding: "14px 16px", marginBottom: 18 }), display: "flex", gap: 12,
+        flexWrap: "wrap", alignItems: "center" }}>
+        <input placeholder={"🔍  Search " + (isTerm ? "terminations" : "disciplinary records") + "…"} value={q}
+          onChange={e => setQ(e.target.value)} style={{ ...inp, flex: "1 1 240px", maxWidth: 360 }} />
+        <select value={payFilter} onChange={e => setPayFilter(e.target.value)} style={{ ...inp, width: "auto", flex: "0 0 auto" }}>
+          <option value="all">All records</option>
+          <option value="pending">Waiting on payroll</option>
+          <option value="completed">Payroll signed off</option>
+        </select>
+        <button className="boa-btn" onClick={() => setDraft(HR_TRACK_BLANK(kind))} style={BTN_PRIMARY}>
+          + Add {isTerm ? "termination" : "disciplinary record"}
+        </button>
+        <button className="boa-btn" onClick={onReload} disabled={loading} style={BTN_GHOST}>{loading ? "Loading…" : "↻ Refresh"}</button>
+        <span style={{ marginLeft: "auto", fontSize: 12.5, color: "#9d6a82" }}>
+          {mine.length} record{mine.length === 1 ? "" : "s"}
+          {pending > 0 && <> · <strong style={{ color: "#b45309" }}>{pending} waiting on payroll</strong></>}
+        </span>
+      </div>
+
+      {err && <div style={{ ...glassCard(), background: "rgba(254,242,242,0.9)", border: "1px solid #fecaca", color: "#9b1c1c" }}>Couldn't load: {err}</div>}
+
+      {/* Backlog clearance — payroll only, and only while there is a backlog. */}
+      {canSign && bulkAll.length > 0 && (
+        <div style={glassCard({ background: "linear-gradient(158deg, rgba(240,253,244,0.90) 0%, rgba(220,252,231,0.52) 100%)", border: "1px solid rgba(134,239,172,0.9)" })}>
+          <div style={{ ...glassHeading("#15803d"), marginBottom: 8 }}>✓ Sign off the backlog in one go</div>
+          <div style={{ fontSize: 12.5, color: "#3f6b4f", marginBottom: 16, lineHeight: 1.65, maxWidth: "78ch" }}>
+            Everything dated before the cut-off gets marked checked in one pass — for the records
+            already reconciled with payroll before the trackers moved into the hub. Records whose
+            date could not be read from the spreadsheet are left alone, and anything here can be
+            re-opened afterwards.
+          </div>
+          <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "flex-end" }}>
+            <label style={{ flex: "0 0 auto" }}>
+              <span style={{ ...lbl, color: "#15803d" }}>Cut-off — sign off everything before</span>
+              <input type="date" value={bulkBefore} onChange={e => setBulkBefore(e.target.value)}
+                style={{ ...inp, width: "auto", minWidth: 190 }} />
+            </label>
+            <button className="boa-btn" onClick={runBulkSignOff} disabled={!!bulkBusy || !bulkTargets.length}
+              style={{ ...BTN_GO, padding: "11px 20px" }}>
+              {bulkBusy
+                ? "Signing off… " + bulkBusy.done + " / " + bulkBusy.total
+                : bulkTargets.length
+                  ? "Mark " + bulkTargets.length + " record" + (bulkTargets.length === 1 ? "" : "s") + " as checked"
+                  : "Nothing before that date"}
+            </button>
+            <div style={{ fontSize: 11.5, color: "#3f6b4f", lineHeight: 1.6, paddingBottom: 2 }}>
+              {bulkAll.length} awaiting payroll in total
+              {bulkUndated > 0 && <><br /><strong style={{ color: "#b45309" }}>{bulkUndated} with an unreadable date — check {bulkUndated === 1 ? "it" : "those"} by hand</strong></>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {draft && (
+        <div style={{ ...glassCard({ padding: "22px 24px" }), border: "1px solid rgba(190,24,93,0.35)",
+          boxShadow: "inset 0 1px 0 rgba(255,255,255,0.95), 0 0 0 3px rgba(214,36,111,0.10), 0 22px 46px -24px rgba(131,24,67,0.55)" }}>
+          <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 18, fontWeight: 700, color: "#831843", marginBottom: 16 }}>
+            {draft.id ? "Edit record" : (isTerm ? "New termination record" : "New disciplinary record")}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(210px,1fr))", gap: 16 }}>
+            <label><span style={lbl}>Employee name</span>
+              <input list="_hrTrackStaff" style={inp} value={draft.employee_name}
+                onChange={e => { setDraft({ ...draft, employee_name: e.target.value }); pickStaff(e.target.value); }} />
+              <datalist id="_hrTrackStaff">{(staffPool || []).map(x => <option key={x.ec || x.name} value={x.name} />)}</datalist>
+            </label>
+            <label><span style={lbl}>Employee ID</span><input style={inp} value={draft.employee_code} onChange={e => setDraft({ ...draft, employee_code: e.target.value })} /></label>
+            <label><span style={lbl}>{isTerm ? "Position" : "Role"}</span><input style={inp} value={draft.role_title} onChange={e => setDraft({ ...draft, role_title: e.target.value })} /></label>
+            <label><span style={lbl}>{isTerm ? "Branch / location" : "Location"}</span><input style={inp} value={draft.location} onChange={e => setDraft({ ...draft, location: e.target.value })} /></label>
+            <label><span style={lbl}>{isTerm ? "Termination date" : "Received on"}</span><input type="date" style={inp} value={draft.event_date || ""} onChange={e => setDraft({ ...draft, event_date: e.target.value })} /></label>
+            {!isTerm && <label><span style={lbl}>Manager</span><input style={inp} value={draft.manager} onChange={e => setDraft({ ...draft, manager: e.target.value })} /></label>}
+            {!isTerm && <label><span style={lbl}>Investigation end</span><input type="date" style={inp} value={draft.investigation_end || ""} onChange={e => setDraft({ ...draft, investigation_end: e.target.value })} /></label>}
+            {!isTerm && <label><span style={lbl}>Action taken</span><input style={inp} value={draft.action_taken} onChange={e => setDraft({ ...draft, action_taken: e.target.value })} /></label>}
+            {!isTerm && <label><span style={lbl}>Bonus</span><input style={inp} value={draft.bonus} onChange={e => setDraft({ ...draft, bonus: e.target.value })} placeholder="50% Bonus / No Bonus" /></label>}
+            {!isTerm && <label><span style={lbl}>To action</span><input style={inp} value={draft.justin_to_action} onChange={e => setDraft({ ...draft, justin_to_action: e.target.value })} /></label>}
+            {!isTerm && <label><span style={lbl}>Filed by</span><input style={inp} value={draft.filed_by} onChange={e => setDraft({ ...draft, filed_by: e.target.value })} /></label>}
+            {isTerm && <label><span style={lbl}>Exit interview conducted</span><input style={inp} value={draft.exit_interview} onChange={e => setDraft({ ...draft, exit_interview: e.target.value })} /></label>}
+          </div>
+          <div style={{ marginTop: 16 }}>
+            <span style={lbl}>{isTerm ? "Reason for termination" : "Investigation description and findings"}</span>
+            <textarea rows={3} style={{ ...inp, resize: "vertical", minHeight: 84, lineHeight: 1.6 }}
+              value={isTerm ? draft.reason : draft.findings}
+              onChange={e => setDraft({ ...draft, [isTerm ? "reason" : "findings"]: e.target.value })} />
+          </div>
+          <div style={{ marginTop: 16 }}>
+            <span style={lbl}>{isTerm ? "Notes" : "Final comments"}</span>
+            <textarea rows={2} style={{ ...inp, resize: "vertical", minHeight: 64, lineHeight: 1.6 }}
+              value={isTerm ? draft.notes : draft.final_comments}
+              onChange={e => setDraft({ ...draft, [isTerm ? "notes" : "final_comments"]: e.target.value })} />
+          </div>
+          <div style={{ fontSize: 11.5, color: "#9d6a82", marginTop: 14, lineHeight: 1.6 }}>
+            Anything you don't have yet can be left blank and filled in later.
+            {draft.id && draft.payroll_status === "completed" && (
+              <strong style={{ color: "#b45309" }}> Changing the date, action or bonus will ask payroll to check it again.</strong>
+            )}
+          </div>
+          <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
+            <button className="boa-btn" onClick={save} disabled={busy} style={BTN_PRIMARY}>{busy ? "Saving…" : "Save record"}</button>
+            <button className="boa-btn" onClick={() => setDraft(null)} style={BTN_GHOST}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      <div style={{ ...glassCard({ padding: 0, marginBottom: 0 }), overflow: "hidden" }}>
+        <div style={{ overflow: "auto", maxHeight: mine.length > 18 ? 720 : "none" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: tableMin }}>
+            <thead><tr>
+              {[{ k: "_payroll", l: "Payroll", w: 148 }].concat(cols).map(c => {
+                const on = sort.k === c.k;
+                return (
+                  <th key={c.k} style={{ ...th, minWidth: c.w }}
+                    aria-sort={on ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}>
+                    <button className="boa-sort" onClick={() => toggleSort(c.k)}
+                      title={"Sort by " + c.l + (on && sort.dir === "asc" ? " — descending" : " — ascending")}>
+                      {c.l}<HrSortIcon active={on} dir={sort.dir} />
+                    </button>
+                  </th>
+                );
+              })}
+              <th style={{ ...th, minWidth: 88 }}></th>
+            </tr></thead>
+            <tbody>
+              {mine.length === 0 && (
+                <tr><td colSpan={cols.length + 2} style={{ ...td, color: "#B49DCB", padding: "28px 16px" }}>
+                  {loading ? "Loading…" : q || payFilter !== "all" ? "Nothing matches that filter." : "No records yet."}
+                </td></tr>
+              )}
+              {sorted.map(r => {
+                const done = (r.payroll_status || "pending") === "completed";
+                const open = openId === r.id;
+                return (
+                  <React.Fragment key={r.id}>
+                    <tr className="boa-row" style={{ background: open ? "rgba(253,242,248,0.85)" : done ? "rgba(240,253,244,0.55)" : "transparent" }}>
+                      <td style={td}>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 10.5, fontWeight: 800,
+                          borderRadius: 999, padding: "4px 10px", whiteSpace: "nowrap",
+                          color: done ? "#15803d" : "#b45309", background: done ? "rgba(220,252,231,0.85)" : "rgba(254,243,199,0.85)",
+                          border: "1px solid " + (done ? "#86efac" : "#fde68a") }}>
+                          {done ? "✓ Signed off" : "⏳ Awaiting payroll"}
+                        </span>
+                        {done && r.payroll_checked_by && (
+                          <div style={{ fontSize: 10.5, color: "#9d6a82", marginTop: 5 }}>{r.payroll_checked_by}</div>
+                        )}
+                      </td>
+                      {cols.map(c => {
+                        const raw = r[c.k];
+                        const val = c.date ? (fmt(raw) || r[c.k === "event_date" ? "event_date_raw" : "investigation_raw"] || "") : (raw || "");
+                        const suspect = c.date && !raw && r[c.k === "event_date" ? "event_date_raw" : "investigation_raw"];
+                        if (c.k === "action_taken" && val) {
+                          const t = hrActionTone(val);
+                          return <td key={c.k} style={td}><span style={{ display: "inline-block", fontSize: 10.5, fontWeight: 800, borderRadius: 7, padding: "4px 9px", color: t.c, background: t.bg, border: "1px solid " + t.b, lineHeight: 1.35 }}>{val}</span></td>;
+                        }
+                        return (
+                          <td key={c.k} style={{ ...td, fontWeight: c.strong ? 700 : 400,
+                            color: c.strong ? "#831843" : suspect ? "#b45309" : td.color,
+                            maxWidth: c.wrap ? c.w : undefined, whiteSpace: c.wrap ? "normal" : "nowrap" }}
+                            title={suspect ? "Date could not be read from the spreadsheet — please confirm" : undefined}>
+                            {c.wrap && String(val).length > 190
+                              ? <><span>{String(val).slice(0, 190).trimEnd()}…</span>
+                                  <button onClick={() => setOpenId(open ? null : r.id)}
+                                    style={{ background: "none", border: "none", padding: "0 0 0 4px", color: "#BE185D", fontWeight: 700, fontSize: 11.5, cursor: "pointer", fontFamily: "inherit" }}>more</button></>
+                              : (val || <span style={{ color: "#d8b4c6" }}>—</span>)}
+                            {suspect && " ⚠"}
+                          </td>
+                        );
+                      })}
+                      <td style={{ ...td, whiteSpace: "nowrap", textAlign: "right" }}>
+                        <button className="boa-btn" onClick={() => setOpenId(open ? null : r.id)}
+                          style={{ ...BTN_GHOST, padding: "6px 11px", fontSize: 11.5 }}>{open ? "Close" : "Open"}</button>
+                      </td>
+                    </tr>
+                    {open && (
+                      /* The detail sticks to the left edge of the scroller, so it
+                         stays readable even when the grid is scrolled sideways —
+                         otherwise the sign-off button sits off-screen. */
+                      <tr><td colSpan={cols.length + 2} style={{ background: "rgba(253,247,250,0.92)", borderBottom: "1px solid rgba(190,24,93,0.12)", padding: 0 }}>
+                        <div style={{ position: "sticky", left: 0, width: "min(100%, 1060px)", boxSizing: "border-box", padding: "20px 22px 22px" }}>
+                          <div style={{ display: "grid", gap: 20, gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))", alignItems: "start" }}>
+                            <div>
+                              <div style={lbl}>Payroll check</div>
+                              <div style={{ fontSize: 12.5, color: "#6B1739", marginBottom: 10, lineHeight: 1.6 }}>
+                                {done
+                                  ? <>Signed off by <strong>{r.payroll_checked_by || "—"}</strong>{r.payroll_checked_at ? " on " + new Date(r.payroll_checked_at).toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }) : ""}. Good for the final payout.</>
+                                  : <>Waiting on the payroll officer to confirm the dates and amounts before the last payout.</>}
+                              </div>
+                              {r.payroll_note && <div style={{ fontSize: 12, color: "#9d6a82", marginBottom: 10, fontStyle: "italic" }}>“{r.payroll_note}”</div>}
+                              {canSign ? (<>
+                                <input placeholder="Payroll note (optional)" style={{ ...inp, marginBottom: 10 }}
+                                  value={noteDraft[r.id] || ""} onChange={e => setNoteDraft(d => ({ ...d, [r.id]: e.target.value }))} />
+                                {done
+                                  ? <button className="boa-btn" onClick={() => setPayroll(r, "pending")} disabled={busy} style={{ ...BTN_GHOST, background: "rgba(254,243,199,0.9)", color: "#92400e", border: "1px solid #fde68a" }}>Re-open for checking</button>
+                                  : <button className="boa-btn" onClick={() => setPayroll(r, "completed")} disabled={busy} style={BTN_GO}>✓ Mark payroll complete</button>}
+                              </>) : (
+                                <div style={{ fontSize: 11.5, color: "#9d6a82", background: "rgba(255,255,255,0.6)", border: "1px dashed rgba(190,24,93,0.22)", borderRadius: 10, padding: "9px 12px", lineHeight: 1.55 }}>
+                                  Only the payroll officer can sign a record off — it is their confirmation that the final payout is safe to run.
+                                </div>
+                              )}
+                            </div>
+                            <div>
+                              <div style={lbl}>Full record</div>
+                              <div style={{ fontSize: 12, color: "#6B1739", lineHeight: 1.65 }}>
+                                {extraCols.map(c => {
+                                  const raw = r[c.k];
+                                  const val = c.date ? (fmt(raw) || r[c.k === "event_date" ? "event_date_raw" : "investigation_raw"] || "") : (raw || "");
+                                  return (
+                                    <div key={c.k} style={{ marginBottom: 7 }}>
+                                      <span style={{ color: "#9d6a82", fontWeight: 700 }}>{c.l}: </span>
+                                      {val || <span style={{ color: "#d8b4c6" }}>—</span>}
+                                    </div>
+                                  );
+                                })}
+                                {cols.filter(c => c.wrap && String(r[c.k] || "").length > 190).map(c => (
+                                  <div key={c.k} style={{ marginTop: 10, paddingTop: 10, borderTop: "1px dashed rgba(190,24,93,0.16)" }}>
+                                    <span style={{ color: "#9d6a82", fontWeight: 700 }}>{c.l}: </span>{r[c.k]}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                            <div>
+                              <div style={lbl}>Filing</div>
+                              <div style={{ fontSize: 12, color: "#9d6a82", lineHeight: 1.7, marginBottom: 12 }}>
+                                {r.event_date_raw && <>As written in the sheet: <strong style={{ color: "#6B1739" }}>{r.event_date_raw}</strong><br /></>}
+                                {r.month_band && <>Filed under: {r.month_band}<br /></>}
+                                {r.source && <>Source: {r.source}<br /></>}
+                                {r.created_by && <>Added by {r.created_by}<br /></>}
+                                {r.updated_by && <>Last edited by {r.updated_by}</>}
+                              </div>
+                              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                <button className="boa-btn" onClick={() => { setDraft({ ...HR_TRACK_BLANK(kind), ...r, event_date: r.event_date || "", investigation_end: r.investigation_end || "" }); setOpenId(null); }}
+                                  style={{ ...BTN_GHOST, background: "rgba(224,242,254,0.85)", color: "#0369a1", border: "1px solid #bae6fd" }}>✏️ Edit</button>
+                                <button className="boa-btn" onClick={() => remove(r)} disabled={busy}
+                                  style={{ ...BTN_GHOST, background: "rgba(254,226,226,0.85)", color: "#991b1b", border: "1px solid #fecaca" }}>Delete</button>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </td></tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function interviewStage(r) {
   if (!r) return "new";
   if (r.promotedToTrialId) return "to_trial";
@@ -22282,6 +23018,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // application can be logged against anyone, not just the people who
   // happen to appear in the non-compliant follow-up list.
   const [vfsModal, setVfsModal] = useState(null);
+  // Permit editor opened from the Compliance tab. Renders the SAME
+  // CompliancePicker the staff / manager / office modals use, so the asylum
+  // → DHA → reference sub-flow is reachable from the Compliance tab too
+  // rather than only from the staff record.
+  // null | { _id, ec, name, branch, role, permit, permitExpiry, asylum* }
+  const [permitModal, setPermitModal] = useState(null);
   // Compliance directory filters (used in the bottom section of the
   // Compliance tab so the user can search + slice by role / branch).
   const [compSearch, setCompSearch] = useState("");
@@ -24212,6 +24954,68 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // free-text portal role. None of the seeded users carry any of those words, so
   // until someone's role says "Payroll" (or their pin is ticked in Settings)
   // this queue is owner-only and the payroll officer will never see it.
+  // Off-boarding access — a named PIN list (boa_offboard_access_v1). This tab
+  // holds termination and disciplinary records, so it is gated in three places
+  // that all read this one answer: the nav item, tryChangeTab, and the render
+  // site. A render gate on its own is cosmetic.
+  // While the key is still loading this is null, and canSeeOffboarding falls
+  // back to the seeded PINs — so there is no window where the tab flashes open.
+  const [offboardAccess, setOffboardAccess] = useState(null);
+  useEffect(() => {
+    let dead = false;
+    (async () => {
+      try {
+        const v = window.BOA_DB.loadByKey ? await window.BOA_DB.loadByKey(OFFBOARD_ACCESS_KEY) : null;
+        if (!dead && v && typeof v === "object") setOffboardAccess(v);
+      } catch (_e) { }
+    })();
+    return () => { dead = true; };
+  }, []);
+  const canOffboard = canSeeOffboarding(currentUser, offboardAccess);
+  const isPayrollSigner = canSignOffPayroll(currentUser, offboardAccess);
+  const [offSubTab, setOffSubTab] = useState("list");     // list | term | disc
+  const [trackerRows, setTrackerRows] = useState([]);
+  const [trackerLoading, setTrackerLoading] = useState(false);
+  const [trackerErr, setTrackerErr] = useState("");
+  // Both trackers come back in one read and are split client-side — they are
+  // one table, and the payroll badge on the pill bar needs both counts anyway.
+  const loadTrackers = React.useCallback(async () => {
+    if (!canOffboard || !window.BOA_DB.listHrTrackerRecords) return;
+    setTrackerLoading(true); setTrackerErr("");
+    try { setTrackerRows(await window.BOA_DB.listHrTrackerRecords(null) || []); }
+    catch (e) { setTrackerErr((e && e.message) || String(e)); }
+    setTrackerLoading(false);
+  }, [canOffboard]);
+  useEffect(() => { if (tab === "offboard" && canOffboard) loadTrackers(); }, [tab, canOffboard, loadTrackers]);
+  // What payroll still has to sign off. This is the number that decides whether
+  // a final payout is safe to run, so it is surfaced on the pill bar and, for
+  // the payroll officer, on the dashboard.
+  const trackerPending = useMemo(() => {
+    const t = { term: 0, disc: 0 };
+    (trackerRows || []).forEach(r => {
+      if (!r || r.payroll_status === "completed") return;
+      if (r.kind === "termination") t.term++; else if (r.kind === "disciplinary") t.disc++;
+    });
+    return t;
+  }, [trackerRows]);
+  // Name/EC picker source for adding a record: everyone the portal knows,
+  // including people already off-boarded (a termination record is written
+  // about someone who has left).
+  const trackerStaffPool = useMemo(() => {
+    const seen = new Set(), out = [];
+    [].concat(staff || [], managers || [], hoStaff || []).forEach(x => {
+      const ec = String((x && x.ec) || "").trim();
+      if (!x || !x.name || (ec && seen.has(ec))) return;
+      if (ec) seen.add(ec);
+      out.push({ ec, name: x.name, branch: x.branch || "", role: x.role || "" });
+    });
+    return out.sort((a, b) => a.name.localeCompare(b.name));
+  }, [staff, managers, hoStaff]);
+  const saveOffboardAccess = async (next) => {
+    setOffboardAccess(next);
+    try { await window.BOA_DB.saveByKey(OFFBOARD_ACCESS_KEY, next); }
+    catch (e) { window.alert("Could not save off-boarding access: " + (e.message || e)); }
+  };
   const [officeHoursAccess, setOfficeHoursAccess] = useState({});
   const officeHoursCfg = useMemo(() => {
     const c = officeHoursAccess || {};
@@ -24279,6 +25083,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // balances need them. This deliberately does NOT reveal the genuine Incident
   // Reports tab (still canSeeIncidents-only). leavePayrollCfg defaults to the
   // Payroll roles, so a payroll officer matches on the first render.
+  // Permit / asylum / DHA status is restricted — see canSeeCompliance. Gates
+  // the Compliance TAB and the Compliance COLUMN together; hiding one without
+  // the other would leave the same data a click away.
+  const canCompliance = canSeeCompliance(currentUser);
   const canSeeLeaveExpiry = canSeeIncidents(currentUser) || accessAllows(currentUser, leavePayrollCfg);
   const saveLeaveOpsCfg = async (next) => {
     setLeaveOpsAccess(next);
@@ -27907,12 +28715,23 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Departed staff (leftDate has passed) are pinned to the bottom for the 31-day
   // grace window so the active list stays clean.
   const filtered = useMemo(() => {
+    const _todayYmd = ymdStr(new Date());
     let list = enriched.filter(s => {
-      if (s.offHidden) return false;          // hide off-boarded staff after the 31-day display window
-
-      const isTerm = s.status === "terminated" || s.active === "false" || s.active === false;
-      if (fShow === "terminated" && !isTerm) return false;
-      if (fShow !== "terminated" && isTerm) return false; // Hide from 'all', 'active', 'on_mat' views
+      const isTerm = isTerminatedRow(s);
+      const hasGone = hasDeparted(s, _todayYmd);
+      // THE ARCHIVE. Someone can have left in three independent ways (the same
+      // three isStillOnBooks() weighs): a terminated / inactive staff row, an
+      // off-boarding record, or a leftDate that has simply passed. This view
+      // used to test only the first — and `offHidden` dropped the off-boarded
+      // before it got that far — so "Terminated (Archive)" was always empty.
+      // The 31-day window exists to keep leavers out of the LIVE views; it must
+      // not apply to the archive those records are kept in.
+      if (fShow === "terminated") {
+        if (!hasGone) return false;
+      } else {
+        if (s.offHidden) return false;        // hide off-boarded staff after the 31-day display window
+        if (isTerm) return false;             // hide from 'all', 'active', 'on_mat' views
+      }
 
       if (fShow === "on_mat" && !s.onMat) return false;
       if (fShow === "active_only" && s.onMat) return false;
@@ -27982,11 +28801,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const q = (search || "").toLowerCase();
     const list = (enrichedManagers || []).filter(m => {
       if (!m) return false;
-      if (m.offHidden) return false;          // hide off-boarded managers past the 31-day display window
-
-      const isTerm = m.status === "terminated" || m.active === "false" || m.active === false;
-      if (fShow === "terminated" && !isTerm) return false;
-      if (fShow !== "terminated" && isTerm) return false;
+      const _todayYmdM = ymdStr(new Date());
+      const isTerm = isTerminatedRow(m);
+      const hasGone = hasDeparted(m, _todayYmdM);
+      // Same three departure routes as the tech list above.
+      if (fShow === "terminated") {
+        if (!hasGone) return false;
+      } else {
+        if (m.offHidden) return false;        // hide off-boarded managers past the 31-day display window
+        if (isTerm) return false;
+      }
 
       if (fShow === "on_mat" && !m.onMat) return false;
       if (fShow === "active_only" && m.onMat) return false;
@@ -28026,6 +28850,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       return (a.name || "").localeCompare(b.name || "");
     });
   }, [enrichedManagers, fShow, fBranch, fPermit, fContract, fRole, search, complianceActions]);
+
+  // Today, stamped once for the Staff List rows so every row in a render judges
+  // "has this person left" against the same date.
+  const _archiveToday = ymdStr(new Date());
 
   // Pool for the Maternity modal lookup: every active tech + every manager,
   // minus anyone who already has a maternity record (no double-up). Role
@@ -28083,7 +28911,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       total: staff.length, active: active.length, onMat: onMatEcs.size,
       pregnant: pregnantEcs.size,
       onUnpaidLegal: onUnpaidLegalEcs.size,
-      zna: active.filter(s => s.permit === "z_na").length,
+      zna: active.filter(isNonCompliantPermit).length,
       noContract: active.filter(s => s.contract === "NO CONTRACT").length,
       // Vacancies and understaffed treat off-boarded AND unpaid-legal staff as gone,
       // so they immediately surface as open positions in the Recruitment tab.
@@ -28977,9 +29805,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     if (leaveSubTab !== "callcentre") setLeaveSubTab("callcentre");
     if (attBranch !== CALL_CENTRE) setAttBranch(CALL_CENTRE);
   }, [ccOnly, schedSubTab, leaveSubTab, attBranch]);
+  // Access revoked while sitting on the tab (Settings edited in another
+  // session): don't leave the records on screen.
+  useEffect(() => { if (tab === "offboard" && !canOffboard) setTab("dashboard"); }, [tab, canOffboard]);
+
   const tryChangeTab = (t) => {
     if (t === tab) return;
     if (currentUser && currentUser.ccOnly && !CC_ONLY_TABS.has(t)) return;   // CC&S-only guard
+    if (t === "offboard" && !canOffboard) return;   // named-PIN list only — see canSeeOffboarding
     if (tab === "scheduling" && schedSubTab === "managers" && mgrSchedDirty) {
       if (!window.confirm("Are you sure? The manager schedule has unsaved changes. They will be lost if you leave.")) return;
       setMgrSchedDirty(false);
@@ -29245,7 +30078,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t: "onboard", l: onboardLbl },
                   { t: "trialPeriod", l: trialLbl },
                   { t: "smTrial", l: smTrialLbl },
-                  { t: "offboard", l: offboardLbl },
+                  ...(canOffboard ? [{ t: "offboard", l: offboardLbl, forceShow: true }] : []),
                   { t: "staff", l: "💅 Salon Staff" },
                   // Office Staff List appears once there are office people —
                   // OR for anyone allowed to add them: this tab holds the only
@@ -29265,7 +30098,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   ] : []),
                   { t: "maternity", l: matLbl },
                   { t: "unpaidLegal", l: "⏸️ Unpaid Leave (Legal)" },
-                  { t: "compliance", l: "📋 Compliance" },
+                  ...(canCompliance ? [{ t: "compliance", l: "📋 Compliance" }] : []),
                   ...(canSeeIncidents(currentUser) ? [(() => {
                     const unread = incidentReports.filter(r => !r.reviewed && !isLeaveExpiryReport(r)).length;
                     return { t: "incidents", l: "🛡️ Incident Reports" + (unread ? "  (" + unread + ")" : "") };
@@ -29748,7 +30581,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             understaffed: _scopedUnderstaffed
           };
           const scopedAttn = {
-            zna: enriched.filter(s => !s.onMat && !s.onUnpaidLegal && !s.offboarded && s.permit === "z_na" && scopedBranchSet.has(s.branch)).length,
+            zna: enriched.filter(s => !s.onMat && !s.onUnpaidLegal && !s.offboarded && isNonCompliantPermit(s) && scopedBranchSet.has(s.branch)).length,
             noContract: enriched.filter(s => !s.onMat && !s.onUnpaidLegal && !s.offboarded && s.contract === "NO CONTRACT" && scopedBranchSet.has(s.branch)).length
           };
           const understaffedBranches = scopedSalons
@@ -29880,7 +30713,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
           const peopleActions = [
             { lbl: "Onboarding", icon: "🌱", to: "onboard" },
-            { lbl: "Off-boarding", icon: "👋", to: "offboard" },
+            ...(canOffboard ? [{ lbl: "Off-boarding", icon: "👋", to: "offboard" }] : []),
             { lbl: "Maternity", icon: "🤱", to: "maternity" },
             { lbl: "Locations", icon: "📍", to: "locations" }
           ];
@@ -30028,6 +30861,33 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   day, loan, day-off swap…) that hasn't been published yet.
                   Staff / kiosk / My BOA keep showing the OLD version until
                   someone reviews + publishes — this is the nudge to do it. */
+              /* Termination / disciplinary records waiting on the payroll
+                  officer's check before the final payout. The instruction was
+                  that this goes to the payroll officer ONLY, so the gate is
+                  the payroll pin, not the whole off-boarding list — HR filing
+                  a record should not nag the owner about checking it. */
+              dashAlert("offboardPayroll", "payroll", "warning",
+              isPayrollSigner && (trackerPending.term + trackerPending.disc) > 0 && (
+                <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 16, padding: "16px 20px", marginBottom: 20, boxShadow: "0 4px 14px rgba(180,83,9,0.10)", display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+                  <div style={{ flex: 1, minWidth: 280 }}>
+                    <div style={{ fontSize: 15, fontWeight: 800, color: "#92400e", letterSpacing: "0.04em", textTransform: "uppercase" }}>📄 Payroll check needed before the final payout</div>
+                    <div style={{ fontSize: 12.5, color: "#b45309", fontWeight: 700, marginTop: 4 }}>
+                      {trackerPending.term > 0 && <>{trackerPending.term} termination{trackerPending.term === 1 ? "" : "s"}</>}
+                      {trackerPending.term > 0 && trackerPending.disc > 0 && " · "}
+                      {trackerPending.disc > 0 && <>{trackerPending.disc} disciplinary record{trackerPending.disc === 1 ? "" : "s"}</>}
+                      {" waiting to be checked"}
+                    </div>
+                    <div style={{ fontSize: 11.5, color: "#b45309", marginTop: 3 }}>
+                      HR has captured these. Confirm the dates and amounts, then mark each one complete so the last payout can be run against it.
+                    </div>
+                  </div>
+                  <button onClick={() => { setOffSubTab(trackerPending.term > 0 ? "term" : "disc"); tryChangeTab("offboard"); }}
+                    title="Open the tracker and sign off the records waiting on payroll."
+                    style={{ background: "#b45309", color: "#fff", border: "none", borderRadius: 10, padding: "10px 18px", fontWeight: 800, fontSize: 13, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap", boxShadow: "0 4px 12px rgba(180,83,9,0.3)" }}>
+                    Check records →
+                  </button>
+                </div>
+              ));
               dashAlert("sageReanchor", "payroll", "warning",
               (currentUser?.isOwner || accessAllows(currentUser, leaveBalancesCfg)) && balAnchorAlert && balAnchorAlert.stale && (
                 <div style={{ background: "#f5f3ff", border: "1px solid #c4b5fd", borderRadius: 16, padding: "16px 20px", marginBottom: 20, boxShadow: "0 4px 14px rgba(109,40,217,0.10)", display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
@@ -31586,7 +32446,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     }
                     return [
                       schedAlert,
-                      scopedAttn.zna > 0 && { i: "🚨", l: scopedAttn.zna + " staff with Z/NA risk", sub: "compliance issue", c: "#7f1d1d", bg: "#fee2e2", to: "staff" },
+                      canCompliance && scopedAttn.zna > 0 && { i: "🚨", l: scopedAttn.zna + " staff with Z/NA risk", sub: "compliance issue", c: "#7f1d1d", bg: "#fee2e2", to: "staff" },
                       scopedAttn.noContract > 0 && { i: "📄", l: scopedAttn.noContract + " staff with no contract", sub: "upload contracts", c: "#7f1d1d", bg: "#fee2e2", to: "staff" },
                       recentDepartures.length > 0 && { i: "👋", l: recentDepartures.length + " departure" + (recentDepartures.length !== 1 ? "s" : "") + " this week", sub: "in last 7 days", c: "#374151", bg: "#f3f4f6", to: "offboard" }
                     ];
@@ -31665,9 +32525,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   {CC_ROLES.map(r => <option key={r.key} value={r.key}>{r.icon} {r.label}</option>)}
                 </optgroup>
               </select>
+              {canCompliance && (
               <select value={oPermit} onChange={e => setOPermit(e.target.value)} style={{ padding: "7px 11px", borderRadius: 7, border: `1px solid ${bdr}`, fontFamily: "inherit", fontSize: 13, background: cream }}>
                 <option value="All">All Compliance</option>{Object.entries(COMPLIANCE).map(([k, c]) => <option key={k} value={k}>{c.icon} {c.label}</option>)}<option value={VFS_FILTER_KEY}>{VFS.icon} {VFS.label}</option>
               </select>
+              )}
               <select value={oContract} onChange={e => setOContract(e.target.value)} style={{ padding: "7px 11px", borderRadius: 7, border: `1px solid ${bdr}`, fontFamily: "inherit", fontSize: 13, background: cream }}>
                 <option value="All">All Contracts</option>{["Permanent", "Fixed Term", "3 Month", "NO CONTRACT"].map(c => <option key={c}>{c}</option>)}
               </select>
@@ -31698,19 +32560,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
                   <thead>
                     <tr style={{ background: "#831843", color: "#FFFFFF" }}>
-                      {["EC ↑", "First Name", "Surname", "Role", "Compliance", "Start Date", "Status", "Return Date", ""].map(h => (
+                      {["EC ↑", "First Name", "Surname", "Role", ...(canCompliance ? ["Compliance"] : []), "Start Date", "Status", "Return Date", ""].map(h => (
                         <th key={h} style={{ padding: "11px 12px", textAlign: "left", fontWeight: 600, fontSize: 9.5, letterSpacing: "0.07em", whiteSpace: "nowrap" }}>{h.toUpperCase()}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
-                    {officeFiltered.length === 0 && <tr><td colSpan={9} style={{ textAlign: "center", padding: 40, color: "#9ca3af" }}>No results.</td></tr>}
+                    {officeFiltered.length === 0 && <tr><td colSpan={canCompliance ? 9 : 8} style={{ textAlign: "center", padding: 40, color: "#9ca3af" }}>No results.</td></tr>}
                     {[
                       { key: "ho", rows: officeHo, label: "🏢 " + HEAD_OFFICE, bg: "#EEF2FF", ink: "#3730a3", bd: "#C7D2FE" },
                       { key: "cc", rows: officeCc, label: "📞 " + CALL_CENTRE, bg: "#FDEEF5", ink: "#831843", bd: "#FBCFE8" }
                     ].map(sec => sec.rows.length === 0 ? null : (
                       <React.Fragment key={sec.key}>
-                        <tr><td colSpan={9} style={{ background: sec.bg, padding: "8px 14px", fontSize: 11, fontWeight: 800, letterSpacing: "0.12em", color: sec.ink, textTransform: "uppercase", borderTop: `2px solid ${sec.bd}`, borderBottom: `1px solid ${sec.bd}` }}>
+                        <tr><td colSpan={canCompliance ? 9 : 8} style={{ background: sec.bg, padding: "8px 14px", fontSize: 11, fontWeight: 800, letterSpacing: "0.12em", color: sec.ink, textTransform: "uppercase", borderTop: `2px solid ${sec.bd}`, borderBottom: `1px solid ${sec.bd}` }}>
                           {sec.label} · {sec.rows.length}
                         </td></tr>
                         {sec.rows.map(p => {
@@ -31744,12 +32606,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                     style={{ marginLeft: 6, fontSize: 9, background: "#FED7AA", color: "#9A3412", border: "1px solid #FDBA74", borderRadius: 4, padding: "1px 6px", fontWeight: 800, letterSpacing: "0.04em" }}>⚠ DEPT MISMATCH</span>
                                 )}
                               </td>
-                              <td style={{ padding: "10px 12px" }}>
+                              {canCompliance && <td style={{ padding: "10px 12px" }}>
                                 <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
                                   {p.permit ? <Chip {...(COMPLIANCE[p.permit] || { icon: "❔", color: "#6b7280", bg: "#f3f4f6", border: "#d1d5db", label: p.permit })}>{(COMPLIANCE[p.permit] || {}).label || p.permit}</Chip> : <span style={{ color: "#9ca3af" }}>—</span>}
+                                  <DhaBadge p={p} />
                                   <VfsBadge act={complianceActions[p.ec]} />
                                 </div>
-                              </td>
+                              </td>}
                               <td style={{ padding: "10px 12px", fontSize: 11, color: "#831843", fontWeight: 600, whiteSpace: "nowrap" }}>{p.startDate ? _fmt(p.startDate) : <span style={{ color: "#d1d5db" }}>—</span>}</td>
                               <td style={{ padding: "10px 12px" }}>
                                 {departed
@@ -31817,9 +32680,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <select value={fBranch} onChange={e => setFBranch(e.target.value)} style={{ padding: "7px 11px", borderRadius: 7, border: `1px solid ${bdr}`, fontFamily: "inherit", fontSize: 13, background: cream }}>
                 <option value="All">All Branches</option>{SALONS.map(s => <option key={s.name}>{s.name}</option>)}
               </select>
+              {canCompliance && (
               <select value={fPermit} onChange={e => setFPermit(e.target.value)} style={{ padding: "7px 11px", borderRadius: 7, border: `1px solid ${bdr}`, fontFamily: "inherit", fontSize: 13, background: cream }}>
                 <option value="All">All Compliance</option>{Object.entries(COMPLIANCE).map(([k, c]) => <option key={k} value={k}>{c.icon} {c.label}</option>)}<option value={VFS_FILTER_KEY}>{VFS.icon} {VFS.label}</option>
               </select>
+              )}
               <select value={fContract} onChange={e => setFContract(e.target.value)} style={{ padding: "7px 11px", borderRadius: 7, border: `1px solid ${bdr}`, fontFamily: "inherit", fontSize: 13, background: cream }}>
                 <option value="All">All Contracts</option>{["Permanent", "Fixed Term", "NO CONTRACT", "2 Weeks", "Induction"].map(c => <option key={c}>{c}</option>)}
               </select>
@@ -31849,17 +32714,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
                   <thead>
                     <tr style={{ background: "#831843", color: "#FFFFFF" }}>
-                      {["EC ↑", "First Name", "Surname", "Branch", "Level", "Role", "Compliance", "Start Date", "Status", "Return Date", ""].map(h => (
+                      {["EC ↑", "First Name", "Surname", "Branch", "Level", "Role", ...(canCompliance ? ["Compliance"] : []), "Start Date", "Status", "Return Date", ""].map(h => (
                         <th key={h} style={{ padding: "11px 12px", textAlign: "left", fontWeight: 600, fontSize: 9.5, letterSpacing: "0.07em", whiteSpace: "nowrap" }}>{h.toUpperCase()}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
-                    {filtered.length === 0 && filteredMgrs.length === 0 && <tr><td colSpan={11} style={{ textAlign: "center", padding: 40, color: "#9ca3af" }}>No results.</td></tr>}
+                    {filtered.length === 0 && filteredMgrs.length === 0 && <tr><td colSpan={canCompliance ? 11 : 10} style={{ textAlign: "center", padding: 40, color: "#9ca3af" }}>No results.</td></tr>}
 
                     {/* Managers section header */}
                     {filteredMgrs.length > 0 && (
-                      <tr><td colSpan={11} style={{ background: "#FDEEF5", padding: "8px 14px", fontSize: 11, fontWeight: 800, letterSpacing: "0.12em", color: "#831843", textTransform: "uppercase", borderTop: "2px solid #FBCFE8", borderBottom: "1px solid #FBCFE8" }}>
+                      <tr><td colSpan={canCompliance ? 11 : 10} style={{ background: "#FDEEF5", padding: "8px 14px", fontSize: 11, fontWeight: 800, letterSpacing: "0.12em", color: "#831843", textTransform: "uppercase", borderTop: "2px solid #FBCFE8", borderBottom: "1px solid #FBCFE8" }}>
                         👑 Managers · {filteredMgrs.length}
                       </td></tr>
                     )}
@@ -31897,12 +32762,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                 style={{ marginLeft: 6, fontSize: 9, background: "#FED7AA", color: "#9A3412", border: "1px solid #FDBA74", borderRadius: 4, padding: "1px 6px", fontWeight: 800, letterSpacing: "0.04em" }}>⭐ SM TRIAL</span>
                             )}
                           </td>
-                          <td style={{ padding: "10px 12px" }}>
+                          {canCompliance && <td style={{ padding: "10px 12px" }}>
                             <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
                               {m.permit ? <Chip {...(COMPLIANCE[m.permit] || { icon: "❔", color: "#6b7280", bg: "#f3f4f6", border: "#d1d5db", label: m.permit })}>{(COMPLIANCE[m.permit] || {}).label || m.permit}</Chip> : <span style={{ color: "#9ca3af" }}>—</span>}
+                              <DhaBadge p={m} />
                               <VfsBadge act={complianceActions[m.ec]} />
                             </div>
-                          </td>
+                          </td>}
                           <td style={{ padding: "10px 12px", fontSize: 11, color: "#831843", fontWeight: 600, whiteSpace: "nowrap" }}>{m.startDate ? new Date(m.startDate.replace(/\//g, "-") + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }) : <span style={{ color: "#d1d5db" }}>—</span>}</td>
                           <td style={{ padding: "10px 12px" }}>
                             {mgrDeparted
@@ -31922,16 +32788,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
                     {/* Nail Techs section header */}
                     {filteredMgrs.length > 0 && filtered.length > 0 && (
-                      <tr><td colSpan={11} style={{ background: "#FDEEF5", padding: "8px 14px", fontSize: 11, fontWeight: 800, letterSpacing: "0.12em", color: "#831843", textTransform: "uppercase", borderTop: "2px solid #FBCFE8", borderBottom: "1px solid #FBCFE8" }}>
+                      <tr><td colSpan={canCompliance ? 11 : 10} style={{ background: "#FDEEF5", padding: "8px 14px", fontSize: 11, fontWeight: 800, letterSpacing: "0.12em", color: "#831843", textTransform: "uppercase", borderTop: "2px solid #FBCFE8", borderBottom: "1px solid #FBCFE8" }}>
                         💅 Nail Techs · {filtered.length}
                       </td></tr>
                     )}
 
                     {filtered.map(s => {
                       const dBack = s.matRec?.returnDate ? daysDiff(s.matRec.returnDate) : null;
-                      const terminated = s.status === "terminated" || s.active === "false" || s.active === false;
-                      const departed = s.offboarded && s.offDaysSinceLeft != null && s.offDaysSinceLeft >= 0;
-                      const rowBg = terminated ? "#f3f4f6" : departed ? "#f3f4f6" : s.onMat ? "#fdf4ff" : s.pregnant ? "#fffbeb" : s.permit === "z_na" ? "#FAEEF1" : "#fff";
+                      const terminated = isTerminatedRow(s);
+                      // `departed` drives the greyed treatment. It has to cover every
+                      // route out — including a leftDate set on the staff modal with no
+                      // off-boarding record, which otherwise rendered as a live row
+                      // sitting in the archive.
+                      const departed = hasDeparted(s, _archiveToday) && !terminated;
+                      const archived = terminated || departed;
+                      const rowBg = terminated ? "#f3f4f6" : departed ? "#f3f4f6" : s.onMat ? "#fdf4ff" : s.pregnant ? "#fffbeb" : isNonCompliantPermit(s) ? "#FAEEF1" : "#fff";
                       const rowOpacity = (departed || terminated) ? 0.5 : s.onMat ? 0.6 : 1;
                       return (
                         <tr key={s._id} style={{ background: rowBg, borderTop: `1px solid ${bdr}`, opacity: rowOpacity }}>
@@ -31947,12 +32818,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           <td style={{ padding: "10px 12px", fontSize: 11, color: "#831843", whiteSpace: "nowrap" }}>📍 {s.branch}</td>
                           <td style={{ padding: "10px 12px" }}><LevelBadge level={s.level} /></td>
                           <td style={{ padding: "10px 12px", fontSize: 11, fontWeight: 600 }}>{s.role || s.roleType || "Nail Tech"}</td>
-                          <td style={{ padding: "10px 12px" }}>
+                          {canCompliance && <td style={{ padding: "10px 12px" }}>
                             <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
                               <CompBadge permit={s.permit} />
+                              <DhaBadge p={s} />
                               <VfsBadge act={complianceActions[s.ec]} />
                             </div>
-                          </td>
+                          </td>}
                           <td style={{ padding: "10px 12px", fontSize: 11, whiteSpace: "nowrap" }}>
                             {s.startDate ? (() => {
                               const d = new Date(s.startDate.replace(/\//g, "-") + "T00:00:00");
@@ -31987,8 +32859,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               : <span style={{ color: "#d1d5db" }}>—</span>}
                           </td>
                           <td style={{ padding: "10px 12px", whiteSpace: "nowrap" }}>
-                            <button onClick={() => setStaffModal(s)} style={{ background: "#f3f4f6", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontFamily: "inherit", fontWeight: 700, marginRight: 4 }}>Edit</button>
-                            {!s.isShadow && <button onClick={() => setTransferModal(s)} style={{ background: s.transferring ? "#bfdbfe" : "#e0f2fe", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontFamily: "inherit", fontWeight: 700, color: "#BE185D" }} title={s.transferring ? "Edit transfer" : "Transfer branch"}>🔄{s.transferring ? " Edit" : ""}</button>}
+                            <button onClick={() => { if (!archived) setStaffModal(s); }} disabled={archived}
+                              title={archived ? "Archived record — read only" : "Edit"}
+                              style={{ background: "#f3f4f6", border: "none", borderRadius: 6, padding: "4px 10px", cursor: archived ? "not-allowed" : "pointer", fontSize: 11, fontFamily: "inherit", fontWeight: 700, marginRight: 4, opacity: archived ? 0.45 : 1 }}>{archived ? "View" : "Edit"}</button>
+                            {!s.isShadow && !archived && <button onClick={() => setTransferModal(s)} style={{ background: s.transferring ? "#bfdbfe" : "#e0f2fe", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontFamily: "inherit", fontWeight: 700, color: "#BE185D" }} title={s.transferring ? "Edit transfer" : "Transfer branch"}>🔄{s.transferring ? " Edit" : ""}</button>}
                           </td>
                         </tr>
                       );
@@ -32665,7 +33539,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 270, overflowY: "auto" }}>
                         {/* Active staff */}
                         {salon.active.map(m => (
-                          <div key={m._id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 7px", borderRadius: 7, background: m.isShadow ? "#eff6ff" : m.transferring ? "#eff6ff" : m.pregnant ? "#fffbeb" : m.permit === "z_na" ? "#FAEEF1" : "#f9fafb", border: `1px solid ${m.isShadow || m.transferring ? "#bfdbfe" : m.pregnant ? "#fde68a" : m.permit === "z_na" ? "#fecaca" : "#e5e7eb"}` }}>
+                          <div key={m._id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 7px", borderRadius: 7, background: m.isShadow ? "#eff6ff" : m.transferring ? "#eff6ff" : m.pregnant ? "#fffbeb" : isNonCompliantPermit(m) ? "#FAEEF1" : "#f9fafb", border: `1px solid ${m.isShadow || m.transferring ? "#bfdbfe" : m.pregnant ? "#fde68a" : isNonCompliantPermit(m) ? "#fecaca" : "#e5e7eb"}` }}>
                             <span style={{ fontSize: 9, color: "#9ca3af", fontFamily: "monospace", minWidth: 34 }}>{m.ec}</span>
                             <span style={{ flex: 1, fontSize: 11, fontWeight: 600, color: m.isShadow || m.transferring ? "#1d4ed8" : "#111827", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                               {m.pregnant ? "🤰 " : m.isShadow ? "🔄 " : m.transferring ? "🔄 " : ""}{m.name}{m.boaPathways && <> <BoaPathwaysBadge size={11} /></>}
@@ -32673,6 +33547,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               {m.isShadow && <span style={{ fontSize: 9, marginLeft: 4, color: "#BE185D" }}>from {m.transferFrom} {m.transferDate ? new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>}
                             </span>
                             {m.level && <LevelBadge level={m.level} />}
+                            <DhaBadge p={m} compact />
                             <VfsBadge act={complianceActions[m.ec]} compact />
                             <span title={(COMPLIANCE[m.permit] || COMPLIANCE.z_na).label} style={{ fontSize: 13 }}>{(COMPLIANCE[m.permit] || COMPLIANCE.z_na).icon}</span>
                           </div>
@@ -33663,7 +34538,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             people (Z/NA or no permit on file). Tracking lives in
             app_state['boa_compliance_actions_v1'] so requests survive page
             reloads and other users. */}
-        {tab === "compliance" && (() => {
+        {tab === "compliance" && canCompliance && (() => {
           // A transferred person belongs to their destination store once the
           // transfer has taken effect (transfer_date reached) — same rule the
           // schedule, check-in and Locations views use. Until then, and when
@@ -33683,22 +34558,30 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const pool = [
             ...enriched
               .filter(stillOnBooks)
-              .map(s => ({ ec: s.ec, name: s.name, branch: effBranch(s), permit: s.permit, role: "NT", onMat: s.onMat })),
+              .map(s => ({ ec: s.ec, name: s.name, branch: effBranch(s), permit: s.permit, asylumDhaChecked: s.asylumDhaChecked, asylumDhaStatus: s.asylumDhaStatus, asylumRef: s.asylumRef, permitExpiry: s.permitExpiry, role: "NT", onMat: s.onMat })),
             ...(enrichedManagers || [])
               .filter(stillOnBooks)
-              .map(m => ({ ec: m.ec, name: m.name, branch: effBranch(m), permit: m.permit, role: m.role || "AM", onMat: !!m.onMat }))
+              .map(m => ({ ec: m.ec, name: m.name, branch: effBranch(m), permit: m.permit, asylumDhaChecked: m.asylumDhaChecked, asylumDhaStatus: m.asylumDhaStatus, asylumRef: m.asylumRef, permitExpiry: m.permitExpiry, role: m.role || "AM", onMat: !!m.onMat }))
           ].filter(p => p && p.ec);
 
-          // Bucket by permit. Non-compliant = explicit z_na OR no permit set.
-          const isNonCompliant = (p) => !p.permit || p.permit === "z_na";
-          const byPermit = { sa_citizen: [], work_permit: [], asylum: [], verified_dha: [], z_na: [], unset: [] };
+          // Non-compliant = no permit, Z/NA, or an asylum document Home
+          // Affairs has no record of. Shared with every other surface via
+          // isNonCompliantPermit so the tiles, the per-store column, the
+          // dashboard alert and the follow-up list cannot disagree.
+          const isNonCompliant = isNonCompliantPermit;
+          const byPermit = { sa_citizen: [], work_permit: [], asylum: [], refugee: [], z_na: [], unset: [] };
           pool.forEach(p => {
             if (!p.permit) byPermit.unset.push(p);
             else if (byPermit[p.permit]) byPermit[p.permit].push(p);
             else byPermit.unset.push(p);
           });
-          const totalCompliant = byPermit.sa_citizen.length + byPermit.work_permit.length + byPermit.verified_dha.length;
-          const nonCompliant = [...byPermit.z_na, ...byPermit.unset]
+          // Asylum splits: DHA said no => chase them like a Z/NA; everyone
+          // else stays under asylum. asylumOpen is the DHA check nobody has
+          // done yet, which is its own piece of outstanding work.
+          const asylumFailed = byPermit.asylum.filter(asylumFailedDha);
+          const asylumOpen = byPermit.asylum.filter(p => p.asylumDhaChecked !== "yes");
+          const totalCompliant = byPermit.sa_citizen.length + byPermit.work_permit.length + byPermit.refugee.length;
+          const nonCompliant = [...byPermit.z_na, ...byPermit.unset, ...asylumFailed]
             .sort((a, b) => (a.branch || "").localeCompare(b.branch || "") || (a.name || "").localeCompare(b.name || ""));
           // Helpers for the action panel.
           const today = new Date();
@@ -33737,7 +34620,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             { l: "🇿🇦 SA Citizens", v: byPermit.sa_citizen.length, c: "#14532d", bg: "#dcfce7" },
             { l: "📋 Asylum on file", v: byPermit.asylum.length, c: "#4c1d95", bg: "#ede9fe" },
             { l: "✅ Valid Work Permit", v: byPermit.work_permit.length, c: "#8E5570", bg: "#dbeafe" },
-            { l: "🔵 Verified by DHA", v: byPermit.verified_dha.length, c: "#0c4a6e", bg: "#e0f2fe" },
+            { l: "🛡️ Refugee on File", v: byPermit.refugee.length, c: "#0c4a6e", bg: "#e0f2fe" },
+            // Overlaps the asylum tile rather than adding to it: these people
+            // hold an asylum document nobody has put to Home Affairs yet.
+            { l: "⏳ DHA check outstanding", v: asylumOpen.length, c: "#92400e", bg: "#fef3c7" },
             { l: "⚠ Not compliant", v: nonCompliant.length, c: "#7f1d1d", bg: "#fee2e2" },
             // Informational overlay — these people are ALSO counted in the
             // tiles above under their real status, so this one does not add
@@ -33832,7 +34718,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   const inBr = pool.filter(p => (p.branch || "") === brName);
                   const red = inBr.filter(isNonCompliant).length;
                   const sa = inBr.filter(p => p.permit === "sa_citizen").length;
-                  const docs = inBr.filter(p => p.permit === "asylum" || p.permit === "work_permit" || p.permit === "verified_dha").length;
+                  const docs = inBr.filter(p => !isNonCompliant(p) && (p.permit === "asylum" || p.permit === "work_permit" || p.permit === "refugee")).length;
                   // 🛂 cuts across the other three columns, so this row does
                   // not add up to `total` — it is an overlay, not a bucket.
                   const vfs = inBr.filter(p => hasVfs(complianceActions[p.ec])).length;
@@ -34011,11 +34897,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 const expPool = [
                   ...(enriched || [])
                     .filter(stillOnBooks)
-                    .filter(s => (s.permit === "asylum" || s.permit === "work_permit") && s.permitExpiry)
+                    .filter(s => permitHasExpiry(s.permit) && s.permitExpiry && !asylumFailedDha(s))
                     .map(s => ({ _id: s._id, ec: s.ec, name: s.name, branch: effBranch(s), permit: s.permit, permitExpiry: s.permitExpiry, role: "NT", onMat: s.onMat })),
                   ...(enrichedManagers || [])
                     .filter(stillOnBooks)
-                    .filter(m => (m.permit === "asylum" || m.permit === "work_permit") && m.permitExpiry)
+                    .filter(m => permitHasExpiry(m.permit) && m.permitExpiry && !asylumFailedDha(m))
                     .map(m => ({ _id: m._id, ec: m.ec, name: m.name, branch: effBranch(m), permit: m.permit, permitExpiry: m.permitExpiry, role: m.role || "AM", onMat: !!m.onMat }))
                 ];
                 // Within next 90 days OR already expired.
@@ -34040,9 +34926,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   const pillFg = overdue ? "#7f1d1d" : veryClose ? "#92400e" : "#1e40af";
                   const pillTxt = overdue ? Math.abs(d) + "d overdue" : d === 0 ? "EXPIRES TODAY" : "in " + d + "d";
                   const roleIcon = p.role === "SSM" ? "💎" : p.role === "SM" ? "👑" : p.role === "AM" ? "⭐" : "💅";
-                  const permitChip = p.permit === "asylum"
-                    ? { lbl: "📋 Asylum", bg: "#ede9fe", fg: "#4c1d95" }
-                    : { lbl: "✅ Work permit", bg: "#dbeafe", fg: "#1e40af" };
+                  const _pc = COMPLIANCE[p.permit] || {};
+                  const permitChip = { lbl: (_pc.icon || "❔") + " " + (_pc.label || p.permit), bg: _pc.bg || "#f3f4f6", fg: _pc.color || "#374151" };
                   return (
                     <tr key={"exp-" + p._id} style={{ borderTop: "1px solid #FEF3C7" }}>
                       <td style={{ padding: "8px 14px", fontFamily: "monospace", fontSize: 11, color: "#9ca3af", width: 60 }}>{p.ec}</td>
@@ -34119,24 +35004,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   button so the manager can record the document letter
                   without leaving the page. */}
               {(() => {
-                const updatePermit = async (person, newPermit) => {
-                  try {
-                    const isMgr = person.role !== "NT";
-                    if (isMgr) {
-                      const live = (managers || []).find(m => m && m._id === person._id);
-                      if (!live) return;
-                      await saveMgr({ ...live, permit: newPermit || null });
-                    } else {
-                      const live = (staff || []).find(s => s && s._id === person._id);
-                      if (!live) return;
-                      await saveStaff({ ...live, permit: newPermit || null });
-                    }
-                    if (window.BOA_LOG_ACTIVITY) {
-                      const lbl = newPermit ? ((COMPLIANCE[newPermit] && COMPLIANCE[newPermit].label) || newPermit) : "Not set";
-                      window.BOA_LOG_ACTIVITY("Updated compliance permit", (person.name || "") + " · " + person.ec, "→ " + lbl + " · " + (person.branch || "—"), "Compliance");
-                    }
-                  } catch (e) { alert("Could not save permit: " + (e.message || e)); }
+                // Opens the shared CompliancePicker for one person, seeded from
+                // their LIVE record (not the flattened pool row) so nothing
+                // outside the compliance fields is lost on save.
+                const openPermitEditor = (person) => {
+                  const live = person.role !== "NT"
+                    ? (managers || []).find(m => m && m._id === person._id)
+                    : (staff || []).find(x => x && x._id === person._id);
+                  if (!live) { alert("Could not find that person's record."); return; }
+                  setPermitModal({
+                    _id: live._id, ec: live.ec, name: live.name, branch: person.branch, role: person.role,
+                    permit: live.permit || null,
+                    permitExpiry: live.permitExpiry || null,
+                    asylumDhaChecked: live.asylumDhaChecked || null,
+                    asylumDhaStatus: live.asylumDhaStatus || null,
+                    asylumRef: live.asylumRef || null,
+                  });
                 };
+
                 // Build the directory pool with _id so we can route the
                 // update to saveStaff / saveMgr cleanly. ONLY include
                 // non-compliant people (Z/NA permit or no permit set) -
@@ -34144,11 +35029,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 const dirPool = [
                   ...(enriched || [])
                     .filter(stillOnBooks)
-                    .filter(s => !s.permit || s.permit === "z_na")
+                    .filter(isNonCompliantPermit)
                     .map(s => ({ _id: s._id, ec: s.ec, name: s.name, branch: effBranch(s), permit: s.permit, role: "NT", onMat: s.onMat })),
                   ...(enrichedManagers || [])
                     .filter(stillOnBooks)
-                    .filter(m => !m.permit || m.permit === "z_na")
+                    .filter(isNonCompliantPermit)
                     .map(m => ({ _id: m._id, ec: m.ec, name: m.name, branch: effBranch(m), permit: m.permit, role: m.role || "AM", onMat: !!m.onMat }))
                 ];
                 const q = (compSearch || "").trim().toLowerCase();
@@ -34239,7 +35124,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                             <td style={{ padding: "8px 14px", fontFamily: "monospace", fontSize: 11, color: "#9ca3af", width: 60 }}>{p.ec}</td>
                                             <td style={{ padding: "8px 14px", fontWeight: 600, color: "#111827" }}>{roleIcon} {p.name || "(no name)"}{p.onMat && <span style={{ marginLeft: 6, fontSize: 10, background: "#FBCFE8", color: "#8E5570", padding: "1px 6px", borderRadius: 99, fontWeight: 700 }}>🤱 mat.</span>}</td>
                                             <td style={{ padding: "8px 14px" }}>
-                                              <span style={{ display: "inline-block", background: chip.bg, color: chip.fg, border: `1px solid ${chip.border}`, fontSize: 10, fontWeight: 800, padding: "3px 9px", borderRadius: 99, letterSpacing: "0.04em" }}>{chip.lbl}</span>
+                                              <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
+                                                <span style={{ display: "inline-block", background: chip.bg, color: chip.fg, border: `1px solid ${chip.border}`, fontSize: 10, fontWeight: 800, padding: "3px 9px", borderRadius: 99, letterSpacing: "0.04em" }}>{chip.lbl}</span>
+                                                <DhaBadge p={p} />
+                                              </div>
                                             </td>
                                             <td style={{ padding: "8px 14px", fontSize: 11 }}>
                                               {hasReq ? (
@@ -34258,12 +35146,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                               {hasVfs(act) && <div style={{ marginTop: hasReq ? 5 : 0, paddingTop: hasReq ? 5 : 0, borderTop: hasReq ? "1px dashed #e5e7eb" : "none" }}>{vfsCell(p)}</div>}
                                             </td>
                                             <td style={{ padding: "8px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
-                                              <select value={p.permit || ""} onChange={e => updatePermit(p, e.target.value || null)}
-                                                style={{ padding: "6px 10px", border: "1px solid #FBCFE8", borderRadius: 7, fontFamily: "inherit", fontSize: 12, background: "#fff", cursor: "pointer", marginRight: 6 }}
-                                                title="Change compliance status">
-                                                <option value="">Not set</option>
-                                                {Object.entries(COMPLIANCE).map(([k, c]) => <option key={k} value={k}>{c.icon} {c.label}</option>)}
-                                              </select>
+                                              <button onClick={() => openPermitEditor(p)}
+                                                title="Change compliance status, including the asylum / DHA detail"
+                                                style={{ padding: "6px 11px", border: "1px solid #FBCFE8", borderRadius: 7, fontFamily: "inherit", fontSize: 11, fontWeight: 700, background: "#fff", color: "#BE185D", cursor: "pointer", marginRight: 6 }}
+                                              >✏️ Status</button>
                                               {vfsBtn(p)}
                                               {hasReq ? (
                                                 <button onClick={() => setComplianceModal({ ...p, ...act, _edit: true })}
@@ -34299,7 +35185,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                             <td style={{ padding: "8px 14px", fontFamily: "monospace", fontSize: 11, color: "#9ca3af", width: 60 }}>{p.ec}</td>
                                             <td style={{ padding: "8px 14px", fontWeight: 600, color: "#111827" }}>💅 {p.name || "(no name)"}{p.onMat && <span style={{ marginLeft: 6, fontSize: 10, background: "#FBCFE8", color: "#8E5570", padding: "1px 6px", borderRadius: 99, fontWeight: 700 }}>🤱 mat.</span>}</td>
                                             <td style={{ padding: "8px 14px" }}>
-                                              <span style={{ display: "inline-block", background: chip.bg, color: chip.fg, border: `1px solid ${chip.border}`, fontSize: 10, fontWeight: 800, padding: "3px 9px", borderRadius: 99, letterSpacing: "0.04em" }}>{chip.lbl}</span>
+                                              <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
+                                                <span style={{ display: "inline-block", background: chip.bg, color: chip.fg, border: `1px solid ${chip.border}`, fontSize: 10, fontWeight: 800, padding: "3px 9px", borderRadius: 99, letterSpacing: "0.04em" }}>{chip.lbl}</span>
+                                                <DhaBadge p={p} />
+                                              </div>
                                             </td>
                                             <td style={{ padding: "8px 14px", fontSize: 11 }}>
                                               {hasReq ? (
@@ -34318,12 +35207,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                               {hasVfs(act) && <div style={{ marginTop: hasReq ? 5 : 0, paddingTop: hasReq ? 5 : 0, borderTop: hasReq ? "1px dashed #e5e7eb" : "none" }}>{vfsCell(p)}</div>}
                                             </td>
                                             <td style={{ padding: "8px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
-                                              <select value={p.permit || ""} onChange={e => updatePermit(p, e.target.value || null)}
-                                                style={{ padding: "6px 10px", border: "1px solid #FBCFE8", borderRadius: 7, fontFamily: "inherit", fontSize: 12, background: "#fff", cursor: "pointer", marginRight: 6 }}
-                                                title="Change compliance status">
-                                                <option value="">Not set</option>
-                                                {Object.entries(COMPLIANCE).map(([k, c]) => <option key={k} value={k}>{c.icon} {c.label}</option>)}
-                                              </select>
+                                              <button onClick={() => openPermitEditor(p)}
+                                                title="Change compliance status, including the asylum / DHA detail"
+                                                style={{ padding: "6px 11px", border: "1px solid #FBCFE8", borderRadius: 7, fontFamily: "inherit", fontSize: 11, fontWeight: 700, background: "#fff", color: "#BE185D", cursor: "pointer", marginRight: 6 }}
+                                              >✏️ Status</button>
                                               {vfsBtn(p)}
                                               {hasReq ? (
                                                 <button onClick={() => setComplianceModal({ ...p, ...act, _edit: true })}
@@ -34568,6 +35455,62 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           );
         })()}
 
+        {/* ── PERMIT EDITOR ── the Compliance tab's route into the same
+            CompliancePicker the staff / manager / office modals render, so
+            asylum → DHA → reference can be captured from either side and the
+            two surfaces cannot show different things. */}
+        {permitModal && (() => {
+          const m = permitModal;
+          const set = (k, v) => setPermitModal(prev => ({ ...prev, [k]: v }));
+          // Mirrors the picker's own required fields: a DHA-confirmed asylum
+          // document is only useful with its reference and expiry.
+          const needsRef = m.permit === "asylum" && m.asylumDhaChecked === "yes" && m.asylumDhaStatus === "on_file";
+          const save = async () => {
+            if (needsRef && !(m.asylumRef || "").trim()) { alert("Enter the unique asylum reference number."); return; }
+            if (needsRef && !m.permitExpiry) { alert("Pick the asylum document expiry date."); return; }
+            const isMgr = m.role !== "NT";
+            const live = isMgr
+              ? (managers || []).find(x => x && x._id === m._id)
+              : (staff || []).find(x => x && x._id === m._id);
+            if (!live) { alert("Could not find that person's record."); return; }
+            const patch = {
+              ...live,
+              permit: m.permit || null,
+              permitExpiry: m.permitExpiry || null,
+              asylumDhaChecked: m.asylumDhaChecked || null,
+              asylumDhaStatus: m.asylumDhaStatus || null,
+              asylumRef: (m.asylumRef || "").trim() || null,
+            };
+            try {
+              if (isMgr) await saveMgr(patch); else await saveStaff(patch);
+              if (window.BOA_LOG_ACTIVITY) {
+                const lbl = m.permit ? ((COMPLIANCE[m.permit] && COMPLIANCE[m.permit].label) || m.permit) : "Not set";
+                const d = asylumDetail(patch);
+                window.BOA_LOG_ACTIVITY("Updated compliance permit", (m.name || "") + " · " + m.ec,
+                  "→ " + lbl + (d ? " · " + d.text : "") + " · " + (m.branch || "—"), "Compliance");
+              }
+              setPermitModal(null);
+            } catch (e) { alert("Could not save permit: " + (e.message || e)); }
+          };
+          return (
+            <div onClick={() => setPermitModal(null)} style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 120 }}>
+              <div onClick={e => e.stopPropagation()} style={{ background: "#FCE7F3", borderRadius: 16, padding: "22px 26px", width: "min(560px, 94vw)", maxHeight: "90vh", overflowY: "auto", boxShadow: "0 10px 40px rgba(0,0,0,0.25)" }}>
+                <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 20, fontWeight: 700, color: "#831843", marginBottom: 4 }}>📋 Compliance / work status</div>
+                <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 16 }}><b>{m.name}</b> · 📍 {m.branch || "—"} · <span style={{ fontFamily: "monospace" }}>{m.ec}</span></div>
+                <CompliancePicker f={m} set={set} compact />
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
+                  <button onClick={() => setPermitModal(null)}
+                    style={{ background: "#fff", color: "#374151", border: "none", borderRadius: 8, padding: "9px 16px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}
+                  >Cancel</button>
+                  <button onClick={save}
+                    style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 8, padding: "9px 18px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}
+                  >Save status</button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
         {/* ── INCIDENT REPORTS TAB ── */}
         {tab === "incidents" && canSeeIncidents(currentUser) && (
           <IncidentReportsTab reports={incidentReports} setReports={setIncidentReports} currentUser={currentUser} people={taggablePeople} />
@@ -34657,7 +35600,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             ...councilLeavers.map(p => ({ type: "critical", msg: `${p.name} (${p.branch || "—"}) — off-boarding a bargaining-council member. Deregister her with the council${p.leftDate ? " — last day " + fmt(p.leftDate) : ""}.`, council: p })),
             ...matRecs.filter(r => r.matStatus === "on_mat" && r.returnDate && daysDiff(r.returnDate) < 0).map(r => ({ type: "warning", msg: `${r.name} (${r.branch}) — return date ${fmt(r.returnDate)} was ${Math.abs(daysDiff(r.returnDate))} days ago. Confirm return or update dates.`, rec: r })),
             ...matRecs.filter(r => r.matStatus === "on_mat" && r.returnDate && daysDiff(r.returnDate) >= 0 && daysDiff(r.returnDate) <= 14).map(r => ({ type: "info", msg: `${r.name} (${r.branch}) — returning in ${daysDiff(r.returnDate)} day(s) on ${fmt(r.returnDate)}`, rec: r })),
-            ...active.filter(s => s.permit === "z_na").map(s => ({ type: "critical", msg: `${s.name} (${s.branch}) — Z/NA: no valid work permit`, s })),
+            ...(canCompliance ? active.filter(isNonCompliantPermit).map(s => ({ type: "critical", msg: `${s.name} (${s.branch}) — ${asylumFailedDha(s) ? "asylum document NOT on the DHA system" : "Z/NA: no valid work permit"}`, s })) : []),
             ...active.filter(s => s.contract === "NO CONTRACT").map(s => ({ type: "warning", msg: `${s.name} (${s.branch}) — no employment contract on file`, s })),
             ...SALONS.filter(sl => active.filter(s => s.branch === sl.name).length === 0).map(sl => ({ type: "critical", msg: `${sl.name} — NO active staff assigned`, s: null })),
           ];
@@ -38369,7 +39312,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       })()}
 
       {/* ── OFF-BOARDING TAB ── */}
-      {tab === "offboard" && (() => {
+      {tab === "offboard" && canOffboard && (() => {
         const now = new Date();
         const p2 = z => String(z).padStart(2, "0");
         const todayStr = now.getFullYear() + "-" + p2(now.getMonth() + 1) + "-" + p2(now.getDate());
@@ -38503,26 +39446,67 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         };
 
         return (
-          <div style={{ padding: "0 24px" }}>
-            <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 26, color: "#831843", fontWeight: 700, marginBottom: 6, letterSpacing: "0.02em" }}>👋 Off-board Staff</div>
+          <div className="boa-off" style={{ padding: "4px 24px 40px" }}>
+            <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 28, color: "#831843", fontWeight: 700, marginBottom: 8, letterSpacing: "0.01em" }}>👋 Off-boarding</div>
+            <div style={{ fontSize: 13.5, color: "#9d6a82", marginBottom: 22, maxWidth: "72ch", lineHeight: 1.65 }}>
+              Who is leaving and when, the termination record payroll signs off, and the
+              disciplinary history behind it. Restricted to a named list of people (Settings).
+            </div>
+
+            {/* Three views over the same departure story. */}
+            <div style={{ display: "flex", gap: 4, padding: 6, borderRadius: 16, maxWidth: 800, marginBottom: 24, flexWrap: "wrap",
+              background: "linear-gradient(150deg, rgba(255,255,255,0.72), rgba(252,231,243,0.62))",
+              backdropFilter: "blur(16px) saturate(160%)", WebkitBackdropFilter: "blur(16px) saturate(160%)",
+              border: "1px solid rgba(255,255,255,0.72)",
+              boxShadow: "inset 0 1px 0 rgba(255,255,255,0.9), 0 12px 30px -18px rgba(131,24,67,0.45)" }}>
+              {[{ k: "list", l: "Off-boarding List", icon: "\uD83D\uDC4B" },
+                { k: "term", l: "Terminations Tracker", icon: "\uD83D\uDCC4" },
+                { k: "disc", l: "Disciplinary Tracker", icon: "\u2696\uFE0F" }].map(t => {
+                const active = offSubTab === t.k;
+                const pending = t.k === "term" ? trackerPending.term : t.k === "disc" ? trackerPending.disc : 0;
+                return (
+                  <button key={t.k} className="boa-pill" onClick={() => setOffSubTab(t.k)}
+                    style={{ flex: "1 1 208px", padding: "13px 18px", borderRadius: 12, border: "none", cursor: "pointer",
+                      background: active ? "linear-gradient(180deg,#D6246F,#A3134F)" : "transparent", color: active ? "#fff" : "#8a3a5f",
+                      fontFamily: "inherit", fontSize: 14.5, fontWeight: 700, transition: "all .18s",
+                      boxShadow: active ? "0 10px 22px -10px rgba(163,19,79,0.85), inset 0 1px 0 rgba(255,255,255,0.28)" : "none",
+                      display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+                    <span aria-hidden="true">{t.icon}</span><span>{t.l}</span>
+                    {pending > 0 && (
+                      <span title={pending + " waiting on payroll"}
+                        style={{ background: active ? "#fff" : "#BE185D", color: active ? "#BE185D" : "#fff",
+                          borderRadius: 999, fontSize: 11, fontWeight: 800, padding: "1px 7px" }}>{pending}</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+
+            {(offSubTab === "term" || offSubTab === "disc") && (
+              <HrTrackerPanel kind={offSubTab === "term" ? "termination" : "disciplinary"}
+                currentUser={currentUser} canSign={isPayrollSigner} rows={trackerRows} loading={trackerLoading} err={trackerErr}
+                onReload={loadTrackers} staffPool={trackerStaffPool} logActivity={logActivity} />
+            )}
+
+            {offSubTab === "list" && (<>
 
             {/* Bargaining-council deregistration — urgent to-do for any leaver
                 still flagged as a council member. */}
             {councilToDeregister.length > 0 && (
-              <div style={{ background: "#fee2e2", border: "1px solid #fca5a5", borderRadius: 13, padding: "14px 18px", marginBottom: 18, animation: "urgentPulse 2s infinite" }}>
-                <div style={{ fontSize: 13, fontWeight: 800, color: "#991b1b", marginBottom: 8 }}>🤝 Deregister from the bargaining council — urgent</div>
-                <div style={{ fontSize: 12, color: "#991b1b", marginBottom: 10 }}>{councilToDeregister.length} off-boarding {councilToDeregister.length === 1 ? "staff member is" : "staff members are"} signed up with the bargaining council. Notify the council that they've left, then mark them deregistered here — this clears their council flag so their sick days are no longer treated as council-covered.</div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(260px,1fr))", gap: 8 }}>
+              <div style={glassCard({ background: "linear-gradient(158deg, rgba(255,245,245,0.94) 0%, rgba(254,226,226,0.62) 100%)", border: "1px solid rgba(252,165,165,0.9)", animation: "urgentPulse 2s infinite" })}>
+                <div style={{ fontSize: 13.5, fontWeight: 800, color: "#991b1b", marginBottom: 10, letterSpacing: "0.01em" }}>🤝 Deregister from the bargaining council — urgent</div>
+                <div style={{ fontSize: 12.5, color: "#a52626", marginBottom: 14, lineHeight: 1.6, maxWidth: "78ch" }}>{councilToDeregister.length} off-boarding {councilToDeregister.length === 1 ? "staff member is" : "staff members are"} signed up with the bargaining council. Notify the council that they've left, then mark them deregistered here — this clears their council flag so their sick days are no longer treated as council-covered.</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 12 }}>
                   {councilToDeregister.map(p => {
                     const onNotice = p.leftDate && p.leftDate >= todayStr;
                     return (
-                      <div key={p._id} style={{ background: "#fff", borderRadius: 9, border: "1px solid #fca5a5", padding: "10px 12px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                      <div key={p._id} style={glassTile({ background: "linear-gradient(155deg, rgba(255,255,255,0.94) 0%, rgba(255,241,241,0.62) 100%)", border: "1px solid rgba(252,165,165,0.9)", padding: "13px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 })}>
                         <div>
                           <div style={{ fontSize: 13, fontWeight: 700, color: "#831843" }}>{p.name}</div>
                           <div style={{ fontSize: 10, fontFamily: "monospace", color: "#991b1b", fontWeight: 700 }}>{p.ec}{p.branch ? " · " + p.branch : ""}</div>
                           {p.leftDate && <div style={{ fontSize: 11, color: "#991b1b", marginTop: 3 }}>{onNotice ? "Last day " : "Left "}{fmt(p.leftDate)}</div>}
                         </div>
-                        <button onClick={() => deregisterCouncil(p)} style={{ padding: "6px 12px", borderRadius: 7, border: "none", background: "#dc2626", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>Mark deregistered</button>
+                        <button className="boa-btn" onClick={() => deregisterCouncil(p)} style={{ padding: "8px 14px", borderRadius: 9, border: "none", background: "linear-gradient(180deg,#e0393a,#b91c1c)", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap", boxShadow: "0 8px 18px -9px rgba(185,28,28,0.85)" }}>Mark deregistered</button>
                       </div>
                     );
                   })}
@@ -38532,18 +39516,18 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
             {/* Pending Terminations banner */}
             {pendingTerms.length > 0 && (
-              <div style={{ background: "#fef3c7", border: "1px solid #fde68a", borderRadius: 13, padding: "14px 18px", marginBottom: 18 }}>
-                <div style={{ fontSize: 13, fontWeight: 800, color: "#92400e", marginBottom: 8 }}>⚠ Pending Terminations from Attendance</div>
-                <div style={{ fontSize: 12, color: "#92400e", marginBottom: 10 }}>{pendingTerms.length} staff marked as terminated in the daily attendance grid but not yet added to off-boarding. Add them with one click.</div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(260px,1fr))", gap: 8 }}>
+              <div style={glassCard({ background: "linear-gradient(158deg, rgba(255,252,240,0.94) 0%, rgba(254,243,199,0.60) 100%)", border: "1px solid rgba(253,230,138,0.9)" })}>
+                <div style={{ fontSize: 13.5, fontWeight: 800, color: "#92400e", marginBottom: 10, letterSpacing: "0.01em" }}>⚠ Pending terminations from attendance</div>
+                <div style={{ fontSize: 12.5, color: "#b45309", marginBottom: 14, lineHeight: 1.6, maxWidth: "78ch" }}>{pendingTerms.length} staff marked as terminated in the daily attendance grid but not yet added to off-boarding. Add them with one click.</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 12 }}>
                   {pendingTerms.map(p => (
-                    <div key={p.ec} style={{ background: "#fff", borderRadius: 9, border: "1px solid #fde68a", padding: "10px 12px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                    <div key={p.ec} style={glassTile({ background: "linear-gradient(155deg, rgba(255,255,255,0.94) 0%, rgba(254,249,231,0.62) 100%)", border: "1px solid rgba(253,230,138,0.9)", padding: "13px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 })}>
                       <div>
                         <div style={{ fontSize: 13, fontWeight: 700, color: "#831843" }}>{p.name}</div>
                         <div style={{ fontSize: 10, fontFamily: "monospace", color: "#92400e", fontWeight: 700 }}>{p.ec} · {p.branch}</div>
                         <div style={{ fontSize: 11, color: "#92400e", marginTop: 3 }}>From {p.firstTermDate}</div>
                       </div>
-                      <button onClick={() => setQuickPick(p)} style={{ padding: "6px 12px", borderRadius: 7, border: "none", background: "#92400e", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700 }}>Add</button>
+                      <button className="boa-btn" onClick={() => setQuickPick(p)} style={{ padding: "8px 16px", borderRadius: 9, border: "none", background: "linear-gradient(180deg,#b06a12,#8a4d09)", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, boxShadow: "0 8px 18px -9px rgba(138,77,9,0.85)" }}>Add</button>
                     </div>
                   ))}
                 </div>
@@ -38552,34 +39536,34 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
             {/* Quick-pick modal */}
             {quickPick && (
-              <div onClick={() => setQuickPick(null)} style={{ position: "fixed", inset: 0, background: "rgba(131,24,67,0.35)", zIndex: 9000, display: "flex", alignItems: "center", justifyContent: "center", padding: "40px 20px" }}>
-                <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 14, maxWidth: 480, width: "100%", padding: "22px 26px" }}>
-                  <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 18, fontWeight: 700, color: "#831843", marginBottom: 6 }}>Confirm off-boarding for {quickPick.name}</div>
-                  <div style={{ fontSize: 12, color: "#831843", marginBottom: 14 }}>EC <strong>{quickPick.ec}</strong> · {quickPick.branch}<br />Attendance shows termination from <strong>{quickPick.firstTermDate}</strong>. Last day worked will be set to one day before that.</div>
-                  <label style={{ fontSize: 11, fontWeight: 700, color: "#831843", letterSpacing: "0.05em" }}>REASON</label>
-                  <select id="_qpReason" defaultValue="Terminated" style={{ width: "100%", padding: "8px 10px", border: "1px solid #FBCFE8", borderRadius: 8, fontSize: 13, fontFamily: "inherit", marginTop: 4, marginBottom: 12, background: "#fff" }}>
+              <div onClick={() => setQuickPick(null)} style={{ position: "fixed", inset: 0, background: "rgba(74,18,48,0.34)", backdropFilter: "blur(6px)", WebkitBackdropFilter: "blur(6px)", zIndex: 9000, display: "flex", alignItems: "center", justifyContent: "center", padding: "40px 20px" }}>
+                <div onClick={e => e.stopPropagation()} style={{ ...GLASS_SURFACE, background: "linear-gradient(158deg, rgba(255,255,255,0.97) 0%, rgba(253,242,248,0.92) 100%)", borderRadius: 20, maxWidth: 500, width: "100%", padding: "26px 28px", boxSizing: "border-box", boxShadow: "0 30px 70px -30px rgba(74,18,48,0.65)" }}>
+                  <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 19, fontWeight: 700, color: "#831843", marginBottom: 8 }}>Confirm off-boarding for {quickPick.name}</div>
+                  <div style={{ fontSize: 12.5, color: "#6B1739", marginBottom: 18, lineHeight: 1.65 }}>EC <strong>{quickPick.ec}</strong> · {quickPick.branch}<br />Attendance shows termination from <strong>{quickPick.firstTermDate}</strong>. Last day worked will be set to one day before that.</div>
+                  <label style={GLASS_LABEL}>Reason</label>
+                  <select id="_qpReason" defaultValue="Terminated" style={{ ...GLASS_INPUT, marginBottom: 16 }}>
                     <option value="Terminated">Terminated</option>
                     <option value="Resigned">Resigned</option>
                     <option value="Mutual agreement">Mutual agreement</option>
                     <option value="End of contract">End of contract</option>
                     <option value="Other">Other</option>
                   </select>
-                  <label style={{ fontSize: 11, fontWeight: 700, color: "#831843", letterSpacing: "0.05em" }}>NOTES (OPTIONAL)</label>
-                  <input id="_qpNotes" placeholder="e.g. final salary processed" style={{ width: "100%", padding: "8px 10px", border: "1px solid #FBCFE8", borderRadius: 8, fontSize: 13, fontFamily: "inherit", marginTop: 4, marginBottom: 14 }} />
-                  <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-                    <button onClick={() => setQuickPick(null)} style={{ padding: "8px 14px", borderRadius: 9, border: "1px solid #FBCFE8", background: "#fff", color: "#831843", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 600 }}>Cancel</button>
-                    <button onClick={submitQuickPick} style={{ padding: "8px 18px", borderRadius: 9, border: "none", background: "#BE185D", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 }}>Confirm Off-board</button>
+                  <label style={GLASS_LABEL}>Notes (optional)</label>
+                  <input id="_qpNotes" placeholder="e.g. final salary processed" style={{ ...GLASS_INPUT, marginBottom: 20 }} />
+                  <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                    <button className="boa-btn" onClick={() => setQuickPick(null)} style={BTN_GHOST}>Cancel</button>
+                    <button className="boa-btn" onClick={submitQuickPick} style={BTN_PRIMARY}>Confirm off-board</button>
                   </div>
                 </div>
               </div>
             )}
 
             {/* Off-board form */}
-            <div style={{ background: "#FFFFFF", borderRadius: 13, padding: "16px 18px", border: "1px solid #FBCFE8", marginBottom: 18 }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "#831843", marginBottom: 10 }}>Mark a staff member as off-boarded</div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 10, marginBottom: 10 }}>
+            <div style={glassCard()}>
+              <div style={{ ...glassHeading(), marginBottom: 16 }}>Mark a staff member as off-boarded</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(230px,1fr))", gap: 16, marginBottom: 16 }}>
                 <div>
-                  <label style={{ fontSize: 11, fontWeight: 700, color: "#831843", letterSpacing: "0.05em", display: "block", marginBottom: 4 }}>STAFF MEMBER</label>
+                  <label style={GLASS_LABEL}>Staff member</label>
                   <StaffPicker
                     people={activeStaffOpts}
                     valueEc={offEcInput}
@@ -38589,12 +39573,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   />
                 </div>
                 <div>
-                  <label style={{ fontSize: 11, fontWeight: 700, color: "#831843", letterSpacing: "0.05em" }}>LAST DAY WORKED</label>
-                  <input id="_offDate" type="date" defaultValue={todayStr} style={{ width: "100%", marginTop: 4, padding: "8px 10px", border: "1px solid #FBCFE8", borderRadius: 8, fontSize: 13, fontFamily: "inherit" }} />
+                  <label style={GLASS_LABEL}>Last day worked</label>
+                  <input id="_offDate" type="date" defaultValue={todayStr} style={GLASS_INPUT} />
                 </div>
                 <div>
-                  <label style={{ fontSize: 11, fontWeight: 700, color: "#831843", letterSpacing: "0.05em" }}>REASON</label>
-                  <select id="_offReason" defaultValue="Resigned" style={{ width: "100%", marginTop: 4, padding: "8px 10px", border: "1px solid #FBCFE8", borderRadius: 8, fontSize: 13, fontFamily: "inherit", background: "#fff" }}>
+                  <label style={GLASS_LABEL}>Reason</label>
+                  <select id="_offReason" defaultValue="Resigned" style={GLASS_INPUT}>
                     <option value="Resigned">Resigned</option>
                     <option value="Terminated">Terminated</option>
                     <option value="Mutual agreement">Mutual agreement</option>
@@ -38603,40 +39587,40 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   </select>
                 </div>
               </div>
-              <div style={{ marginBottom: 10 }}>
-                <label style={{ fontSize: 11, fontWeight: 700, color: "#831843", letterSpacing: "0.05em" }}>NOTES (OPTIONAL)</label>
-                <input id="_offNotes" placeholder="e.g. Moving to JHB" style={{ width: "100%", marginTop: 4, padding: "8px 10px", border: "1px solid #FBCFE8", borderRadius: 8, fontSize: 13, fontFamily: "inherit" }} />
+              <div style={{ marginBottom: 16 }}>
+                <label style={GLASS_LABEL}>Notes (optional)</label>
+                <input id="_offNotes" placeholder="e.g. Moving to JHB" style={GLASS_INPUT} />
               </div>
-              <button onClick={submitOff} style={{ padding: "8px 18px", borderRadius: 9, border: "none", background: "#BE185D", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 }}>OFF-BOARD</button>
+              <button className="boa-btn" onClick={submitOff} style={{ ...BTN_PRIMARY, fontSize: 13, padding: "11px 22px", letterSpacing: "0.04em" }}>Off-board</button>
             </div>
 
             {/* Working Notice card */}
             {notice.length > 0 && (
-              <div style={{ background: "#fffbeb", borderRadius: 13, padding: "16px 18px", border: "1px solid #fde68a", marginBottom: 14 }}>
-                <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
-                  <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 16, fontWeight: 600, color: "#92400e" }}>⏳ Working notice</div>
-                  <div style={{ fontSize: 11, color: "#92400e", fontWeight: 600 }}>· {notice.length} {notice.length === 1 ? "person" : "people"}</div>
+              <div style={glassCard({ background: "linear-gradient(158deg, rgba(255,252,240,0.92) 0%, rgba(254,243,199,0.55) 100%)", border: "1px solid rgba(253,230,138,0.85)" })}>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+                  <div style={glassHeading("#92400e")}>⏳ Working notice</div>
+                  <div style={{ fontSize: 11.5, color: "#b45309", fontWeight: 600 }}>· {notice.length} {notice.length === 1 ? "person" : "people"}</div>
                 </div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 10 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(290px,1fr))", gap: 14 }}>
                   {notice.map(o => {
                     const d = new Date(o.leftDate + "T00:00:00");
                     const dStr = d.toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" });
                     const t0n = new Date(now.getFullYear(), now.getMonth(), now.getDate());
                     const daysUntil = Math.floor((d - t0n) / 86400000);
                     return (
-                      <div key={o.ec} style={{ background: "#FFFFFF", borderRadius: 11, padding: "13px 14px", border: "1px solid #fde68a" }}>
+                      <div key={o.ec} style={glassTile({ background: "linear-gradient(155deg, rgba(255,255,255,0.92) 0%, rgba(254,249,231,0.62) 100%)", border: "1px solid rgba(253,230,138,0.9)" })}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 6, marginBottom: 6 }}>
                           <div>
-                            <div style={{ fontSize: 13, fontWeight: 700, color: "#831843" }}>{o.name}</div>
-                            <div style={{ fontSize: 10, fontFamily: "monospace", color: "#E84B9B", fontWeight: 700 }}>{o.ec} · {o.branch}</div>
+                            <div style={{ fontSize: 14, fontWeight: 700, color: "#831843", lineHeight: 1.35 }}>{o.name}</div>
+                            <div style={{ fontSize: 10.5, fontFamily: "monospace", color: "#C2447E", fontWeight: 700, marginTop: 3, letterSpacing: "0.02em" }}>{o.ec} · {o.branch}</div>
                           </div>
-                          <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 8px", borderRadius: 99, background: "#fef3c7", color: "#92400e", letterSpacing: "0.02em" }}>{o.reason}</span>
+                          <span style={{ fontSize: 9.5, fontWeight: 800, padding: "4px 10px", borderRadius: 99, background: "#fef3c7", color: "#92400e", letterSpacing: "0.03em", whiteSpace: "nowrap", border: "1px solid rgba(255,255,255,0.7)" }}>{o.reason}</span>
                         </div>
                         <div style={{ fontSize: 11, color: "#92400e", marginTop: 4 }}>
                           Last day {dStr}<span style={{ opacity: 0.75 }}> · {daysUntil === 0 ? "today" : daysUntil === 1 ? "tomorrow" : "in " + daysUntil + " days"}</span>
                         </div>
-                        {o.notes && <div style={{ fontSize: 11, color: "#831843", marginTop: 6, fontStyle: "italic", whiteSpace: "pre-wrap" }}>{o.notes}</div>}
-                        <button onClick={() => undoOff(o.ec)} style={{ marginTop: 8, background: "transparent", border: "1px solid #fde68a", color: "#92400e", padding: "4px 10px", borderRadius: 5, fontSize: 10, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>↺ Cancel</button>{renderExitBadge(o)}
+                        {o.notes && <div style={{ fontSize: 11.5, color: "#7d5068", marginTop: 9, fontStyle: "italic", whiteSpace: "pre-wrap", lineHeight: 1.55 }}>{o.notes}</div>}
+                        <button onClick={() => undoOff(o.ec)} className="boa-btn" style={{ marginTop: 12, marginRight: 8, background: "rgba(255,255,255,0.7)", border: "1px solid rgba(217,119,6,0.28)", color: "#92400e", padding: "6px 12px", borderRadius: 8, fontSize: 10.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>↺ Cancel</button>{renderExitBadge(o)}
                       </div>
                     );
                   })}
@@ -38645,15 +39629,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             )}
 
             {/* Recently Left card */}
-            <div style={{ background: "#FFFFFF", borderRadius: 13, padding: "16px 18px", border: "1px solid #FBCFE8" }}>
-              <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
-                <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 16, fontWeight: 600, color: "#831843" }}>Recently Left</div>
-                <div style={{ fontSize: 11, color: "#BE185D", fontWeight: 600 }}>· last 30 days · {recent.length} {recent.length === 1 ? "person" : "people"}</div>
+            <div style={glassCard()}>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+                <div style={glassHeading()}>Recently left</div>
+                <div style={{ fontSize: 11.5, color: "#BE185D", fontWeight: 600 }}>· last 30 days · {recent.length} {recent.length === 1 ? "person" : "people"}</div>
               </div>
               {recent.length === 0 ? (
-                <div style={{ fontSize: 12, color: "#9ca3af", padding: "20px 4px", textAlign: "center" }}>No staff have left in the last 30 days.</div>
+                <div style={{ fontSize: 12.5, color: "#a98ba0", padding: "26px 4px", textAlign: "center" }}>No staff have left in the last 30 days.</div>
               ) : (
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 10 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(290px,1fr))", gap: 14 }}>
                   {recent.map(o => {
                     const d = new Date(o.leftDate + "T00:00:00");
                     const dStr = d.toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" });
@@ -38661,19 +39645,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     const reasonBg = o.reason === "Terminated" ? "#fee2e2" : o.reason === "Resigned" ? "#dbeafe" : "#fef3c7";
                     const reasonColor = o.reason === "Terminated" ? "#991b1b" : o.reason === "Resigned" ? "#1e3a8a" : "#92400e";
                     return (
-                      <div key={o.ec} style={{ background: "#FDEEF5", borderRadius: 11, padding: "13px 14px", border: "1px solid #FBCFE8" }}>
+                      <div key={o.ec} style={glassTile()}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 6, marginBottom: 6 }}>
                           <div>
-                            <div style={{ fontSize: 13, fontWeight: 700, color: "#831843" }}>{o.name}</div>
-                            <div style={{ fontSize: 10, fontFamily: "monospace", color: "#E84B9B", fontWeight: 700 }}>{o.ec} · {o.branch}</div>
+                            <div style={{ fontSize: 14, fontWeight: 700, color: "#831843", lineHeight: 1.35 }}>{o.name}</div>
+                            <div style={{ fontSize: 10.5, fontFamily: "monospace", color: "#C2447E", fontWeight: 700, marginTop: 3, letterSpacing: "0.02em" }}>{o.ec} · {o.branch}</div>
                           </div>
-                          <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 8px", borderRadius: 99, background: reasonBg, color: reasonColor, letterSpacing: "0.02em" }}>{o.reason}</span>
+                          <span style={{ fontSize: 9.5, fontWeight: 800, padding: "4px 10px", borderRadius: 99, background: reasonBg, color: reasonColor, letterSpacing: "0.03em", whiteSpace: "nowrap", border: "1px solid rgba(255,255,255,0.7)" }}>{o.reason}</span>
                         </div>
                         <div style={{ fontSize: 11, color: "#BE185D", marginTop: 4 }}>
                           Left {dStr}<span style={{ opacity: 0.7 }}> · {daysAgo === 0 ? "today" : daysAgo === 1 ? "yesterday" : daysAgo + " days ago"}</span>
                         </div>
-                        {o.notes && <div style={{ fontSize: 11, color: "#831843", marginTop: 6, fontStyle: "italic", whiteSpace: "pre-wrap" }}>{o.notes}</div>}
-                        <button onClick={() => undoOff(o.ec)} style={{ marginTop: 8, background: "transparent", border: "1px solid #FBCFE8", color: "#831843", padding: "4px 10px", borderRadius: 5, fontSize: 10, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>↺ Restore</button>{renderExitBadge(o)}
+                        {o.notes && <div style={{ fontSize: 11.5, color: "#7d5068", marginTop: 9, fontStyle: "italic", whiteSpace: "pre-wrap", lineHeight: 1.55 }}>{o.notes}</div>}
+                        <button onClick={() => undoOff(o.ec)} className="boa-btn" style={{ marginTop: 12, marginRight: 8, background: "rgba(255,255,255,0.7)", border: "1px solid rgba(190,24,93,0.20)", color: "#9d174d", padding: "6px 12px", borderRadius: 8, fontSize: 10.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>↺ Restore</button>{renderExitBadge(o)}
                       </div>
                     );
                   })}
@@ -38683,22 +39667,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
             {/* Earlier departures archive — restore anyone who left >30 days ago */}
             {archiveAll.length > 0 && (
-              <div style={{ background: "#FFFFFF", borderRadius: 13, padding: "16px 18px", border: "1px solid #FBCFE8", marginTop: 14 }}>
-                <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
-                  <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 16, fontWeight: 600, color: "#831843" }}>Earlier departures</div>
-                  <div style={{ fontSize: 11, color: "#BE185D", fontWeight: 600 }}>· left over 30 days ago · {archiveAll.length} {archiveAll.length === 1 ? "person" : "people"}</div>
+              <div style={glassCard({ marginBottom: 0 })}>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
+                  <div style={glassHeading()}>Earlier departures</div>
+                  <div style={{ fontSize: 11.5, color: "#BE185D", fontWeight: 600 }}>· left over 30 days ago · {archiveAll.length} {archiveAll.length === 1 ? "person" : "people"}</div>
                 </div>
-                <div style={{ fontSize: 11, color: "#9ca3af", marginBottom: 12 }}>Off-boarded by mistake? Search and Restore to bring them back as active staff — their schedule and attendance history return automatically.</div>
+                <div style={{ fontSize: 12, color: "#a98ba0", marginBottom: 14, lineHeight: 1.6, maxWidth: "72ch" }}>Off-boarded by mistake? Search and Restore to bring them back as active staff — their schedule and attendance history return automatically.</div>
                 <input
                   value={offArchiveQuery}
                   onChange={(e) => setOffArchiveQuery(e.target.value)}
-                  placeholder="Search by name, EC or branch…"
-                  style={{ width: "100%", padding: "8px 10px", border: "1px solid #FBCFE8", borderRadius: 8, fontSize: 13, fontFamily: "inherit", marginBottom: 12 }}
+                  placeholder="🔍  Search by name, EC or branch…"
+                  style={{ ...GLASS_INPUT, maxWidth: 380, marginBottom: 16 }}
                 />
                 {archive.length === 0 ? (
-                  <div style={{ fontSize: 12, color: "#9ca3af", padding: "16px 4px", textAlign: "center" }}>No earlier departures match “{offArchiveQuery}”.</div>
+                  <div style={{ fontSize: 12.5, color: "#a98ba0", padding: "20px 4px", textAlign: "center" }}>No earlier departures match “{offArchiveQuery}”.</div>
                 ) : (
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 10 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(290px,1fr))", gap: 14 }}>
                     {archive.map(o => {
                       const d = new Date(o.leftDate + "T00:00:00");
                       const dStr = d.toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" });
@@ -38706,19 +39690,19 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       const reasonBg = o.reason === "Terminated" ? "#fee2e2" : o.reason === "Resigned" ? "#dbeafe" : "#fef3c7";
                       const reasonColor = o.reason === "Terminated" ? "#991b1b" : o.reason === "Resigned" ? "#1e3a8a" : "#92400e";
                       return (
-                        <div key={o.ec} style={{ background: "#F9FAFB", borderRadius: 11, padding: "13px 14px", border: "1px solid #e5e7eb" }}>
+                        <div key={o.ec} style={glassTile({ background: "linear-gradient(155deg, rgba(255,255,255,0.80) 0%, rgba(246,244,247,0.58) 100%)", border: "1px solid rgba(255,255,255,0.78)" })}>
                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 6, marginBottom: 6 }}>
                             <div>
-                              <div style={{ fontSize: 13, fontWeight: 700, color: "#831843" }}>{o.name}</div>
-                              <div style={{ fontSize: 10, fontFamily: "monospace", color: "#E84B9B", fontWeight: 700 }}>{o.ec} · {o.branch}</div>
+                              <div style={{ fontSize: 14, fontWeight: 700, color: "#831843", lineHeight: 1.35 }}>{o.name}</div>
+                              <div style={{ fontSize: 10.5, fontFamily: "monospace", color: "#C2447E", fontWeight: 700, marginTop: 3, letterSpacing: "0.02em" }}>{o.ec} · {o.branch}</div>
                             </div>
-                            {o.reason && <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 8px", borderRadius: 99, background: reasonBg, color: reasonColor, letterSpacing: "0.02em" }}>{o.reason}</span>}
+                            {o.reason && <span style={{ fontSize: 9.5, fontWeight: 800, padding: "4px 10px", borderRadius: 99, background: reasonBg, color: reasonColor, letterSpacing: "0.03em", whiteSpace: "nowrap", border: "1px solid rgba(255,255,255,0.7)" }}>{o.reason}</span>}
                           </div>
                           <div style={{ fontSize: 11, color: "#BE185D", marginTop: 4 }}>
                             Left {dStr}<span style={{ opacity: 0.7 }}> · {daysAgo} days ago</span>
                           </div>
-                          {o.notes && <div style={{ fontSize: 11, color: "#831843", marginTop: 6, fontStyle: "italic", whiteSpace: "pre-wrap" }}>{o.notes}</div>}
-                          <button onClick={() => undoOff(o.ec)} style={{ marginTop: 8, background: "transparent", border: "1px solid #FBCFE8", color: "#831843", padding: "4px 10px", borderRadius: 5, fontSize: 10, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>↺ Restore</button>{renderExitBadge(o)}
+                          {o.notes && <div style={{ fontSize: 11.5, color: "#7d5068", marginTop: 9, fontStyle: "italic", whiteSpace: "pre-wrap", lineHeight: 1.55 }}>{o.notes}</div>}
+                          <button onClick={() => undoOff(o.ec)} className="boa-btn" style={{ marginTop: 12, marginRight: 8, background: "rgba(255,255,255,0.7)", border: "1px solid rgba(190,24,93,0.20)", color: "#9d174d", padding: "6px 12px", borderRadius: 8, fontSize: 10.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>↺ Restore</button>{renderExitBadge(o)}
                         </div>
                       );
                     })}
@@ -38726,6 +39710,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 )}
               </div>
             )}
+            </>)}
           </div>
         );
       })()}
