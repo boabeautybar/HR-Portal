@@ -11106,7 +11106,20 @@ const OFFBOARD_ACCESS_KEY = "boa_offboard_access_v1";
 const OFFBOARD_DEFAULT_PINS = ["0864", "0992", "5589", "1401"];
 // Who is who on that list: 0864 owner, 0992 dev, 5589 HR, 1401 payroll.
 // Only payroll signs a record off, and only payroll is chased about it.
+// Two different questions, deliberately answered by two different lists.
+//
+//   payrollPins  — who gets CHASED about the backlog. The instruction was that
+//                  the notification goes to the payroll officer only, so HR
+//                  filing a record does not put a warning on the owner's
+//                  dashboard about checking it.
+//   signOffPins  — who may GIVE the sign-off. Payroll owns the check, but HR
+//                  and the owner can confirm it too, so a final payout is not
+//                  blocked when the payroll officer is away.
+//
+// Dev (0992) is on neither: it is a maintenance login, not a person who has
+// verified anyone's last payslip.
 const OFFBOARD_DEFAULT_PAYROLL_PINS = ["1401"];
+const OFFBOARD_DEFAULT_SIGNOFF_PINS = ["1401", "5589", "0864"];
 function offboardPins(cfg) {
   const pins = cfg && Array.isArray(cfg.pins) ? cfg.pins.filter(Boolean) : null;
   return (pins && pins.length) ? pins.map(String) : OFFBOARD_DEFAULT_PINS.slice();
@@ -11115,16 +11128,24 @@ function offboardPayrollPins(cfg) {
   const pins = cfg && Array.isArray(cfg.payrollPins) ? cfg.payrollPins.filter(Boolean) : null;
   return (pins && pins.length) ? pins.map(String) : OFFBOARD_DEFAULT_PAYROLL_PINS.slice();
 }
+function offboardSignOffPins(cfg) {
+  const pins = cfg && Array.isArray(cfg.signOffPins) ? cfg.signOffPins.filter(Boolean) : null;
+  return (pins && pins.length) ? pins.map(String) : OFFBOARD_DEFAULT_SIGNOFF_PINS.slice();
+}
+// Who is chased about the queue.
+function isOffboardPayrollOfficer(user, cfg) {
+  if (!canSeeOffboarding(user, cfg)) return false;
+  return offboardPayrollPins(cfg).indexOf(String(user.pin)) >= 0;
+}
 function canSeeOffboarding(user, cfg) {
   if (!user || !user.pin) return false;
   return offboardPins(cfg).indexOf(String(user.pin)) >= 0;
 }
-// The sign-off is payroll's own confirmation that the dates and amounts are
-// right before the final payout, so it is theirs to give. Everyone else on the
-// tab sees the status read-only rather than a button they should not press.
+// Who may sign a record off. Membership of the access list is still required,
+// so widening this list can never let someone in who cannot open the tab.
 function canSignOffPayroll(user, cfg) {
   if (!canSeeOffboarding(user, cfg)) return false;
-  return offboardPayrollPins(cfg).indexOf(String(user.pin)) >= 0;
+  return offboardSignOffPins(cfg).indexOf(String(user.pin)) >= 0;
 }
 
 function _isOwnerOrMaster(user) {
@@ -12943,17 +12964,21 @@ function IncidentReportsTab({ reports, setReports, currentUser, mode, people }) 
             const unread = domainScoped.filter(r => incDomainOf(r) === d.k && !r.reviewed).length;
             return (
               <button key={d.k} onClick={() => { setDomainTab(d.k); setOpenId(null); }}
-                style={{ flex: 1, padding: "12px 18px", borderRadius: 10, border: "none", cursor: "pointer",
+                style={{
+                  flex: 1, padding: "12px 18px", borderRadius: 10, border: "none", cursor: "pointer",
                   background: active ? "#BE185D" : "transparent", color: active ? "#fff" : "#831843",
                   fontFamily: "inherit", fontSize: 14.5, fontWeight: 700, transition: "all .18s",
                   boxShadow: active ? "0 4px 12px rgba(190,24,93,0.32)" : "none",
-                  display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+                  display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8
+                }}>
                 <span aria-hidden="true">{d.icon}</span>
                 <span>{d.label} Incidents</span>
                 <span style={{ fontSize: 12, fontWeight: 800, opacity: active ? 0.85 : 0.6 }}>{n}</span>
                 {unread > 0 && (
-                  <span style={{ background: active ? "#fff" : "#BE185D", color: active ? "#BE185D" : "#fff",
-                    borderRadius: 999, fontSize: 11, fontWeight: 800, padding: "1px 7px" }}>{unread} new</span>
+                  <span style={{
+                    background: active ? "#fff" : "#BE185D", color: active ? "#BE185D" : "#fff",
+                    borderRadius: 999, fontSize: 11, fontWeight: 800, padding: "1px 7px"
+                  }}>{unread} new</span>
                 )}
               </button>
             );
@@ -16288,7 +16313,8 @@ function LeaveBalancesTab({ enriched, managers, office, currentUser, logActivity
                         <tr style={{ background: "#FDF2F8" }}>
                           <td style={{ ...td, borderBottom: "2px solid #FBCFE8" }} colSpan={10}>
                             {/* Calculation trail — how opening → current → projected is built, plus expiry */}
-                            {(() => { const bd = buildBreakdown(r); return (
+                            {(() => {
+                              const bd = buildBreakdown(r); return (
                               <div style={{ marginBottom: 12, background: "#fff", border: "1px solid #FCE7F3", borderRadius: 9, padding: "12px 14px" }}>
                                 <div style={{ fontSize: 11.5, fontWeight: 800, color: "#9d174d", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 2 }}>How this balance is calculated</div>
                                 <div style={{ fontSize: 11.5, color: "#9d6a82", marginBottom: 10, lineHeight: 1.5 }}>
@@ -16360,7 +16386,8 @@ function LeaveBalancesTab({ enriched, managers, office, currentUser, logActivity
                                   <div style={{ fontSize: 11.5, color: "#15803d", marginTop: 10, fontWeight: 600 }}>✓ Nothing heading for forfeiture — no completed employment year is currently inside its 6-month redemption window.</div>
                                 ) : null}
                               </div>
-                            ); })()}
+                              );
+                            })()}
                             {/* Reconciliation — this cycle's past leave days vs what actually happened */}
                             {cycle && (
                               <div style={{ marginBottom: 12, background: "#fff", border: "1px solid #FCE7F3", borderRadius: 9, padding: "10px 12px" }}>
@@ -21431,13 +21458,19 @@ const BTN_BASE = {
   border: "1px solid transparent", borderRadius: 10, padding: "10px 16px", cursor: "pointer",
   fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, lineHeight: 1.2, whiteSpace: "nowrap"
 };
-const BTN_PRIMARY = { ...BTN_BASE, background: "linear-gradient(180deg,#D6246F,#A3134F)", color: "#fff",
-  boxShadow: "0 8px 18px -8px rgba(163,19,79,0.75), inset 0 1px 0 rgba(255,255,255,0.28)" };
-const BTN_GHOST = { ...BTN_BASE, background: "rgba(255,255,255,0.62)", color: "#831843",
+const BTN_PRIMARY = {
+  ...BTN_BASE, background: "linear-gradient(180deg,#D6246F,#A3134F)", color: "#fff",
+  boxShadow: "0 8px 18px -8px rgba(163,19,79,0.75), inset 0 1px 0 rgba(255,255,255,0.28)"
+};
+const BTN_GHOST = {
+  ...BTN_BASE, background: "rgba(255,255,255,0.62)", color: "#831843",
   border: "1px solid rgba(190,24,93,0.18)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)",
-  boxShadow: "inset 0 1px 0 rgba(255,255,255,0.85)" };
-const BTN_GO = { ...BTN_BASE, background: "linear-gradient(180deg,#1c9a52,#12703b)", color: "#fff",
-  boxShadow: "0 8px 18px -8px rgba(18,112,59,0.7), inset 0 1px 0 rgba(255,255,255,0.28)" };
+  boxShadow: "inset 0 1px 0 rgba(255,255,255,0.85)"
+};
+const BTN_GO = {
+  ...BTN_BASE, background: "linear-gradient(180deg,#1c9a52,#12703b)", color: "#fff",
+  boxShadow: "0 8px 18px -8px rgba(18,112,59,0.7), inset 0 1px 0 rgba(255,255,255,0.28)"
+};
 
 /* Columns marked `p` show in the table; the rest live in the expanded record
    so the grid stays readable instead of scrolling sideways for a page and a
@@ -21448,6 +21481,7 @@ const HR_TRACK_COLS = {
     { k: "employee_name", l: "Full name", w: 200, strong: true, p: true },
     { k: "role_title", l: "Position", w: 108, p: true },
     { k: "location", l: "Branch / location", w: 142, p: true },
+    { k: "separation_type", l: "Type", w: 118, p: true },
     { k: "event_date", l: "Termination date", w: 132, date: true, p: true },
     { k: "reason", l: "Reason for termination", w: 300, wrap: true, p: true },
     { k: "exit_interview", l: "Exit interview", w: 120 },
@@ -21486,14 +21520,27 @@ function hrActionTone(v) {
 const HR_BULK_CUTOFF = "2026-07-15";
 function HrSortIcon({ active, dir }) {
   return (
-    <span aria-hidden="true" style={{ marginLeft: 6, fontSize: 8.5, lineHeight: 1,
-      opacity: active ? 1 : 0.32, color: active ? "#BE185D" : "inherit" }}>
+    <span aria-hidden="true" style={{
+      marginLeft: 6, fontSize: 8.5, lineHeight: 1,
+      opacity: active ? 1 : 0.32, color: active ? "#BE185D" : "inherit"
+    }}>
       {active ? (dir === "asc" ? "\u25B2" : "\u25BC") : "\u21C5"}
     </span>
   );
 }
+// Termination vs resignation is not decoration: it changes notice pay, the
+// UIF reason code and whether the final payout carries a dismissal. It reads
+// in the same colours the off-boarding list already uses for the two.
+const HR_SEPARATION = [
+  { v: "termination", l: "Termination", c: "#991b1b", bg: "#fee2e2", b: "#fca5a5" },
+  { v: "resignation", l: "Resignation", c: "#1e3a8a", bg: "#dbeafe", b: "#bfdbfe" }
+];
+const hrSeparation = (v) => HR_SEPARATION.find(x => x.v === String(v || "").toLowerCase()) || null;
 const HR_TRACK_BLANK = (kind) => ({
   kind, employee_code: "", employee_name: "", role_title: "", location: "", manager: "",
+  // Every row in this tracker before today was an involuntary termination, so
+  // that is the default; a resignation is a deliberate change, not a slip.
+  separation_type: kind === "termination" ? "termination" : "",
   event_date: "", event_date_raw: "", investigation_end: "", investigation_raw: "",
   reason: "", findings: "", action_taken: "", bonus: "", justin_to_action: "",
   exit_interview: "", filed_by: "", final_comments: "", notes: ""
@@ -21520,7 +21567,7 @@ function HrTrackerPanel({ kind, currentUser, canSign, rows, loading, err, onRelo
     return (rows || [])
       .filter(r => r && r.kind === kind)
       .filter(r => payFilter === "all" ? true : (r.payroll_status || "pending") === payFilter)
-      .filter(r => !ql || [r.employee_name, r.employee_code, r.location, r.role_title, r.manager,
+      .filter(r => !ql || [r.employee_name, r.employee_code, r.location, r.role_title, r.manager, r.separation_type,
                            r.reason, r.findings, r.action_taken, r.final_comments, r.notes]
                             .some(v => String(v || "").toLowerCase().includes(ql)));
   }, [rows, kind, q, payFilter]);
@@ -21559,13 +21606,17 @@ function HrTrackerPanel({ kind, currentUser, canSign, rows, loading, err, onRelo
   // needs and stops scrolling sideways the moment the window can hold it.
   const tableMin = 148 + 88 + cols.reduce((n, c) => n + c.w, 0);
 
-  const th = { textAlign: "left", padding: "11px 14px", fontSize: 9.5, fontWeight: 800, color: "#9d174d",
+  const th = {
+    textAlign: "left", padding: "11px 14px", fontSize: 9.5, fontWeight: 800, color: "#9d174d",
     textTransform: "uppercase", letterSpacing: "0.07em", whiteSpace: "nowrap",
     background: "linear-gradient(180deg, rgba(253,242,248,0.97), rgba(252,231,243,0.92))",
     backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)",
-    position: "sticky", top: 0, zIndex: 2, boxShadow: "inset 0 -1px 0 rgba(190,24,93,0.16)" };
-  const td = { padding: "13px 14px", fontSize: 12.5, lineHeight: 1.55, color: "#6B1739",
-    borderBottom: "1px solid rgba(190,24,93,0.09)", verticalAlign: "top" };
+    position: "sticky", top: 0, zIndex: 2, boxShadow: "inset 0 -1px 0 rgba(190,24,93,0.16)"
+  };
+  const td = {
+    padding: "13px 14px", fontSize: 12.5, lineHeight: 1.55, color: "#6B1739",
+    borderBottom: "1px solid rgba(190,24,93,0.09)", verticalAlign: "top"
+  };
   const inp = GLASS_INPUT;
   const lbl = GLASS_LABEL;
 
@@ -21591,8 +21642,8 @@ function HrTrackerPanel({ kind, currentUser, canSign, rows, loading, err, onRelo
     } catch (e) { window.alert("Could not save: " + ((e && e.message) || e)); }
     setBusy(false);
   };
-  // Payroll's sign-off. Only the payroll officer gets this button; HR adding or
-  // editing never can, and an edit to a date/action/bonus resets it server-side.
+  // The payroll check. Payroll, HR and the owner get this button; dev never
+  // does, and an edit to a date/action/bonus/type resets it server-side.
   const setPayroll = async (r, status) => {
     setBusy(true);
     try {
@@ -21612,7 +21663,7 @@ function HrTrackerPanel({ kind, currentUser, canSign, rows, loading, err, onRelo
   const runBulkSignOff = async () => {
     const targets = bulkTargets;
     if (!targets.length) return;
-    const label = isTerm ? "termination" : "disciplinary";
+    const label = isTerm ? "termination / resignation" : "disciplinary";
     if (!window.confirm(
       "Mark " + targets.length + " " + label + " record" + (targets.length === 1 ? "" : "s") +
       " dated before " + fmt(bulkBefore) + " as checked by payroll?\n\n" +
@@ -21657,15 +21708,19 @@ function HrTrackerPanel({ kind, currentUser, canSign, rows, loading, err, onRelo
   const pickStaff = (name) => {
     const hit = (staffPool || []).find(x => x.name === name);
     if (!hit) return;
-    setDraft(d => ({ ...d, employee_name: hit.name, employee_code: hit.ec || d.employee_code,
-      location: hit.branch || d.location, role_title: hit.role || d.role_title }));
+    setDraft(d => ({
+      ...d, employee_name: hit.name, employee_code: hit.ec || d.employee_code,
+      location: hit.branch || d.location, role_title: hit.role || d.role_title
+    }));
   };
 
   return (
     <div>
-      <div style={{ ...glassCard({ padding: "14px 16px", marginBottom: 18 }), display: "flex", gap: 12,
-        flexWrap: "wrap", alignItems: "center" }}>
-        <input placeholder={"🔍  Search " + (isTerm ? "terminations" : "disciplinary records") + "…"} value={q}
+      <div style={{
+        ...glassCard({ padding: "14px 16px", marginBottom: 18 }), display: "flex", gap: 12,
+        flexWrap: "wrap", alignItems: "center"
+      }}>
+        <input placeholder={"🔍  Search " + (isTerm ? "terminations & resignations" : "disciplinary records") + "…"} value={q}
           onChange={e => setQ(e.target.value)} style={{ ...inp, flex: "1 1 240px", maxWidth: 360 }} />
         <select value={payFilter} onChange={e => setPayFilter(e.target.value)} style={{ ...inp, width: "auto", flex: "0 0 auto" }}>
           <option value="all">All records</option>
@@ -21673,7 +21728,7 @@ function HrTrackerPanel({ kind, currentUser, canSign, rows, loading, err, onRelo
           <option value="completed">Payroll signed off</option>
         </select>
         <button className="boa-btn" onClick={() => setDraft(HR_TRACK_BLANK(kind))} style={BTN_PRIMARY}>
-          + Add {isTerm ? "termination" : "disciplinary record"}
+          + Add {isTerm ? "termination or resignation" : "disciplinary record"}
         </button>
         <button className="boa-btn" onClick={onReload} disabled={loading} style={BTN_GHOST}>{loading ? "Loading…" : "↻ Refresh"}</button>
         <span style={{ marginLeft: "auto", fontSize: 12.5, color: "#9d6a82" }}>
@@ -21717,10 +21772,12 @@ function HrTrackerPanel({ kind, currentUser, canSign, rows, loading, err, onRelo
       )}
 
       {draft && (
-        <div style={{ ...glassCard({ padding: "22px 24px" }), border: "1px solid rgba(190,24,93,0.35)",
-          boxShadow: "inset 0 1px 0 rgba(255,255,255,0.95), 0 0 0 3px rgba(214,36,111,0.10), 0 22px 46px -24px rgba(131,24,67,0.55)" }}>
+        <div style={{
+          ...glassCard({ padding: "22px 24px" }), border: "1px solid rgba(190,24,93,0.35)",
+          boxShadow: "inset 0 1px 0 rgba(255,255,255,0.95), 0 0 0 3px rgba(214,36,111,0.10), 0 22px 46px -24px rgba(131,24,67,0.55)"
+        }}>
           <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 18, fontWeight: 700, color: "#831843", marginBottom: 16 }}>
-            {draft.id ? "Edit record" : (isTerm ? "New termination record" : "New disciplinary record")}
+            {draft.id ? "Edit record" : (isTerm ? "New termination or resignation" : "New disciplinary record")}
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(210px,1fr))", gap: 16 }}>
             <label><span style={lbl}>Employee name</span>
@@ -21731,6 +21788,12 @@ function HrTrackerPanel({ kind, currentUser, canSign, rows, loading, err, onRelo
             <label><span style={lbl}>Employee ID</span><input style={inp} value={draft.employee_code} onChange={e => setDraft({ ...draft, employee_code: e.target.value })} /></label>
             <label><span style={lbl}>{isTerm ? "Position" : "Role"}</span><input style={inp} value={draft.role_title} onChange={e => setDraft({ ...draft, role_title: e.target.value })} /></label>
             <label><span style={lbl}>{isTerm ? "Branch / location" : "Location"}</span><input style={inp} value={draft.location} onChange={e => setDraft({ ...draft, location: e.target.value })} /></label>
+            {isTerm && <label><span style={lbl}>Type</span>
+              <select style={inp} value={draft.separation_type || "termination"}
+                onChange={e => setDraft({ ...draft, separation_type: e.target.value })}>
+                {HR_SEPARATION.map(o => <option key={o.v} value={o.v}>{o.l}</option>)}
+              </select>
+            </label>}
             <label><span style={lbl}>{isTerm ? "Termination date" : "Received on"}</span><input type="date" style={inp} value={draft.event_date || ""} onChange={e => setDraft({ ...draft, event_date: e.target.value })} /></label>
             {!isTerm && <label><span style={lbl}>Manager</span><input style={inp} value={draft.manager} onChange={e => setDraft({ ...draft, manager: e.target.value })} /></label>}
             {!isTerm && <label><span style={lbl}>Investigation end</span><input type="date" style={inp} value={draft.investigation_end || ""} onChange={e => setDraft({ ...draft, investigation_end: e.target.value })} /></label>}
@@ -21796,10 +21859,12 @@ function HrTrackerPanel({ kind, currentUser, canSign, rows, loading, err, onRelo
                   <React.Fragment key={r.id}>
                     <tr className="boa-row" style={{ background: open ? "rgba(253,242,248,0.85)" : done ? "rgba(240,253,244,0.55)" : "transparent" }}>
                       <td style={td}>
-                        <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 10.5, fontWeight: 800,
+                        <span style={{
+                          display: "inline-flex", alignItems: "center", gap: 5, fontSize: 10.5, fontWeight: 800,
                           borderRadius: 999, padding: "4px 10px", whiteSpace: "nowrap",
                           color: done ? "#15803d" : "#b45309", background: done ? "rgba(220,252,231,0.85)" : "rgba(254,243,199,0.85)",
-                          border: "1px solid " + (done ? "#86efac" : "#fde68a") }}>
+                          border: "1px solid " + (done ? "#86efac" : "#fde68a")
+                        }}>
                           {done ? "✓ Signed off" : "⏳ Awaiting payroll"}
                         </span>
                         {done && r.payroll_checked_by && (
@@ -21810,14 +21875,22 @@ function HrTrackerPanel({ kind, currentUser, canSign, rows, loading, err, onRelo
                         const raw = r[c.k];
                         const val = c.date ? (fmt(raw) || r[c.k === "event_date" ? "event_date_raw" : "investigation_raw"] || "") : (raw || "");
                         const suspect = c.date && !raw && r[c.k === "event_date" ? "event_date_raw" : "investigation_raw"];
+                        if (c.k === "separation_type") {
+                          const sep = hrSeparation(val);
+                          return <td key={c.k} style={td}>{sep
+                            ? <span style={{ display: "inline-block", fontSize: 10.5, fontWeight: 800, borderRadius: 7, padding: "4px 10px", color: sep.c, background: sep.bg, border: "1px solid " + sep.b, lineHeight: 1.35, whiteSpace: "nowrap" }}>{sep.l}</span>
+                            : <span style={{ color: "#d8b4c6" }}>—</span>}</td>;
+                        }
                         if (c.k === "action_taken" && val) {
                           const t = hrActionTone(val);
                           return <td key={c.k} style={td}><span style={{ display: "inline-block", fontSize: 10.5, fontWeight: 800, borderRadius: 7, padding: "4px 9px", color: t.c, background: t.bg, border: "1px solid " + t.b, lineHeight: 1.35 }}>{val}</span></td>;
                         }
                         return (
-                          <td key={c.k} style={{ ...td, fontWeight: c.strong ? 700 : 400,
+                          <td key={c.k} style={{
+                            ...td, fontWeight: c.strong ? 700 : 400,
                             color: c.strong ? "#831843" : suspect ? "#b45309" : td.color,
-                            maxWidth: c.wrap ? c.w : undefined, whiteSpace: c.wrap ? "normal" : "nowrap" }}
+                            maxWidth: c.wrap ? c.w : undefined, whiteSpace: c.wrap ? "normal" : "nowrap"
+                          }}
                             title={suspect ? "Date could not be read from the spreadsheet — please confirm" : undefined}>
                             {c.wrap && String(val).length > 190
                               ? <><span>{String(val).slice(0, 190).trimEnd()}…</span>
@@ -21856,7 +21929,7 @@ function HrTrackerPanel({ kind, currentUser, canSign, rows, loading, err, onRelo
                                   : <button className="boa-btn" onClick={() => setPayroll(r, "completed")} disabled={busy} style={BTN_GO}>✓ Mark payroll complete</button>}
                               </>) : (
                                 <div style={{ fontSize: 11.5, color: "#9d6a82", background: "rgba(255,255,255,0.6)", border: "1px dashed rgba(190,24,93,0.22)", borderRadius: 10, padding: "9px 12px", lineHeight: 1.55 }}>
-                                  Only the payroll officer can sign a record off — it is their confirmation that the final payout is safe to run.
+                                  Payroll, HR or the owner signs this off — it is the confirmation that the final payout is safe to run.
                                 </div>
                               )}
                             </div>
@@ -24990,7 +25063,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     return () => { dead = true; };
   }, []);
   const canOffboard = canSeeOffboarding(currentUser, offboardAccess);
-  const isPayrollSigner = canSignOffPayroll(currentUser, offboardAccess);
+  const isPayrollOfficer = isOffboardPayrollOfficer(currentUser, offboardAccess);   // gets the nudge
+  const canSignOffRecords = canSignOffPayroll(currentUser, offboardAccess);         // may sign off
   const [offSubTab, setOffSubTab] = useState("list");     // list | term | disc
   const [trackerRows, setTrackerRows] = useState([]);
   const [trackerLoading, setTrackerLoading] = useState(false);
@@ -30279,9 +30353,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               // ccOnly account is authoritative and absolute: it sees EXACTLY the
               // CC&S tabs (even a forceShow tab outside the set is hidden, and a
               // CC&S tab in its stored hideTabs is still shown).
-              .map(g => ({ ...g, items: g.items.filter(it => currentUser.ccOnly
+              .map(g => ({
+                ...g, items: g.items.filter(it => currentUser.ccOnly
                 ? CC_ONLY_TABS.has(it.t)
-                : (it.forceShow || (!hideTabs.has(it.t) && (!hideCats.has(g.key) || showTabs.has(it.t))))) }))
+                  : (it.forceShow || (!hideTabs.has(it.t) && (!hideCats.has(g.key) || showTabs.has(it.t)))))
+              }))
               .filter(g => g.items.length > 0);
             const tabToCategory = {};
             for (const g of visibleGroups) for (const it of g.items) tabToCategory[it.t] = g.key;
@@ -30885,7 +30961,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   the payroll pin, not the whole off-boarding list — HR filing
                   a record should not nag the owner about checking it. */
               dashAlert("offboardPayroll", "payroll", "warning",
-              isPayrollSigner && (trackerPending.term + trackerPending.disc) > 0 && (
+            isPayrollOfficer && (trackerPending.term + trackerPending.disc) > 0 && (
                 <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 16, padding: "16px 20px", marginBottom: 20, boxShadow: "0 4px 14px rgba(180,83,9,0.10)", display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
                   <div style={{ flex: 1, minWidth: 280 }}>
                     <div style={{ fontSize: 15, fontWeight: 800, color: "#92400e", letterSpacing: "0.04em", textTransform: "uppercase" }}>📄 Payroll check needed before the final payout</div>
@@ -39472,28 +39548,34 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             </div>
 
             {/* Three views over the same departure story. */}
-            <div style={{ display: "flex", gap: 4, padding: 6, borderRadius: 16, maxWidth: 800, marginBottom: 24, flexWrap: "wrap",
+            <div style={{
+              display: "flex", gap: 4, padding: 6, borderRadius: 16, maxWidth: 800, marginBottom: 24, flexWrap: "wrap",
               background: "linear-gradient(150deg, rgba(255,255,255,0.72), rgba(252,231,243,0.62))",
               backdropFilter: "blur(16px) saturate(160%)", WebkitBackdropFilter: "blur(16px) saturate(160%)",
               border: "1px solid rgba(255,255,255,0.72)",
-              boxShadow: "inset 0 1px 0 rgba(255,255,255,0.9), 0 12px 30px -18px rgba(131,24,67,0.45)" }}>
+              boxShadow: "inset 0 1px 0 rgba(255,255,255,0.9), 0 12px 30px -18px rgba(131,24,67,0.45)"
+            }}>
               {[{ k: "list", l: "Off-boarding List", icon: "\uD83D\uDC4B" },
-                { k: "term", l: "Terminations Tracker", icon: "\uD83D\uDCC4" },
+              { k: "term", l: "Terminations & Resignations Tracker", icon: "\uD83D\uDCC4" },
                 { k: "disc", l: "Disciplinary Tracker", icon: "\u2696\uFE0F" }].map(t => {
                 const active = offSubTab === t.k;
                 const pending = t.k === "term" ? trackerPending.term : t.k === "disc" ? trackerPending.disc : 0;
                 return (
                   <button key={t.k} className="boa-pill" onClick={() => setOffSubTab(t.k)}
-                    style={{ flex: "1 1 208px", padding: "13px 18px", borderRadius: 12, border: "none", cursor: "pointer",
+                    style={{
+                      flex: "1 1 208px", padding: "13px 18px", borderRadius: 12, border: "none", cursor: "pointer",
                       background: active ? "linear-gradient(180deg,#D6246F,#A3134F)" : "transparent", color: active ? "#fff" : "#8a3a5f",
                       fontFamily: "inherit", fontSize: 14.5, fontWeight: 700, transition: "all .18s",
                       boxShadow: active ? "0 10px 22px -10px rgba(163,19,79,0.85), inset 0 1px 0 rgba(255,255,255,0.28)" : "none",
-                      display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+                      display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8
+                    }}>
                     <span aria-hidden="true">{t.icon}</span><span>{t.l}</span>
                     {pending > 0 && (
                       <span title={pending + " waiting on payroll"}
-                        style={{ background: active ? "#fff" : "#BE185D", color: active ? "#BE185D" : "#fff",
-                          borderRadius: 999, fontSize: 11, fontWeight: 800, padding: "1px 7px" }}>{pending}</span>
+                        style={{
+                          background: active ? "#fff" : "#BE185D", color: active ? "#BE185D" : "#fff",
+                          borderRadius: 999, fontSize: 11, fontWeight: 800, padding: "1px 7px"
+                        }}>{pending}</span>
                     )}
                   </button>
                 );
@@ -39502,7 +39584,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
             {(offSubTab === "term" || offSubTab === "disc") && (
               <HrTrackerPanel kind={offSubTab === "term" ? "termination" : "disciplinary"}
-                currentUser={currentUser} canSign={isPayrollSigner} rows={trackerRows} loading={trackerLoading} err={trackerErr}
+                currentUser={currentUser} canSign={canSignOffRecords} rows={trackerRows} loading={trackerLoading} err={trackerErr}
                 onReload={loadTrackers} staffPool={trackerStaffPool} logActivity={logActivity} />
             )}
 
