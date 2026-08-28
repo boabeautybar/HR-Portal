@@ -11039,6 +11039,24 @@ function canSeeIncidents(user) {
     r.includes("national") || isRomRole(user.role);
 }
 
+// TEMPORARY named-PIN grant for the Called in Sick tab ONLY.
+//
+// That tab sits behind canSeeIncidents, which keys off the free-text ROLE
+// string. An "Ops Admin" (Rochelle, 3030) matches none of its role tokens, so
+// she fails the gate no matter what Settings -> Users says: the permission grid
+// happily lists "Called in Sick" and saves the tick, but the nav item is built
+// inside the canSeeIncidents guard, so the toggle can never take effect.
+//
+// Widening canSeeIncidents itself would also hand over incident reports,
+// extra-day requests and HR Reports, so this grants the one tab instead.
+// Remove once the permission model is reworked to make the Settings toggle
+// authoritative for this tab.
+const CALLED_IN_SICK_PINS = new Set(["3030"]); // Rochelle - Ops Admin
+function canSeeCalledInSick(user) {
+  if (canSeeIncidents(user)) return true;
+  return !!(user && user.pin && CALLED_IN_SICK_PINS.has(String(user.pin)));
+}
+
 // Who may see permit / asylum / DHA status. Narrower than canSeeIncidents on
 // purpose: this is immigration status, and the roles that act on it are the
 // Owner, National Ops, HR, Recruitment, Payroll, Project Management and the
@@ -26601,7 +26619,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const _ftHideCats = new Set((currentUser && currentUser.hideCategories) || []);
     const _ftShowTabs = new Set((currentUser && currentUser.showTabs) || []);
     const _canSeeFreshaTodo = !_ftHideTabs.has("freshaTodo") && (!_ftHideCats.has("Operations") || _ftShowTabs.has("freshaTodo"));
-    const _needRequests = canSeeIncidents(currentUser) || _canSeeFreshaTodo;
+    const _needRequests = canSeeIncidents(currentUser) || _canSeeFreshaTodo || canSeeCalledInSick(currentUser);
     Promise.all([
       window.BOA_DB.loadAll(),
       window.BOA_DB.loadOnboarding(),
@@ -30124,7 +30142,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     const pend = leaveRequests.filter(r => r.status === "pending" && r.leave_type !== "Sick" && r.leave_type !== "Absent").length;
                     return { t: "leaveRequests", l: "📨 Leave Requests" + (pend ? "  (" + pend + ")" : "") };
                   })()] : []),
-                  ...(canSeeIncidents(currentUser) ? [(() => {
+                  ...(canSeeCalledInSick(currentUser) ? [(() => {
                     const n = calledInSickWindow(leaveRequests).list.length;
                     return { t: "calledInSick", l: "🤒 Called in Sick" + (n ? "  (" + n + ")" : "") };
                   })()] : []),
@@ -35546,7 +35564,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         )}
 
         {/* ── CALLED IN SICK TAB ── */}
-        {tab === "calledInSick" && canSeeIncidents(currentUser) && (
+        {tab === "calledInSick" && canSeeCalledInSick(currentUser) && (
           <CalledInSickTab requests={leaveRequests} setRequests={setLeaveRequests} currentUser={currentUser} />
         )}
 
