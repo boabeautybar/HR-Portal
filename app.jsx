@@ -11681,13 +11681,23 @@ function can(user, capKey, ctx) {
 
    tier — what the Settings grid may do to this tab:
      "open"    everyone by default; the grid can hide it
-     "normal"  a default audience; the grid can BOTH grant (grantTabs) and hide
-     "list"    granted by a named AccessPanel; the grid can hide, not grant
-     "locked"  code-change only; the grid can hide, not grant
+     "normal"  a role / access-list DEFAULT; the grid can both grant and hide
+     "locked"  the grid can hide, never grant
 
-   The rule is uniform: REVOKE works at every tier, GRANT only at "normal".
-   That is what fixes both halves of the old model at once — a tick that did
-   nothing (defect A) and a tab that could not be hidden at all (defect B).
+   Roles and access lists are DEFAULTS, not ceilings: they decide what someone
+   gets without anyone touching their record, and the per-user grid overrides
+   them in both directions. That is the whole point — changing who can reach a
+   tab should never require a code change.
+
+   "locked" is deliberately down to ONE entry: Settings. A tab grid that could
+   hand out Settings would be self-granting — anyone given it could then edit
+   their own record and everyone else's, including the Owner's, so the grant
+   could never be taken back. Every other restriction is a default worth
+   overriding from the UI; that one is a privilege boundary.
+
+   `sensitive` doesn't restrict anything. It makes the grid ASK before handing
+   out a tab whose data would embarrass you if a mis-click exposed it — the
+   protection a hard lock was standing in for, without the code round-trip.
 
    ignoreCategoryHide — set on tabs that used to carry forceShow. Deleting
    forceShow makes them hideable, which is the fix; but hideCategories is a
@@ -11701,18 +11711,18 @@ const TAB_ACCESS = {
   onboard: { tier: "open", cat: "People" },
   trialPeriod: { tier: "open", cat: "People" },
   smTrial: { tier: "open", cat: "People" },
-  offboard: { tier: "list", cat: "People", ignoreCategoryHide: true, allow: g => g.canOffboard,
-    grantedIn: "Settings → \u201cOff-boarding access\u201d (the red panel below the user list). Add the person there; the Owner is NOT automatically included." },
+  offboard: { tier: "normal", cat: "People", ignoreCategoryHide: true, sensitive: "Off-boarding holds terminations, resignations and disciplinary records.", allow: g => g.canOffboard,
+    grantedIn: "Default: the Off-boarding column in the access matrix below (named PINs only — not even the Owner is automatic). Ticking here grants it directly instead." },
   staff: { tier: "open", cat: "People" },
   officeStaff: { tier: "normal", cat: "People", allow: g => !!(g.hoStaffCount || g.canAddOfficeStaff) },
   officeTrials: { tier: "normal", cat: "People", allow: g => !!(g.canAddOfficeStaff || g.officeTrialCount) },
   recruitment: { tier: "open", cat: "People" },
-  hrLibrary: { tier: "locked", cat: "People", allow: g => g.isOwnerOrMaster,
-    grantedIn: "Owner and Master Admin only." },
+  hrLibrary: { tier: "normal", cat: "People", sensitive: "Employee Files holds every scanned document on record.", allow: g => g.isOwnerOrMaster,
+    grantedIn: "Default: Owner and Master Admin." },
   maternity: { tier: "open", cat: "People" },
   unpaidLegal: { tier: "open", cat: "People" },
-  compliance: { tier: "locked", cat: "People", allow: g => g.canCompliance,
-    grantedIn: "Immigration / permit data — granted by ROLE only: HR, National Ops, Recruitment, Payroll, Project, Dev, or the Owner. Not handed out per person." },
+  compliance: { tier: "normal", cat: "People", sensitive: "Compliance exposes immigration status — permit, asylum and DHA data.", allow: g => g.canCompliance,
+    grantedIn: "Default: HR, National Ops, Recruitment, Payroll, Project, Dev and the Owner." },
   incidents: { tier: "normal", cat: "People", allow: g => g.canIncidents },
   leaveExpiry: { tier: "normal", cat: "People", allow: g => g.canLeaveExpiry },
   // ── Operations ───────────────────────────────────────────────────────────
@@ -11739,12 +11749,12 @@ const TAB_ACCESS = {
   payrollProgress: { tier: "open", cat: "Payroll" },
   payrollReports: { tier: "open", cat: "Payroll" },
   overtime: { tier: "open", cat: "Payroll" },
-  officeHours: { tier: "list", cat: "Payroll", ignoreCategoryHide: true, allow: g => g.canOfficeHours,
-    grantedIn: "Settings → \u201c⏰ Office Hours alerts (Payroll)\u201d access panel, below the user list." },
-  payrollInbox: { tier: "list", cat: "Payroll", ignoreCategoryHide: true, allow: g => g.canPayrollInbox },
-  leaveBalances: { tier: "list", cat: "Payroll", ignoreCategoryHide: true, allow: g => g.canLeaveBalances },
-  frl: { tier: "list", cat: "Payroll", ignoreCategoryHide: true, allow: g => g.canLeaveBalances },
-  bargainingCouncil: { tier: "list", cat: "Payroll", ignoreCategoryHide: true, allow: g => g.canLeaveBalances },
+  officeHours: { tier: "normal", cat: "Payroll", ignoreCategoryHide: true, allow: g => g.canOfficeHours,
+    grantedIn: "Default: the Office Hours column in the access matrix below. Ticking here grants it directly instead." },
+  payrollInbox: { tier: "normal", cat: "Payroll", ignoreCategoryHide: true, allow: g => g.canPayrollInbox },
+  leaveBalances: { tier: "normal", cat: "Payroll", ignoreCategoryHide: true, allow: g => g.canLeaveBalances },
+  frl: { tier: "normal", cat: "Payroll", ignoreCategoryHide: true, allow: g => g.canLeaveBalances },
+  bargainingCouncil: { tier: "normal", cat: "Payroll", ignoreCategoryHide: true, allow: g => g.canLeaveBalances },
   bonusConfig: { tier: "normal", cat: "Payroll", allow: g => g.isOwnerOrMaster },
   // ── Insights ─────────────────────────────────────────────────────────────
   alerts: { tier: "open", cat: "Insights" },
@@ -12451,6 +12461,16 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, dataCounts, offbo
 
   const togglePerm = (tab, field) => {
     if (!editing) return;
+    // Granting a sensitive tab asks first. These used to be hard-locked in
+    // code, which meant a legitimate grant needed a developer; the real risk
+    // was never that the Owner would decide to grant one, it was a mis-click
+    // in a 60-row checkbox matrix. So confirm the intent instead of forbidding
+    // it. Only on the way ON, and only when they don't already have it.
+    const meta = TAB_ACCESS[tab];
+    const cur0 = editing.perms[tab] || {};
+    if (field === "visible" && !cur0.visible && meta && meta.sensitive && cur0.byDefault === false) {
+      if (!window.confirm(meta.sensitive + "\n\nGive " + (editing.name || "this user") + " access to it?")) return;
+    }
     setEditing(prev => {
       const cur = prev.perms[tab] || { visible: true, editable: true };
       const next = { ...cur, [field]: !cur[field] };
@@ -12700,30 +12720,24 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, dataCounts, offbo
                         </tr>
                         {inCat.map(({ t, l, icon }) => {
                           const p = editing.perms[t] || { visible: true, editable: true };
-                          // A tick can only turn a tab ON when the tier allows a
-                          // grant. For "list" and "locked" tabs the person is
-                          // either already in the audience or must be added
-                          // where that audience actually lives — so the box is
-                          // disabled and says where to go, instead of accepting
-                          // a click and silently doing nothing.
+                          // Inert now means one thing only: Settings, which
+                          // must not be self-granting. Everything else is a
+                          // default you can override right here.
+                          const meta = TAB_ACCESS[t] || {};
                           const inert = p.byDefault === false && p.grantable === false;
-                          const where = (TAB_ACCESS[t] || {}).grantedIn;
-                          const why = where || (p.tier === "list"
-                            ? "Granted by an access list further down this page, not here."
-                            : p.tier === "locked"
-                              ? "Restricted by role in code — this tab can be hidden, never handed out."
-                              : "");
+                          const where = meta.grantedIn;
+                          const why = inert
+                            ? "Settings can grant every other tab, so it can't grant itself — that would let whoever received it re-grant it to anyone, permanently."
+                            : where || "";
                           return (
                             <tr key={t} style={{ borderTop: "1px solid #FCE7F3", opacity: inert ? 0.65 : 1 }}>
                               <td style={{ padding: "7px 10px 7px 26px", color: "#831843" }}>
                                 <span style={{ marginRight: 6 }}>{icon}</span>{l}
-                                {inert && <>
-                                  <span title={why} style={{ marginLeft: 6, fontSize: 9, fontWeight: 800, color: "#92400e", background: "#FEF3C7", border: "1px solid #FDE68A", borderRadius: 99, padding: "1px 7px", cursor: "help" }}>
-                                    {p.tier === "list" ? "ACCESS LIST" : "ROLE-LOCKED"}
-                                  </span>
-                                  {where && <div style={{ fontSize: 10.5, color: "#a16207", marginTop: 2, fontWeight: 500 }}>↳ {where}</div>}
-                                </>}
+                                {inert && <span title={why} style={{ marginLeft: 6, fontSize: 9, fontWeight: 800, color: "#92400e", background: "#FEF3C7", border: "1px solid #FDE68A", borderRadius: 99, padding: "1px 7px", cursor: "help" }}>OWNER ONLY</span>}
+                                {!inert && meta.sensitive && <span title={meta.sensitive} style={{ marginLeft: 6, fontSize: 9, fontWeight: 800, color: "#9a3412", background: "#ffedd5", border: "1px solid #fed7aa", borderRadius: 99, padding: "1px 7px", cursor: "help" }}>SENSITIVE</span>}
                                 {!inert && p.byDefault === false && p.visible && <span title="Not in this tab's default audience — visible because you granted it here." style={{ marginLeft: 6, fontSize: 9, fontWeight: 800, color: "#166534", background: "#dcfce7", border: "1px solid #bbf7d0", borderRadius: 99, padding: "1px 7px", cursor: "help" }}>GRANTED</span>}
+                                {!inert && p.byDefault === true && where && <span title={"Already has it by default. " + where} style={{ marginLeft: 6, fontSize: 9, fontWeight: 800, color: "#a16207", background: "#fef9c3", border: "1px solid #fde68a", borderRadius: 99, padding: "1px 7px", cursor: "help" }}>VIA ROLE / LIST</span>}
+                                {!inert && where && <div style={{ fontSize: 10.5, color: "#a16207", marginTop: 2, fontWeight: 500 }}>↳ {where}</div>}
                               </td>
                               <td style={{ padding: "7px 10px", textAlign: "center" }}>
                                 <input type="checkbox" checked={!!p.visible} disabled={inert} title={inert ? why : undefined} onChange={() => togglePerm(t, "visible")} />

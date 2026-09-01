@@ -139,19 +139,21 @@ Resolution order:
 3. **Per-user override**: `hideTabs` (revoke — existing key) and `grantTabs` (grant — **new** key); behavior depends on tier.
 4. **Default audience**: canonical role predicates, access-list refs, PIN lists.
 
-### 4.2 Three tiers (decided)
+### 4.2 Tiers — **revised after review**
 
-| Tier | Grid revokes? | Grid grants? | Grants live in | Members |
-|---|---|---|---|---|
-| **normal** | ✅ | ✅ | Settings grid | ~40 tabs + all dashboard cards + most actions |
-| **list** | ✅ | ❌ — named AccessPanel only | AccessPanels (existing UI) | leaveOps, leavePayroll, leaveBalances, officeStaff, officeHours, overtime, cashupReview, **offboard** (+payroll/signoff sub-lists) |
-| **locked** | ✅ | ❌ — code change only | — | compliance/immigration data (tab + column + modal pickers + DHA badges), Settings→Users, `act.staff.delete`, `act.locations.delete`, `act.attendance.totalReset` |
+The original three-tier model (normal / list / locked) held role and access-list grants as *ceilings* the grid could not raise. In use that turned out to be the wrong instinct: it recreated the original complaint one level up — an owner looking at a row they could not tick, needing a developer to change an access point. The owner's decision was: **roles and access lists are defaults, the grid overrides them in both directions.**
 
-Why not everything grantable: compliance data is immigration status with legal exposure — the code already treats it as "narrower on purpose." A mis-click in a ~60-row checkbox matrix should not be able to expose DHA/asylum status. **Revoke works at every tier** — `visible = tierAllows(user) && !hideTabs.has(key)` — which fixes `forceShow` (defect B) without weakening any hard gate.
+| Tier | Grid revokes? | Grid grants? | Members |
+|---|---|---|---|
+| **open** | ✅ | n/a (already visible) | 26 rows |
+| **normal** | ✅ | ✅ via `grantTabs` | 19 rows — everything with a role or access-list default |
+| **locked** | ✅ | ❌ | **`settings` only** |
 
-The key rule: **the grid never shows a tick that does nothing.** Normal rows are fully live (the role predicate becomes merely the *default* — retiring `CALLED_IN_SICK_PINS` via a proper `grantTabs` entry for 3030). List/locked rows render as informational — current effective state + "granted via Leave-Payroll access list → Settings › Leave access" — with only the *hide* checkbox live.
+**Why `settings` stays locked, and nothing else.** A grid that can hand out Settings is self-granting: whoever receives it can edit every record including the Owner's, re-grant it to themselves after it is taken away, and revoke the Owner. That is a privilege boundary, not a policy default. Every other restriction is a default worth overriding from the UI.
 
-Defect-A re-triage: `hrReports`, `extraDayRequests`, `leaveRequests`, `calledInSick`, `leaveExpiry`, `incidents`, `storeHours`, `bonusConfig`, `voucherAdmin`, `kioskPins`, `managerPins`, `storeAllocation` → **normal**. `compliance` → **locked**. `offboard`, `officeHours` → **list**.
+**`sensitive` replaces the rest of the locking.** Off-boarding, Compliance and Employee Files are flagged; the grid asks for confirmation before granting them and badges the row **SENSITIVE**. The risk a hard lock was really guarding against was never a considered decision to grant — it was a mis-click in a 60-row checkbox matrix. A confirm addresses that without a code round-trip.
+
+**Account-shape flags stay absolute** and are deliberately not part of this: `ccOnly` (sees exactly the CC&S tabs), `voucherEntryOnly` (replaces the whole portal shell) and `demo` (persistence no-oped). Those define *which universe* an account is in rather than answering a per-tab question, so a grant cannot add to them and a hide cannot subtract.
 
 ### 4.3 Storage — additive, zero migration
 
