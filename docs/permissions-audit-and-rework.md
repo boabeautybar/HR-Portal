@@ -213,7 +213,7 @@ Invert the guard: wrap **every** `BOA_DB` function except an explicit read allow
 
 Each phase ships and verifies alone. Order: stop the bleeding → invisible plumbing → the headline promise → payroll-adjacent writes → lockout-risk last.
 
-**Status (branch `feat/permissions-hardening`, unpushed):** Phase 1 ✅ · Phase 4 ✅ + affordance pass ✅ · Phases 2, 3, 5 not started.
+**Status (branch `feat/permissions-hardening`, unpushed):** Phase 1 ✅ · Phase 4 ✅ + affordance pass ✅ · Phase 2 ✅ · Phases 3, 5 not started.
 Phases 1 and 4 were taken out of order deliberately: 4's read-only flip is what makes the *existing* grid ticks mean anything, and it needed no model change, so it could ship while 2–3 were still on paper.
 
 ### Phase 1 — Pure bug fixes, no model change *(size M)* — ✅ SHIPPED
@@ -226,8 +226,18 @@ Phases 1 and 4 were taken out of order deliberately: 4's read-only flip is what 
 
 *Payroll-adjacent in this phase: cash-ups, offboard sign-off — extra care + payroll export diff.*
 
-### Phase 2 — Foundation, behavior-preserving *(size M)*
-`ROLES` + `CAPABILITIES` + `can()`/`deriveAcl` encoding **current** semantics 1:1. Existing gate functions (`canSeeIncidents`, `canSeeCompliance`, `accessAllows`, offboard helpers, …) become thin wrappers. No enforcement site changes. Ships with the golden-master harness (§6) proving old ≡ new for every stored user × every capability.
+### Phase 2 — Foundation, behavior-preserving *(size M)* — ✅ SHIPPED
+`ROLES` (9 canonical roles, word-boundary matchers) + `CAPABILITIES` (16 entries) + `can(user, capKey, ctx)`. Every gate function is now a one-liner over `can()`; the four in-App IIFEs (`canEvaluate`, `canDecide`, `canRecordOvertime`, `canReviewCashups`) and nine inline national-ops tests are registry lookups. **Both magic PIN sets are gone from the code body** — `CALLED_IN_SICK_PINS` and `SCHED_ALERT_PINS` are now registry audiences, which is what lets Phase 3 delete the Rochelle patch by editing one entry.
+
+**Verified: 69,106 comparisons, zero behaviour differences.** `scratchpad/aclgold.js` slices the pre-Phase-2 gates out of the git blob and the new registry out of the working tree, evaluates both, and diffs every answer across 974 synthetic users × every gate × 20 access configs. Neither side is hand-transcribed, so the harness cannot agree with itself by construction. It caught one real defect during the work: the canonical `payroll` role also matches *wages* and *finance* titles, so wiring `tab.compliance` to it would have opened permit and asylum status to a "Wages Clerk". That audience now uses a deliberately narrower `payroll_substr`.
+
+`deriveAcl` was **not** built: it has no consumers until Phase 3 wires the nav, so shipping it now would be dead code. Account-shape flags (`ccOnly`, `demo`, `voucherEntryOnly`) also stay out of `can()` on purpose — they decide which registry *subset* applies rather than answering a capability question, and folding them in would have changed what the wrappers return, breaking the phase's one guarantee.
+
+**Two live defect-I instances are now visible in one place** (`LEGACY_ROLE_MATCH`), preserved 1:1 rather than silently fixed:
+- `tab.compliance` still matches `national` as a bare substring, and the SM-trial gates still use bare `hr` / `human res` against an *untrimmed* title.
+- `"International Ops"` satisfies **both** national audiences — including Store Allocation and the PIN directories — because `"international ops"` contains `"national ops"`. The canonical `national_ops` role already rejects it; Phase 3 moves these audiences over. *Worth confirming no live record carries such a title before then.*
+
+New console tool: `__BOA_ACL_AUDIT()` prints the effective capability matrix for the real roster (`__BOA_ACL_AUDIT("3030")` for one person).
 
 ### Phase 3 — Enforcement unification + grid authority *(size L — the big one)*
 `TAB_REGISTRY`; nav, `tryChangeTab`, body-normalization effect + `LockedTab`, and registry-driven `dataNeeds` all reading from `acl`; delete `forceShow`; convert the 6 raw `setTab` calls + quick-links; tri-state grid editor writing `grantTabs`; **retire `CALLED_IN_SICK_PINS`** (Rochelle gets a `grantTabs` entry). Dashboard cleanup (J): registry `dash.*` keys for the 11 unkeyed cards, split `mgrSick`/`techSick`, re-home `trialAmCheckinAlert`, stop offering CAN-EDIT on read-only surfaces.
@@ -323,6 +333,6 @@ All seeds are currently **undeletable** (defect K).
 
 ---
 
-*Next step: Phase 2 (the `ROLES` + `CAPABILITIES` registry), which unblocks Phase 3 — and Phase 3 is what finally lets `CALLED_IN_SICK_PINS` be deleted.*
+*Next step: Phase 3 — make the Settings grid authoritative. The registry is in place, so this is now nav + `tryChangeTab` + a body-normalisation effect + `grantTabs`, and it is what finally makes the Called in Sick tick mean something.*
 
 *Delivery note: Phases 1 and 4 are accumulating as commits on `feat/permissions-hardening` and land as **one** PR to main, rather than a PR per phase, to keep hosting/deploy cost down.*

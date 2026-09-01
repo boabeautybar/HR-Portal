@@ -11182,8 +11182,7 @@ function permsToUser(base, perms, stores) {
 // abbreviations like "ROM" or longer "Regional Operations Manager" also match
 // so a typo or legacy seed doesn't accidentally drop the scope toggle).
 function isRomRole(role) {
-  const r = (role || "").toLowerCase().trim();
-  return r === "regional ops manager" || r === "regional operations manager" || r === "rom";
+  return ROLE_BY_ID.regional_ops.match(String(role || "").toLowerCase().trim());
 }
 
 // Who may see confidential staff incident reports: the Owner, HR, and senior
@@ -11193,15 +11192,9 @@ function isRomRole(role) {
 // bare substrings: a plain .includes("hr") fired on any role containing those
 // two letters ("Chris…"), and .includes("national") let an "International …"
 // role through. Same style as canSeeCompliance below.
+// Audience now lives in CAPABILITIES["tab.incidents"] below.
 function canSeeIncidents(user) {
-  if (!user) return false;
-  if (user.isOwner) return true;
-  const r = String(user.role || "").toLowerCase().trim();
-  if (!r) return false;
-  return r === "master admin"
-    || /\bhr\b/.test(r) || /human\s*res/.test(r)   // HR, HR Generalist, HR / Payroll
-    || /\bnational\b/.test(r)                      // National Ops — not "International"
-    || isRomRole(user.role);
+  return can(user, "tab.incidents");
 }
 
 // TEMPORARY named-PIN grant for the Called in Sick tab ONLY.
@@ -11216,10 +11209,9 @@ function canSeeIncidents(user) {
 // extra-day requests and HR Reports, so this grants the one tab instead.
 // Remove once the permission model is reworked to make the Settings toggle
 // authoritative for this tab.
-const CALLED_IN_SICK_PINS = new Set(["3030"]); // Rochelle - Ops Admin
+// The pin now lives in CAPABILITIES["tab.calledInSick"].audience.pins.
 function canSeeCalledInSick(user) {
-  if (canSeeIncidents(user)) return true;
-  return !!(user && user.pin && CALLED_IN_SICK_PINS.has(String(user.pin)));
+  return can(user, "tab.calledInSick");
 }
 
 // Who may see permit / asylum / DHA status. Narrower than canSeeIncidents on
@@ -11232,18 +11224,9 @@ function canSeeCalledInSick(user) {
 // boundaries: a bare .includes("hr") would fire on unrelated role names.
 // Gates BOTH the Compliance tab and the Compliance column on every staff list,
 // so there is no back door into the same data.
+// Audience now lives in CAPABILITIES["tab.compliance"] (tier: locked).
 function canSeeCompliance(user) {
-  if (!user) return false;
-  if (user.isOwner) return true;
-  const r = String(user.role || "").toLowerCase().trim();
-  if (!r) return false;
-  return r === "master admin"
-    || /\bhr\b/.test(r) || /human\s*res/.test(r)   // HR, HR Manager, HR / Payroll, Human Resources
-    || /national/.test(r)                          // National Ops
-    || /recruit/.test(r)                           // Recruiter, Recruitment
-    || /payroll/.test(r)                           // Payroll, Payroll Manager
-    || /project/.test(r)                           // Project Manager
-    || /\bdev(eloper|ops)?\b/.test(r);              // Dev, Developer, DevOps
+  return can(user, "tab.compliance");
 }
 
 // ─── RECRUITMENT / INTERVIEW ROLE GATES ──────────────────────────────────────
@@ -11297,58 +11280,294 @@ function offboardSignOffPins(cfg) {
   const pins = cfg && Array.isArray(cfg.signOffPins) ? cfg.signOffPins.filter(Boolean) : null;
   return (pins && pins.length) ? pins.map(String) : OFFBOARD_DEFAULT_SIGNOFF_PINS.slice();
 }
-// Who is chased about the queue.
+// All three read the same stored config, so all three take it as an argument
+// and pass it to the resolver as ctx. The "membership of the access list is
+// still required" rule that sign-off and payroll-officer share is now the
+// registry's `requires: "tab.offboard"`, not a repeated first line.
 function isOffboardPayrollOfficer(user, cfg) {
-  if (!canSeeOffboarding(user, cfg)) return false;
-  return offboardPayrollPins(cfg).indexOf(String(user.pin)) >= 0;
+  return can(user, "act.offboard.payrollOfficer", { offboard: cfg });
 }
 function canSeeOffboarding(user, cfg) {
-  if (!user || !user.pin) return false;
-  return offboardPins(cfg).indexOf(String(user.pin)) >= 0;
+  return can(user, "tab.offboard", { offboard: cfg });
 }
-// Who may sign a record off. Membership of the access list is still required,
-// so widening this list can never let someone in who cannot open the tab.
 function canSignOffPayroll(user, cfg) {
-  if (!canSeeOffboarding(user, cfg)) return false;
-  return offboardSignOffPins(cfg).indexOf(String(user.pin)) >= 0;
+  return can(user, "act.offboard.signoff", { offboard: cfg });
 }
 
 function _isOwnerOrMaster(user) {
-  if (!user) return false;
-  if (user.isOwner) return true;
-  return (user.role || "").toLowerCase().trim() === "master admin";
+  return can(user, "sys.ownerOrMaster");
 }
 function canRecruitInterviews(user) {
-  if (!user) return false;
-  if (_isOwnerOrMaster(user)) return true;
-  return /recruit/i.test(user.role || "");
+  return can(user, "act.interviews.recruit");
 }
 function canTrainInterviews(user) {
-  if (!user) return false;
-  if (_isOwnerOrMaster(user)) return true;
-  const r = (user.role || "");
-  return /\btrainer\b/i.test(r) && !/manager/i.test(r);
+  return can(user, "act.interviews.train");
 }
 
 // Shared access-gate check: does this user fall inside an access config
 // ({ roles:[...], pins:[...] })? Owners always pass. Role keys are matched
 // loosely against the user's role title so seed/typo variants still work.
 function accessAllows(user, cfg) {
+  return _cfgAllows(user, cfg, ACCESS_KEY_MATCH, true);
+}
+
+/* ═══ CAPABILITY REGISTRY ═══════════════════════════════════════════════════
+   Phase 2 of docs/permissions-audit-and-rework.md. One resolver over one
+   registry, replacing role tests that had been hand-rolled ten different ways
+   and drifted apart — the drift is what made Settings → Users lie about the
+   Called in Sick tab (Rochelle, 3030) in the first place.
+
+   BEHAVIOUR-PRESERVING BY CONSTRUCTION. Every entry encodes what the gate it
+   replaces did on the day it was written, quirks included, and each gate
+   function below becomes a one-line wrapper over can(). Nobody's access
+   changes in this phase. That is the point: Phase 3 can only safely make the
+   Settings grid authoritative once the answer lives in exactly one place, and
+   proving "same answers, new plumbing" is much easier than proving a
+   simultaneous rewrite of plumbing AND policy.
+
+   NOT handled here, deliberately: ccOnly / demo / voucherEntryOnly. Those are
+   account-SHAPE flags — they decide which subset of the registry exists for an
+   account rather than answering a capability question, they are enforced in
+   the nav filters today, and folding them in now would change what these
+   wrappers return. Phase 3 moves them in alongside deriveAcl().              */
+
+// ─── Canonical roles ────────────────────────────────────────────────────────
+// Role titles are free text (Settings → Users), so every matcher runs on the
+// lower-cased, trimmed title and tests WORD BOUNDARIES. Bare substrings are
+// what let "International Ops" satisfy a national gate and any role holding
+// the letters h-r satisfy an HR gate (defect I in the audit).
+const ROLES = [
+  { id: "master_admin", label: "Master Admin", match: r => r === "master admin" },
+  { id: "hr", label: "HR", match: r => /\bhr\b/.test(r) || /human\s*res/.test(r) },
+  { id: "national_ops", label: "National Ops Manager", match: r => /\bnational\b/.test(r) },
+  { id: "regional_ops", label: "Regional Ops Manager", match: r => r === "regional ops manager" || r === "regional operations manager" || r === "rom" },
+  { id: "payroll", label: "Payroll", match: r => /\bpayroll\b/.test(r) || /\bwages\b/.test(r) || /\bfinance\b/.test(r) },
+  { id: "recruiter", label: "Recruitment", match: r => /recruit/.test(r) },
+  { id: "nailtech_trainer", label: "Nail Tech Trainer", match: r => /\btrainer\b/.test(r) && !/manager/.test(r) },
+  { id: "project", label: "Project Manager", match: r => /project/.test(r) },
+  { id: "dev", label: "Developer", match: r => /\bdev(eloper|ops)?\b/.test(r) }
+];
+const ROLE_BY_ID = ROLES.reduce((m, x) => { m[x.id] = x; return m; }, {});
+function roleIdsOf(user) {
+  const r = String((user && user.role) || "").toLowerCase().trim();
+  return ROLES.filter(x => x.match(r)).map(x => x.id);
+}
+
+// LEGACY matchers — looser tests that are STILL LIVE behind specific gates.
+// They exist so the registry could be adopted without moving anyone's access.
+// Each is a defect-I instance that Phase 3 retires against a verified roster;
+// none is a pattern to copy. `loose` is the lower-cased but UNTRIMMED title,
+// which two of these gates compare against.
+const LEGACY_ROLE_MATCH = {
+  // canSeeCompliance's national test never got the Phase-1 word boundaries,
+  // so "International …" still opens the immigration-status gate.
+  national_substr: r => /national/.test(r),
+  // canSeeCompliance matches "payroll" as a bare substring and NOTHING else.
+  // The canonical payroll role also admits wages/finance titles, so using it
+  // here would have quietly handed a "Wages Clerk" access to permit and asylum
+  // status. Narrower on purpose — keep it narrow.
+  payroll_substr: r => /payroll/.test(r),
+  // Two different "national" audiences existed inline across the file: the
+  // dashboard/senior crowd tested a bare "national" substring (so
+  // "International Ops" qualified), while Store Allocation and the PIN
+  // directories required an explicit National Ops / Operations title. They are
+  // genuinely different sizes, so they stay two capabilities rather than being
+  // merged into whichever one happened to be read first.
+  national_ops_titled: r => r.includes("national ops") || r.includes("national operations"),
+  // The SM-trial evaluate/decide gates use bare substrings AND compare an
+  // untrimmed title, so " Master Admin " fails there but passes elsewhere.
+  hr_substr: (r, loose) => loose.includes("hr"),
+  humanres_substr: (r, loose) => loose.includes("human res"),
+  master_untrimmed: (r, loose) => loose === "master admin"
+};
+
+// Config-driven role KEYS ({roles:["national","hr"], pins:[…]} access lists).
+// Two sets, because two of the consumers hand-rolled their own and so missed
+// the Phase-1 word-boundary fix that accessAllows received.
+const ACCESS_KEY_MATCH = {
+  national: r => /\bnational\b/.test(r),
+  regional: r => /\bregional\b/.test(r) || /\brom\b/.test(r),
+  payroll: r => /\bpayroll\b/.test(r) || /\bwages\b/.test(r) || /\bfinance\b/.test(r),
+  hr: r => /\bhr\b/.test(r) || /human\s*res/.test(r)
+};
+const LEGACY_CFG_KEY_MATCH = {
+  national: r => r.includes("national ops") || r.includes("national operations") || r.includes("national"),
+  regional: r => r.includes("regional") || /\brom\b/.test(r) || r.includes("regional ops")
+};
+function _cfgAllows(user, cfg, keyMatch, ownerImplicit) {
   if (!user) return false;
-  if (user.isOwner) return true;
-  // Word boundaries, not substrings — see canSeeIncidents. The loose form let
-  // "International …" satisfy the national key and any role containing the
-  // letters "hr" satisfy the hr key.
+  if (ownerImplicit && user.isOwner) return true;
   const role = String(user.role || "").toLowerCase().trim();
-  const roleMatch = (cfg && cfg.roles || []).some(k =>
-    k === "national" ? /\bnational\b/.test(role)
-      : k === "regional" ? (/\bregional\b/.test(role) || /\brom\b/.test(role))
-        : k === "payroll" ? (/\bpayroll\b/.test(role) || /\bwages\b/.test(role) || /\bfinance\b/.test(role))
-          : k === "hr" ? (/\bhr\b/.test(role) || /human\s*res/.test(role))
-            : false
-  );
+  const roleMatch = ((cfg && cfg.roles) || []).some(k => keyMatch[k] ? keyMatch[k](role) : false);
   if (roleMatch) return true;
-  return (cfg && cfg.pins || []).includes(user.pin);
+  return ((cfg && cfg.pins) || []).includes(user.pin);
+}
+
+// Named PIN lists that live in a stored config with a seeded fallback. Kept as
+// functions, not a static array, because the fallback only applies when the
+// stored key is missing or empty — see offboardPins() above.
+const CAP_LISTS = {
+  "offboard.pins": ctx => offboardPins(ctx && ctx.offboard),
+  "offboard.payrollPins": ctx => offboardPayrollPins(ctx && ctx.offboard),
+  "offboard.signOffPins": ctx => offboardSignOffPins(ctx && ctx.offboard)
+};
+
+/* Entry shape:
+     tier          "normal" grid grants+revokes | "list" AccessPanel grants |
+                   "locked" code-change only. Carried now, enforced in Phase 3.
+     surface       "tab" | "action"
+     gridKey       matching SETTINGS_TABS key, where one exists
+     ownerImplicit false = the Owner does NOT get a free pass. Two gates mean
+                   this: the off-boarding list (an owner not on the list stays
+                   out — it was an explicit instruction) and the schedule
+                   alerts (the owner deliberately isn't paged).
+     requires      parent capability, ANDed — mirrors canSignOffPayroll
+     inherits      parent capability, ORed  — mirrors canSeeCalledInSick
+     audience      { roles[], legacy[], pins[], list, cfgRef, cfgKeys }        */
+const CAPABILITIES = {
+  "sys.ownerOrMaster": {
+    tier: "locked", surface: "action",
+    audience: { roles: ["master_admin"] }
+  },
+  // Owner + anyone whose title contains "national" — the crowd that sees
+  // senior dashboard cards (ED offers, unpublished schedules, daily updates)
+  // and the manager-hours queue.
+  "sys.seniorOps": {
+    tier: "normal", surface: "action",
+    audience: { legacy: ["national_substr"] }
+  },
+  // Owner + an explicit National Ops / National Operations title. Narrower:
+  // gates Store Allocation and the kiosk/manager PIN directories.
+  "sys.nationalOps": {
+    tier: "normal", surface: "action",
+    audience: { legacy: ["national_ops_titled"] }
+  },
+  "tab.incidents": {
+    tier: "normal", surface: "tab", gridKey: "incidents",
+    audience: { roles: ["master_admin", "hr", "national_ops", "regional_ops"] }
+  },
+  // The named-PIN grant that this whole rework exists to delete. It stays a
+  // separate capability inheriting tab.incidents (rather than widening that
+  // audience) because widening would also hand over incident reports, HR
+  // Reports and extra-day requests. Phase 3 replaces the pin with a grantTabs
+  // entry on 3030's record and this capability collapses into the grid.
+  "tab.calledInSick": {
+    tier: "normal", surface: "tab", gridKey: "calledInSick",
+    inherits: "tab.incidents",
+    audience: { pins: ["3030"] }
+  },
+  // LOCKED: immigration status. Regional Ops sit outside this on purpose even
+  // though they see incidents — they manage stores, they don't chase permits.
+  "tab.compliance": {
+    tier: "locked", surface: "tab", gridKey: "compliance",
+    audience: {
+      roles: ["master_admin", "hr", "recruiter", "project", "dev"],
+      legacy: ["national_substr", "payroll_substr"]
+    }
+  },
+  "tab.offboard": {
+    tier: "list", surface: "tab", gridKey: "offboard",
+    ownerImplicit: false,
+    audience: { list: "offboard.pins" }
+  },
+  "act.offboard.signoff": {
+    tier: "list", surface: "action", requires: "tab.offboard",
+    ownerImplicit: false,
+    audience: { list: "offboard.signOffPins" }
+  },
+  "act.offboard.payrollOfficer": {
+    tier: "list", surface: "action", requires: "tab.offboard",
+    ownerImplicit: false,
+    audience: { list: "offboard.payrollPins" }
+  },
+  "act.interviews.recruit": {
+    tier: "normal", surface: "action",
+    audience: { roles: ["master_admin", "recruiter"] }
+  },
+  "act.interviews.train": {
+    tier: "normal", surface: "action",
+    audience: { roles: ["master_admin", "nailtech_trainer"] }
+  },
+  // Manager-trial evaluate/decide. Evaluate additionally admits Regional Ops;
+  // only HR / National / owner close a trial out.
+  "act.smtrial.evaluate": {
+    tier: "normal", surface: "action",
+    audience: {
+      roles: ["regional_ops"],
+      legacy: ["master_untrimmed", "hr_substr", "humanres_substr", "national_substr"]
+    }
+  },
+  "act.smtrial.decide": {
+    tier: "normal", surface: "action",
+    audience: { legacy: ["master_untrimmed", "hr_substr", "humanres_substr", "national_substr"] }
+  },
+  "act.overtime.record": {
+    tier: "list", surface: "action",
+    audience: { cfgRef: "overtime", cfgKeys: "legacy" }
+  },
+  "act.cashups.review": {
+    tier: "list", surface: "action",
+    audience: { cfgRef: "cashupReview", cfgKeys: "legacy" }
+  },
+  // ownerImplicit:false — the owner is deliberately not paged about missing
+  // schedules; this is a worklist, not a permission to see something.
+  "act.schedule.alerts": {
+    tier: "normal", surface: "action",
+    ownerImplicit: false,
+    audience: { pins: ["1993", "2023", "3030"] }   // Master, Kelly, Rochelle
+  }
+};
+
+// The one resolver. ctx supplies the runtime access configs a capability names
+// ({ offboard, overtime, cashupReview, … }); capabilities that need none can be
+// called with two arguments. An unknown key is CLOSED, never open.
+function can(user, capKey, ctx) {
+  const cap = CAPABILITIES[capKey];
+  if (!cap) return false;
+  if (!user) return false;
+  if (cap.ownerImplicit !== false && user.isOwner) return true;
+  if (cap.requires && !can(user, cap.requires, ctx)) return false;
+  if (cap.inherits && can(user, cap.inherits, ctx)) return true;
+  return _audienceAllows(user, cap.audience, ctx);
+}
+
+// Console audit: the effective capability matrix for the REAL stored roster.
+// The registry made this possible to write at all — before it, answering "what
+// can 3030 actually do" meant reading ten gates in six places. Owner-only in
+// practice (nothing is exposed that the caller can't already see in Settings).
+// Run window.__BOA_ACL_AUDIT() in the browser console; pass a pin to focus one
+// person, e.g. __BOA_ACL_AUDIT("3030").
+function aclAudit(users, ctx, onlyPin) {
+  const keys = Object.keys(CAPABILITIES).sort();
+  const rows = [];
+  Object.keys(users || {}).forEach(pin => {
+    if (onlyPin && String(pin) !== String(onlyPin)) return;
+    const u = Object.assign({ pin }, users[pin]);
+    const row = { pin, name: u.name || "", role: u.role || "", owner: !!u.isOwner };
+    keys.forEach(k => { row[k] = can(u, k, ctx) ? "✓" : ""; });
+    row["(roles matched)"] = roleIdsOf(u).join(",") || "—";
+    rows.push(row);
+  });
+  rows.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  if (console.table) console.table(rows);
+  return rows;
+}
+
+function _audienceAllows(user, aud, ctx) {
+  if (!aud) return false;
+  const loose = String(user.role || "").toLowerCase();
+  const r = loose.trim();
+  if ((aud.roles || []).some(id => ROLE_BY_ID[id] && ROLE_BY_ID[id].match(r, loose))) return true;
+  if ((aud.legacy || []).some(k => LEGACY_ROLE_MATCH[k] && LEGACY_ROLE_MATCH[k](r, loose))) return true;
+  if (aud.pins && aud.pins.indexOf(String(user.pin)) >= 0) return true;
+  if (aud.list && CAP_LISTS[aud.list] && CAP_LISTS[aud.list](ctx).indexOf(String(user.pin)) >= 0) return true;
+  if (aud.cfgRef) {
+    const cfg = (ctx && ctx[aud.cfgRef]) || {};
+    const keys = aud.cfgKeys === "legacy" ? LEGACY_CFG_KEY_MATCH : ACCESS_KEY_MATCH;
+    // owner was already settled above, so never re-grant here
+    if (_cfgAllows(user, cfg, keys, false)) return true;
+  }
+  return false;
 }
 
 // Reusable Settings panel for granting an access list by role and/or by named
@@ -24899,7 +25118,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   };
   useEffect(() => {
     if (tab !== "dashboard") return;
-    const _senior = currentUser?.isOwner || (currentUser?.role || "").toLowerCase().includes("national");
+    const _senior = can(currentUser, "sys.seniorOps");
     if (!_senior) return;
     // Names must be loaded first, or every row misreads as a placeholder
     // (isPlaceholder = no resolvable name) and the alert under-counts.
@@ -25359,9 +25578,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Manager minus-hours alert audience: National Ops + whoever sees the payroll
   // Office-Hours queue (payroll officer), plus owners. Same "investigate now"
   // crowd, since a wrong manager deduction is a payroll error to catch early.
-  const canSeeMgrHours = !!(currentUser?.isOwner
-    || (currentUser?.role || "").toLowerCase().includes("national")
-    || canSeeOfficeHours);
+  const canSeeMgrHours = !!(can(currentUser, "sys.seniorOps") || canSeeOfficeHours);
   // Who may REVIEW ("tick off") a store's daily cash-up (boa_cashup_review_access_v1).
   // Default: Regional Ops managers (owners always allowed). Editable in Settings.
   const [cashupReviewAccess, setCashupReviewAccess] = useState({});
@@ -25390,6 +25607,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const c = leavePayrollAccess || {};
     return { roles: Array.isArray(c.roles) ? c.roles : ["payroll"], pins: Array.isArray(c.pins) ? c.pins : [] };
   }, [leavePayrollAccess]);
+  // Expose the capability audit once the access configs are loaded, so
+  // __BOA_ACL_AUDIT() in the console answers from real data rather than
+  // defaults. Read-only: it computes, it never writes.
+  useEffect(() => {
+    window.__BOA_ACL_AUDIT = (pin) => aclAudit(appUsers, {
+      offboard: offboardAccess, overtime: overtimeCfg, cashupReview: cashupReviewCfg
+    }, pin);
+    return () => { delete window.__BOA_ACL_AUDIT; };
+  }, [appUsers, offboardAccess, overtimeCfg, cashupReviewCfg]);
   // Who can see the Leave Requests tab: the broad incident roles PLUS anyone
   // granted the operational or payroll leave check in Settings (e.g. an Ops
   // person ticked for the operational gate). Previously this only used
@@ -26860,11 +27086,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // ── Upcoming-cycle schedule check ── flags branches whose tech / manager
   // schedule for the coming month hasn't been saved. Deadline is the 15th.
   // Surfaces as a dashboard "Needs attention" item and as an Alerts entry.
-  const SCHED_ALERT_PINS = new Set(["1993", "2023", "3030"]); // Master, Kelly, Rochelle
+  // Who is paged about it now lives in CAPABILITIES["act.schedule.alerts"]
+  // (ownerImplicit:false — the owner is deliberately not on this worklist).
+  const _schedAlertsForMe = can(currentUser, "act.schedule.alerts");
   const [upcomingMissing, setUpcomingMissing] = useState([]); // [{ branch, type, ym }]
   const [upcomingChecked, setUpcomingChecked] = useState(false);
   useEffect(() => {
-    if (!SCHED_ALERT_PINS.has(currentUser.pin)) return;
+    if (!_schedAlertsForMe) return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
     if (!(tab === "dashboard" || tab === "alerts")) return;
     let cancelled = false;
@@ -30580,17 +30808,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               // grid still applies on top, so the Owner can hide any of these
               // from a specific senior user via Settings.
               ...(() => {
-                const role = (currentUser?.role || "").toLowerCase();
-                const isNationalOps = role.includes("national ops") || role.includes("national operations");
+                const isNationalOps = can(currentUser, "sys.nationalOps");
                 const adminItems = [];
-                if (currentUser?.isOwner || isNationalOps || isRomRole(currentUser?.role)) {
+                if (isNationalOps || isRomRole(currentUser?.role)) {
                   adminItems.push({ t: "kioskPins", l: "🔑 Kiosk PINs" });
                   adminItems.push({ t: "managerPins", l: "🆔 Manager PINs" });
                 }
                 if (currentUser?.isOwner) {
                   adminItems.push({ t: "settings", l: "⚙️ Settings" });
                 }
-                if (currentUser?.isOwner || isNationalOps) {
+                if (isNationalOps) {
                   adminItems.push({ t: "storeAllocation", l: "🏬 Store Allocation" });
                 }
                 if (_isOwnerOrMaster(currentUser)) {
@@ -31103,7 +31330,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
               /* ── SECTION: EXTRA-DAY REQUESTS (Owner + National Ops) ── */
               dashAlert("edOffers", "people", "info",
-              (currentUser?.isOwner || (currentUser?.role || "").toLowerCase().includes("national"))
+              can(currentUser, "sys.seniorOps")
                 && !(new Set(currentUser?.hideTabs || []).has("dashEdRequests"))
                 && (() => {
                   const openOffers = (edOffers || []).filter(o => o && o.status === "open");
@@ -31419,7 +31646,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </div>
               ));
               dashAlert("unpublishedSched", "scheduling", "warning",
-              (currentUser?.isOwner || (currentUser?.role || "").toLowerCase().includes("national")) && pubCycleAlert && pubCycleAlert.count > 0 && (() => {
+              can(currentUser, "sys.seniorOps") && pubCycleAlert && pubCycleAlert.count > 0 && (() => {
                 const a = pubCycleAlert;
                 const kindsTxt = Object.keys(a.kinds)
                   .sort((x, y) => a.kinds[y] - a.kinds[x])
@@ -32047,7 +32274,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   extra-day events. Most ED posts self-expire, but legacy/untagged
                   ones linger — this card lets an owner prune or clear them. */
               dashAlert("dailyUpdates", "operations", "info",
-              (currentUser?.isOwner || (currentUser?.role || "").toLowerCase().includes("national"))
+              can(currentUser, "sys.seniorOps")
                 && !(new Set(currentUser?.hideTabs || []).has("dashNews"))
                 && Array.isArray(newsPosts) && newsPosts.length > 0 && (() => {
                   const fmtWhen = (iso) => { try { return new Date(iso).toLocaleString(undefined, { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }); } catch (_) { return ""; } };
@@ -32781,7 +33008,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   {(() => {
                     // Schedule alert: only for users responsible for scheduling.
                     let schedAlert = null;
-                    if (SCHED_ALERT_PINS.has(currentUser.pin) && upcomingChecked && upcomingMissing.length > 0) {
+                    if (_schedAlertsForMe && upcomingChecked && upcomingMissing.length > 0) {
                       const today = new Date();
                       // Display the COVERED (end) month — that's what users mean by
                       // "the schedule for June". Deadline is the 15th of the start month.
@@ -32821,7 +33048,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     </div>
                   ))}
                   {scopedAttn.zna === 0 && scopedAttn.noContract === 0 && recentDepartures.length === 0 &&
-                    (!SCHED_ALERT_PINS.has(currentUser.pin) || (upcomingChecked && upcomingMissing.length === 0)) && (
+                    (!_schedAlertsForMe || (upcomingChecked && upcomingMissing.length === 0)) && (
                       <div style={{ background: "#dcfce7", border: "1px solid #86efac", borderRadius: 14, padding: "14px 16px", color: "#14532d", fontWeight: 700, fontSize: 13 }}>
                         ✅ Nothing urgent — everything in good shape.
                       </div>
@@ -35944,7 +36171,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const active = enriched.filter(s => !s.onMat && !s.onUnpaidLegal && !s.offboarded);
           // Upcoming-cycle schedule alerts (only for users responsible for scheduling).
           const schedAlerts = [];
-          if (SCHED_ALERT_PINS.has(currentUser.pin) && upcomingChecked && upcomingMissing.length > 0) {
+          if (_schedAlertsForMe && upcomingChecked && upcomingMissing.length > 0) {
             const today = new Date();
             const m0 = upcomingMissing[0];
             const monthLbl = new Date(m0.endY, m0.endM, 1).toLocaleDateString("en-ZA", { month: "long", year: "numeric" });
@@ -38147,21 +38374,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // is that the region's ROM evaluates, and a second ROM who has been in
         // the store may add their own. HR/national/owner can also record one
         // (e.g. capturing a paper form).
-        const canEvaluate = (() => {
-          const u = currentUser;
-          if (!u) return false;
-          if (u.isOwner) return true;
-          const r = String(u.role || "").toLowerCase();
-          return isRomRole(u.role) || r === "master admin" || r.includes("hr") || r.includes("human res") || r.includes("national");
-        })();
+        const canEvaluate = can(currentUser, "act.smtrial.evaluate");
         // Only HR / national ops / owner close a trial out.
-        const canDecide = (() => {
-          const u = currentUser;
-          if (!u) return false;
-          if (u.isOwner) return true;
-          const r = String(u.role || "").toLowerCase();
-          return r === "master admin" || r.includes("hr") || r.includes("human res") || r.includes("national");
-        })();
+        const canDecide = can(currentUser, "act.smtrial.decide");
         const myStores = (currentUser && Array.isArray(currentUser.stores)) ? currentUser.stores : [];
 
         // Keep only sections/labels in the snapshot — the guidance text is long
@@ -44042,18 +44257,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const ym = attYM;
         // Only owners + people granted in Settings → Overtime access may record
         // overtime. Everyone else gets the tab read-only (view, no submit).
-        const canRecordOvertime = (() => {
-          if (!currentUser) return false;
-          if (currentUser.isOwner) return true;
-          const role = (currentUser.role || "").toLowerCase();
-          const roleMatch = (overtimeCfg.roles || []).some(k =>
-            k === "national" ? (role.includes("national ops") || role.includes("national operations") || role.includes("national"))
-              : k === "regional" ? (role.includes("regional") || /\brom\b/.test(role) || role.includes("regional ops"))
-                : false
-          );
-          if (roleMatch) return true;
-          return (overtimeCfg.pins || []).includes(currentUser.pin);
-        })();
+        const canRecordOvertime = can(currentUser, "act.overtime.record", { overtime: overtimeCfg });
         const ymPretty = (() => {
           try {
             const [yy, mm] = ym.split("-").map(Number);
@@ -50972,18 +51176,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         // Only owners + people granted in Settings → Cash-up review may tick a
         // cash-up off as reviewed. Everyone else sees the review status read-only.
-        const canReviewCashups = (() => {
-          if (!currentUser) return false;
-          if (currentUser.isOwner) return true;
-          const role = (currentUser.role || "").toLowerCase();
-          const roleMatch = (cashupReviewCfg.roles || []).some(k =>
-            k === "national" ? (role.includes("national ops") || role.includes("national operations") || role.includes("national"))
-              : k === "regional" ? (role.includes("regional") || /\brom\b/.test(role) || role.includes("regional ops"))
-                : false
-          );
-          if (roleMatch) return true;
-          return (cashupReviewCfg.pins || []).includes(currentUser.pin);
-        })();
+        const canReviewCashups = can(currentUser, "act.cashups.review", { cashupReview: cashupReviewCfg });
 
         const filtered = cashupRows.filter(r => {
           if (_hasStoreScope && !scopedSalonNames.has(r.branch)) return false;
@@ -51619,9 +51812,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       )}
 
       {tab === "storeAllocation" && (() => {
-        const role = (currentUser?.role || "").toLowerCase();
-        const isNationalOps = role.includes("national ops") || role.includes("national operations");
-        const allowed = !!currentUser?.isOwner || isNationalOps;
+        const allowed = can(currentUser, "sys.nationalOps");
         if (!allowed) {
           return (
             <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: 11, padding: "20px 22px", color: "#7f1d1d", fontFamily: "'Outfit',system-ui,sans-serif" }}>
