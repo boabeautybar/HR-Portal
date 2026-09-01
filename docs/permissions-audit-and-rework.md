@@ -353,6 +353,15 @@ All seeds are currently **undeletable** (defect K).
 
 *Next step: Phase 5 — seed & legacy retirement (defect K). Lockout-risk, so last, and it needs the live records verified first.*
 
-*Before the PR: the payroll export diff, and a background-refresh soak on a view-only tab. The `__BOA_ACL_AUDIT("3030")` check is done — the grant landed and the fallback pin is deleted.*
+### Pre-PR verification — complete
+
+| Check | Result |
+|---|---|
+| `__BOA_ACL_AUDIT("3030")` — did the V5 migration land? | ✅ `grantTabs: ["calledInSick"]`, `migrated: true`. The hardcoded pin was deleted only after this. |
+| Does any live record lose a tab? | ✅ Checked all 11 records against the six ex-`forceShow` tabs — the only tabs whose default visibility Phase 3 changes. |
+| Payroll numbers | ✅ Static proof rather than a CSV diff: 14 of 16 payroll/attendance functions are **byte-identical** to `origin/main`, and the shared `attClassify` region — the classifier payroll and HR both read — is identical. The two that changed (`canSignOffPayroll`, `isOffboardPayrollOfficer`) are permission gates, not arithmetic, and the golden master reports zero differences on them. No payroll calculation changed in this branch. |
+| Background-refresh soak (view-only tab) | ✅ PASS with `__BOA_RO_ACTIVE: true` — the 90-second self-repair (transfer auto-settle, leave-expiry auto-filing) completed with no lock dialog, and `__BOA_RO_SYSTEM` returned to 0, confirming the `boaSystemWrite` bypass unwound rather than leaving read-only disabled. |
+
+*Ready to push.*
 
 *Delivery note: Phases 1 and 4 are accumulating as commits on `feat/permissions-hardening` and land as **one** PR to main, rather than a PR per phase, to keep hosting/deploy cost down.*
