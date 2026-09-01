@@ -31295,9 +31295,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         { t: "recruitment", l: "🎯 Recruitment" },
                         { t: "leave", l: "🌴 Leave Planner" }
                       ]
-                        .filter(it => currentUser.ccOnly
-                          ? CC_ONLY_TABS.has(it.t)
-                          : (!hideCats.has(NAV_TAB_TO_CATEGORY[it.t]) && !hideTabs.has(it.t)))
+                        .filter(it => acl.visible.has(it.t))
                         .map(it => tabBtn(it.t, it.l))}
                     </div>
                   </div>
