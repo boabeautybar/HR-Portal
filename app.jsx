@@ -175,6 +175,22 @@ function _readOnlyError() {
   e.__boaReadOnly = true;   // tag so the global handler below can spot it
   return e;
 }
+// ── View-only AFFORDANCE (not enforcement) ───────────────────────────────────
+// The BOA_DB guard above is the enforcement layer and stands alone: it refuses
+// the write whichever button was clicked, even one nobody remembered to dress.
+// These two helpers are the affordance layer. Without them a view-only user is
+// walked all the way through a multi-step wizard — or a "PERMANENTLY DELETE"
+// confirm — before anything tells them no, which reads as a broken portal
+// rather than a permission. They grey the control and swap its tooltip for the
+// reason. Deliberately dumb: no gating logic lives here, so a helper that is
+// forgotten (or wrong) can never grant access the guard would have refused.
+const RO_LOCK_HINT = "🔒 View-only — your role can browse this tab but can't make changes here.";
+function roStyle(locked, style) {
+  return locked ? { ...(style || {}), opacity: 0.4, cursor: "not-allowed", boxShadow: "none" } : style;
+}
+function roTitle(locked, title) {
+  return locked ? RO_LOCK_HINT : title;
+}
 // AUTOMATIC MAINTENANCE WRITES. The portal repairs itself on load: it settles
 // transfers whose date has passed and auto-files leave-expiry incidents. Those
 // are not the signed-in person's edits, and reloadCoreData re-runs on a timer
@@ -4429,7 +4445,7 @@ function StaffModal({ s, onClose, onSave, onTransfer, allStaff, isOwner, onHardD
 }
 
 // ─── TRANSFER MODAL ───────────────────────────────────────────────────────────────
-function TransferModal({ s, onClose, onConfirm, onCancelTransfer }) {
+function TransferModal({ s, onClose, onConfirm, onCancelTransfer, readOnly }) {
   // If this person already has a pending transfer, pre-fill the form
   const isEditing = !!s.transferring && !s.isShadow;
   const [toBranch, setToBranch] = useState(s.transferTo || SALONS.find(sl => sl.name !== s.branch)?.name || "");
@@ -4532,17 +4548,19 @@ function TransferModal({ s, onClose, onConfirm, onCancelTransfer }) {
         <div style={{ display: "flex", gap: 10, marginTop: 22, justifyContent: "space-between", alignItems: "center" }}>
           {/* Delete transfer button — only shown when editing */}
           {isEditing && !confirmDelete && (
-            <button onClick={() => setConfirmDelete(true)}
-              style={{ padding: "9px 16px", borderRadius: 9, border: "none", background: "#FBCFE8", color: "#831843", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700 }}>
+            <button onClick={() => setConfirmDelete(true)} disabled={readOnly}
+              title={roTitle(readOnly, undefined)}
+              style={roStyle(readOnly, { padding: "9px 16px", borderRadius: 9, border: "none", background: "#FBCFE8", color: "#831843", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700 })}>
               🗑 Delete Transfer
             </button>
           )}
           <div style={{ display: "flex", gap: 10, marginLeft: "auto" }}>
             <button onClick={onClose} style={{ padding: "9px 20px", borderRadius: 9, border: "1px solid #FBCFE8", background: "#FFFFFF", cursor: "pointer", fontFamily: "inherit", fontSize: 13 }}>Cancel</button>
             <button onClick={() => toBranch && transferDate && onConfirm({ staff: s, toBranch, transferDate, note, isPending })}
-              disabled={!toBranch || !transferDate}
-              style={{ padding: "9px 22px", borderRadius: 9, border: "none", background: !toBranch || !transferDate ? "#d1d5db" : "#0c4a6e", color: "#fff", cursor: !toBranch || !transferDate ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 }}>
-              {isEditing ? "💾 Save Changes" : isPending ? "Schedule Transfer" : "Confirm Transfer Now"}
+              disabled={readOnly || !toBranch || !transferDate}
+              title={roTitle(readOnly, undefined)}
+              style={roStyle(readOnly, { padding: "9px 22px", borderRadius: 9, border: "none", background: !toBranch || !transferDate ? "#d1d5db" : "#0c4a6e", color: "#fff", cursor: !toBranch || !transferDate ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 })}>
+              {readOnly ? "🔒 View-only" : isEditing ? "💾 Save Changes" : isPending ? "Schedule Transfer" : "Confirm Transfer Now"}
             </button>
           </div>
         </div>
@@ -18118,7 +18136,7 @@ async function clearTechScheduleLeaveGrid(lv, remaining, ctx) {
 //     is already validated + built; onComplete just persists it.
 // deps: { enriched, managers, leaveRecs, leaveBalances, schedCache, ymdToSchedYm, today, requests }
 // r is request-shaped: { id?, ec, name, start_date, end_date, store, ref_code?, emergency?, reason? }
-function LeaveApprovalWizard({ r, mode, deps, actor, onReverse, onComplete, onCancel }) {
+function LeaveApprovalWizard({ r, mode, deps, actor, onReverse, onComplete, onCancel, readOnly }) {
   const [step, setStep] = useState(1);
   const [busy, setBusy] = useState(false);
   const [balInput, setBalInput] = useState("");   // "" = use the recommended figure
@@ -18228,7 +18246,7 @@ function LeaveApprovalWizard({ r, mode, deps, actor, onReverse, onComplete, onCa
                   {ov.calOverlaps.map((lv, i) => (
                     <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginTop: 5, flexWrap: "wrap" }}>
                       <span style={{ fontSize: 12.5 }}>• {fmtIncidentDate(lv.startDate)} → {fmtIncidentDate(lv.endDate)}{lv.type && lv.type !== "Annual leave" ? " (" + lv.type + ")" : ""}{lv.emergency ? " · emergency" : ""}</span>
-                      {onReverse && <button disabled={busy} onClick={() => doReverse(lv)} style={btn("#b45309", "#fff", "#b45309")}>↩ Reverse this & continue</button>}
+                      {onReverse && <button disabled={busy || readOnly} onClick={() => doReverse(lv)} title={roTitle(readOnly, undefined)} style={roStyle(readOnly, btn("#b45309", "#fff", "#b45309"))}>↩ Reverse this & continue</button>}
                     </div>
                   ))}
                   <div style={{ fontSize: 11.5, marginTop: 6 }}>Reversing removes the old approved leave from the planner and schedule so this request can take its place.</div>
@@ -18339,7 +18357,7 @@ function LeaveApprovalWizard({ r, mode, deps, actor, onReverse, onComplete, onCa
               <div style={verdict("#f0fdf4", "#bbf7d0", "#15803d")}>On complete: the leave is <strong>approved</strong>, added to the planner &amp; schedule, and the balance is recorded. {mode === "request" ? "The employee sees it on My BOA." : ""}</div>
               <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginTop: 8 }}>
                 <button disabled={busy} onClick={() => setStep(2)} style={btn("#fff", "#9d6a82", "#e7c6d4")}>← Back</button>
-                <button disabled={busy} onClick={complete} style={btn("#15803d", "#fff", "#15803d")}>{busy ? "Working…" : "✓ Complete approval"}</button>
+                <button disabled={busy || readOnly} onClick={complete} title={roTitle(readOnly, undefined)} style={roStyle(readOnly, btn("#15803d", "#fff", "#15803d"))}>{readOnly ? "🔒 View-only" : busy ? "Working…" : "✓ Complete approval"}</button>
               </div>
             </div>
           )}
@@ -18349,7 +18367,7 @@ function LeaveApprovalWizard({ r, mode, deps, actor, onReverse, onComplete, onCa
   );
 }
 
-function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLeaveRecs, enriched: enrichedBase, managers, staff, opsCfg, logActivity, schedCache, ymdToSchedYm, hoStaff, ccOnly, reverseLeave }) {
+function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLeaveRecs, enriched: enrichedBase, managers, staff, opsCfg, logActivity, schedCache, ymdToSchedYm, hoStaff, ccOnly, reverseLeave, readOnly }) {
   // Head Office people resolve through the same person-lookup pool as techs, so an
   // HO leave request enriches (name/branch) and writes to the planner on approval
   // instead of dropping into "Nail Techs" with a "not on planner" badge. HO carry
@@ -18598,7 +18616,7 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
                   <span>📅 {fmtIncidentDate(r.start_date)} → {fmtIncidentDate(r.end_date)}</span>
                   {g && g.person && g.days > 0 && <span style={{ color: "#b91c1c", fontWeight: 700 }}>· {g.days} day{g.days === 1 ? "" : "s"} missing</span>}
                   {p ? (
-                    <button onClick={() => repairPlanner(r)} disabled={busy} title={"Add this approved leave to the Leave Planner now."} style={{ marginLeft: "auto", fontSize: 11.5, fontWeight: 800, color: "#fff", background: "#dc2626", border: "none", borderRadius: 8, padding: "5px 12px", cursor: "pointer", opacity: busy ? 0.6 : 1 }}>➕ Add to planner now</button>
+                    <button onClick={() => repairPlanner(r)} disabled={busy || readOnly} title={roTitle(readOnly, "Add this approved leave to the Leave Planner now.")} style={roStyle(readOnly, { marginLeft: "auto", fontSize: 11.5, fontWeight: 800, color: "#fff", background: "#dc2626", border: "none", borderRadius: 8, padding: "5px 12px", cursor: "pointer", opacity: busy ? 0.6 : 1 })}>➕ Add to planner now</button>
                   ) : (
                     <span style={{ marginLeft: "auto", fontSize: 11, fontWeight: 700, color: "#92400e", background: "#fef3c7", border: "1px solid #f59e0b", borderRadius: 999, padding: "2px 9px" }} title={"No staff member or manager matches employee code \"" + (r.ec || "—") + "\" — add it on the Leave Planner manually."}>no EC match — add manually</span>
                   )}
@@ -18633,7 +18651,7 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
                     if (!g) return null;
                     if (!g.person) return <span style={{ fontSize: 11, fontWeight: 700, color: "#92400e", background: "#fef3c7", border: "1px solid #f59e0b", borderRadius: 999, padding: "2px 9px" }} title={"Approved, but no staff member or manager matches employee code \"" + (r.ec || "—") + "\" — add this leave on the Leave Planner manually."}>⚠ not on planner — no EC match</span>;
                     if (g.days <= 0) return null;
-                    return <button onClick={() => repairPlanner(r)} disabled={busy} title={g.days + " day(s) of this approved leave are missing from the Leave Planner. Click to add them now."} style={{ fontSize: 11, fontWeight: 800, color: "#92400e", background: "#fef3c7", border: "1px solid #f59e0b", borderRadius: 999, padding: "2px 10px", cursor: "pointer" }}>⚠ not on planner · add now</button>;
+                    return <button onClick={() => repairPlanner(r)} disabled={busy || readOnly} title={roTitle(readOnly, g.days + " day(s) of this approved leave are missing from the Leave Planner. Click to add them now.")} style={roStyle(readOnly, { fontSize: 11, fontWeight: 800, color: "#92400e", background: "#fef3c7", border: "1px solid #f59e0b", borderRadius: 999, padding: "2px 10px", cursor: "pointer" })}>{readOnly ? "⚠ not on planner" : "⚠ not on planner · add now"}</button>;
                   })()}
                   <span style={{ marginLeft: "auto", fontSize: 11, color: "#6b7280" }}>✓ {r.decided_by || "—"}{r.decided_at ? " · " + fmtAppr(r.decided_at) : ""}</span>
                 </div>
@@ -18807,7 +18825,7 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
                             <div style={amber}>
                               <strong>⚠ Approved, but {g.days} day{g.days === 1 ? "" : "s"} of this leave {g.days === 1 ? "is" : "are"} not on the Leave Planner.</strong> It may show on the schedule (the grid was stamped at approval) while the planner — which drives the 20% cap, balances and Fresha blocking — doesn't know about it.
                               <div style={{ marginTop: 8 }}>
-                                <button onClick={() => repairPlanner(r)} disabled={busy} style={{ background: "#b45309", color: "#fff", border: "none", borderRadius: 8, padding: "7px 14px", fontWeight: 800, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>➕ Add to Leave Planner now</button>
+                                <button onClick={() => repairPlanner(r)} disabled={busy || readOnly} title={roTitle(readOnly, undefined)} style={roStyle(readOnly, { background: "#b45309", color: "#fff", border: "none", borderRadius: 8, padding: "7px 14px", fontWeight: 800, fontSize: 12, cursor: "pointer", fontFamily: "inherit" })}>➕ Add to Leave Planner now</button>
                               </div>
                             </div>
                           );
@@ -18870,11 +18888,11 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
                                 {approved ? (
                                   <span style={{ fontSize: 12.5, color: "#15803d", fontWeight: 800 }}>✅ Approved{r.balance_days != null ? " · balance " + fmtDays(r.balance_days) + "d" : ""}</span>
                                 ) : canOps ? (
-                                  <button disabled={busy} onClick={() => openWizard(r)} style={btn("#be185d", "#fff", "#be185d")}>▶ Approve — review &amp; confirm</button>
+                                  <button disabled={busy || readOnly} onClick={() => openWizard(r)} title={roTitle(readOnly, undefined)} style={roStyle(readOnly, btn("#be185d", "#fff", "#be185d"))}>{readOnly ? "🔒 Approving is view-only for you" : <>▶ Approve — review &amp; confirm</>}</button>
                                 ) : (
                                   <span style={{ fontSize: 12, color: "#9d6a82", fontStyle: "italic" }}>Awaiting an approver.</span>
                                 )}
-                                {!approved && <button disabled={busy} onClick={() => { setDeclineId(r.id); setDeclineText(r.decision_note || ""); }} style={btn("#fff", "#b91c1c", "#b91c1c")}>Decline</button>}
+                                {!approved && <button disabled={busy || readOnly} onClick={() => { setDeclineId(r.id); setDeclineText(r.decision_note || ""); }} title={roTitle(readOnly, undefined)} style={roStyle(readOnly, btn("#fff", "#b91c1c", "#b91c1c"))}>Decline</button>}
                               </div>
                             </div>
                           );
@@ -18882,9 +18900,10 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
 
                         {r.status === "declined" && (
                           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
-                            <button disabled={busy} onClick={() => { setDeclineId(r.id); setDeclineText(r.decision_note || ""); }}
-                              style={{ border: "1.5px solid #b91c1c", background: "#b91c1c", color: "#fff", borderRadius: 9, padding: "7px 16px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: "pointer" }}>
-                              ● Declined — edit reason
+                            <button disabled={busy || readOnly} onClick={() => { setDeclineId(r.id); setDeclineText(r.decision_note || ""); }}
+                              title={roTitle(readOnly, undefined)}
+                              style={roStyle(readOnly, { border: "1.5px solid #b91c1c", background: "#b91c1c", color: "#fff", borderRadius: 9, padding: "7px 16px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: "pointer" })}>
+                              {readOnly ? "● Declined" : "● Declined — edit reason"}
                             </button>
                           </div>
                         )}
@@ -18915,8 +18934,9 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
                           <input value={noteDraft[r.id] || ""} onChange={e => setNoteDraft({ ...noteDraft, [r.id]: e.target.value })}
                             placeholder="Add an internal note…" onKeyDown={e => { if (e.key === "Enter") addNote(r); }}
                             style={{ flex: 1, fontFamily: "inherit", fontSize: 13, padding: "8px 11px", borderRadius: 9, border: "1.5px solid #e7c6d4" }} />
-                          <button disabled={busy || !(noteDraft[r.id] || "").trim()} onClick={() => addNote(r)}
-                            style={{ background: "#831843", color: "#fff", border: "none", borderRadius: 9, padding: "8px 14px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: "pointer", opacity: (noteDraft[r.id] || "").trim() ? 1 : 0.5 }}>Add</button>
+                          <button disabled={busy || readOnly || !(noteDraft[r.id] || "").trim()} onClick={() => addNote(r)}
+                            title={roTitle(readOnly, undefined)}
+                            style={roStyle(readOnly, { background: "#831843", color: "#fff", border: "none", borderRadius: 9, padding: "8px 14px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: "pointer", opacity: (noteDraft[r.id] || "").trim() ? 1 : 0.5 })}>Add</button>
                         </div>
                       </div>
                     );
@@ -18936,6 +18956,7 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
           onReverse={wizardReverse}
           onComplete={wizardComplete}
           onCancel={() => setWizard(null)}
+          readOnly={readOnly}
         />
       )}
     </div>
@@ -22811,9 +22832,14 @@ function CtStorePicker({ value, onChange, selectedBranch, onPickStore, salonName
   );
 }
 
-function InterviewsView({ interviewList, persistInterviews, trialList, persistTrialList, staff, managers, currentUser, branchNeed }) {
-  const canRecruit = canRecruitInterviews(currentUser);
-  const canTrain = canTrainInterviews(currentUser);
+function InterviewsView({ interviewList, persistInterviews, trialList, persistTrialList, staff, managers, currentUser, branchNeed, readOnly }) {
+  // A tab-level view-only grant lands the user in the SAME state as someone who
+  // is neither the recruiter nor the trainer — this view already has a designed,
+  // complete viewer-only path, so read-only reuses it rather than bolting a
+  // second one alongside. Only the explanatory line below has to distinguish
+  // the two, because the reason differs even though the UI doesn't.
+  const canRecruit = canRecruitInterviews(currentUser) && !readOnly;
+  const canTrain = canTrainInterviews(currentUser) && !readOnly;
   const viewerOnly = !canRecruit && !canTrain;
   const [form, setForm] = useState(null);          // null = closed; else candidate draft (+ _editId when editing)
   const [filter, setFilter] = useState("active");  // active | needsAction | today | all
@@ -22944,10 +22970,11 @@ function InterviewsView({ interviewList, persistInterviews, trialList, persistTr
         <div>
           <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 22, fontWeight: 700, color: "#4f46e5" }}>📋 Nail Tech Interviews</div>
           <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>
-            {canRecruit && canTrain ? "You can schedule interviews and record outcomes."
-              : canRecruit ? "You're set up as the recruiter — schedule interviews and book inductions."
-                : canTrain ? "You're set up as the nail-tech trainer — mark attendance and pass/fail."
-                  : "View only — interview actions are limited to the recruiter and the nail-tech trainer."}
+            {readOnly ? "🔒 View only — your role can browse recruitment but can't make changes here."
+              : canRecruit && canTrain ? "You can schedule interviews and record outcomes."
+                : canRecruit ? "You're set up as the recruiter — schedule interviews and book inductions."
+                  : canTrain ? "You're set up as the nail-tech trainer — mark attendance and pass/fail."
+                    : "View only — interview actions are limited to the recruiter and the nail-tech trainer."}
           </div>
         </div>
         {canRecruit && <button onClick={openAdd} style={{ background: "#4f46e5", color: "#fff", border: "none", borderRadius: 9, padding: "9px 16px", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>+ Add candidate</button>}
@@ -33248,9 +33275,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   nail techs and managers — it is the "publish the latest draft"
                   step, done in one pass for every branch's current-cycle edits. */}
               {currentUser?.isOwner && (
-                <button onClick={openPublishCycle} disabled={pubCycleBusy}
-                  title="Scan every branch — nail techs AND managers — for schedule edits made mid-cycle (leave approvals, extra days, day-off swaps) and publish them live to staff, kiosk and My BOA. Scoped to the CURRENT payroll cycle only; you review every change before anything goes live."
-                  style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6, padding: "12px 18px", borderRadius: 11, fontSize: 14, fontWeight: 800, background: pubCycleBusy ? "#FBCFE8" : "#831843", color: "#fff", border: "none", cursor: pubCycleBusy ? "default" : "pointer", boxShadow: pubCycleBusy ? "none" : "0 4px 12px rgba(131,24,67,0.28)", whiteSpace: "nowrap" }}>
+                <button onClick={openPublishCycle} disabled={pubCycleBusy || currentTabIsReadOnly}
+                  title={roTitle(currentTabIsReadOnly, "Scan every branch — nail techs AND managers — for schedule edits made mid-cycle (leave approvals, extra days, day-off swaps) and publish them live to staff, kiosk and My BOA. Scoped to the CURRENT payroll cycle only; you review every change before anything goes live.")}
+                  style={roStyle(currentTabIsReadOnly, { marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6, padding: "12px 18px", borderRadius: 11, fontSize: 14, fontWeight: 800, background: pubCycleBusy ? "#FBCFE8" : "#831843", color: "#fff", border: "none", cursor: pubCycleBusy ? "default" : "pointer", boxShadow: pubCycleBusy ? "none" : "0 4px 12px rgba(131,24,67,0.28)", whiteSpace: "nowrap" })}>
                   {pubCycleBusy && !pubCycleOpen ? "Scanning…" : "⚡ Publish current cycle"}
                 </button>
               )}
@@ -33370,7 +33397,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 22, fontWeight: 700, color: "#831843" }}>📍 Locations</div>
                 <button
                   onClick={() => setAddLocationModal({ name: "", mani: "", pedi: "", capacity: "", lowDemand: false, targetCapacity: "", region: "wc", openingDate: "", saving: false })}
-                  style={{ background: accent, color: "#fff", border: "none", borderRadius: 8, padding: "9px 16px", cursor: "pointer", fontSize: 12, fontWeight: 700, letterSpacing: "0.04em" }}
+                  disabled={currentTabIsReadOnly}
+                  title={roTitle(currentTabIsReadOnly, undefined)}
+                  style={roStyle(currentTabIsReadOnly, { background: accent, color: "#fff", border: "none", borderRadius: 8, padding: "9px 16px", cursor: "pointer", fontSize: 12, fontWeight: 700, letterSpacing: "0.04em" })}
                 >+ Add new location</button>
               </div>
 
@@ -35871,7 +35900,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         {/* ── LEAVE REQUESTS TAB ── */}
         {tab === "leaveRequests" && canSeeLeaveRequests && (
-          <LeaveRequestsTab requests={leaveRequests} setRequests={setLeaveRequests} currentUser={currentUser} leaveRecs={leaveRecs} setLeaveRecs={setLeaveRecs} enriched={enriched} managers={managers} staff={staff} hoStaff={hoStaff} ccOnly={ccOnly} opsCfg={leaveOpsCfg} logActivity={logActivity} schedCache={schedCache} ymdToSchedYm={ymdToSchedYm} reverseLeave={reverseLeave} />
+          <LeaveRequestsTab requests={leaveRequests} setRequests={setLeaveRequests} currentUser={currentUser} leaveRecs={leaveRecs} setLeaveRecs={setLeaveRecs} enriched={enriched} managers={managers} staff={staff} hoStaff={hoStaff} ccOnly={ccOnly} opsCfg={leaveOpsCfg} logActivity={logActivity} schedCache={schedCache} ymdToSchedYm={ymdToSchedYm} reverseLeave={reverseLeave} readOnly={currentTabIsReadOnly} />
         )}
 
         {/* ── PAYROLL INBOX TAB ── */}
@@ -36134,6 +36163,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               managers={managers}
               currentUser={currentUser}
               branchNeed={recruitFuture.perBranch}
+              readOnly={currentTabIsReadOnly}
             />
           )}
 
@@ -39554,10 +39584,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
                     <button
                       onClick={submitOb}
-                      disabled={obSubmitting}
-                      style={{ width: "100%", padding: "16px", borderRadius: 10, border: "none", background: obSubmitting ? "#f472b6" : "#BE185D", color: "#fff", cursor: obSubmitting ? "wait" : "pointer", fontFamily: "inherit", fontSize: 15, fontWeight: 800, boxShadow: "0 4px 14px rgba(190, 24, 93, 0.3)" }}
+                      disabled={obSubmitting || currentTabIsReadOnly}
+                      title={roTitle(currentTabIsReadOnly, undefined)}
+                      style={roStyle(currentTabIsReadOnly, { width: "100%", padding: "16px", borderRadius: 10, border: "none", background: obSubmitting ? "#f472b6" : "#BE185D", color: "#fff", cursor: obSubmitting ? "wait" : "pointer", fontFamily: "inherit", fontSize: 15, fontWeight: 800, boxShadow: "0 4px 14px rgba(190, 24, 93, 0.3)" })}
                     >
-                      {obSubmitting ? "⏳ Registering Employee & Uploading..." : "🎉 Complete Registration"}
+                      {currentTabIsReadOnly ? "🔒 View-only — you can't register staff on this tab" : obSubmitting ? "⏳ Registering Employee & Uploading..." : "🎉 Complete Registration"}
                     </button>
                   </div>
                 </div>
@@ -39643,10 +39674,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                     {/* Undoing a hire is a different act from tidying
                                         the history list — Remove only hides the row and
                                         would strand a live employee behind it. */}
-                                    <button onClick={() => reverseOnboarding(r._id)}
-                                      title="They shouldn't have been onboarded — delete the staff record, retire the code and put the trial back"
-                                      style={{ background: "none", border: "1px solid #c4b5fd", borderRadius: 6, padding: "4px 8px", cursor: "pointer", fontSize: 11, color: "#6b21a8", fontFamily: "inherit", fontWeight: 700 }}>↩ Reverse</button>
-                                    <button onClick={() => delOb(r._id)} title="Remove this row from the history view only — the staff record stays" style={{ background: "none", border: "1px solid #fca5a5", borderRadius: 6, padding: "4px 8px", cursor: "pointer", fontSize: 11, color: "#991b1b" }}>✕ Remove</button>
+                                    <button onClick={() => reverseOnboarding(r._id)} disabled={currentTabIsReadOnly}
+                                      title={roTitle(currentTabIsReadOnly, "They shouldn't have been onboarded — delete the staff record, retire the code and put the trial back")}
+                                      style={roStyle(currentTabIsReadOnly, { background: "none", border: "1px solid #c4b5fd", borderRadius: 6, padding: "4px 8px", cursor: "pointer", fontSize: 11, color: "#6b21a8", fontFamily: "inherit", fontWeight: 700 })}>↩ Reverse</button>
+                                    <button onClick={() => delOb(r._id)} disabled={currentTabIsReadOnly} title={roTitle(currentTabIsReadOnly, "Remove this row from the history view only — the staff record stays")} style={roStyle(currentTabIsReadOnly, { background: "none", border: "1px solid #fca5a5", borderRadius: 6, padding: "4px 8px", cursor: "pointer", fontSize: 11, color: "#991b1b" })}>✕ Remove</button>
                                   </>}
                               </div>
                             </div>
@@ -39869,7 +39900,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           <div style={{ fontSize: 10, fontFamily: "monospace", color: "#991b1b", fontWeight: 700 }}>{p.ec}{p.branch ? " · " + p.branch : ""}</div>
                           {p.leftDate && <div style={{ fontSize: 11, color: "#991b1b", marginTop: 3 }}>{onNotice ? "Last day " : "Left "}{fmt(p.leftDate)}</div>}
                         </div>
-                        <button className="boa-btn" onClick={() => deregisterCouncil(p)} style={{ padding: "8px 14px", borderRadius: 9, border: "none", background: "linear-gradient(180deg,#e0393a,#b91c1c)", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap", boxShadow: "0 8px 18px -9px rgba(185,28,28,0.85)" }}>Mark deregistered</button>
+                        <button className="boa-btn" onClick={() => deregisterCouncil(p)} disabled={currentTabIsReadOnly} title={roTitle(currentTabIsReadOnly, undefined)} style={roStyle(currentTabIsReadOnly, { padding: "8px 14px", borderRadius: 9, border: "none", background: "linear-gradient(180deg,#e0393a,#b91c1c)", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap", boxShadow: "0 8px 18px -9px rgba(185,28,28,0.85)" })}>Mark deregistered</button>
                       </div>
                     );
                   })}
@@ -39915,7 +39946,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <input id="_qpNotes" placeholder="e.g. final salary processed" style={{ ...GLASS_INPUT, marginBottom: 20 }} />
                   <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
                     <button className="boa-btn" onClick={() => setQuickPick(null)} style={BTN_GHOST}>Cancel</button>
-                    <button className="boa-btn" onClick={submitQuickPick} style={BTN_PRIMARY}>Confirm off-board</button>
+                    <button className="boa-btn" onClick={submitQuickPick} disabled={currentTabIsReadOnly} title={roTitle(currentTabIsReadOnly, undefined)} style={roStyle(currentTabIsReadOnly, BTN_PRIMARY)}>Confirm off-board</button>
                   </div>
                 </div>
               </div>
@@ -39954,7 +39985,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <label style={GLASS_LABEL}>Notes (optional)</label>
                 <input id="_offNotes" placeholder="e.g. Moving to JHB" style={GLASS_INPUT} />
               </div>
-              <button className="boa-btn" onClick={submitOff} style={{ ...BTN_PRIMARY, fontSize: 13, padding: "11px 22px", letterSpacing: "0.04em" }}>Off-board</button>
+              <button className="boa-btn" onClick={submitOff} disabled={currentTabIsReadOnly} title={roTitle(currentTabIsReadOnly, undefined)} style={roStyle(currentTabIsReadOnly, { ...BTN_PRIMARY, fontSize: 13, padding: "11px 22px", letterSpacing: "0.04em" })}>Off-board</button>
             </div>
 
             {/* Working Notice card */}
@@ -39983,7 +40014,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           Last day {dStr}<span style={{ opacity: 0.75 }}> · {daysUntil === 0 ? "today" : daysUntil === 1 ? "tomorrow" : "in " + daysUntil + " days"}</span>
                         </div>
                         {o.notes && <div style={{ fontSize: 11.5, color: "#7d5068", marginTop: 9, fontStyle: "italic", whiteSpace: "pre-wrap", lineHeight: 1.55 }}>{o.notes}</div>}
-                        <button onClick={() => undoOff(o.ec)} className="boa-btn" style={{ marginTop: 12, marginRight: 8, background: "rgba(255,255,255,0.7)", border: "1px solid rgba(217,119,6,0.28)", color: "#92400e", padding: "6px 12px", borderRadius: 8, fontSize: 10.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>↺ Cancel</button>{renderExitBadge(o)}
+                        <button onClick={() => undoOff(o.ec)} className="boa-btn" disabled={currentTabIsReadOnly} title={roTitle(currentTabIsReadOnly, undefined)} style={roStyle(currentTabIsReadOnly, { marginTop: 12, marginRight: 8, background: "rgba(255,255,255,0.7)", border: "1px solid rgba(217,119,6,0.28)", color: "#92400e", padding: "6px 12px", borderRadius: 8, fontSize: 10.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" })}>↺ Cancel</button>{renderExitBadge(o)}
                       </div>
                     );
                   })}
@@ -40020,7 +40051,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           Left {dStr}<span style={{ opacity: 0.7 }}> · {daysAgo === 0 ? "today" : daysAgo === 1 ? "yesterday" : daysAgo + " days ago"}</span>
                         </div>
                         {o.notes && <div style={{ fontSize: 11.5, color: "#7d5068", marginTop: 9, fontStyle: "italic", whiteSpace: "pre-wrap", lineHeight: 1.55 }}>{o.notes}</div>}
-                        <button onClick={() => undoOff(o.ec)} className="boa-btn" style={{ marginTop: 12, marginRight: 8, background: "rgba(255,255,255,0.7)", border: "1px solid rgba(190,24,93,0.20)", color: "#9d174d", padding: "6px 12px", borderRadius: 8, fontSize: 10.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>↺ Restore</button>{renderExitBadge(o)}
+                        <button onClick={() => undoOff(o.ec)} className="boa-btn" disabled={currentTabIsReadOnly} title={roTitle(currentTabIsReadOnly, undefined)} style={roStyle(currentTabIsReadOnly, { marginTop: 12, marginRight: 8, background: "rgba(255,255,255,0.7)", border: "1px solid rgba(190,24,93,0.20)", color: "#9d174d", padding: "6px 12px", borderRadius: 8, fontSize: 10.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" })}>↺ Restore</button>{renderExitBadge(o)}
                       </div>
                     );
                   })}
@@ -40065,7 +40096,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             Left {dStr}<span style={{ opacity: 0.7 }}> · {daysAgo} days ago</span>
                           </div>
                           {o.notes && <div style={{ fontSize: 11.5, color: "#7d5068", marginTop: 9, fontStyle: "italic", whiteSpace: "pre-wrap", lineHeight: 1.55 }}>{o.notes}</div>}
-                          <button onClick={() => undoOff(o.ec)} className="boa-btn" style={{ marginTop: 12, marginRight: 8, background: "rgba(255,255,255,0.7)", border: "1px solid rgba(190,24,93,0.20)", color: "#9d174d", padding: "6px 12px", borderRadius: 8, fontSize: 10.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>↺ Restore</button>{renderExitBadge(o)}
+                          <button onClick={() => undoOff(o.ec)} className="boa-btn" disabled={currentTabIsReadOnly} title={roTitle(currentTabIsReadOnly, undefined)} style={roStyle(currentTabIsReadOnly, { marginTop: 12, marginRight: 8, background: "rgba(255,255,255,0.7)", border: "1px solid rgba(190,24,93,0.20)", color: "#9d174d", padding: "6px 12px", borderRadius: 8, fontSize: 10.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" })}>↺ Restore</button>{renderExitBadge(o)}
                         </div>
                       );
                     })}
@@ -41049,6 +41080,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         // Persist a single cell change (and update local React state)
         const setCell = async (ec, d, v) => {
+          // Pre-flight for view-only users. The BOA_DB guard would refuse the
+          // write anyway, but only AFTER pushUndo() has polluted the session's
+          // undo stack with an edit that never happened — and the grid is the
+          // one surface where a refusal per cell would fire dozens of dialogs.
+          if (currentTabIsReadOnly) { alert(RO_MESSAGE); return; }
           pushUndo("cell edit");
           const prev = attGrid[ec] && attGrid[ec][d];
           const next = { ...attGrid, [ec]: { ...(attGrid[ec] || {}) } };
@@ -42473,37 +42509,37 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <div style={{ flex: 1 }} />
               {attLoading && <span style={{ fontSize: 11, color: "#9ca3af", fontStyle: "italic" }}>Loading…</span>}
               {allExport && <span style={{ fontSize: 11, color: "#BE185D", fontStyle: "italic", fontWeight: 600 }}>Building all-stores CSV… {allExport.idx + 1}/{allExport.stores.length} ({allExport.stores[allExport.idx]})</span>}
-              <button onClick={autoFill} style={{ padding: "7px 14px", background: "#fef3c7", color: "#78350f", border: "1px solid #fbbf24", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Fill empty cells from schedule (faded, still unconfirmed)">✓ Auto-fill from Schedule</button>
+              <button onClick={autoFill} disabled={currentTabIsReadOnly} style={roStyle(currentTabIsReadOnly, { padding: "7px 14px", background: "#fef3c7", color: "#78350f", border: "1px solid #fbbf24", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 })} title={roTitle(currentTabIsReadOnly, "Fill empty cells from schedule (faded, still unconfirmed)")}>✓ Auto-fill from Schedule</button>
               <button onClick={downloadAttendanceCsv} disabled={!!allExport} style={{ padding: "7px 14px", background: "#FFFFFF", color: "#BE185D", border: "1px solid #FBCFE8", borderRadius: 8, cursor: allExport ? "default" : "pointer", opacity: allExport ? 0.5 : 1, fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Download a CSV of the side totals for THIS store — employee code, name, role, new-starter start date, all day counts (incl. sick + note, unpaid) and whether the bonus is lost">⬇ CSV totals</button>
               <button onClick={downloadTrialCsv} disabled={!!allExport} style={{ padding: "7px 14px", background: "#FEF9C3", color: "#854d0e", border: "1px solid #FDE047", borderRadius: 8, cursor: allExport ? "default" : "pointer", opacity: allExport ? 0.5 : 1, fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Download a CSV of JUST the trial people for THIS store (the 🧪 yellow rows — still on paid trial, not yet promoted to onboarding, so they're excluded from the CSV totals). One row per trial person with their paid trial days, store vs head-office split, and absent days.">🧪 Trial days CSV</button>
               <button onClick={downloadAllStoresCsv} disabled={!!allExport} style={{ padding: "7px 14px", background: "#BE185D", color: "#FFFFFF", border: "1px solid #BE185D", borderRadius: 8, cursor: allExport ? "default" : "pointer", opacity: allExport ? 0.6 : 1, fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Download ONE CSV covering every store for this pay cycle — one row per person, at their current store (transfers and loaned days folded in exactly as on each store's own sheet). Walks each store in turn, so it takes a few seconds.">⬇ All stores CSV</button>
               <button onClick={downloadAllTrialCsv} disabled={!!allExport} style={{ padding: "7px 14px", background: "#FACC15", color: "#713f12", border: "1px solid #CA8A04", borderRadius: 8, cursor: allExport ? "default" : "pointer", opacity: allExport ? 0.6 : 1, fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Download ONE CSV of every store's trial people (the 🧪 yellow rows, not yet promoted to onboarding) for this pay cycle — one row per trial person with a Branch column, paid trial days, store vs head-office split, and absent days. Instant (no per-store walk).">🧪 Trial — all stores</button>
-              <button onClick={importFresha} style={{ padding: "7px 14px", background: "#dbeafe", color: "#1e3a8a", border: "1px solid #93c5fd", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Upload a Fresha appointments CSV — every nail tech with a completed appointment that day is marked On Time">📤 Import Fresha CSV</button>
-              <button onClick={importCheckins} style={{ padding: "7px 14px", background: "#dcfce7", color: "#14532d", border: "1px solid #86efac", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Pull every clock-in from the staff check-in app and stamp those days as On Time (or Extra Day if scheduled off). Confirmed cells are preserved. Use ↩ Undo to roll the import back.">✓ Import Check-ins</button>
+              <button onClick={importFresha} disabled={currentTabIsReadOnly} style={roStyle(currentTabIsReadOnly, { padding: "7px 14px", background: "#dbeafe", color: "#1e3a8a", border: "1px solid #93c5fd", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 })} title={roTitle(currentTabIsReadOnly, "Upload a Fresha appointments CSV — every nail tech with a completed appointment that day is marked On Time")}>📤 Import Fresha CSV</button>
+              <button onClick={importCheckins} disabled={currentTabIsReadOnly} style={roStyle(currentTabIsReadOnly, { padding: "7px 14px", background: "#dcfce7", color: "#14532d", border: "1px solid #86efac", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 })} title={roTitle(currentTabIsReadOnly, "Pull every clock-in from the staff check-in app and stamp those days as On Time (or Extra Day if scheduled off). Confirmed cells are preserved. Use ↩ Undo to roll the import back.")}>✓ Import Check-ins</button>
               {attCheckinSnapshot && (
-                <button onClick={undoCheckinsImport} style={{ padding: "7px 14px", background: "#fef3c7", color: "#78350f", border: "1px solid #fbbf24", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Restore the attendance grid to its state right before the last check-in import">↩ Undo Check-in Import</button>
+                <button onClick={undoCheckinsImport} disabled={currentTabIsReadOnly} style={roStyle(currentTabIsReadOnly, { padding: "7px 14px", background: "#fef3c7", color: "#78350f", border: "1px solid #fbbf24", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 })} title={roTitle(currentTabIsReadOnly, "Restore the attendance grid to its state right before the last check-in import")}>↩ Undo Check-in Import</button>
               )}
               {(attEditStack.length > 0 || attPersistUndo) && (() => {
                 const top = attEditStack[0] || attPersistUndo;
                 const persistedOnly = attEditStack.length === 0 && !!attPersistUndo;
                 const when = top && top.ts ? new Date(top.ts).toLocaleString("en-ZA", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "";
                 return (
-                  <button onClick={undoLastEdit}
-                    title={"Undo the last change to " + attBranch + "'s sheet: " + (top.label || "edit") + (when ? " (" + when + ")" : "") + (persistedOnly ? "\n\n(Saved change — undoable even though it was made earlier or by someone else.)" : "\n\n" + attEditStack.length + " action" + (attEditStack.length === 1 ? "" : "s") + " in this session's history")}
-                    style={{ padding: "7px 14px", background: "#fef3c7", color: "#78350f", border: "1px solid #fbbf24", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }}>
+                  <button onClick={undoLastEdit} disabled={currentTabIsReadOnly}
+                    title={roTitle(currentTabIsReadOnly, "Undo the last change to " + attBranch + "'s sheet: " + (top.label || "edit") + (when ? " (" + when + ")" : "") + (persistedOnly ? "\n\n(Saved change — undoable even though it was made earlier or by someone else.)" : "\n\n" + attEditStack.length + " action" + (attEditStack.length === 1 ? "" : "s") + " in this session's history"))}
+                    style={roStyle(currentTabIsReadOnly, { padding: "7px 14px", background: "#fef3c7", color: "#78350f", border: "1px solid #fbbf24", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 })}>
                     ↶ Undo {top.label || "last change"}{attEditStack.length > 1 ? " (" + attEditStack.length + ")" : ""}
                   </button>
                 );
               })()}
-              <button onClick={resetCycle} style={{ padding: "7px 14px", background: "#fee2e2", color: "#7f1d1d", border: "1px solid #fca5a5", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Clear every cell for this branch + cycle (with confirmation)">↺ Reset Cycle</button>
-              <button onClick={totalResetCycle} style={{ padding: "7px 14px", background: "#7f1d1d", color: "#fff", border: "1px solid #7f1d1d", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }} title="Permanently delete the attendance grid, kiosk audit log, proofs and absence sidecars for this branch + cycle">⚠ Total Reset</button>
+              <button onClick={resetCycle} disabled={currentTabIsReadOnly} style={roStyle(currentTabIsReadOnly, { padding: "7px 14px", background: "#fee2e2", color: "#7f1d1d", border: "1px solid #fca5a5", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 })} title={roTitle(currentTabIsReadOnly, "Clear every cell for this branch + cycle (with confirmation)")}>↺ Reset Cycle</button>
+              <button onClick={totalResetCycle} disabled={currentTabIsReadOnly} style={roStyle(currentTabIsReadOnly, { padding: "7px 14px", background: "#7f1d1d", color: "#fff", border: "1px solid #7f1d1d", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 })} title={roTitle(currentTabIsReadOnly, "Permanently delete the attendance grid, kiosk audit log, proofs and absence sidecars for this branch + cycle")}>⚠ Total Reset</button>
             </div>
 
             {mirrorSuppressed && (
               <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 8, padding: "11px 15px", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8, fontSize: 12.5, color: "#854d0e", fontWeight: 600 }}>
                 <span style={{ fontSize: 16 }}>⚠</span>
                 <span>Schedule mirror is <strong>OFF</strong> for {attBranch} · {cycLabel} — a <strong>Total Reset</strong> cleared this sheet, so off-days and the kiosk/Fresha checks are hidden until you rebuild from the schedule.</span>
-                <button onClick={autoFill} style={{ marginLeft: "auto", padding: "6px 13px", background: "#854d0e", color: "#fff", border: "none", borderRadius: 7, cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, whiteSpace: "nowrap" }}>✓ Auto-fill from Schedule</button>
+                <button onClick={autoFill} disabled={currentTabIsReadOnly} title={roTitle(currentTabIsReadOnly, undefined)} style={roStyle(currentTabIsReadOnly, { marginLeft: "auto", padding: "6px 13px", background: "#854d0e", color: "#fff", border: "none", borderRadius: 7, cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, whiteSpace: "nowrap" })}>✓ Auto-fill from Schedule</button>
               </div>
             )}
 
@@ -45323,7 +45359,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
                 {m._id ? (
                   <button onClick={() => { if (window.confirm("Cancel this loan?")) { cancelLoan(m._id); setLoanModal(null); } }}
-                    style={{ background: "#fff", color: "#b91c1c", border: "1px solid #fecaca", borderRadius: 8, padding: "9px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}
+                    disabled={currentTabIsReadOnly}
+                    title={roTitle(currentTabIsReadOnly, undefined)}
+                    style={roStyle(currentTabIsReadOnly, { background: "#fff", color: "#b91c1c", border: "1px solid #fecaca", borderRadius: 8, padding: "9px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700 })}
                   >Cancel loan</button>
                 ) : <span />}
                 <div style={{ display: "flex", gap: 8 }}>
@@ -45331,10 +45369,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     style={{ background: "#f3f4f6", color: "#374151", border: "none", borderRadius: 8, padding: "9px 16px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}
                   >Close</button>
                   <button
-                    disabled={loanSaving || !m.ec || !m.toBranch || !m.date || !!onLeaveBlocker || (fromBranch && fromBranch === m.toBranch)}
+                    disabled={currentTabIsReadOnly || loanSaving || !m.ec || !m.toBranch || !m.date || !!onLeaveBlocker || (fromBranch && fromBranch === m.toBranch)}
                     onClick={() => saveLoan({ ...m, fromBranch })}
-                    style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 8, padding: "9px 18px", cursor: loanSaving ? "wait" : "pointer", fontSize: 12, fontWeight: 700, opacity: (loanSaving || !m.ec || !m.toBranch || !m.date || !!onLeaveBlocker || (fromBranch && fromBranch === m.toBranch)) ? 0.5 : 1 }}
-                  >{loanSaving ? "Saving…" : (m._id ? "Save changes" : "Log borrow")}</button>
+                    title={roTitle(currentTabIsReadOnly, undefined)}
+                    style={roStyle(currentTabIsReadOnly, { background: "#BE185D", color: "#fff", border: "none", borderRadius: 8, padding: "9px 18px", cursor: loanSaving ? "wait" : "pointer", fontSize: 12, fontWeight: 700, opacity: (loanSaving || !m.ec || !m.toBranch || !m.date || !!onLeaveBlocker || (fromBranch && fromBranch === m.toBranch)) ? 0.5 : 1 })}
+                  >{currentTabIsReadOnly ? "🔒 View-only" : loanSaving ? "Saving…" : (m._id ? "Save changes" : "Log borrow")}</button>
                 </div>
               </div>
             </div>
@@ -50703,8 +50742,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               </button>
               <button
                 onClick={() => setEdPublish({ branch: "", date: "", shiftCode: "W", start: "09:00", end: "18:00", note: "", busy: false, err: "" })}
-                title="Offer a published off-day as an extra day. It alerts every kiosk; off-duty managers claim it and Ops approves the best one."
-                style={{ background: "linear-gradient(135deg,#BE185D,#E84B9B)", color: "#fff", border: "none", borderRadius: 8, padding: "7px 12px", cursor: "pointer", fontSize: 12, fontWeight: 800, boxShadow: "0 4px 12px rgba(190,24,93,0.28)" }}>
+                disabled={currentTabIsReadOnly}
+                title={roTitle(currentTabIsReadOnly, "Offer a published off-day as an extra day. It alerts every kiosk; off-duty managers claim it and Ops approves the best one.")}
+                style={roStyle(currentTabIsReadOnly, { background: "linear-gradient(135deg,#BE185D,#E84B9B)", color: "#fff", border: "none", borderRadius: 8, padding: "7px 12px", cursor: "pointer", fontSize: 12, fontWeight: 800, boxShadow: "0 4px 12px rgba(190,24,93,0.28)" })}>
                 ✨ Publish an ED
               </button>
               <div style={{ fontSize: 11, display: "flex", gap: 12 }}>
@@ -50759,9 +50799,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     style={{ background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 8, padding: "8px 14px", cursor: mgrCoverageDraftApplying ? "not-allowed" : "pointer", fontSize: 12, fontWeight: 700, opacity: mgrCoverageDraftApplying ? 0.6 : 1 }}>
                     ↺ Discard
                   </button>
-                  <button onClick={_applyDraft} disabled={mgrCoverageDraftApplying}
-                    style={{ background: mgrCoverageDraftApplying ? "#FBCFE8" : "#16A34A", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", cursor: mgrCoverageDraftApplying ? "not-allowed" : "pointer", fontSize: 13, fontWeight: 800 }}>
-                    {mgrCoverageDraftApplying ? "Applying…" : "✓ Apply to live"}
+                  <button onClick={_applyDraft} disabled={mgrCoverageDraftApplying || currentTabIsReadOnly}
+                    title={roTitle(currentTabIsReadOnly, undefined)}
+                    style={roStyle(currentTabIsReadOnly, { background: mgrCoverageDraftApplying ? "#FBCFE8" : "#16A34A", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", cursor: mgrCoverageDraftApplying ? "not-allowed" : "pointer", fontSize: 13, fontWeight: 800 })}>
+                    {currentTabIsReadOnly ? "🔒 View-only" : mgrCoverageDraftApplying ? "Applying…" : "✓ Apply to live"}
                   </button>
                 </div>
               );
@@ -51258,15 +51299,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                   {r.review_comment && <span title={r.review_comment} style={{ color: "#9ca3af", cursor: "help" }}>💬</span>}
                                 </span>
                                 <span style={{ fontSize: 10, color: "#9ca3af" }}>{r.reviewed_by || "—"}{r.reviewed_at ? " · " + _fmtStamp(r.reviewed_at) : ""}</span>
-                                {canReviewCashups && (
+                                {canReviewCashups && !currentTabIsReadOnly && (
                                   <a href="#" onClick={e => { e.preventDefault(); setCashupReviewModal({ row: r, comment: r.review_comment || "" }); }} style={{ fontSize: 10, color: "#BE185D", fontWeight: 700 }}>edit / undo</a>
                                 )}
                               </div>
                             ) : canReviewCashups ? (
                               <button
                                 onClick={() => setCashupReviewModal({ row: r, comment: "" })}
-                                title="Tick off — confirm you've reviewed this cash-up and it matches"
-                                style={{ background: "#fff", color: "#14532d", border: "1px solid #bbf7d0", borderRadius: 7, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}
+                                disabled={currentTabIsReadOnly}
+                                title={roTitle(currentTabIsReadOnly, "Tick off — confirm you've reviewed this cash-up and it matches")}
+                                style={roStyle(currentTabIsReadOnly, { background: "#fff", color: "#14532d", border: "1px solid #bbf7d0", borderRadius: 7, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700 })}
                               >✓ Tick off</button>
                             ) : (
                               <span style={{ color: "#9ca3af", fontSize: 11 }}>Not yet</span>
@@ -51292,8 +51334,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                       window.alert("Couldn't reopen: " + ((e && e.message) || e));
                                     }
                                   }}
-                                  title="Reopen — let the store submit again for this day"
-                                  style={{ background: "#fff", color: "#BE185D", border: "1px solid #FBCFE8", borderRadius: 7, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}
+                                  disabled={currentTabIsReadOnly}
+                                  title={roTitle(currentTabIsReadOnly, "Reopen — let the store submit again for this day")}
+                                  style={roStyle(currentTabIsReadOnly, { background: "#fff", color: "#BE185D", border: "1px solid #FBCFE8", borderRadius: 7, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700 })}
                                 >↻ Reopen</button>
                               )}
                               {!_hasStoreScope && canReviewCashups && (
@@ -51308,8 +51351,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                       window.alert("Couldn't delete: " + ((e && e.message) || e));
                                     }
                                   }}
-                                  title="Delete permanently — removes this cash-up everywhere (for test / duplicate entries)"
-                                  style={{ background: "#fff", color: "#b91c1c", border: "1px solid #fecaca", borderRadius: 7, padding: "4px 9px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}
+                                  disabled={currentTabIsReadOnly}
+                                  title={roTitle(currentTabIsReadOnly, "Delete permanently — removes this cash-up everywhere (for test / duplicate entries)")}
+                                  style={roStyle(currentTabIsReadOnly, { background: "#fff", color: "#b91c1c", border: "1px solid #fecaca", borderRadius: 7, padding: "4px 9px", cursor: "pointer", fontSize: 11, fontWeight: 700 })}
                                 >🗑 Delete</button>
                               )}
                               {isArchived && _hasStoreScope && <span style={{ color: "#9ca3af", fontSize: 11 }}>—</span>}
@@ -52754,7 +52798,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           onClose={() => setOfficeCellModal(null)}
         />
       )}
-      {transferModal && <TransferModal s={transferModal} onClose={() => setTransferModal(null)} onConfirm={handleTransfer} onCancelTransfer={cancelTransfer} />}
+      {transferModal && <TransferModal s={transferModal} onClose={() => setTransferModal(null)} onConfirm={handleTransfer} onCancelTransfer={cancelTransfer} readOnly={currentTabIsReadOnly} />}
       {matModal && <MatModal rec={matModal} onClose={() => setMatModal(null)} onSave={saveMat} onDelete={delMat} people={matPickerPool} />}
       <AlertModal data={uiDialog} onResolve={resolveUiDialog} />
       {plannerWizard && (
@@ -52766,6 +52810,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           onReverse={null}
           onComplete={async () => { await plannerWizard.commit(leaveRecs); setPlannerWizard(null); }}
           onCancel={() => setPlannerWizard(null)}
+          readOnly={currentTabIsReadOnly}
         />
       )}
     </div>

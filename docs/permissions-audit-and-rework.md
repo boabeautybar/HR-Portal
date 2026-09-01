@@ -213,7 +213,10 @@ Invert the guard: wrap **every** `BOA_DB` function except an explicit read allow
 
 Each phase ships and verifies alone. Order: stop the bleeding → invisible plumbing → the headline promise → payroll-adjacent writes → lockout-risk last.
 
-### Phase 1 — Pure bug fixes, no model change *(size M)*
+**Status (branch `feat/permissions-hardening`, unpushed):** Phase 1 ✅ · Phase 4 ✅ + affordance pass ✅ · Phases 2, 3, 5 not started.
+Phases 1 and 4 were taken out of order deliberately: 4's read-only flip is what makes the *existing* grid ticks mean anything, and it needed no model change, so it could ship while 2–3 were still on paper.
+
+### Phase 1 — Pure bug fixes, no model change *(size M)* — ✅ SHIPPED
 1. **Destructive-path guards (F):** pre-flight permission check on reverse-onboarding before any write; gate cash-up Delete/Reopen on the existing `cashupReviewCfg`; add the missed methods (`saveCustomSalons`, `saveTechLoans`, `deleteStaff`, `saveHrTrackerRecord`, `setHrTrackerPayroll`, `saveRetiredEcs`, `saveProbation`, `migrateEmployeeCode`, …) to `READ_ONLY_GUARDED_METHODS`.
 2. **`permsToUser` round-trip (D):** preserve unknown `hideTabs` keys, preserve `hideCategories`, always write `stores` (incl. empty).
 3. **Data loads (E):** `_needRequests` += `accessAllows(leaveOpsCfg) || accessAllows(leavePayrollCfg)`; two-wave load so configs exist before conditionals.
@@ -229,10 +232,14 @@ Each phase ships and verifies alone. Order: stop the bleeding → invisible plum
 ### Phase 3 — Enforcement unification + grid authority *(size L — the big one)*
 `TAB_REGISTRY`; nav, `tryChangeTab`, body-normalization effect + `LockedTab`, and registry-driven `dataNeeds` all reading from `acl`; delete `forceShow`; convert the 6 raw `setTab` calls + quick-links; tri-state grid editor writing `grantTabs`; **retire `CALLED_IN_SICK_PINS`** (Rochelle gets a `grantTabs` entry). Dashboard cleanup (J): registry `dash.*` keys for the 11 unkeyed cards, split `mgrSick`/`techSick`, re-home `trialAmCheckinAlert`, stop offering CAN-EDIT on read-only surfaces.
 
-### Phase 4 — Read-only flip + action capabilities *(size M)*
-Wrap-all denylist DB guard; `act.*` entries live; "2002" removal; `readOnly` prop threading for attendance/cashups/scheduling; Settings editor for `voucherEntryOnly`.
+### Phase 4 — Read-only flip + action capabilities *(size M)* — ✅ SHIPPED (except `act.*` / "2002", which depend on Phase 2)
+Wrap-all denylist DB guard (**102 methods guarded, up from 30**; 0 reads mis-guarded); the guard now **throws a tagged error instead of returning `null`**, so a blocked write can no longer be mistaken for a successful one — the old behaviour let execution continue past the refusal and produce a phantom branch plus a false "Added new location" audit entry. `boaSystemWrite()` exempts the portal's own background repairs (transfer auto-settle, leave-expiry auto-filing) so a view-only user sitting on a tab during a timed refresh isn't shown a dialog they didn't trigger. Settings editor for `voucherEntryOnly`.
 
-*Payroll-adjacent: attendance Total Reset, sign-off — run the before/after payroll export diff (the attendance classifier is shared with payroll).*
+**Affordance pass** — 37 controls across 12 surfaces now grey out with the reason in the tooltip rather than refusing after the fact: Schedule Transfer, Log borrow / Cancel loan, Apply to live, Publish an ED, Publish current cycle, the whole Leave Requests write surface (approve wizard, decline, notes, planner repair, reverse), the attendance toolbar **and the grid cells** (pre-flight before `pushUndo`, so no phantom undo entries), cash-up tick-off / reopen / delete, Add location, onboarding registration + reverse/remove, and off-boarding (off-board, quick-pick, undo, council de-registration). Recruitment reuses `InterviewsView`'s existing viewer-only path by folding read-only into `canRecruit`/`canTrain`. Helpers `roStyle`/`roTitle` are identity functions when unlocked, so nothing changes for anyone who can edit.
+
+*`act.*` capabilities and "2002" removal remain deferred — both need the Phase 2 registry.*
+
+*Payroll-adjacent: attendance Total Reset, sign-off — the before/after payroll export diff is still outstanding (the attendance classifier is shared with payroll).*
 
 ### Phase 5 — Seed & legacy retirement *(size S, lockout-risk, last)*
 AppGate seeds only when the store key is truly missing (stop per-boot re-insertion — defect K); drop the `STAFF_USERS` login fallback once all live records are verified in Supabase; keep **one break-glass owner recovery path**; delete deprecated wrappers, the `showTabs` write path, and the migration PIN literals.
@@ -316,4 +323,6 @@ All seeds are currently **undeletable** (defect K).
 
 ---
 
-*Next step after review: prompt corrections to this doc, or "execute Phase 1" — each phase lands as its own PR to main per the usual workflow.*
+*Next step: Phase 2 (the `ROLES` + `CAPABILITIES` registry), which unblocks Phase 3 — and Phase 3 is what finally lets `CALLED_IN_SICK_PINS` be deleted.*
+
+*Delivery note: Phases 1 and 4 are accumulating as commits on `feat/permissions-hardening` and land as **one** PR to main, rather than a PR per phase, to keep hosting/deploy cost down.*
