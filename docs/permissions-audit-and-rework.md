@@ -213,7 +213,7 @@ Invert the guard: wrap **every** `BOA_DB` function except an explicit read allow
 
 Each phase ships and verifies alone. Order: stop the bleeding → invisible plumbing → the headline promise → payroll-adjacent writes → lockout-risk last.
 
-**Status (branch `feat/permissions-hardening`, unpushed):** Phase 1 ✅ · Phase 4 ✅ + affordance pass ✅ · Phase 2 ✅ · Phase 3 ◐ (enforcement + grid authority done; dashboard card cleanup outstanding) · Phase 5 not started.
+**Status (branch `feat/permissions-hardening`, unpushed):** Phase 1 ✅ · Phase 4 ✅ + affordance pass ✅ · Phase 2 ✅ · Phase 3 ✅ · Phase 5 not started.
 Phases 1 and 4 were taken out of order deliberately: 4's read-only flip is what makes the *existing* grid ticks mean anything, and it needed no model change, so it could ship while 2–3 were still on paper.
 
 ### Phase 1 — Pure bug fixes, no model change *(size M)* — ✅ SHIPPED
@@ -239,7 +239,7 @@ Phases 1 and 4 were taken out of order deliberately: 4's read-only flip is what 
 
 New console tool: `__BOA_ACL_AUDIT()` prints the effective capability matrix for the real roster (`__BOA_ACL_AUDIT("3030")` for one person).
 
-### Phase 3 — Enforcement unification + grid authority *(size L — the big one)* — ◐ MOSTLY SHIPPED
+### Phase 3 — Enforcement unification + grid authority *(size L — the big one)* — ✅ SHIPPED
 `TAB_ACCESS` (52 entries) is now the single manifest of every tab's audience, and `deriveAcl` computes one answer that the nav filter, `tryChangeTab`, a new body-normalisation effect and the Settings grid all read. **52 nav keys ↔ 52 registry entries, zero conditional nav items left** — the builder supplies labels and badge counts, nothing else.
 
 What actually changed for users:
@@ -251,7 +251,7 @@ What actually changed for users:
 
 Verified by `scratchpad/acltabs.js` — 47 assertions covering the intended changes and the invariants that must not move (owner reach, ccOnly absoluteness, `showTabs`, grant/revoke precedence, round-trip stability). Phase 2's golden master still reports zero capability differences.
 
-**Still outstanding in this phase:** the dashboard card cleanup — registry keys for the 11 unkeyed cards, splitting `mgrSick`/`techSick`, re-homing `trialAmCheckinAlert`.
+**Dashboard cleanup (defect J), also done:** `DASH_CARDS` registers all 20 cards. Twelve had no Settings key at all — the grid listed eight rows for a surface that renders twenty things — so they could not be turned off for anyone. `dashAlert()` now applies the hide itself, which means a new card is toggleable the moment it is added rather than the moment someone remembers to add a row. `mgrSick`/`techSick` are separate keys (the legacy combined `dashCalledInSick` still hides both, for records that carry it), `trialAmCheckinAlert` moved to People since it renders in the Trial Period tab, and CAN EDIT is no longer offered on card rows — a card is shown or hidden, there is nothing on it to edit.
 
 *Original scope:*
 `TAB_REGISTRY`; nav, `tryChangeTab`, body-normalization effect + `LockedTab`, and registry-driven `dataNeeds` all reading from `acl`; delete `forceShow`; convert the 6 raw `setTab` calls + quick-links; tri-state grid editor writing `grantTabs`; **retire `CALLED_IN_SICK_PINS`** (Rochelle gets a `grantTabs` entry). Dashboard cleanup (J): registry `dash.*` keys for the 11 unkeyed cards, split `mgrSick`/`techSick`, re-home `trialAmCheckinAlert`, stop offering CAN-EDIT on read-only surfaces.
@@ -347,6 +347,8 @@ All seeds are currently **undeletable** (defect K).
 
 ---
 
-*Next step: Phase 3 — make the Settings grid authoritative. The registry is in place, so this is now nav + `tryChangeTab` + a body-normalisation effect + `grantTabs`, and it is what finally makes the Called in Sick tick mean something.*
+*Next step: Phase 5 — seed & legacy retirement (defect K). Lockout-risk, so last, and it needs the live records verified first.*
+
+*Before the PR: the payroll export diff, a background-refresh soak on a view-only tab, and confirming `__BOA_ACL_AUDIT("3030")` shows the Called in Sick grant landed in her record — after which the fallback pin in `tab.calledInSick` can be deleted.*
 
 *Delivery note: Phases 1 and 4 are accumulating as commits on `feat/permissions-hardening` and land as **one** PR to main, rather than a PR per phase, to keep hosting/deploy cost down.*

@@ -11033,17 +11033,57 @@ function StaffRankedBars({ rows, refValue, refLabel }) {
 // owner add new ones, edit permissions, reset PINs and delete accounts.
 // All changes flow through `onUsersUpdate` (defined in AppGate) which
 // upserts the live user store into Supabase under APP_USERS_KEY.
+/* Dashboard cards. Twelve of the twenty had no Settings key at all, so they
+   could not be turned off for anybody — the grid listed eight rows for a
+   surface that renders twenty things. Registering them here means dashAlert()
+   applies the hide itself and a new card is toggleable the moment it is added,
+   rather than the moment someone remembers to add a row below.
+
+   `legacy` keeps an older, coarser key working: Called in Sick used to be ONE
+   key covering both the manager and nail-tech cards, so a record that still
+   carries dashCalledInSick must keep hiding both. */
+const DASH_CARDS = [
+  { id: "securityAlerts", key: "dashSecurityAlerts", l: "Security Alerts", icon: "🚨" },
+  { id: "hrActions", key: "dashHrActions", l: "HR Actions & Tasks", icon: "📝" },
+  { id: "mgrAbsences", key: "dashMgrAbsences", l: "Manager Absences (Action required)", icon: "📌" },
+  { id: "mgrSick", key: "dashMgrSick", legacy: "dashCalledInSick", l: "Called in Sick · Managers", icon: "🤒" },
+  { id: "techSick", key: "dashTechSick", legacy: "dashCalledInSick", l: "Called in Sick · Nail Techs", icon: "🤒" },
+  { id: "abscond", key: "dashAbscond", l: "Abscond / Absence Warnings", icon: "🚨" },
+  { id: "edOffers", key: "dashEdRequests", l: "Extra-Day Offers (review)", icon: "✨" },
+  { id: "dailyUpdates", key: "dashNews", l: "Daily Updates (kiosk feed)", icon: "📰" },
+  // The twelve that had no toggle until now.
+  { id: "myAlert", key: "dashMyAlerts", l: "My Alerts", icon: "🔔" },
+  { id: "offboardPayroll", key: "dashOffboardPayroll", l: "Off-boarding · payroll sign-off due", icon: "👋" },
+  { id: "sageReanchor", key: "dashSageReanchor", l: "Leave balances · Sage re-anchor due", icon: "🧾" },
+  { id: "officeHours", key: "dashOfficeHours", l: "Office Hours · findings", icon: "⏰" },
+  { id: "mgrHoursDocked", key: "dashMgrHoursDocked", l: "Manager hours docked", icon: "⏱️" },
+  { id: "mgrNoClockOut", key: "dashMgrNoClockOut", l: "Managers with no clock-out", icon: "🕐" },
+  { id: "leaveExpiry", key: "dashLeaveExpiry", l: "Leave expiry · auto-filed", icon: "⏳" },
+  { id: "unpublishedSched", key: "dashUnpublishedSched", l: "Unpublished schedule changes", icon: "📅" },
+  { id: "freshaDue", key: "dashFreshaDue", l: "Fresha · due soon", icon: "💇‍♀️" },
+  { id: "probationEnding", key: "dashProbationEnding", l: "Probation ending", icon: "📋" },
+  { id: "trialHrActions", key: "dashTrialHrActions", l: "Trial · HR actions", icon: "🧪" },
+  { id: "storeOpenings", key: "dashStoreOpenings", l: "Store openings", icon: "🔓" }
+];
+const DASH_BY_ID = DASH_CARDS.reduce((m, c) => { m[c.id] = c; return m; }, {});
+// Is this dashboard card hidden for this user? One place, so a card can never
+// be "registered but unhideable" again.
+// Grid rows that are dashboard cards / in-tab notices rather than tabs. They
+// have no editable state, so offering CAN EDIT on them was a checkbox that
+// saved a value nothing ever read.
+const DASH_ROW_KEYS = new Set(DASH_CARDS.map(c => c.key).concat(["trialAmCheckinAlert"]));
+function dashCardHidden(user, id) {
+  const c = DASH_BY_ID[id];
+  if (!c) return false;
+  const hidden = new Set((user && user.hideTabs) || []);
+  return hidden.has(c.key) || (!!c.legacy && hidden.has(c.legacy));
+}
+
 const SETTINGS_TABS = [
-  { t: "dashSecurityAlerts", l: "Security Alerts", cat: "Home/Dashboard", icon: "🚨" },
-  { t: "dashHrActions", l: "HR Actions & Tasks", cat: "Home/Dashboard", icon: "📝" },
-  { t: "dashMgrAbsences", l: "Manager Absences (Action required)", cat: "Home/Dashboard", icon: "📌" },
-  { t: "dashCalledInSick", l: "Called in Sick / Absent (today & tomorrow)", cat: "Home/Dashboard", icon: "🤒" },
-  { t: "dashAbscond", l: "Abscond / Absence Warnings", cat: "Home/Dashboard", icon: "🚨" },
-  // These two gates were already checked on the dashboard but never listed
-  // here, so there was no way to actually turn them off for a user.
-  { t: "dashEdRequests", l: "Extra-Day Offers (review)", cat: "Home/Dashboard", icon: "✨" },
-  { t: "dashNews", l: "Daily Updates (kiosk feed)", cat: "Home/Dashboard", icon: "📰" },
-  { t: "trialAmCheckinAlert", l: "AM Trial · missing check-in (trainers)", cat: "Home/Dashboard", icon: "⚠️" },
+  ...DASH_CARDS.map(c => ({ t: c.key, l: c.l, cat: "Home/Dashboard", icon: c.icon })),
+  // Renders inside the Trial Period tab, not on the dashboard — it was filed
+  // under Home/Dashboard, where nobody would look for it.
+  { t: "trialAmCheckinAlert", l: "AM Trial · missing check-in (trainers)", cat: "People", icon: "⚠️" },
   // Tab KEY stays "staff" — it's persisted in every user's hideTabs /
   // showTabs / readOnlyTabs and in NAV_TAB_TO_CATEGORY, so renaming the key
   // would silently orphan those. Label only.
@@ -12615,7 +12655,9 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, dataCounts, offbo
                                 <input type="checkbox" checked={!!p.visible} disabled={inert} title={inert ? why : undefined} onChange={() => togglePerm(t, "visible")} />
                               </td>
                               <td style={{ padding: "7px 10px", textAlign: "center" }}>
-                                <input type="checkbox" checked={!!p.editable} disabled={!p.visible} onChange={() => togglePerm(t, "editable")} />
+                                {DASH_ROW_KEYS.has(t)
+                                  ? <span title="A dashboard card is shown or hidden — there is nothing to edit on it." style={{ color: "#9ca3af", fontSize: 11 }}>—</span>
+                                  : <input type="checkbox" checked={!!p.editable} disabled={!p.visible} onChange={() => togglePerm(t, "editable")} />}
                               </td>
                             </tr>
                           );
@@ -31595,6 +31637,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // was the last one) simply doesn't render.
           const dashAlertEntries = [];
           const dashAlert = (id, group, severity, res) => {
+            // The per-user hide lives here, not at each call site. Twelve cards
+            // simply never got one because adding it was a separate step that
+            // was easy to forget — now every registered card is toggleable and
+            // an unregistered id is a no-op you notice immediately.
+            if (dashCardHidden(currentUser, id)) return;
             if (!res) return;                       // gate false, or nothing to report
             const node = res.node !== undefined ? res.node : res;
             if (!node) return;
@@ -31604,7 +31651,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               /* ── SECTION: EXTRA-DAY REQUESTS (Owner + National Ops) ── */
               dashAlert("edOffers", "people", "info",
               can(currentUser, "sys.seniorOps")
-                && !(new Set(currentUser?.hideTabs || []).has("dashEdRequests"))
                 && (() => {
                   const openOffers = (edOffers || []).filter(o => o && o.status === "open");
                   const pendingByOffer = {};
@@ -32131,7 +32177,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   the "Abscond / Absence Warnings" permission (owner-only by
                   default; grant others in Settings). */
               dashAlert("abscond", "people", "critical",
-              !(new Set(currentUser?.hideTabs || []).has("dashAbscond")) && (() => {
+              (() => {
                 // What counts toward an abscond streak: NO SHOW and ABSENT.
                 const MISSED = { no: 1, absent: 1 };
                 // A day they actually WORKED — counts as a return to work and
@@ -32279,7 +32325,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   owners and ROMs; admins can grant it to other roles in
                   Settings → Users → Edit. */
               dashAlert("mgrAbsences", "people", "warning",
-              !(new Set(currentUser?.hideTabs || []).has("dashMgrAbsences")) && (() => {
+              (() => {
                 const _t = new Date();
                 const _todayYmd = _t.getFullYear() + "-" + String(_t.getMonth() + 1).padStart(2, "0") + "-" + String(_t.getDate()).padStart(2, "0");
                 if (dashTodayMgrClockinEcs == null) return null;     // still loading
@@ -32382,7 +32428,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   action and a "Mark done" so it can be cleared off the dashboard.
                   Scoped to the ROM's own stores. */
               dashAlert("mgrSick", "people", "info",
-              !(new Set(currentUser?.hideTabs || []).has("dashCalledInSick")) && canSeeIncidents(currentUser) && (() => {
+              canSeeIncidents(currentUser) && (() => {
                 const { today, tomorrow, list } = calledInSickWindow(leaveRequests);
                 const isMgrEc = (ec) => isManagerEc(ec);
                 const mgrSick = list.filter(r => isMgrEc(r.ec) && !r.reviewed
@@ -32445,7 +32491,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   summary; click through to the Called in Sick tab for details.
                   (Managers are handled by the ROM-action card above.) */
               dashAlert("techSick", "people", "info",
-              !(new Set(currentUser?.hideTabs || []).has("dashCalledInSick")) && canSeeIncidents(currentUser) && (() => {
+              canSeeIncidents(currentUser) && (() => {
                 const { today, tomorrow, list: _list } = calledInSickWindow(leaveRequests);
                 const list = _list.filter(r => !isManagerEc(r.ec));
                 if (!list.length) return null;
@@ -32548,7 +32594,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   ones linger — this card lets an owner prune or clear them. */
               dashAlert("dailyUpdates", "operations", "info",
               can(currentUser, "sys.seniorOps")
-                && !(new Set(currentUser?.hideTabs || []).has("dashNews"))
+
                 && Array.isArray(newsPosts) && newsPosts.length > 0 && (() => {
                   const fmtWhen = (iso) => { try { return new Date(iso).toLocaleString(undefined, { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }); } catch (_) { return ""; } };
                   const posts = newsPosts.slice().sort((a, b) => String(b.ts || "").localeCompare(String(a.ts || "")));
@@ -32582,7 +32628,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               /* ── SECTION: SECURITY ALERTS ── */
               /* Only visible to users who have the dashSecurityAlerts permission (not in hideTabs) */
               dashAlert("securityAlerts", "security", "critical",
-              !(new Set(currentUser?.hideTabs || []).has("dashSecurityAlerts")) && securityLogs && securityLogs.length > 0 && (
+              securityLogs && securityLogs.length > 0 && (
                 <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 14, padding: "16px", marginBottom: 18, boxShadow: "0 1px 4px rgba(220,38,38,0.06)" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -32705,7 +32751,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   not something a Regional Ops Manager would action.
                   Also gated by the dashHrActions permission. */
               dashAlert("hrActions", "people", "warning",
-              !_hasStoreScope && !(new Set(currentUser?.hideTabs || []).has("dashHrActions")) && (() => {
+              !_hasStoreScope && (() => {
                 const pendingTasks = obList.filter(o =>
                   o.status === "Pending Trainer Review" ||
                   o.status === "Pending Trial 1 Review" ||
