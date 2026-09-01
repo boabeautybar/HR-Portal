@@ -11655,15 +11655,18 @@ const TAB_ACCESS = {
   onboard: { tier: "open", cat: "People" },
   trialPeriod: { tier: "open", cat: "People" },
   smTrial: { tier: "open", cat: "People" },
-  offboard: { tier: "list", cat: "People", ignoreCategoryHide: true, allow: g => g.canOffboard },
+  offboard: { tier: "list", cat: "People", ignoreCategoryHide: true, allow: g => g.canOffboard,
+    grantedIn: "Settings → \u201cOff-boarding access\u201d (the red panel below the user list). Add the person there; the Owner is NOT automatically included." },
   staff: { tier: "open", cat: "People" },
   officeStaff: { tier: "normal", cat: "People", allow: g => !!(g.hoStaffCount || g.canAddOfficeStaff) },
   officeTrials: { tier: "normal", cat: "People", allow: g => !!(g.canAddOfficeStaff || g.officeTrialCount) },
   recruitment: { tier: "open", cat: "People" },
-  hrLibrary: { tier: "locked", cat: "People", allow: g => g.isOwnerOrMaster },
+  hrLibrary: { tier: "locked", cat: "People", allow: g => g.isOwnerOrMaster,
+    grantedIn: "Owner and Master Admin only." },
   maternity: { tier: "open", cat: "People" },
   unpaidLegal: { tier: "open", cat: "People" },
-  compliance: { tier: "locked", cat: "People", allow: g => g.canCompliance },
+  compliance: { tier: "locked", cat: "People", allow: g => g.canCompliance,
+    grantedIn: "Immigration / permit data — granted by ROLE only: HR, National Ops, Recruitment, Payroll, Project, Dev, or the Owner. Not handed out per person." },
   incidents: { tier: "normal", cat: "People", allow: g => g.canIncidents },
   leaveExpiry: { tier: "normal", cat: "People", allow: g => g.canLeaveExpiry },
   // ── Operations ───────────────────────────────────────────────────────────
@@ -11690,7 +11693,8 @@ const TAB_ACCESS = {
   payrollProgress: { tier: "open", cat: "Payroll" },
   payrollReports: { tier: "open", cat: "Payroll" },
   overtime: { tier: "open", cat: "Payroll" },
-  officeHours: { tier: "list", cat: "Payroll", ignoreCategoryHide: true, allow: g => g.canOfficeHours },
+  officeHours: { tier: "list", cat: "Payroll", ignoreCategoryHide: true, allow: g => g.canOfficeHours,
+    grantedIn: "Settings → \u201c⏰ Office Hours alerts (Payroll)\u201d access panel, below the user list." },
   payrollInbox: { tier: "list", cat: "Payroll", ignoreCategoryHide: true, allow: g => g.canPayrollInbox },
   leaveBalances: { tier: "list", cat: "Payroll", ignoreCategoryHide: true, allow: g => g.canLeaveBalances },
   frl: { tier: "list", cat: "Payroll", ignoreCategoryHide: true, allow: g => g.canLeaveBalances },
@@ -12637,18 +12641,22 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, dataCounts, offbo
                           // disabled and says where to go, instead of accepting
                           // a click and silently doing nothing.
                           const inert = p.byDefault === false && p.grantable === false;
-                          const why = p.tier === "list"
+                          const where = (TAB_ACCESS[t] || {}).grantedIn;
+                          const why = where || (p.tier === "list"
                             ? "Granted by an access list further down this page, not here."
                             : p.tier === "locked"
                               ? "Restricted by role in code — this tab can be hidden, never handed out."
-                              : "";
+                              : "");
                           return (
                             <tr key={t} style={{ borderTop: "1px solid #FCE7F3", opacity: inert ? 0.65 : 1 }}>
                               <td style={{ padding: "7px 10px 7px 26px", color: "#831843" }}>
                                 <span style={{ marginRight: 6 }}>{icon}</span>{l}
-                                {inert && <span title={why} style={{ marginLeft: 6, fontSize: 9, fontWeight: 800, color: "#92400e", background: "#FEF3C7", border: "1px solid #FDE68A", borderRadius: 99, padding: "1px 7px", cursor: "help" }}>
-                                  {p.tier === "list" ? "ACCESS LIST" : "ROLE-LOCKED"}
-                                </span>}
+                                {inert && <>
+                                  <span title={why} style={{ marginLeft: 6, fontSize: 9, fontWeight: 800, color: "#92400e", background: "#FEF3C7", border: "1px solid #FDE68A", borderRadius: 99, padding: "1px 7px", cursor: "help" }}>
+                                    {p.tier === "list" ? "ACCESS LIST" : "ROLE-LOCKED"}
+                                  </span>
+                                  {where && <div style={{ fontSize: 10.5, color: "#a16207", marginTop: 2, fontWeight: 500 }}>↳ {where}</div>}
+                                </>}
                                 {!inert && p.byDefault === false && p.visible && <span title="Not in this tab's default audience — visible because you granted it here." style={{ marginLeft: 6, fontSize: 9, fontWeight: 800, color: "#166534", background: "#dcfce7", border: "1px solid #bbf7d0", borderRadius: 99, padding: "1px 7px", cursor: "help" }}>GRANTED</span>}
                               </td>
                               <td style={{ padding: "7px 10px", textAlign: "center" }}>
