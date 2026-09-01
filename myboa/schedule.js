@@ -29,6 +29,7 @@
     ec: "", store: "", name: "", role: "", effRole: "", isManager: false,
     homeBranch: "", typedStore: "",   // typedStore = what they entered; store = home anchor
     transferring: false, transferTo: "", transferDate: "",   // permanent branch move (effective date)
+    startDate: "",           // employment start — nothing before it is on the roster
     custom: {},              // ymd -> "HH:MM - HH:MM" custom hours for this person
     leaveRanges: [],         // [{start,end,emergency}] annual/emergency leave (boa_leave_v1)
     view: "soon",            // soon | week | month
@@ -503,10 +504,22 @@
     };
   }
 
+  // Pre-start overlay — nothing before the employment start date is on the
+  // roster. A row generated before the start date was known still holds real
+  // W/O cells for those days (a BLANK tech cell also reads as a working day
+  // here), so trusting the saved cell showed a new starter working days she
+  // hadn't started. The HR portal greys the same cells at render time.
+  function preStartOn(dt) {
+    if (!state.startDate) return false;
+    return ymdStr(dt) < state.startDate;
+  }
+  var PRE_START_INFO = { kind: "off", label: "Not started yet", sub: "" };
+
   // Status for a date, resolved against `branch` (the person's EFFECTIVE store that
   // day — home, or the transfer destination once the transfer date has passed).
   function cellStatus(row, dt, branch) {
     branch = branch || state.store;
+    if (preStartOn(dt)) return PRE_START_INFO;
     if (matMlOn(dt)) return ML_INFO;
     if (legalUnpaidOn(dt)) return LEGAL_INFO;
     var _alv = annualLeaveOn(dt);
@@ -816,7 +829,7 @@
         // missing column (e.g. first_name) makes PostgREST reject the whole
         // query, which silently emptied the role (→ generic wrong hours).
         var rr = await Promise.all([
-          sb.from("staff").select("employee_code,name,role,role_type,branch,transferring,transfer_to,transfer_date").ilike("employee_code", ecTrim + "%").limit(10),
+          sb.from("staff").select("employee_code,name,role,role_type,branch,transferring,transfer_to,transfer_date,start_date").ilike("employee_code", ecTrim + "%").limit(10),
           sb.from("app_state").select("value").eq("key", "boa_sm_trial_v1").maybeSingle(),
           sb.from("app_state").select("value").eq("key", "boa_mgr_times_v1").maybeSingle(),
           // Maternity record — so the schedule flips to ML straight from the
@@ -849,6 +862,7 @@
           state.transferring = !!row.transferring;
           state.transferTo = (row.transfer_to || "").trim();
           state.transferDate = row.transfer_date ? String(row.transfer_date).replace(/\//g, "-") : "";
+          state.startDate = row.start_date ? String(row.start_date).replace(/\//g, "-") : "";
           if (row.role_type === "manager") state.isManager = true;
           if (state.role) state.mgrRoles[ecUp] = state.role;   // self always known for the lineup
         }

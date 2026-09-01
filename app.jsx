@@ -5357,6 +5357,38 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
 
   const days = window.BOA_DB ? window.BOA_DB.periodDays(ym) : [];
 
+  // Heal pre-start cells on an ALREADY-SAVED row. A tech only exists on the
+  // schedule from her start date, but a row generated before that date was
+  // known (or by an older build, where the generator's pre-start guard was
+  // dead code) carries real W/O cells for days before it. The grid render
+  // greys those cells, so the hub looked right while the SAVED cell stayed
+  // "W" — and the kiosk + My BOA, which render the saved cell verbatim, showed
+  // a new starter working days she hadn't started. Stamp "X" (the recognised
+  // pre-start marker) so the stored grid matches what the hub displays, and
+  // mark dirty so Save/Publish pushes it to the store surfaces. Mirrors the
+  // manager tab's identical post-load pass.
+  useEffect(() => {
+    if (loading) return;
+    if (!days || days.length === 0) return;
+    const _pad = n => String(n).padStart(2, "0");
+    const _ymd = d => d.year + "-" + _pad(d.monthIdx + 1) + "-" + _pad(d.d);
+    const startByEc = {};
+    (allStaff || []).forEach(s => { if (s && s.ec && s.startDate) startByEc[String(s.ec).trim()] = s.startDate; });
+    let changed = false;
+    const next = JSON.parse(JSON.stringify(grid || {}));
+    Object.keys(next).forEach(ec => {
+      const sd = startByEc[String(ec).trim()];
+      if (!sd) return;
+      days.forEach(d => {
+        if (_ymd(d) < sd && next[ec][d.d] !== "X") { next[ec][d.d] = "X"; changed = true; }
+      });
+    });
+    if (changed) { setGrid(next); setDirty(true); }
+    // `days` is rebuilt every render, so it stays out of the deps; ym/branch
+    // cover every case where it actually changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [grid, allStaff, loading, branch, ym]);
+
   // Auto-stamp 'R' on cells with a pending off-day request — runs after each
   // schedule load and whenever techRequests changes (e.g. a new request comes
   // in from the check-in app). Empty cells become R; cells the user has set
@@ -6910,9 +6942,16 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
     // PHASE 18 — Onboarding & offboarding ghost cells.
     // Days BEFORE a tech's start date (onboarding) → "X" (pre-start marker).
     // Days AFTER a tech's left date (offboarding) → "X" (post-departure).
+    // Gated on the start date ALONE — not on an `_onboarding` flag. Tech rows
+    // come straight from the staff list (see the `techs` memo), which never
+    // carries that flag: only onboarding MANAGERS are wrapped with it. Gating on
+    // it made this whole block dead code, so an auto-filled row was scheduled W
+    // from the 25th while the hub greyed those cells at render time only — the
+    // kiosk + My BOA read the saved cell and showed the new tech working days
+    // before she started. mgrSched's pre-start blanking gates the same way.
     sortedTechs.forEach(s => {
       const startDate = s.startDate || s._startDate;
-      if (s._onboarding && startDate) {
+      if (startDate) {
         days.forEach(d => {
           const ymd = d.year + "-" + String(d.monthIdx + 1).padStart(2, "0") + "-" + String(d.d).padStart(2, "0");
           if (ymd < startDate) newGrid[s.ec][d.d] = "X";
@@ -7816,7 +7855,8 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
       return { row, unhonored };
     }
     const startDate = tech.startDate || tech._startDate;
-    const isOnboarding = tech._onboarding && startDate;
+    // Start date alone — `_onboarding` is never set on a tech row (see PHASE 18).
+    const isOnboarding = !!startDate;
     const leftDate = tech.leftDate;
     days.forEach(d => {
       const ymd = _ymd(d);
@@ -28855,11 +28895,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // salon branch + salon tier. Split into the two sections at the render site.
   const officeFiltered = useMemo(() => {
     const q = (oSearch || "").trim().toLowerCase();
+    const _todayYmdO = ymdStr(new Date());
     const list = (enrichedOffice || []).filter(s => {
-      if (s.offHidden) return false;          // past the 31-day leaver window
-      const isTerm = s.status === "terminated" || s.active === "false" || s.active === false;
-      if (oShow === "terminated" && !isTerm) return false;
-      if (oShow !== "terminated" && isTerm) return false;
+      const isTerm = isTerminatedRow(s);
+      const hasGone = hasDeparted(s, _todayYmdO);
+      // THE ARCHIVE — same three routes out as the salon list above: a
+      // terminated / inactive row, an off-boarding record, or a leftDate that
+      // has passed. This view tested only the first, and `offHidden` dropped
+      // the off-boarded before it even got there, so "Terminated (Archive)"
+      // came up empty for Head Office. The 31-day window keeps leavers out of
+      // the LIVE views; it must not apply to the archive that keeps them.
+      if (oShow === "terminated") {
+        if (!hasGone) return false;
+      } else {
+        if (s.offHidden) return false;        // past the 31-day leaver window
+        if (isTerm) return false;             // hide from 'all', 'active', 'on_mat'
+      }
       if (oShow === "on_mat" && !s.onMat) return false;
       if (oShow === "active_only" && s.onMat) return false;
       // Department is DERIVED (isCallCentreStaff), never a stored branch.
@@ -32670,11 +32721,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           {sec.label} · {sec.rows.length}
                         </td></tr>
                         {sec.rows.map(p => {
-                          const departed = p.offboarded && p.offDaysSinceLeft != null && p.offDaysSinceLeft >= 0;
+                          const terminated = isTerminatedRow(p);
+                          // Covers every route out — including a leftDate set on the
+                          // office modal with no off-boarding record, which otherwise
+                          // rendered as a live row sitting in the archive.
+                          const departed = hasDeparted(p, _archiveToday) && !terminated;
+                          const archived = terminated || departed;
                           const onNotice = p.offboarded && p.offDaysSinceLeft != null && p.offDaysSinceLeft < 0;
                           const _fmt = (ymd) => { try { return new Date(String(ymd).replace(/\//g, "-") + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }); } catch (_) { return ymd; } };
-                          const rowBg = departed ? "#f3f4f6" : p.onMat ? "#fdf4ff" : p.pregnant ? "#fffbeb" : "#fff";
-                          const rowOpacity = departed ? 0.5 : p.onMat ? 0.6 : 1;
+                          const rowBg = archived ? "#f3f4f6" : p.onMat ? "#fdf4ff" : p.pregnant ? "#fffbeb" : "#fff";
+                          const rowOpacity = archived ? 0.5 : p.onMat ? 0.6 : 1;
                           // A role from the OTHER department (e.g. an office role
                           // on a -CC code) means the roster and the shift-hours
                           // rule disagree about this person — surface it.
@@ -32743,8 +32799,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                         title="Off-board this person — set their last day and work the exit checklist"
                                         style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 6, padding: "5px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700, color: "#9d174d" }}>👋 Off-board</button>
                                     )}
-                                    <button onClick={() => setOfficeModal({ ...p, _dept: isCallCentreStaff(p) ? "CC" : "HO" })}
-                                      style={{ background: "#e2e8f0", border: "none", borderRadius: 6, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700, color: "#831843" }}>✏️ Edit</button>
+                                    <button onClick={() => { if (!archived) setOfficeModal({ ...p, _dept: isCallCentreStaff(p) ? "CC" : "HO" }); }} disabled={archived}
+                                      title={archived ? "Archived record — read only" : "Edit"}
+                                      style={{ background: "#e2e8f0", border: "none", borderRadius: 6, padding: "5px 11px", cursor: archived ? "not-allowed" : "pointer", fontSize: 11, fontWeight: 700, color: "#831843", opacity: archived ? 0.55 : 1 }}>✏️ Edit</button>
                                   </span>
                                 )}
                               </td>
@@ -51543,6 +51600,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               ...prev.filter(l => !(String(l.ec).trim() === ec && l.date === ymd)),
               { _op: "upsert", ec, name: E.name || "", date: ymd, fromBranch: homeBranch, toBranch: dest, note: E._draftNote || "", extra: draftCode === "E" }
             ]);
+          } else if (dest && dest === homeBranch && oldDest === homeBranch) {
+            // GUEST ROW at the loan's destination: this cell is rendered under
+            // the store the manager is loaned TO, so E.branch === the loan's
+            // toBranch and the editor seeds dest to it. That is not a reversal —
+            // it is the borrowed day itself. Leave the loan record alone
+            // (falling through to the branch below would stage a removal and
+            // silently bounce her back to her home store).
           } else {
             // Cleared destination — drop any pending draft loan for the
             // same (ec,date) and stage a removal if a live loan exists.
@@ -51620,7 +51684,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </select>
               </div>
 
-              {_isWorkingCode && !draftDest && (
+              {/* A loan whose destination IS the branch you're looking at is not
+                  a cross-store day (a guest row seeds _draftDest from the loan
+                  record, so dest === branch there) — the same comparison the
+                  save path makes via _isCrossStore. Without it the custom-hours
+                  fields vanished on every loaned day, leaving no way at all to
+                  override the computed shift for a manager working away. */}
+              {_isWorkingCode && (!draftDest || draftDest === E.branch) && (
                 <div style={{ marginTop: 12, padding: "10px 12px", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 9 }}>
                   <label style={{ fontSize: 10, fontWeight: 800, color: "#b45309", letterSpacing: "0.06em" }}>CUSTOM HOURS — THIS DAY ONLY (optional)</label>
                   <div style={{ fontSize: 11, color: "#92400e", marginTop: 2 }}>
@@ -51656,9 +51726,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <option value="">— Stay at {E.branch} —</option>
                   {otherBranches.map(b => <option key={b} value={b}>{b}</option>)}
                 </select>
-                {draftDest && (
+                {draftDest && draftDest !== E.branch && (
                   <div style={{ marginTop: 6, padding: "8px 10px", background: "#dbeafe", border: "1px solid #93c5fd", borderRadius: 8, fontSize: 12, color: "#1e3a8a" }}>
                     ↪ {E.name} will be loaned to <strong>{draftDest}</strong> on this day. {E.branch}'s schedule will show "↪ Loaned to {draftDest}".
+                  </div>
+                )}
+                {draftDest && draftDest === E.branch && (
+                  <div style={{ marginTop: 6, padding: "8px 10px", background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 8, fontSize: 12, color: "#1e3a8a" }}>
+                    ↪ Borrowed day — {E.name} is loaned IN to {E.branch} on this date. Editing here changes her shift at {E.branch}; the loan itself stays as it is.
                   </div>
                 )}
               </div>
