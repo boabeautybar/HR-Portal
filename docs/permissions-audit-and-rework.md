@@ -213,7 +213,7 @@ Invert the guard: wrap **every** `BOA_DB` function except an explicit read allow
 
 Each phase ships and verifies alone. Order: stop the bleeding → invisible plumbing → the headline promise → payroll-adjacent writes → lockout-risk last.
 
-**Status (branch `feat/permissions-hardening`, unpushed):** Phase 1 ✅ · Phase 4 ✅ + affordance pass ✅ · Phase 2 ✅ · Phases 3, 5 not started.
+**Status (branch `feat/permissions-hardening`, unpushed):** Phase 1 ✅ · Phase 4 ✅ + affordance pass ✅ · Phase 2 ✅ · Phase 3 ◐ (enforcement + grid authority done; dashboard card cleanup outstanding) · Phase 5 not started.
 Phases 1 and 4 were taken out of order deliberately: 4's read-only flip is what makes the *existing* grid ticks mean anything, and it needed no model change, so it could ship while 2–3 were still on paper.
 
 ### Phase 1 — Pure bug fixes, no model change *(size M)* — ✅ SHIPPED
@@ -239,7 +239,21 @@ Phases 1 and 4 were taken out of order deliberately: 4's read-only flip is what 
 
 New console tool: `__BOA_ACL_AUDIT()` prints the effective capability matrix for the real roster (`__BOA_ACL_AUDIT("3030")` for one person).
 
-### Phase 3 — Enforcement unification + grid authority *(size L — the big one)*
+### Phase 3 — Enforcement unification + grid authority *(size L — the big one)* — ◐ MOSTLY SHIPPED
+`TAB_ACCESS` (52 entries) is now the single manifest of every tab's audience, and `deriveAcl` computes one answer that the nav filter, `tryChangeTab`, a new body-normalisation effect and the Settings grid all read. **52 nav keys ↔ 52 registry entries, zero conditional nav items left** — the builder supplies labels and badge counts, nothing else.
+
+What actually changed for users:
+- **The grid can grant (defect A).** New `grantTabs` key. Ticking Visible on a "normal"-tier tab the person wouldn't reach by default now records a real grant instead of removing a `hideTabs` entry that was never there. A V5 migration moves 3030's Called in Sick access from the hardcoded PIN into `grantTabs`.
+- **`forceShow` is deleted (defect B).** Off-boarding, Office Hours, Payroll Inbox, Leave Balances, FRL and Bargaining Council can finally be hidden per user. *Deliberate carve-out:* an explicit per-tab hide revokes them, a whole-category hide does not (`ignoreCategoryHide`) — otherwise anyone on the leave-payroll access list who happens to have "Payroll" collapsed would have silently lost their inbox.
+- **Bodies are guarded (defect C).** One normalisation effect bounces a user off any tab they can't see, closing all ~27 unguarded bodies at once instead of 27 edits in the repo's highest-churn file; every raw `setTab()` now routes through `tryChangeTab`, which is the single choke point.
+- **The grid stopped lying.** Rows that can't be granted from Settings render disabled and badged **ACCESS LIST** or **ROLE-LOCKED**, with a tooltip pointing at where the grant actually lives. Granted rows are badged **GRANTED**.
+- **Publish current cycle** (folded in): was `isOwner` inline on the Scheduling tab but owner-or-national on a dashboard card calling the same handler — two doors, two audiences, and the dashboard one bypassed view-only entirely, since read-only is scoped to the tab you're looking at. Now one capability plus a **pre-flight inside the handler**, so it holds whichever door was used.
+
+Verified by `scratchpad/acltabs.js` — 47 assertions covering the intended changes and the invariants that must not move (owner reach, ccOnly absoluteness, `showTabs`, grant/revoke precedence, round-trip stability). Phase 2's golden master still reports zero capability differences.
+
+**Still outstanding in this phase:** the dashboard card cleanup — registry keys for the 11 unkeyed cards, splitting `mgrSick`/`techSick`, re-homing `trialAmCheckinAlert`.
+
+*Original scope:*
 `TAB_REGISTRY`; nav, `tryChangeTab`, body-normalization effect + `LockedTab`, and registry-driven `dataNeeds` all reading from `acl`; delete `forceShow`; convert the 6 raw `setTab` calls + quick-links; tri-state grid editor writing `grantTabs`; **retire `CALLED_IN_SICK_PINS`** (Rochelle gets a `grantTabs` entry). Dashboard cleanup (J): registry `dash.*` keys for the 11 unkeyed cards, split `mgrSick`/`techSick`, re-home `trialAmCheckinAlert`, stop offering CAN-EDIT on read-only surfaces.
 
 ### Phase 4 — Read-only flip + action capabilities *(size M)* — ✅ SHIPPED (except `act.*` / "2002", which depend on Phase 2)

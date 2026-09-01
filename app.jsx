@@ -9339,7 +9339,7 @@ function PinLogin(props) {
       setPin("");
       return;
     }
-    const session = { pin, name: u.name, role: u.role, demo: !!u.demo, isOwner: !!u.isOwner, voucherEntryOnly: !!u.voucherEntryOnly, ccOnly: !!u.ccOnly, hideCategories: u.hideCategories || [], hideTabs: u.hideTabs || [], showTabs: u.showTabs || [], readOnlyTabs: u.readOnlyTabs || [], stores: Array.isArray(u.stores) ? u.stores.slice() : [], signedInAt: new Date().toISOString() };
+    const session = { pin, name: u.name, role: u.role, demo: !!u.demo, isOwner: !!u.isOwner, voucherEntryOnly: !!u.voucherEntryOnly, ccOnly: !!u.ccOnly, hideCategories: u.hideCategories || [], hideTabs: u.hideTabs || [], showTabs: u.showTabs || [], grantTabs: u.grantTabs || [], readOnlyTabs: u.readOnlyTabs || [], stores: Array.isArray(u.stores) ? u.stores.slice() : [], signedInAt: new Date().toISOString() };
     try { sessionStorage.setItem(PIN_SESSION_KEY, JSON.stringify(session)); } catch (_) { }
     window.BOA_CURRENT_USER = session;
     onUnlock(session);
@@ -10623,6 +10623,22 @@ function AppGate() {
             u.hideTabs = [...ht, "officeStaff"];
           }
         });
+        // V5 migration: move the hardcoded Called in Sick grant into DATA.
+        // 3030 (Rochelle) reached that tab only because her PIN was written
+        // into the code — the Settings tick for it could never take effect.
+        // grantTabs now makes the tick real, so the grant becomes an ordinary
+        // record entry the owner can see and revoke like any other. Additive
+        // and idempotent; it never removes anything.
+        Object.keys(dynamic).forEach(pin => {
+          const u = dynamic[pin];
+          if (u._calledInSickGrantMigrated) return;
+          u._calledInSickGrantMigrated = true;
+          dashMigrated = true;
+          if (pin !== "3030") return;
+          const gt = Array.isArray(u.grantTabs) ? u.grantTabs : [];
+          if (!gt.includes("calledInSick")) u.grantTabs = [...gt, "calledInSick"];
+          if (Array.isArray(u.hideTabs)) u.hideTabs = u.hideTabs.filter(t => t !== "calledInSick");
+        });
         if (dashMigrated) { try { await saveAppUsersToDb(dynamic); } catch (_) { } }
       }
       if (cancelled) return;
@@ -10645,6 +10661,7 @@ function AppGate() {
               hideCategories: u.hideCategories || [],
               hideTabs: u.hideTabs || [],
               showTabs: u.showTabs || [],
+              grantTabs: u.grantTabs || [],
               readOnlyTabs: u.readOnlyTabs || [],
               stores: Array.isArray(u.stores) ? u.stores.slice() : []
             };
@@ -10677,6 +10694,7 @@ function AppGate() {
         demo: !!u.demo, isOwner: !!u.isOwner,
         hideCategories: u.hideCategories || [],
         hideTabs: u.hideTabs || [],
+        grantTabs: u.grantTabs || [],
         readOnlyTabs: u.readOnlyTabs || []
       };
       // ROM store allocation — only stamp the field when actually set, so
@@ -10701,6 +10719,7 @@ function AppGate() {
         ccOnly: !!u.ccOnly,
         hideCategories: u.hideCategories || [],
         hideTabs: u.hideTabs || [],
+        grantTabs: u.grantTabs || [],
         readOnlyTabs: u.readOnlyTabs || [],
         stores: Array.isArray(u.stores) ? u.stores.slice() : []
       };
@@ -11092,24 +11111,35 @@ const CC_ONLY_TABS = new Set(["scheduling", "ccCheckins"]);
 
 // Convert a stored user record (hideCategories + hideTabs + readOnlyTabs)
 // into a per-tab matrix the editor can flip checkboxes against.
-function userToPerms(u) {
-  const hideCats = new Set(u.hideCategories || []);
-  const hideTabs = new Set(u.hideTabs || []);
-  const showTabs = new Set(u.showTabs || []);
+// `gctx` (optional) is the gate context for the user BEING EDITED. With it,
+// each row also reports what the tab's default audience says and whether a tick
+// can change that — which is how the grid stops offering ticks that do nothing.
+// Without it the function degrades to the old visible/editable pair, so callers
+// that only need the shape (e.g. a save round-trip) don't have to build one.
+function userToPerms(u, gctx) {
   const roTabs = new Set(u.readOnlyTabs || []);
+  const acl = deriveAcl(u, gctx || {});
   const perms = {};
-  SETTINGS_TABS.forEach(({ t, cat }) => {
+  SETTINGS_TABS.forEach(({ t }) => {
     // A CC&S-only account is authoritative: it sees EXACTLY the CC&S tabs
     // (editable) and nothing else, regardless of the stored hide/showTabs — so
     // the toggle both grants the six surfaces and hides everything else.
     if (u.ccOnly) {
       const vis = CC_ONLY_TABS.has(t);
-      perms[t] = { visible: vis, editable: vis };
+      perms[t] = { visible: vis, editable: vis, byDefault: vis, grantable: false, tier: "locked" };
       return;
     }
-    const visible = (!hideCats.has(cat) || showTabs.has(t)) && !hideTabs.has(t);
-    const editable = visible && !roTabs.has(t);
-    perms[t] = { visible, editable };
+    const e = TAB_ACCESS[t] || { tier: "open" };
+    // Dashboard pseudo-tabs (dash*) have no TAB_ACCESS entry — they are cards,
+    // not tabs — so they keep the plain hide/show semantics they always had.
+    const visible = TAB_ACCESS[t] ? acl.visible.has(t) : !(new Set(u.hideTabs || [])).has(t);
+    perms[t] = {
+      visible,
+      editable: visible && !roTabs.has(t),
+      byDefault: gctx ? tabAllowedByDefault(t, gctx) : true,
+      grantable: e.tier === "normal",
+      tier: e.tier
+    };
   });
   return perms;
 }
@@ -11128,15 +11158,29 @@ function permsToUser(base, perms, stores) {
   const hideTabs = [];
   const readOnlyTabs = [];
   const hideCategories = [];
+  const grantTabs = [];
   if (base.ccOnly) {
     hideTabs.push(...(base.hideTabs || []));
     readOnlyTabs.push(...(base.readOnlyTabs || []));
     hideCategories.push(...(base.hideCategories || []));
+    grantTabs.push(...(base.grantTabs || []));
   } else {
     SETTINGS_TABS.forEach(({ t }) => {
       const p = perms[t] || { visible: true, editable: true };
       if (!p.visible) { hideTabs.push(t); return; }
+      // Ticked visible on a tab the person would NOT reach by default: that is
+      // a grant, and recording it is the whole point of this phase. Before
+      // grantTabs existed the tick only removed a hideTabs entry that was never
+      // there, so it saved happily and changed nothing — the Called in Sick bug.
+      // Only "normal" tier can be granted here; list/locked rows render
+      // disabled in the editor, so p.visible can't have been flipped on them.
+      if (p.byDefault === false && p.grantable) grantTabs.push(t);
       if (!p.editable) readOnlyTabs.push(t);
+    });
+    // Same unknown-key preservation hideTabs gets below.
+    const gridKeysG = new Set(SETTINGS_TABS.map(x => x.t));
+    (base.grantTabs || []).forEach(t => {
+      if (!gridKeysG.has(t) && !grantTabs.includes(t)) grantTabs.push(t);
     });
     // Carry over hidden tabs the permission grid does not model. hideTabs is
     // rebuilt from SETTINGS_TABS, so any stored key that has no row there --
@@ -11168,6 +11212,7 @@ function permsToUser(base, perms, stores) {
     ccOnly: !!base.ccOnly,  // whole-account "Call Centre & Sales only" flag
     hideCategories,
     hideTabs,
+    grantTabs,
     readOnlyTabs
   };
   // ROM store allocation. Always written, including an empty list — writing it
@@ -11446,11 +11491,13 @@ const CAPABILITIES = {
     tier: "normal", surface: "tab", gridKey: "incidents",
     audience: { roles: ["master_admin", "hr", "national_ops", "regional_ops"] }
   },
-  // The named-PIN grant that this whole rework exists to delete. It stays a
-  // separate capability inheriting tab.incidents (rather than widening that
-  // audience) because widening would also hand over incident reports, HR
-  // Reports and extra-day requests. Phase 3 replaces the pin with a grantTabs
-  // entry on 3030's record and this capability collapses into the grid.
+  // The named-PIN grant this whole rework existed to delete. It is now a
+  // "normal" tier tab, so the Settings tick genuinely grants it (grantTabs) and
+  // the V5 migration moves 3030's access there. The pin stays ONLY as a
+  // belt-and-braces fallback until that migration is confirmed against the live
+  // records — deleting it in the same change that introduces the migration
+  // would mean a single failed write locks Rochelle out of the tab she uses.
+  // Confirm with __BOA_ACL_AUDIT("3030"), then delete these two lines.
   "tab.calledInSick": {
     tier: "normal", surface: "tab", gridKey: "calledInSick",
     inherits: "tab.incidents",
@@ -11509,6 +11556,16 @@ const CAPABILITIES = {
     tier: "list", surface: "action",
     audience: { cfgRef: "cashupReview", cfgKeys: "legacy" }
   },
+  // Publishing the current cycle writes live schedules for every branch. It
+  // was reachable from two places with two DIFFERENT audiences: the Scheduling
+  // tab button checked isOwner inline, while the dashboard "unpublished
+  // schedule" card checked owner-or-national. The wider door was the real
+  // answer, so that is what both now use — nobody loses access, and the two
+  // stop disagreeing.
+  "act.schedule.publishCycle": {
+    tier: "normal", surface: "action",
+    audience: { legacy: ["national_substr"] }
+  },
   // ownerImplicit:false — the owner is deliberately not paged about missing
   // schedules; this is a worklist, not a permission to see something.
   "act.schedule.alerts": {
@@ -11529,6 +11586,158 @@ function can(user, capKey, ctx) {
   if (cap.requires && !can(user, cap.requires, ctx)) return false;
   if (cap.inherits && can(user, cap.inherits, ctx)) return true;
   return _audienceAllows(user, cap.audience, ctx);
+}
+
+/* ═══ TAB ACCESS REGISTRY ═══════════════════════════════════════════════════
+   Phase 3. One manifest of every tab's audience, replacing the role tests that
+   were inlined into the nav-group builder. The builder still decides an item's
+   LABEL and badge count; it no longer decides who may see it.
+
+   tier — what the Settings grid may do to this tab:
+     "open"    everyone by default; the grid can hide it
+     "normal"  a default audience; the grid can BOTH grant (grantTabs) and hide
+     "list"    granted by a named AccessPanel; the grid can hide, not grant
+     "locked"  code-change only; the grid can hide, not grant
+
+   The rule is uniform: REVOKE works at every tier, GRANT only at "normal".
+   That is what fixes both halves of the old model at once — a tick that did
+   nothing (defect A) and a tab that could not be hidden at all (defect B).
+
+   ignoreCategoryHide — set on tabs that used to carry forceShow. Deleting
+   forceShow makes them hideable, which is the fix; but hideCategories is a
+   blunt instrument that predates these tabs, and a user who is on the
+   leave-payroll access list yet has "Payroll" collapsed in their record would
+   have silently lost the Payroll Inbox. So an EXPLICIT per-tab hide revokes
+   them and a whole-category hide does not. Phase 5 can revisit once the live
+   records are known.                                                        */
+const TAB_ACCESS = {
+  // ── People ───────────────────────────────────────────────────────────────
+  onboard: { tier: "open", cat: "People" },
+  trialPeriod: { tier: "open", cat: "People" },
+  smTrial: { tier: "open", cat: "People" },
+  offboard: { tier: "list", cat: "People", ignoreCategoryHide: true, allow: g => g.canOffboard },
+  staff: { tier: "open", cat: "People" },
+  officeStaff: { tier: "normal", cat: "People", allow: g => !!(g.hoStaffCount || g.canAddOfficeStaff) },
+  officeTrials: { tier: "normal", cat: "People", allow: g => !!(g.canAddOfficeStaff || g.officeTrialCount) },
+  recruitment: { tier: "open", cat: "People" },
+  hrLibrary: { tier: "locked", cat: "People", allow: g => g.isOwnerOrMaster },
+  maternity: { tier: "open", cat: "People" },
+  unpaidLegal: { tier: "open", cat: "People" },
+  compliance: { tier: "locked", cat: "People", allow: g => g.canCompliance },
+  incidents: { tier: "normal", cat: "People", allow: g => g.canIncidents },
+  leaveExpiry: { tier: "normal", cat: "People", allow: g => g.canLeaveExpiry },
+  // ── Operations ───────────────────────────────────────────────────────────
+  scheduling: { tier: "open", cat: "Operations" },
+  locations: { tier: "open", cat: "Operations" },
+  checkins: { tier: "open", cat: "Operations" },
+  mgrclockins: { tier: "open", cat: "Operations" },
+  hoCheckins: { tier: "normal", cat: "Operations", allow: g => !!g.hoOnlyCount },
+  ccCheckins: { tier: "normal", cat: "Operations", allow: g => !!g.ccStaffCount },
+  leave: { tier: "open", cat: "Operations" },
+  leaveRequests: { tier: "normal", cat: "Operations", allow: g => g.canLeaveRequests },
+  calledInSick: { tier: "normal", cat: "Operations", allow: g => g.canCalledInSick },
+  extraDayRequests: { tier: "normal", cat: "Operations", allow: g => g.canIncidents },
+  freshaTodo: { tier: "open", cat: "Operations" },
+  storeOpenings: { tier: "open", cat: "Operations" },
+  storeHours: { tier: "normal", cat: "Operations", allow: g => g.isOwnerOrMaster },
+  movements: { tier: "open", cat: "Operations" },
+  dailyTasks: { tier: "open", cat: "Operations" },
+  mgrCoverage: { tier: "open", cat: "Operations" },
+  cashups: { tier: "open", cat: "Operations" },
+  mgrPlanner: { tier: "open", cat: "Operations" },
+  // ── Payroll ──────────────────────────────────────────────────────────────
+  attendance: { tier: "open", cat: "Payroll" },
+  payrollProgress: { tier: "open", cat: "Payroll" },
+  payrollReports: { tier: "open", cat: "Payroll" },
+  overtime: { tier: "open", cat: "Payroll" },
+  officeHours: { tier: "list", cat: "Payroll", ignoreCategoryHide: true, allow: g => g.canOfficeHours },
+  payrollInbox: { tier: "list", cat: "Payroll", ignoreCategoryHide: true, allow: g => g.canPayrollInbox },
+  leaveBalances: { tier: "list", cat: "Payroll", ignoreCategoryHide: true, allow: g => g.canLeaveBalances },
+  frl: { tier: "list", cat: "Payroll", ignoreCategoryHide: true, allow: g => g.canLeaveBalances },
+  bargainingCouncil: { tier: "list", cat: "Payroll", ignoreCategoryHide: true, allow: g => g.canLeaveBalances },
+  bonusConfig: { tier: "normal", cat: "Payroll", allow: g => g.isOwnerOrMaster },
+  // ── Insights ─────────────────────────────────────────────────────────────
+  alerts: { tier: "open", cat: "Insights" },
+  staffingReport: { tier: "open", cat: "Insights" },
+  storeReports: { tier: "open", cat: "Insights" },
+  hrReports: { tier: "normal", cat: "Insights", allow: g => g.canIncidents },
+  activity: { tier: "open", cat: "Insights" },
+  // ── Admin ────────────────────────────────────────────────────────────────
+  kioskPins: { tier: "normal", cat: "Admin", allow: g => !!(g.isNationalOps || g.isRom) },
+  managerPins: { tier: "normal", cat: "Admin", allow: g => !!(g.isNationalOps || g.isRom) },
+  storeAllocation: { tier: "normal", cat: "Admin", allow: g => g.isNationalOps },
+  voucherAdmin: { tier: "normal", cat: "Admin", allow: g => g.isOwnerOrMaster },
+  // Settings edits everyone else's permissions, so it is the one tab the grid
+  // must never be able to hand out.
+  settings: { tier: "locked", allow: g => g.isOwner }
+};
+
+// The gate inputs TAB_ACCESS predicates read, computed for ANY user — not just
+// the signed-in one. That matters: the Settings grid has to answer "what would
+// this OTHER person see by default" to know whether a tick is a grant or a
+// no-op, and before this it simply couldn't ask.
+//   env: the runtime access configs + global data counts.
+function gateCtxFor(user, env) {
+  const e = env || {};
+  const n = e.counts || {};
+  return {
+    isOwner: !!(user && user.isOwner),
+    isOwnerOrMaster: _isOwnerOrMaster(user),
+    isNationalOps: can(user, "sys.nationalOps"),
+    isRom: isRomRole(user && user.role),
+    canOffboard: canSeeOffboarding(user, e.offboardAccess),
+    canCompliance: canSeeCompliance(user),
+    canIncidents: canSeeIncidents(user),
+    canCalledInSick: canSeeCalledInSick(user),
+    canLeaveExpiry: canSeeIncidents(user) || accessAllows(user, e.leavePayrollCfg),
+    canLeaveRequests: canSeeIncidents(user) || accessAllows(user, e.leaveOpsCfg) || accessAllows(user, e.leavePayrollCfg),
+    canOfficeHours: accessAllows(user, e.officeHoursCfg),
+    canAddOfficeStaff: accessAllows(user, e.officeStaffCfg),
+    canPayrollInbox: accessAllows(user, e.leavePayrollCfg),
+    canLeaveBalances: accessAllows(user, e.leaveBalancesCfg),
+    hoStaffCount: n.hoStaff || 0,
+    hoOnlyCount: n.hoOnly || 0,
+    ccStaffCount: n.ccStaff || 0,
+    officeTrialCount: n.officeTrial || 0
+  };
+}
+// Would this user reach the tab with no per-user overrides at all?
+function tabAllowedByDefault(t, g) {
+  const e = TAB_ACCESS[t];
+  if (!e) return true;
+  return e.allow ? !!e.allow(g) : true;
+}
+
+// Build the whole answer once: which tabs this user may see, and which of
+// those are view-only. Every consumer (nav filter, tryChangeTab, the
+// normalisation effect, the Settings grid) reads THIS, so they cannot disagree
+// about what exists — which is exactly how the nav and the grid drifted apart.
+function deriveAcl(user, g) {
+  const visible = new Set(["dashboard"]);   // always reachable; the fallback target
+  if (!user) return { visible, readOnly: new Set(), grantable: () => false };
+  const hideTabs = new Set(user.hideTabs || []);
+  const hideCats = new Set(user.hideCategories || []);
+  const showTabs = new Set(user.showTabs || []);
+  const grantTabs = new Set(user.grantTabs || []);
+  Object.keys(TAB_ACCESS).forEach(t => {
+    const e = TAB_ACCESS[t];
+    // A CC&S-only account is absolute: exactly the CC&S tabs, nothing added by
+    // a grant and nothing removed by a hide.
+    if (user.ccOnly) { if (CC_ONLY_TABS.has(t)) visible.add(t); return; }
+    let allowed = e.allow ? !!e.allow(g) : true;
+    if (!allowed && e.tier === "normal" && grantTabs.has(t)) allowed = true;
+    if (!allowed) return;
+    if (hideTabs.has(t)) return;
+    if (!e.ignoreCategoryHide && e.cat && hideCats.has(e.cat) && !showTabs.has(t)) return;
+    visible.add(t);
+  });
+  return {
+    visible,
+    readOnly: new Set(user.readOnlyTabs || []),
+    // Does a grid tick on this tab do anything? Drives the Settings UI so it
+    // can stop offering ticks that are inert (the original complaint).
+    grantable: (t) => !!(TAB_ACCESS[t] && TAB_ACCESS[t].tier === "normal")
+  };
 }
 
 // Console audit: the effective capability matrix for the REAL stored roster.
@@ -11880,7 +12089,7 @@ function SmCriteriaPanel({ cfg, onSave }) {
   );
 }
 
-function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, offboardAccess, onOffboardAccessSave, overtimeCfg, onOvertimeCfgSave, cashupReviewCfg, onCashupReviewCfgSave, leaveOpsCfg, onLeaveOpsCfgSave, leavePayrollCfg, onLeavePayrollCfgSave, leaveBalancesCfg, onLeaveBalancesCfgSave, officeStaffCfg, onOfficeStaffCfgSave, officeHoursCfg, onOfficeHoursCfgSave, smCriteriaCfg, onSmCriteriaSave }) {
+function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, dataCounts, offboardAccess, onOffboardAccessSave, overtimeCfg, onOvertimeCfgSave, cashupReviewCfg, onCashupReviewCfgSave, leaveOpsCfg, onLeaveOpsCfgSave, leavePayrollCfg, onLeavePayrollCfgSave, leaveBalancesCfg, onLeaveBalancesCfgSave, officeStaffCfg, onOfficeStaffCfgSave, officeHoursCfg, onOfficeHoursCfgSave, smCriteriaCfg, onSmCriteriaSave }) {
   const users = appUsers || {};
   const [editing, setEditing] = useState(null);   // {pin, isNew, name, role, demo, isOwner, perms, originalPin}
   const [busy, setBusy] = useState(false);
@@ -11921,11 +12130,21 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, offboardAccess, o
       isOwner: !!u.isOwner,
       ccOnly: !!u.ccOnly,
       voucherEntryOnly: !!u.voucherEntryOnly,
-      perms: userToPerms(u),
+      perms: userToPerms(u, _gctx(u)),
       stores: Array.isArray(u.stores) ? u.stores.slice() : []
     });
   };
   const cancelEdit = () => setEditing(null);
+
+  // Gate context for an arbitrary user record. Lets each grid row answer "would
+  // THIS person reach the tab by default", which is what tells a real tick apart
+  // from a no-op — the question the old grid never asked, and the reason it
+  // cheerfully saved a Called in Sick tick that could never take effect.
+  const _gctxEnv = useMemo(() => ({
+    offboardAccess, leaveOpsCfg, leavePayrollCfg, leaveBalancesCfg,
+    officeHoursCfg, officeStaffCfg, counts: dataCounts || {}
+  }), [offboardAccess, leaveOpsCfg, leavePayrollCfg, leaveBalancesCfg, officeHoursCfg, officeStaffCfg, dataCounts]);
+  const _gctx = (u) => gateCtxFor(u, _gctxEnv);
 
   const persist = async (next) => {
     setBusy(true);
@@ -12013,7 +12232,12 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, offboardAccess, o
     setEditing(prev => {
       const np = { ...prev.perms };
       SETTINGS_TABS.filter(x => x.cat === cat).forEach(({ t }) => {
-        np[t] = { visible, editable: visible && editable };
+        const cur = prev.perms[t] || {};
+        // "Show all" must not appear to grant a tab the grid can't grant —
+        // those rows are disabled individually, so honour that in bulk too.
+        const inert = cur.byDefault === false && cur.grantable === false;
+        const vis = inert ? !!cur.visible : visible;
+        np[t] = { ...cur, visible: vis, editable: vis && editable };
       });
       return { ...prev, perms: np };
     });
@@ -12052,7 +12276,7 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, offboardAccess, o
           <tbody>
             {sortedPins.map(pin => {
               const u = users[pin];
-              const perms = userToPerms(u);
+              const perms = userToPerms(u, _gctx(u));
               const visibleCount = SETTINGS_TABS.filter(({ t }) => perms[t].visible).length;
               const totalCount = SETTINGS_TABS.length;
               const roList = SETTINGS_TABS.filter(({ t }) => perms[t].visible && !perms[t].editable).map(x => x.l);
@@ -12313,7 +12537,7 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, offboardAccess, o
                   // record so unticking restores the pre-ccOnly tab set.
                   const v = e.target.checked;
                   const stored = (editing.originalPin && users[editing.originalPin]) || {};
-                  setEditing({ ...editing, ccOnly: v, perms: userToPerms({ ...stored, ccOnly: v }) });
+                  setEditing({ ...editing, ccOnly: v, perms: userToPerms({ ...stored, ccOnly: v }, _gctx({ ...stored, ccOnly: v })) });
                 }} />
                 📞 Call Centre &amp; Sales only — sees ONLY CC&amp;S Scheduling and Check-ins; every other tab hidden
               </label>
@@ -12366,13 +12590,29 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, offboardAccess, o
                         </tr>
                         {inCat.map(({ t, l, icon }) => {
                           const p = editing.perms[t] || { visible: true, editable: true };
+                          // A tick can only turn a tab ON when the tier allows a
+                          // grant. For "list" and "locked" tabs the person is
+                          // either already in the audience or must be added
+                          // where that audience actually lives — so the box is
+                          // disabled and says where to go, instead of accepting
+                          // a click and silently doing nothing.
+                          const inert = p.byDefault === false && p.grantable === false;
+                          const why = p.tier === "list"
+                            ? "Granted by an access list further down this page, not here."
+                            : p.tier === "locked"
+                              ? "Restricted by role in code — this tab can be hidden, never handed out."
+                              : "";
                           return (
-                            <tr key={t} style={{ borderTop: "1px solid #FCE7F3" }}>
+                            <tr key={t} style={{ borderTop: "1px solid #FCE7F3", opacity: inert ? 0.65 : 1 }}>
                               <td style={{ padding: "7px 10px 7px 26px", color: "#831843" }}>
                                 <span style={{ marginRight: 6 }}>{icon}</span>{l}
+                                {inert && <span title={why} style={{ marginLeft: 6, fontSize: 9, fontWeight: 800, color: "#92400e", background: "#FEF3C7", border: "1px solid #FDE68A", borderRadius: 99, padding: "1px 7px", cursor: "help" }}>
+                                  {p.tier === "list" ? "ACCESS LIST" : "ROLE-LOCKED"}
+                                </span>}
+                                {!inert && p.byDefault === false && p.visible && <span title="Not in this tab's default audience — visible because you granted it here." style={{ marginLeft: 6, fontSize: 9, fontWeight: 800, color: "#166534", background: "#dcfce7", border: "1px solid #bbf7d0", borderRadius: 99, padding: "1px 7px", cursor: "help" }}>GRANTED</span>}
                               </td>
                               <td style={{ padding: "7px 10px", textAlign: "center" }}>
-                                <input type="checkbox" checked={!!p.visible} onChange={() => togglePerm(t, "visible")} />
+                                <input type="checkbox" checked={!!p.visible} disabled={inert} title={inert ? why : undefined} onChange={() => togglePerm(t, "visible")} />
                               </td>
                               <td style={{ padding: "7px 10px", textAlign: "center" }}>
                                 <input type="checkbox" checked={!!p.editable} disabled={!p.visible} onChange={() => togglePerm(t, "editable")} />
@@ -12391,7 +12631,7 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, offboardAccess, o
               🏬 <strong>Store allocation</strong> is now managed on the dedicated <strong>Store Allocation</strong> tab (under Admin), so a National Ops Manager can be granted edit rights to it without full Settings access.
             </div>
             <div style={{ background: "#FEF3C7", border: "1px solid #FDE68A", borderRadius: 9, padding: "9px 13px", fontSize: 11, color: "#92400e", marginBottom: 14 }}>
-              🛡️ <strong>Admin tabs</strong> (Kiosk PINs, Manager PINs, Store Allocation) only appear for senior ops roles — <strong>Owner</strong>, <strong>National Ops</strong> and <strong>Regional Ops</strong> — so PINs are never exposed to regular staff. For those users the toggles below still apply: untick <strong>Visible</strong> to hide an admin tab from them. Ticking it on for any other role has no effect.
+              🛡️ <strong>Admin tabs</strong> (Kiosk PINs, Manager PINs, Store Allocation) default to senior ops roles — <strong>Owner</strong>, <strong>National Ops</strong> and <strong>Regional Ops</strong> — so PINs are never exposed to regular staff by accident. Ticking <strong>Visible</strong> now genuinely grants one to somebody outside those roles, and the row is badged <strong>GRANTED</strong> so it is obvious later why they have it. Rows badged <strong>ACCESS LIST</strong> or <strong>ROLE-LOCKED</strong> can only be hidden from here, never handed out.
             </div>
 
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
@@ -25152,6 +25392,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Scan every branch's draft-vs-published for the current cycle and open the
   // review modal. Mirrors SQL Q7 — see computeCyclePendingRows.
   const openPublishCycle = async () => {
+    // Pre-flight, not a render-site check. This action is reachable from the
+    // Scheduling tab AND from a dashboard card, so gating only where the button
+    // is drawn left two problems: the two sites disagreed about the audience,
+    // and read-only is scoped to the tab you are LOOKING AT — so someone with
+    // Scheduling set to view-only could publish schedules from the dashboard,
+    // where the BOA_DB guard is not armed. Checking the schedule's own
+    // permissions here holds whichever door was used.
+    if (!can(currentUser, "act.schedule.publishCycle")) {
+      alert("You don't have permission to publish the schedule cycle.");
+      return;
+    }
+    // Read the stored list directly rather than `acl`, which is declared
+    // further down the component body — this closure would resolve it fine at
+    // click time, but not depending on that ordering is one less trap.
+    if ((currentUser?.readOnlyTabs || []).includes("scheduling")) { alert(RO_MESSAGE); return; }
     setPubCycleErr(""); setPubCycleRows(null); setPubCycleSkip({});
     setPubCycleOpen(true); setPubCycleBusy(true);
     try {
@@ -25650,6 +25905,34 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const c = leaveBalancesAccess || {};
     return { roles: Array.isArray(c.roles) ? c.roles : [], pins: Array.isArray(c.pins) ? c.pins : [] };
   }, [leaveBalancesAccess]);
+
+  // ── THE access-control answer ──────────────────────────────────────────────
+  // Computed once and read by the nav filter, tryChangeTab, the tab-body
+  // normalisation effect and the Settings grid. Before this, each of those
+  // worked it out for itself, which is how the grid ended up showing ticks the
+  // nav ignored. Data-presence gates (hoStaff.length, …) live here rather than
+  // in TAB_ACCESS because they depend on loaded state, not on policy.
+  const acl = useMemo(() => deriveAcl(currentUser, {
+    isOwner: !!currentUser?.isOwner,
+    isOwnerOrMaster: _isOwnerOrMaster(currentUser),
+    isNationalOps: can(currentUser, "sys.nationalOps"),
+    isRom: isRomRole(currentUser?.role),
+    canOffboard, canCompliance,
+    canIncidents: canSeeIncidents(currentUser),
+    canLeaveExpiry: canSeeLeaveExpiry,
+    canLeaveRequests: canSeeLeaveRequests,
+    canCalledInSick: canSeeCalledInSick(currentUser),
+    canOfficeHours: canSeeOfficeHours,
+    canAddOfficeStaff,
+    canPayrollInbox: accessAllows(currentUser, leavePayrollCfg),
+    canLeaveBalances: accessAllows(currentUser, leaveBalancesCfg),
+    hoStaffCount: hoStaff.length,
+    hoOnlyCount: hoOnlyStaff.length,
+    ccStaffCount: ccStaff.length,
+    officeTrialCount: (officeTrialList || []).length
+  }), [currentUser, canOffboard, canCompliance, canSeeLeaveExpiry, canSeeLeaveRequests,
+    canSeeOfficeHours, canAddOfficeStaff, leavePayrollCfg, leaveBalancesCfg,
+    hoStaff.length, hoOnlyStaff.length, ccStaff.length, officeTrialList]);
   // Is the balance anchor behind Sage? (state declared up with the other
   // dashboard alerts; the effect must sit below leaveBalancesCfg's declaration.)
   useEffect(() => {
@@ -30382,6 +30665,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   useEffect(() => {
     if (currentUser && currentUser.ccOnly && !CC_ONLY_TABS.has(tab)) setTab("scheduling");
   }, [currentUser, tab]);
+  // TAB-BODY NORMALISATION. ~27 tab bodies render on a tab-key match alone, so
+  // anything that set `tab` without going through tryChangeTab — a deep link,
+  // a stale session, a raw setTab, a permission edited in another session —
+  // rendered a body the nav had already hidden. Bouncing off a non-visible tab
+  // here closes all of them at once, and self-heals rather than needing 27
+  // separate guards in the highest-churn file in the repo.
+  useEffect(() => {
+    if (!currentUser || currentUser.ccOnly) return;   // ccOnly has its own rule above
+    if (!TAB_ACCESS[tab]) return;                     // sub-tabs / unregistered keys
+    if (!acl.visible.has(tab)) setTab("dashboard");
+  }, [currentUser, tab, acl]);
   // Lock every CC&S-only surface to Call Centre & Sales data: the schedule and
   // leave sub-tabs to the CC&S pill, and the attendance store to CC&S.
   useEffect(() => {
@@ -30390,14 +30684,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     if (leaveSubTab !== "callcentre") setLeaveSubTab("callcentre");
     if (attBranch !== CALL_CENTRE) setAttBranch(CALL_CENTRE);
   }, [ccOnly, schedSubTab, leaveSubTab, attBranch]);
-  // Access revoked while sitting on the tab (Settings edited in another
-  // session): don't leave the records on screen.
-  useEffect(() => { if (tab === "offboard" && !canOffboard) setTab("dashboard"); }, [tab, canOffboard]);
-
   const tryChangeTab = (t) => {
     if (t === tab) return;
-    if (currentUser && currentUser.ccOnly && !CC_ONLY_TABS.has(t)) return;   // CC&S-only guard
-    if (t === "offboard" && !canOffboard) return;   // named-PIN list only — see canSeeOffboarding
+    // Single choke point. Every nav tile, dashboard quick-link and cross-tab
+    // button routes through here, so one check covers all of them — including
+    // the offboard and CC&S rules that used to be spelled out separately.
+    if (TAB_ACCESS[t] && !acl.visible.has(t)) return;
     if (tab === "scheduling" && schedSubTab === "managers" && mgrSchedDirty) {
       if (!window.confirm("Are you sure? The manager schedule has unsaved changes. They will be lost if you leave.")) return;
       setMgrSchedDirty(false);
@@ -30663,7 +30955,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t: "onboard", l: onboardLbl },
                   { t: "trialPeriod", l: trialLbl },
                   { t: "smTrial", l: smTrialLbl },
-                  ...(canOffboard ? [{ t: "offboard", l: offboardLbl, forceShow: true }] : []),
+                  { t: "offboard", l: offboardLbl },
                   { t: "staff", l: "💅 Salon Staff" },
                   // Office Staff List appears once there are office people —
                   // OR for anyone allowed to add them: this tab holds the only
@@ -30672,26 +30964,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   // (fresh-install chicken-and-egg). Still a no-op for
                   // salon-only users: the V4 migration hides the key for
                   // non-owners, and accessAllows gates canAddOfficeStaff.
-                  ...(hoStaff.length || canAddOfficeStaff ? [{ t: "officeStaff", l: "🏢 Office Staff List" }] : []),
+                  { t: "officeStaff", l: "🏢 Office Staff List" },
                   // HQ / CC&S trial pipeline — same gate as the Office Staff List
                   // (canAddOfficeStaff), since it feeds that list. Also shown once
                   // any office trial exists so an in-flight trial is never hidden.
-                  ...(canAddOfficeStaff || (officeTrialList || []).length ? [{ t: "officeTrials", l: officeTrialLbl }] : []),
+                  { t: "officeTrials", l: officeTrialLbl },
                   { t: "recruitment", l: "🎯 Recruitment" },
-                  ...(_isOwnerOrMaster(currentUser) ? [
-                    { t: "hrLibrary", l: "📁 Employee Files" }
-                  ] : []),
+                  { t: "hrLibrary", l: "📁 Employee Files" },
                   { t: "maternity", l: matLbl },
                   { t: "unpaidLegal", l: "⏸️ Unpaid Leave (Legal)" },
-                  ...(canCompliance ? [{ t: "compliance", l: "📋 Compliance" }] : []),
-                  ...(canSeeIncidents(currentUser) ? [(() => {
+                  { t: "compliance", l: "📋 Compliance" },
+                  (() => {
                     const unread = incidentReports.filter(r => !r.reviewed && !isLeaveExpiryReport(r)).length;
                     return { t: "incidents", l: "🛡️ Incident Reports" + (unread ? "  (" + unread + ")" : "") };
-                  })()] : []),
-                  ...(canSeeLeaveExpiry ? [(() => {
+                  })(),
+                  (() => {
                     const unread = incidentReports.filter(r => !r.reviewed && isLeaveExpiryReport(r)).length;
                     return { t: "leaveExpiry", l: "⏳ Leave Expiry Reports" + (unread ? "  (" + unread + ")" : "") };
-                  })()] : [])
+                  })()
                 ]
               },
               {
@@ -30702,21 +30992,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t: "locations", l: "📍 Locations" },
                   { t: "checkins", l: "📲 Nail Tech Check-ins" },
                   { t: "mgrclockins", l: "🕐 Manager Check-ins" },
-                  ...(hoOnlyStaff.length ? [{ t: "hoCheckins", l: "🏢 Head Office Check-ins" }] : []),
-                  ...(ccStaff.length ? [{ t: "ccCheckins", l: "📞 Call Centre & Sales Check-ins" }] : []),
+                  { t: "hoCheckins", l: "🏢 Head Office Check-ins" },
+                  { t: "ccCheckins", l: "📞 Call Centre & Sales Check-ins" },
                   { t: "leave", l: "🌴 Leave Planner" },
-                  ...(canSeeLeaveRequests ? [(() => {
+                  (() => {
                     const pend = leaveRequests.filter(r => r.status === "pending" && r.leave_type !== "Sick" && r.leave_type !== "Absent").length;
                     return { t: "leaveRequests", l: "📨 Leave Requests" + (pend ? "  (" + pend + ")" : "") };
-                  })()] : []),
-                  ...(canSeeCalledInSick(currentUser) ? [(() => {
+                  })(),
+                  (() => {
                     const n = calledInSickWindow(leaveRequests).list.length;
                     return { t: "calledInSick", l: "🤒 Called in Sick" + (n ? "  (" + n + ")" : "") };
-                  })()] : []),
-                  ...(canSeeIncidents(currentUser) ? [(() => {
+                  })(),
+                  (() => {
                     const n = extraDayRequests.filter(r => r.status === "pending").length;
                     return { t: "extraDayRequests", l: "💰 Extra-Day Requests" + (n ? "  (" + n + ")" : "") };
-                  })()] : []),
+                  })(),
                   // Fresha To-Do is granted via the normal Settings show/hide
                   // permissions (not canSeeIncidents) so the owner can give it
                   // to the Fresha openers (e.g. Farida) who don't pass the HR
@@ -30746,7 +31036,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     return { t: "freshaTodo", l: "💇‍♀️ Fresha To-Do" + (n ? "  (" + n + ")" : "") };
                   })(),
                   { t: "storeOpenings", l: "🔓 Store Openings" },
-                  ...(_isOwnerOrMaster(currentUser) ? [{ t: "storeHours", l: "🕖 Store Opening Hours" }] : []),
+                  { t: "storeHours", l: "🕖 Store Opening Hours" },
                   { t: "movements", l: "🔀 Today's Movements" },
                   { t: "dailyTasks", l: "📋 Daily Tasks" },
                   { t: "mgrCoverage", l: "🗓 Manager Coverage" },
@@ -30769,21 +31059,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   // Badge counts only what payroll must ACTION (short / no
                   // clock-out / absent, minus anything already reviewed) — the
                   // live "not in yet" list clears itself and would keep it lit.
-                  ...(canSeeOfficeHours ? [{
+                  {
                     t: "officeHours",
-                    l: "⏰ Office Hours" + (officeOpenFindings.length ? "  (" + officeOpenFindings.length + ")" : ""),
-                    forceShow: true
-                  }] : []),
-                  ...(accessAllows(currentUser, leavePayrollCfg) ? [(() => {
+                    l: "⏰ Office Hours" + (officeOpenFindings.length ? "  (" + officeOpenFindings.length + ")" : "")
+                  },
+                  (() => {
                     const nReq = (leaveRequests || []).filter(r => r.status !== "declined" && r.leave_type !== "Sick" && r.leave_type !== "Absent" && !r.balance_checked_at).length;
                     const nCal = (leaveRecs || []).filter(lv => lv && lv.balancePending && !lv.emergency).length;
                     const n = nReq + nCal;
-                    return { t: "payrollInbox", l: "📥 Payroll Inbox" + (n ? "  (" + n + ")" : ""), forceShow: true };
-                  })()] : []),
-                  ...(accessAllows(currentUser, leaveBalancesCfg) ? [{ t: "leaveBalances", l: "🧾 Leave Balances", forceShow: true }] : []),
-                  ...(accessAllows(currentUser, leaveBalancesCfg) ? [{ t: "frl", l: "👪 Family Responsibility", forceShow: true }] : []),
-                  ...(accessAllows(currentUser, leaveBalancesCfg) ? [{ t: "bargainingCouncil", l: "🤝 Bargaining Council", forceShow: true }] : []),
-                  ...(_isOwnerOrMaster(currentUser) ? [{ t: "bonusConfig", l: "🧮 Bonus & Commission" }] : [])
+                    return { t: "payrollInbox", l: "📥 Payroll Inbox" + (n ? "  (" + n + ")" : "") };
+                  })(),
+                  { t: "leaveBalances", l: "🧾 Leave Balances" },
+                  { t: "frl", l: "👪 Family Responsibility" },
+                  { t: "bargainingCouncil", l: "🤝 Bargaining Council" },
+                  { t: "bonusConfig", l: "🧮 Bonus & Commission" }
                 ]
               },
               {
@@ -30796,7 +31085,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   // HR Reports carries incident, conduct and watch-list data, so
                   // it rides the same gate as the Incidents tab rather than being
                   // hideable per user like the other Insights entries.
-                  ...(canSeeIncidents(currentUser) ? [{ t: "hrReports", l: "📈 HR Reports" }] : []),
+                  { t: "hrReports", l: "📈 HR Reports" },
                   { t: "activity", l: "📜 Activity Log" }
                 ]
               },
@@ -30808,47 +31097,31 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               // grid still applies on top, so the Owner can hide any of these
               // from a specific senior user via Settings.
               ...(() => {
-                const isNationalOps = can(currentUser, "sys.nationalOps");
-                const adminItems = [];
-                if (isNationalOps || isRomRole(currentUser?.role)) {
-                  adminItems.push({ t: "kioskPins", l: "🔑 Kiosk PINs" });
-                  adminItems.push({ t: "managerPins", l: "🆔 Manager PINs" });
-                }
-                if (currentUser?.isOwner) {
-                  adminItems.push({ t: "settings", l: "⚙️ Settings" });
-                }
-                if (isNationalOps) {
-                  adminItems.push({ t: "storeAllocation", l: "🏬 Store Allocation" });
-                }
-                if (_isOwnerOrMaster(currentUser)) {
-                  adminItems.push({ t: "voucherAdmin", l: "💳 Voucher Admin" });
-                }
-                return adminItems.length > 0 ? [{
+                const adminItems = [
+                  { t: "kioskPins", l: "🔑 Kiosk PINs" },
+                  { t: "managerPins", l: "🆔 Manager PINs" },
+                  { t: "settings", l: "⚙️ Settings" },
+                  { t: "storeAllocation", l: "🏬 Store Allocation" },
+                  { t: "voucherAdmin", l: "💳 Voucher Admin" }
+                ];
+                return adminItems.some(it => acl.visible.has(it.t)) ? [{
                   key: "Admin", icon: "🛡️", title: "Admin",
                   color: { bg: "#FEF3C7", bgActive: "#FDE68A", ink: "#92400e" },
                   items: adminItems
                 }] : [];
               })()
             ];
-            // Category that owns the currently-active tab.
-            // Permission filter: hide entire categories AND/OR individual tabs.
-            const hideCats = new Set(currentUser.hideCategories || []);
-            const hideTabs = new Set(currentUser.hideTabs || []);
-            // showTabs allow-lists specific tabs back in even when their whole
-            // category is hidden (e.g. Rochelle keeps People hidden but still
-            // gets the Trial Period tab).
-            const showTabs = new Set(currentUser.showTabs || []);
+            // hideCategories / hideTabs / showTabs are still the stored keys —
+            // they are just read by deriveAcl now instead of being unpacked and
+            // re-interpreted here.
             const visibleGroups = groups
-              // forceShow items (access-gated tabs like the Payroll Inbox) bypass
-              // the category/tab hide filter — access is governed by their own
-              // admin access list, so a locked-down account still sees them. A
-              // ccOnly account is authoritative and absolute: it sees EXACTLY the
-              // CC&S tabs (even a forceShow tab outside the set is hidden, and a
-              // CC&S tab in its stored hideTabs is still shown).
+              // One filter, one source of truth. This used to re-derive
+              // visibility from hideTabs/hideCats/showTabs/forceShow inline,
+              // which is precisely how it drifted out of step with the grid
+              // that writes those keys. An item with no TAB_ACCESS entry is a
+              // pseudo-item (sub-tab routing) and stays as-is.
               .map(g => ({
-                ...g, items: g.items.filter(it => currentUser.ccOnly
-                ? CC_ONLY_TABS.has(it.t)
-                  : (it.forceShow || (!hideTabs.has(it.t) && (!hideCats.has(g.key) || showTabs.has(it.t)))))
+                ...g, items: g.items.filter(it => !TAB_ACCESS[it.t] || acl.visible.has(it.t))
               }))
               .filter(g => g.items.length > 0);
             const tabToCategory = {};
@@ -33501,7 +33774,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   mirrored to attendance / kiosk / My BOA, and this covers BOTH
                   nail techs and managers — it is the "publish the latest draft"
                   step, done in one pass for every branch's current-cycle edits. */}
-              {currentUser?.isOwner && (
+              {can(currentUser, "act.schedule.publishCycle") && (
                 <button onClick={openPublishCycle} disabled={pubCycleBusy || currentTabIsReadOnly}
                   title={roTitle(currentTabIsReadOnly, "Scan every branch — nail techs AND managers — for schedule edits made mid-cycle (leave approvals, extra days, day-off swaps) and publish them live to staff, kiosk and My BOA. Scoped to the CURRENT payroll cycle only; you review every change before anything goes live.")}
                   style={roStyle(currentTabIsReadOnly, { marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6, padding: "12px 18px", borderRadius: 11, fontSize: 14, fontWeight: 800, background: pubCycleBusy ? "#FBCFE8" : "#831843", color: "#fff", border: "none", cursor: pubCycleBusy ? "default" : "pointer", boxShadow: pubCycleBusy ? "none" : "0 4px 12px rgba(131,24,67,0.28)", whiteSpace: "nowrap" })}>
@@ -36227,7 +36500,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       {items.map((item, i) => (
                         <div key={i} style={{ background: cfg.bg, border: `1px solid ${cfg.bdr}`, borderRadius: 11, padding: "11px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
                           <span style={{ fontSize: 12.5, color: cfg.c, fontWeight: 500 }}>{cfg.icon} {item.msg}</span>
-                          {item.rec && <button onClick={() => { setMatModal(item.rec); setTab("maternity"); }} style={{ background: cfg.btn, color: "#fff", border: "none", borderRadius: 7, padding: "5px 14px", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>Update</button>}
+                          {item.rec && <button onClick={() => { setMatModal(item.rec); tryChangeTab("maternity"); }} style={{ background: cfg.btn, color: "#fff", border: "none", borderRadius: 7, padding: "5px 14px", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>Update</button>}
                           {item.council && <button onClick={async () => {
                             if (!window.confirm("Mark " + item.council.name + " as deregistered from the bargaining council?\n\nThis clears their council flag (so their sick days are no longer treated as council-covered). Do this once you've notified the council that they've left.")) return;
                             try {
@@ -36235,7 +36508,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               if (logActivity) logActivity("Deregistered bargaining-council member", item.council.name + (item.council.ec ? " (" + item.council.ec + ")" : ""), "On off-boarding", "Payroll");
                             } catch (e) { window.alert(e.message || String(e)); }
                           }} style={{ background: cfg.btn, color: "#fff", border: "none", borderRadius: 7, padding: "5px 14px", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>Mark deregistered</button>}
-                          {item.s && <button onClick={() => { setStaffModal(item.s); setTab("staff"); }} style={{ background: cfg.btn, color: "#fff", border: "none", borderRadius: 7, padding: "5px 14px", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>Resolve</button>}
+                          {item.s && <button onClick={() => { setStaffModal(item.s); tryChangeTab("staff"); }} style={{ background: cfg.btn, color: "#fff", border: "none", borderRadius: 7, padding: "5px 14px", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>Resolve</button>}
                         </div>
                       ))}
                     </div>
@@ -36671,7 +36944,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           }
                           setManagers(plannerMgrs.map(m => ({ ...m })));
                           alert("Plan applied to live data!");
-                          setTab("locations");
+                          tryChangeTab("locations");
                         }}
                           style={{ padding: "8px 16px", borderRadius: 9, border: "none", background: "#BE185D", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700 }}>
                           ✓ Apply to Live Data
@@ -37359,7 +37632,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // that form is actually SUBMITTED (see submitOb). Marking it as
           // promoted now would drop the candidate from BOTH the trial "passed"
           // list and the onboarded list if the form is left unfinished.
-          setTab("onboard");
+          tryChangeTab("onboard");
           setObShowForm(true);
         };
         const deleteTrial = (id) => {
@@ -38843,7 +39116,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           );
                         })}
                       </div>
-                      <button onClick={() => setTab("incidents")}
+                      <button onClick={() => tryChangeTab("incidents")}
                         style={{ marginTop: 8, padding: "5px 10px", borderRadius: 6, border: "1px solid #fed7aa", background: "#fff", color: "#9a3412", cursor: "pointer", fontFamily: "inherit", fontSize: 10, fontWeight: 700 }}>Open Incidents tab →</button>
                     </div>
                   )}
@@ -43552,13 +43825,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       <tbody>
                         {sorted.map(e => (
                           <tr key={e.branch} style={{ background: e.open > 0 ? "#fef2f2" : (e.total > 0 ? "#f0fdf4" : "transparent"), cursor: "pointer" }}
-                            onClick={() => { setAttBranch(e.branch); setTab("attendance"); }}>
+                            onClick={() => { setAttBranch(e.branch); tryChangeTab("attendance"); }}>
                             <td style={{ padding: "8px 12px", borderBottom: "1px solid #FBF1F5", color: "#831843", fontWeight: 600 }}>{e.branch}{e.approx ? <span title="Estimated — open this branch's attendance sheet once so it can publish its exact count." style={{ marginLeft: 6, fontSize: 10, color: "#b45309", fontWeight: 700 }}>~ est.</span> : null}</td>
                             <td style={{ padding: "8px 12px", borderBottom: "1px solid #FBF1F5", textAlign: "right", color: e.open > 0 ? "#7f1d1d" : "#9ca3af", fontWeight: 700 }}>{e.open}</td>
                             <td style={{ padding: "8px 12px", borderBottom: "1px solid #FBF1F5", textAlign: "right", color: "#166534", fontWeight: 600 }}>{e.reviewed}</td>
                             <td style={{ padding: "8px 12px", borderBottom: "1px solid #FBF1F5", textAlign: "right", color: "#831843", fontWeight: 600 }}>{e.total}</td>
                             <td style={{ padding: "8px 12px", borderBottom: "1px solid #FBF1F5", textAlign: "right" }}>
-                              <button onClick={(ev) => { ev.stopPropagation(); setAttBranch(e.branch); setTab("attendance"); }} style={{ background: "transparent", border: "1px solid #F9A8D4", color: "#831843", cursor: "pointer", padding: "4px 10px", borderRadius: 5, fontSize: 11 }}>Open →</button>
+                              <button onClick={(ev) => { ev.stopPropagation(); setAttBranch(e.branch); tryChangeTab("attendance"); }} style={{ background: "transparent", border: "1px solid #F9A8D4", color: "#831843", cursor: "pointer", padding: "4px 10px", borderRadius: 5, fontSize: 11 }}>Open →</button>
                             </td>
                           </tr>
                         ))}
@@ -51790,6 +52063,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           appUsers={appUsers}
           onUsersUpdate={onUsersUpdate}
           currentUser={currentUser}
+          dataCounts={{ hoStaff: hoStaff.length, hoOnly: hoOnlyStaff.length, ccStaff: ccStaff.length, officeTrial: (officeTrialList || []).length }}
           offboardAccess={offboardAccess}
           onOffboardAccessSave={saveOffboardAccess}
           overtimeCfg={overtimeCfg}
