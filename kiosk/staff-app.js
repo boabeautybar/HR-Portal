@@ -1473,10 +1473,16 @@
       var _xfer = (s.transferring && s.transfer_date) ? s.transfer_date : null;
       var _outgoing = !!_xfer && s.transfer_to && s.transfer_to !== thisBranch;
       var _incoming = !!_xfer && s.transfer_to === thisBranch && s.branch !== thisBranch;
+      // Pre-start: nobody is on the roster before their start date. The HR
+      // portal greys these cells at render time, but a saved row generated
+      // before the start date was known still holds real W/O cells for them —
+      // so a new starter read as WORKING here for days she hadn't started.
+      // Blank them from the staff record instead of trusting the saved cell.
+      var _startD = s.start_date ? String(s.start_date).replace(/\//g, "-") : null;
       html += '<tr><td class="sched-name" title="' + esc(s.name) + '">' + esc(s.name) + '</td>';
       days.forEach(function (d, i) {
         var _ymd = _ymdOf(d);
-        var blanked = (_outgoing && _ymd >= _xfer) || (_incoming && _ymd < _xfer);
+        var blanked = (_outgoing && _ymd >= _xfer) || (_incoming && _ymd < _xfer) || (!!_startD && _ymd < _startD);
         // Leave-Planner overlay wins, then the PUBLISHED snapshot, then the live
         // draft only for a day the snapshot leaves empty. (Coverage on the portal
         // is the producer and reads live-first + re-derives; consumer surfaces
