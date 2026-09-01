@@ -11542,17 +11542,20 @@ const CAPABILITIES = {
     desc: "🛡️ Incident Reports, 💰 Extra-Day Requests and 📈 HR Reports tabs.",
     audience: { roles: ["master_admin", "hr", "national_ops", "regional_ops"] }
   },
-  // The named-PIN grant this whole rework existed to delete. It is now a
-  // "normal" tier tab, so the Settings tick genuinely grants it (grantTabs) and
-  // the V5 migration moves 3030's access there. The pin stays ONLY as a
-  // belt-and-braces fallback until that migration is confirmed against the live
-  // records — deleting it in the same change that introduces the migration
-  // would mean a single failed write locks Rochelle out of the tab she uses.
-  // Confirm with __BOA_ACL_AUDIT("3030"), then delete these two lines.
+  // The named-PIN grant this whole rework existed to delete — now deleted.
+  //
+  // It was here because the Settings tick for this tab could never take effect:
+  // the nav built the item inside canSeeIncidents, which keys off a free-text
+  // role, so an "Ops Admin" failed it no matter what the grid said. The only
+  // way to give Rochelle (3030) the tab was to write her PIN into the code.
+  //
+  // The tab is "normal" tier now, so the tick is real, and the V5 migration
+  // moved her access into grantTabs on her own record — confirmed present
+  // before this hardcode came out. It inherits tab.incidents so the HR / ops
+  // audience still reaches it by default; everyone else is a grid decision.
   "tab.calledInSick": {
     tier: "normal", surface: "tab", gridKey: "calledInSick",
-    inherits: "tab.incidents",
-    audience: { pins: ["3030"] }
+    inherits: "tab.incidents"
   },
   // LOCKED: immigration status. Regional Ops sit outside this on purpose even
   // though they see incidents — they manage stores, they don't chase permits.

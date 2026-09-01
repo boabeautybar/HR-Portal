@@ -215,7 +215,9 @@ Invert the guard: wrap **every** `BOA_DB` function except an explicit read allow
 
 Each phase ships and verifies alone. Order: stop the bleeding → invisible plumbing → the headline promise → payroll-adjacent writes → lockout-risk last.
 
-**Status (branch `feat/permissions-hardening`, unpushed):** Phase 1 ✅ · Phase 4 ✅ + affordance pass ✅ · Phase 2 ✅ · Phase 3 ✅ · Phase 5 not started.
+**Status (branch `feat/permissions-hardening`, unpushed):** Phase 1 ✅ · Phase 2 ✅ · Phase 3 ✅ · Phase 4 ✅ + affordance pass ✅ · Phase 5 not started.
+
+**`CALLED_IN_SICK_PINS` is gone.** The hardcode that opened this whole review — the one whose own comment read *"Remove once the permission model is reworked to make the Settings toggle authoritative"* — was deleted once `__BOA_ACL_AUDIT("3030")` confirmed the V5 migration had moved her access into `grantTabs` on her own record. `SCHED_ALERT_PINS` went the same way in Phase 2. No permission is written into the code body any more; the only named-PIN list left is the schedule-alert worklist, which is a notification target rather than an access rule.
 Phases 1 and 4 were taken out of order deliberately: 4's read-only flip is what makes the *existing* grid ticks mean anything, and it needed no model change, so it could ship while 2–3 were still on paper.
 
 ### Phase 1 — Pure bug fixes, no model change *(size M)* — ✅ SHIPPED
@@ -351,6 +353,6 @@ All seeds are currently **undeletable** (defect K).
 
 *Next step: Phase 5 — seed & legacy retirement (defect K). Lockout-risk, so last, and it needs the live records verified first.*
 
-*Before the PR: the payroll export diff, a background-refresh soak on a view-only tab, and confirming `__BOA_ACL_AUDIT("3030")` shows the Called in Sick grant landed in her record — after which the fallback pin in `tab.calledInSick` can be deleted.*
+*Before the PR: the payroll export diff, and a background-refresh soak on a view-only tab. The `__BOA_ACL_AUDIT("3030")` check is done — the grant landed and the fallback pin is deleted.*
 
 *Delivery note: Phases 1 and 4 are accumulating as commits on `feat/permissions-hardening` and land as **one** PR to main, rather than a PR per phase, to keep hosting/deploy cost down.*
