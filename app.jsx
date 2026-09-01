@@ -11514,6 +11514,15 @@ const CAPABILITIES = {
     tier: "locked", surface: "action",
     audience: { roles: ["master_admin"] }
   },
+  // Who may hand out access. Deliberately narrower than "can open Settings":
+  // granting someone the Off-boarding list or Cash-up delete is a different
+  // act from editing a tab toggle, so it gets its own capability rather than
+  // riding on whoever happens to reach the page.
+  "sys.accessAdmin": {
+    tier: "locked", surface: "action",
+    audience: { roles: ["dev"] },
+    desc: "🔐 Grant or revoke any of the access lists above.",
+  },
   // Owner + anyone whose title contains "national" — the crowd that sees
   // senior dashboard cards (ED offers, unpublished schedules, daily updates)
   // and the manager-hours queue.
@@ -11525,10 +11534,12 @@ const CAPABILITIES = {
   // gates Store Allocation and the kiosk/manager PIN directories.
   "sys.nationalOps": {
     tier: "normal", surface: "action",
+    desc: "🏬 Store Allocation, 🔑 Kiosk PINs and 🆔 Manager PINs tabs.",
     audience: { legacy: ["national_ops_titled"] }
   },
   "tab.incidents": {
     tier: "normal", surface: "tab", gridKey: "incidents",
+    desc: "🛡️ Incident Reports, 💰 Extra-Day Requests and 📈 HR Reports tabs.",
     audience: { roles: ["master_admin", "hr", "national_ops", "regional_ops"] }
   },
   // The named-PIN grant this whole rework existed to delete. It is now a
@@ -11547,6 +11558,7 @@ const CAPABILITIES = {
   // though they see incidents — they manage stores, they don't chase permits.
   "tab.compliance": {
     tier: "locked", surface: "tab", gridKey: "compliance",
+    desc: "📋 Compliance tab, the permit / DHA column on every staff list, and the permit fields inside a staff record.",
     audience: {
       roles: ["master_admin", "hr", "recruiter", "project", "dev"],
       legacy: ["national_substr", "payroll_substr"]
@@ -11569,16 +11581,19 @@ const CAPABILITIES = {
   },
   "act.interviews.recruit": {
     tier: "normal", surface: "action",
+    desc: "🎯 Recruitment — add candidates, schedule interviews, book inductions.",
     audience: { roles: ["master_admin", "recruiter"] }
   },
   "act.interviews.train": {
     tier: "normal", surface: "action",
+    desc: "🎓 Recruitment — mark interview attendance and pass / fail.",
     audience: { roles: ["master_admin", "nailtech_trainer"] }
   },
   // Manager-trial evaluate/decide. Evaluate additionally admits Regional Ops;
   // only HR / National / owner close a trial out.
   "act.smtrial.evaluate": {
     tier: "normal", surface: "action",
+    desc: "⭐ SM Trials — record an evaluation against the criteria.",
     audience: {
       roles: ["regional_ops"],
       legacy: ["master_untrimmed", "hr_substr", "humanres_substr", "national_substr"]
@@ -11586,6 +11601,7 @@ const CAPABILITIES = {
   },
   "act.smtrial.decide": {
     tier: "normal", surface: "action",
+    desc: "⭐ SM Trials — close a trial out (pass / fail).",
     audience: { legacy: ["master_untrimmed", "hr_substr", "humanres_substr", "national_substr"] }
   },
   "act.overtime.record": {
@@ -11604,17 +11620,47 @@ const CAPABILITIES = {
   // stop disagreeing.
   "act.schedule.publishCycle": {
     tier: "normal", surface: "action",
-    audience: { legacy: ["national_substr"] }
+    audience: { legacy: ["national_substr"] },
+    desc: "⚡ Publish current cycle — scan every branch for mid-cycle schedule edits and push them live to staff, kiosk and My BOA."
   },
   // ownerImplicit:false — the owner is deliberately not paged about missing
   // schedules; this is a worklist, not a permission to see something.
   "act.schedule.alerts": {
     tier: "normal", surface: "action",
+    desc: "📅 Paged when a branch has not saved next month's schedule by the 15th. The Owner is deliberately NOT on this worklist.",
     ownerImplicit: false,
     audience: { pins: ["1993", "2023", "3030"] }   // Master, Kelly, Rochelle
   }
 };
 
+// Render a capability's audience as a sentence. Generated from the registry
+// entry, so the reference table under the access matrix cannot drift from the
+// rule it is describing — which is what happened to every hand-written
+// "who can do this" note this rework replaced.
+const AUDIENCE_WORDS = {
+  master_admin: "Master Admin", hr: "HR", national_ops: "National Ops",
+  regional_ops: "Regional Ops Manager", payroll: "Payroll / wages / finance",
+  recruiter: "Recruitment", nailtech_trainer: "Nail-tech trainer (not manager trainers)",
+  project: "Project Manager", dev: "Developer",
+  national_substr: "any role containing \u201cnational\u201d",
+  national_ops_titled: "a National Ops / National Operations title",
+  payroll_substr: "any role containing \u201cpayroll\u201d",
+  hr_substr: "any role containing \u201chr\u201d", humanres_substr: "Human Resources",
+  master_untrimmed: "Master Admin"
+};
+function describeAudience(capKey) {
+  const cap = CAPABILITIES[capKey];
+  if (!cap) return "";
+  const a = cap.audience || {};
+  const parts = [];
+  if (cap.ownerImplicit !== false) parts.push("the Owner");
+  (a.roles || []).forEach(r => parts.push(AUDIENCE_WORDS[r] || r));
+  (a.legacy || []).forEach(r => parts.push(AUDIENCE_WORDS[r] || r));
+  if (a.pins && a.pins.length) parts.push("named PINs (" + a.pins.join(", ") + ")");
+  if (cap.inherits) parts.push("anyone who passes " + cap.inherits);
+  if (!parts.length) return "nobody by default";
+  return parts.join(", ");
+}
 // The one resolver. ctx supplies the runtime access configs a capability names
 // ({ offboard, overtime, cashupReview, … }); capabilities that need none can be
 // called with two arguments. An unknown key is CLOSED, never open.
@@ -11712,9 +11758,84 @@ const TAB_ACCESS = {
   storeAllocation: { tier: "normal", cat: "Admin", allow: g => g.isNationalOps },
   voucherAdmin: { tier: "normal", cat: "Admin", allow: g => g.isOwnerOrMaster },
   // Settings edits everyone else's permissions, so it is the one tab the grid
-  // must never be able to hand out.
-  settings: { tier: "locked", allow: g => g.isOwner }
+  // must never be able to hand out. The Developer is admitted because they are
+  // the second person who may grant access (sys.accessAdmin) and the matrix
+  // lives on this page — without this that capability could never be used.
+  settings: { tier: "locked", allow: g => g.isOwner || g.isDev }
 };
+
+/* ═══ ACCESS LISTS ══════════════════════════════════════════════════════════
+   The named grant lists, in one place. These used to be nine separate Settings
+   panels stacked down the page, each with its own layout and its own wording,
+   and none of them said what it actually unlocked — so the only way to answer
+   "what does this give someone" was to read the code.
+
+   `unlocks` is that answer, written in terms of what the person will SEE or be
+   able to DO, and it is rendered next to the column rather than hidden in a
+   tooltip. `roleOpts` are the role keys that config understands; a role grant
+   applies to everyone holding that role and cannot be removed per person.     */
+const ACCESS_LISTS = [
+  {
+    id: "offboard", cfgRef: "offboard", field: "pins", ownerImplicit: false,
+    icon: "👋", label: "Off-boarding",
+    unlocks: "Opens the Off-boarding tab — terminations, resignations, disciplinary records and exit checklists. This list is the ONLY way in: an Owner who is not on it does not get in either.",
+    roleOpts: []
+  },
+  {
+    id: "offboardPayroll", cfgRef: "offboard", field: "payrollPins", ownerImplicit: false, requires: "offboard",
+    icon: "📮", label: "Sign-off chase",
+    unlocks: "Receives the dashboard reminder listing off-boarding records still waiting for payroll sign-off. Notification only — it grants no extra access.",
+    roleOpts: []
+  },
+  {
+    id: "offboardSignoff", cfgRef: "offboard", field: "signOffPins", ownerImplicit: false, requires: "offboard",
+    icon: "✍️", label: "Payroll sign-off",
+    unlocks: "Can mark an off-boarding record as payroll-signed-off — the final confirmation that the last payout was checked.",
+    roleOpts: []
+  },
+  {
+    id: "leaveOps", cfgRef: "leaveOps",
+    icon: "🌴", label: "Leave · ops check",
+    unlocks: "Shows the Leave Requests tab and allows the operational step — confirming the store can spare the person before the leave is approved.",
+    roleOpts: [{ key: "national", label: "National Ops" }, { key: "regional", label: "Regional managers" }, { key: "hr", label: "HR" }]
+  },
+  {
+    id: "leavePayroll", cfgRef: "leavePayroll",
+    icon: "🧮", label: "Leave · payroll",
+    unlocks: "Shows the Payroll Inbox and Leave Expiry Reports tabs, and allows the balance check on a leave request (days available, recorded against Sage).",
+    roleOpts: [{ key: "national", label: "National Ops" }, { key: "payroll", label: "Payroll / wages / finance" }, { key: "hr", label: "HR" }]
+  },
+  {
+    id: "leaveBalances", cfgRef: "leaveBalances",
+    icon: "🧾", label: "Leave Balances",
+    unlocks: "Shows three Payroll tabs: Leave Balances (upload the balance file, add adjustments), Family Responsibility, and Bargaining Council.",
+    roleOpts: [{ key: "payroll", label: "Payroll / wages / finance" }, { key: "hr", label: "HR" }]
+  },
+  {
+    id: "officeStaff", cfgRef: "officeStaff",
+    icon: "🏢", label: "Office staff",
+    unlocks: "Shows the Office Staff List and HQ Trials tabs, including the ➕ Add Head Office Staff and ➕ Add Call Centre & Sales Staff buttons.",
+    roleOpts: [{ key: "hr", label: "HR" }, { key: "payroll", label: "Payroll / wages / finance" }]
+  },
+  {
+    id: "officeHours", cfgRef: "officeHours",
+    icon: "⏰", label: "Office Hours",
+    unlocks: "Shows the Payroll → Office Hours queue and its dashboard card: office staff who worked short of a 9-hour day, never clocked out, or were absent.",
+    roleOpts: [{ key: "payroll", label: "Payroll / wages / finance" }, { key: "hr", label: "HR" }, { key: "national", label: "National Ops" }]
+  },
+  {
+    id: "overtime", cfgRef: "overtime", legacyKeys: true,
+    icon: "⏱️", label: "Overtime",
+    unlocks: "Can record and manage overtime on the Overtime tab. Overtime is portal-only — it is never captured at the kiosk.",
+    roleOpts: [{ key: "national", label: "National Ops" }, { key: "regional", label: "Regional managers" }]
+  },
+  {
+    id: "cashupReview", cfgRef: "cashupReview", legacyKeys: true,
+    icon: "💰", label: "Cash-up review",
+    unlocks: "Can tick off a store's daily cash-up as reviewed, reopen one so the store can resubmit, and permanently delete a test or duplicate entry.",
+    roleOpts: [{ key: "national", label: "National Ops" }, { key: "regional", label: "Regional managers" }]
+  }
+];
 
 // The gate inputs TAB_ACCESS predicates read, computed for ANY user — not just
 // the signed-in one. That matters: the Settings grid has to answer "what would
@@ -11728,6 +11849,7 @@ function gateCtxFor(user, env) {
     isOwner: !!(user && user.isOwner),
     isOwnerOrMaster: _isOwnerOrMaster(user),
     isNationalOps: can(user, "sys.nationalOps"),
+    isDev: can(user, "sys.accessAdmin"),
     isRom: isRomRole(user && user.role),
     canOffboard: canSeeOffboarding(user, e.offboardAccess),
     canCompliance: canSeeCompliance(user),
@@ -11823,124 +11945,192 @@ function _audienceAllows(user, aud, ctx) {
   return false;
 }
 
-// Reusable Settings panel for granting an access list by role and/or by named
-// person (owners always included). Used for the leave-workflow gates.
-function AccessPanel({ title, blurb, cfg, onSave, users, roleOpts, accent, accentBg, border }) {
-  const c = cfg || { roles: [], pins: [] };
-  const userList = Object.keys(users || {})
+
+// ─── ACCESS MATRIX ───────────────────────────────────────────────────────────
+// One table for every named grant list. This replaced nine stacked panels that
+// each rendered their own layout, their own user list and their own wording —
+// ~450 lines of near-duplicate markup in which the same person appeared nine
+// times and no panel said what it actually unlocked.
+//
+// A cell is one of three things, and the difference matters:
+//   ✓  granted here — a tick against this person's PIN; removable
+//   ◆  granted by their ROLE or by being the Owner; NOT removable per person,
+//      because it follows from who they are (change the role, or the role
+//      grant at the top of the column)
+//   ·  no access
+// Showing role grants as a distinct, non-clickable state is the point: the old
+// panels showed an empty checkbox for someone who already had access through
+// their role, which read as "denied" and invited a pointless second grant.
+//
+// The off-boarding columns are the exception the old shared panel got wrong: it
+// force-ticked owners as "always" without ever writing them into pins, which is
+// right where the gate short-circuits on isOwner but WRONG for off-boarding,
+// where membership is PIN-only with no owner bypass — saving through it would
+// have quietly dropped the owner off their own list. Hence ownerImplicit on the
+// column, and a cell that only shows ◆ where the resolver really would pass.
+function AccessMatrix({ users, cfgs, onSave, canEdit }) {
+  const [openCol, setOpenCol] = useState(null);
+  const people = Object.keys(users || {})
     .filter(pin => !(users[pin] && (users[pin].voucherEntryOnly || users[pin].demo)))
-    .map(pin => ({ pin, name: (users[pin] && users[pin].name) || pin, role: (users[pin] && users[pin].role) || "", isOwner: !!(users[pin] && users[pin].isOwner) }))
-    .sort((a, b) => a.name.localeCompare(b.name));
-  const toggleArr = (arr, val) => (arr || []).includes(val) ? (arr || []).filter(x => x !== val) : [...(arr || []), val];
-  const setCfg = (patch) => onSave({ ...c, ...patch });
-  const ac = accent || "#BE185D";
-  const chk = { width: 15, height: 15, accentColor: ac };
-  const colHead = { fontSize: 10, fontWeight: 800, color: ac, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 8 };
-  const rowL = { display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 13, color: "#831843", cursor: "pointer" };
+    .map(pin => ({ pin, ...(users[pin] || {}) }))
+    .sort((a, b) => String(a.name || a.pin).localeCompare(String(b.name || b.pin)));
+
+  const cfgOf = (col) => (cfgs && cfgs[col.cfgRef]) || {};
+  const pinsOf = (col) => {
+    const c = cfgOf(col);
+    const arr = c[col.field || "pins"];
+    return Array.isArray(arr) ? arr.map(String) : [];
+  };
+  // Why does this person have it? Mirrors the resolver rather than guessing.
+  const cellState = (col, u) => {
+    if (pinsOf(col).indexOf(String(u.pin)) >= 0) return "granted";
+    if (col.ownerImplicit !== false && u.isOwner) return "owner";
+    const role = String(u.role || "").toLowerCase().trim();
+    const keys = col.legacyKeys ? LEGACY_CFG_KEY_MATCH : ACCESS_KEY_MATCH;
+    const cfgRoles = Array.isArray(cfgOf(col).roles) ? cfgOf(col).roles : [];
+    if (cfgRoles.some(k => keys[k] && keys[k](role))) return "role";
+    return "none";
+  };
+  const toggle = (col, pin) => {
+    if (!canEdit) return;
+    const field = col.field || "pins";
+    const cur = pinsOf(col);
+    const next = cur.indexOf(String(pin)) >= 0 ? cur.filter(x => x !== String(pin)) : [...cur, String(pin)];
+    onSave(col.cfgRef, { ...cfgOf(col), [field]: next });
+  };
+  const toggleRole = (col, key) => {
+    if (!canEdit) return;
+    const cur = Array.isArray(cfgOf(col).roles) ? cfgOf(col).roles : [];
+    const next = cur.indexOf(key) >= 0 ? cur.filter(x => x !== key) : [...cur, key];
+    onSave(col.cfgRef, { ...cfgOf(col), roles: next });
+  };
+
+  const th = { padding: "8px 6px", fontSize: 10, fontWeight: 800, color: "#831843", textAlign: "center", verticalAlign: "bottom", borderLeft: "1px solid #FCE7F3", minWidth: 74 };
+  const td = { padding: "6px", textAlign: "center", borderLeft: "1px solid #FCE7F3", borderTop: "1px solid #FCE7F3" };
+  const mark = { granted: "✓", owner: "◆", role: "◆", none: "·" };
+  const markStyle = {
+    granted: { color: "#15803d", fontWeight: 900 },
+    owner: { color: "#a16207", fontWeight: 800 },
+    role: { color: "#a16207", fontWeight: 800 },
+    none: { color: "#d4d4d8" }
+  };
+  const whyText = { owner: "Has this as the Owner — not removable per person.", role: "Granted by their role — change the role grant at the top of this column, or their role.", granted: "Granted to this person here. Click to remove.", none: canEdit ? "No access. Click to grant." : "No access." };
+
   return (
-    <div style={{ marginTop: 26, background: accentBg || "#FDF2F8", border: "2px solid " + (border || "#FBCFE8"), borderRadius: 14, padding: "18px 20px" }}>
-      <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 18, color: ac, fontWeight: 700, marginBottom: 2 }}>{title}</div>
-      <div style={{ fontSize: 12, color: ac, marginBottom: 16, opacity: 0.85 }}>{blurb}</div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 20 }}>
-        <div>
-          <div style={colHead}>Allowed by role</div>
-          {roleOpts.map(r => (
-            <label key={r.key} style={rowL}>
-              <input type="checkbox" style={chk} checked={(c.roles || []).includes(r.key)} onChange={() => setCfg({ roles: toggleArr(c.roles, r.key) })} />
-              {r.label}
-            </label>
-          ))}
-        </div>
-        <div>
-          <div style={colHead}>…or specific people</div>
-          {userList.map(u => (
-            <label key={u.pin} style={{ ...rowL, opacity: u.isOwner ? 0.6 : 1 }}>
-              <input type="checkbox" style={chk} checked={u.isOwner || (c.pins || []).includes(u.pin)} disabled={u.isOwner} onChange={() => setCfg({ pins: toggleArr(c.pins, u.pin) })} />
-              {u.name} <span style={{ color: "#F472B6", fontSize: 11 }}>· {u.role}{u.isOwner ? " · always" : ""}</span>
-            </label>
-          ))}
-        </div>
+    <div style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 13, padding: "18px 20px", marginBottom: 18 }}>
+      <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 19, color: "#831843", fontWeight: 700 }}>🔐 Access lists</div>
+      <div style={{ fontSize: 12, color: "#9F1A4F", marginTop: 3, marginBottom: 4 }}>
+        Named grants that sit outside the tab grid above. Click a column heading to see exactly what it unlocks.
       </div>
-      <div style={{ fontSize: 11, color: ac, marginTop: 14, fontStyle: "italic", opacity: 0.85 }}>Owners always have access. Changes save automatically.</div>
+      <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 12, display: "flex", gap: 14, flexWrap: "wrap" }}>
+        <span><b style={markStyle.granted}>✓</b> granted here (click to remove)</span>
+        <span><b style={markStyle.role}>◆</b> via their role or Owner — not removable per person</span>
+        <span><b style={markStyle.none}>·</b> no access</span>
+      </div>
+      {!canEdit && (
+        <div style={{ background: "#FEF3C7", border: "1px solid #FDE68A", borderRadius: 9, padding: "8px 12px", fontSize: 11.5, color: "#92400e", marginBottom: 12, fontWeight: 600 }}>
+          🔒 View only — access is granted by the <strong>Owner</strong> and the <strong>Developer</strong>.
+        </div>
+      )}
+
+      {openCol && (() => {
+        const col = ACCESS_LISTS.find(c => c.id === openCol);
+        if (!col) return null;
+        return (
+          <div style={{ background: "#FDF2F8", border: "1px solid #FBCFE8", borderRadius: 10, padding: "12px 14px", marginBottom: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+              <div style={{ fontSize: 13, fontWeight: 800, color: "#831843" }}>{col.icon} {col.label}</div>
+              <button onClick={() => setOpenCol(null)} style={{ background: "transparent", border: "none", color: "#9F1A4F", cursor: "pointer", fontSize: 16, lineHeight: 1 }}>×</button>
+            </div>
+            <div style={{ fontSize: 12, color: "#9F1A4F", marginTop: 5 }}>{col.unlocks}</div>
+            {col.requires && <div style={{ fontSize: 11, color: "#a16207", marginTop: 6 }}>⚠ Also requires <strong>{(ACCESS_LISTS.find(c => c.id === col.requires) || {}).label}</strong> — this one does nothing on its own.</div>}
+            {col.roleOpts && col.roleOpts.length > 0 && (
+              <div style={{ marginTop: 9 }}>
+                <div style={{ fontSize: 10, fontWeight: 800, color: "#831843", letterSpacing: "0.05em", marginBottom: 5 }}>GRANT TO A WHOLE ROLE</div>
+                <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+                  {col.roleOpts.map(ro => {
+                    const on = (Array.isArray(cfgOf(col).roles) ? cfgOf(col).roles : []).indexOf(ro.key) >= 0;
+                    return (
+                      <label key={ro.key} style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 9px", borderRadius: 7, fontSize: 11.5, fontWeight: 700, cursor: canEdit ? "pointer" : "default", background: on ? "#FCE7F3" : "#fff", border: "1px solid " + (on ? "#F9A8D4" : "#FBCFE8"), color: "#831843", opacity: canEdit ? 1 : 0.7 }}>
+                        <input type="checkbox" checked={on} disabled={!canEdit} onChange={() => toggleRole(col, ro.key)} style={{ accentColor: "#BE185D" }} />
+                        {ro.label}
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            {(!col.roleOpts || col.roleOpts.length === 0) && (
+              <div style={{ fontSize: 11, color: "#a16207", marginTop: 7 }}>This list is by named person only — no role shortcut, and the Owner is not automatically included.</div>
+            )}
+          </div>
+        );
+      })()}
+
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <thead>
+            <tr style={{ background: "#FCE7F3" }}>
+              <th style={{ padding: "8px 10px", textAlign: "left", fontSize: 10, fontWeight: 800, color: "#831843", position: "sticky", left: 0, background: "#FCE7F3", minWidth: 170 }}>PERSON</th>
+              {ACCESS_LISTS.map(col => (
+                <th key={col.id} style={th}>
+                  <button onClick={() => setOpenCol(openCol === col.id ? null : col.id)}
+                    title={col.unlocks}
+                    style={{ background: openCol === col.id ? "#F9A8D4" : "transparent", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 10, fontWeight: 800, color: "#831843", padding: "3px 4px", borderRadius: 6, lineHeight: 1.25 }}>
+                    <div style={{ fontSize: 14 }}>{col.icon}</div>
+                    {col.label}
+                    <div style={{ fontSize: 9, opacity: 0.65, fontWeight: 600 }}>what?</div>
+                  </button>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {people.map(u => (
+              <tr key={u.pin}>
+                <td style={{ padding: "7px 10px", color: "#831843", position: "sticky", left: 0, background: "#fff", borderTop: "1px solid #FCE7F3" }}>
+                  <div style={{ fontWeight: 700 }}>{u.name || "(unnamed)"} {u.isOwner && <span style={{ fontSize: 9, background: "#FCE7F3", color: "#BE185D", borderRadius: 99, padding: "1px 6px", fontWeight: 800 }}>OWNER</span>}</div>
+                  <div style={{ fontSize: 10, color: "#9ca3af" }}>{u.pin}{u.role ? " · " + u.role : ""}</div>
+                </td>
+                {ACCESS_LISTS.map(col => {
+                  const st = cellState(col, u);
+                  const clickable = canEdit && st !== "owner" && st !== "role";
+                  return (
+                    <td key={col.id} style={td}>
+                      <button onClick={() => clickable && toggle(col, u.pin)} disabled={!clickable}
+                        title={whyText[st]}
+                        style={{ background: "transparent", border: "none", cursor: clickable ? "pointer" : "default", fontSize: 15, lineHeight: 1, padding: "2px 8px", borderRadius: 6, ...markStyle[st] }}>
+                        {mark[st]}
+                      </button>
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Granted by role only — no list to edit, so state the rule instead of
+          leaving people to guess why somebody has something. */}
+      <div style={{ marginTop: 18, borderTop: "1px solid #FCE7F3", paddingTop: 14 }}>
+        <div style={{ fontSize: 11, fontWeight: 800, color: "#831843", letterSpacing: "0.05em", marginBottom: 3 }}>GRANTED BY ROLE — NOT EDITABLE HERE</div>
+        <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 9 }}>These follow from someone&apos;s role. To change one, change their role in the user list above — or ask for the rule itself to be changed.</div>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
+          <tbody>
+            {Object.keys(CAPABILITIES).filter(k => CAPABILITIES[k].desc).map(k => (
+              <tr key={k}>
+                <td style={{ padding: "6px 8px", borderTop: "1px solid #FCE7F3", color: "#831843", width: "58%" }}>{CAPABILITIES[k].desc}</td>
+                <td style={{ padding: "6px 8px", borderTop: "1px solid #FCE7F3", color: "#6b7280" }}>{describeAudience(k)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
 
-// ── Settings: OFF-BOARDING ACCESS ───────────────────────────────────────────
-// The three off-boarding PIN lists, finally editable from the UI. Until now
-// saveOffboardAccess was written but never called and no panel existed, so the
-// only way to change who can open Off-boarding was to hand-edit the
-// boa_offboard_access_v1 row in Supabase — while the tab itself told the user
-// the list was managed "in Settings".
-//
-// Deliberately NOT the shared AccessPanel: that component force-ticks owners as
-// "always" and never writes them into pins, which is right for the leave gates
-// (accessAllows short-circuits on isOwner) but WRONG here — canSeeOffboarding
-// is PIN membership only, with no owner bypass, so saving through AccessPanel
-// would have quietly dropped the owner off the list. There are also no role
-// options: these are named individuals by design.
-function OffboardAccessPanel({ cfg, onSave, users }) {
-  const c = cfg || {};
-  const userList = Object.keys(users || {})
-    .filter(pin => !(users[pin] && (users[pin].voucherEntryOnly || users[pin].demo)))
-    .map(pin => ({ pin, name: (users[pin] && users[pin].name) || pin, role: (users[pin] && users[pin].role) || "" }))
-    .sort((a, b) => a.name.localeCompare(b.name));
-  const ac = "#7f1d1d";
-  const toggleArr = (arr, val) => (arr || []).includes(val) ? (arr || []).filter(x => x !== val) : [...(arr || []), val];
-  const colHead = { fontSize: 10, fontWeight: 800, color: ac, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 4 };
-  const rowL = { display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 13, color: "#7f1d1d", cursor: "pointer" };
-  // Each list shows its EFFECTIVE membership: the helpers fall back to the
-  // built-in default whenever the stored array is empty, so an empty list means
-  // "defaults apply", never "nobody". Say so rather than showing empty boxes.
-  const cols = [
-    { key: "pins", head: "Can open Off-boarding", eff: offboardPins(c), def: OFFBOARD_DEFAULT_PINS, hint: "Sees the tab, the termination and disciplinary trackers." },
-    { key: "payrollPins", head: "Payroll officer (chased)", eff: offboardPayrollPins(c), def: OFFBOARD_DEFAULT_PAYROLL_PINS, hint: "Gets the dashboard nudge about the sign-off backlog." },
-    { key: "signOffPins", head: "May sign off", eff: offboardSignOffPins(c), def: OFFBOARD_DEFAULT_SIGNOFF_PINS, hint: "Confirms a record before the final payout. Must also be on the first list." }
-  ];
-  return (
-    <div style={{ marginTop: 26, background: "#fef2f2", border: "2px solid #fecaca", borderRadius: 14, padding: "18px 20px" }}>
-      <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 18, color: ac, fontWeight: 700, marginBottom: 2 }}>Off-boarding access</div>
-      <div style={{ fontSize: 12, color: ac, marginBottom: 16, opacity: 0.85 }}>
-        Off-boarding carries termination and disciplinary records, so it is restricted to named people — there is no role shortcut and <strong>no owner bypass</strong>. Untick everyone in a column to fall back to the built-in default.
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 20 }}>
-        {cols.map(col => {
-          const stored = Array.isArray(c[col.key]) ? c[col.key].filter(Boolean).map(String) : [];
-          const usingDefault = stored.length === 0;
-          return (
-            <div key={col.key}>
-              <div style={colHead}>{col.head}</div>
-              <div style={{ fontSize: 10.5, color: ac, opacity: 0.7, marginBottom: 8, lineHeight: 1.4 }}>{col.hint}</div>
-              {userList.map(u => (
-                <label key={u.pin} style={rowL}>
-                  <input
-                    type="checkbox"
-                    style={{ width: 15, height: 15, accentColor: ac }}
-                    checked={col.eff.includes(u.pin)}
-                    onChange={() => {
-                      // First edit of a defaulted list starts from the effective
-                      // default, so ticking one extra person does not silently
-                      // drop the other three.
-                      const base = usingDefault ? col.eff.slice() : stored;
-                      onSave({ ...c, [col.key]: toggleArr(base, u.pin) });
-                    }}
-                  />
-                  {u.name} <span style={{ color: "#f87171", fontSize: 11 }}>· {u.role}</span>
-                </label>
-              ))}
-              {usingDefault && (
-                <div style={{ fontSize: 10.5, color: ac, marginTop: 8, fontStyle: "italic", opacity: 0.8 }}>
-                  Using the built-in default ({col.def.join(", ")}).
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-      <div style={{ fontSize: 11, color: ac, marginTop: 14, fontStyle: "italic", opacity: 0.85 }}>Changes save automatically. Removing yourself here will close the tab for you on your next load.</div>
-    </div>
-  );
-}
 
 // ── Settings: SM classification criteria, evaluation form & trial policy ────
 // National ops / HR define what "ready to be an SM" means. Everything here is
@@ -12372,154 +12562,30 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, dataCounts, offbo
         </table>
       </div>
 
-      {/* ── Off-boarding access ── the three named-PIN lists that decide who
-          can open Off-boarding, who is chased about the sign-off backlog, and
-          who may give it. Previously unreachable: saveOffboardAccess existed
-          but nothing rendered a panel for it.
+      {/* One matrix for every named grant list. Nine separate panels used to
+          live here — each with its own layout, its own copy of the user list
+          and its own wording — so the same person appeared nine times and no
+          panel said what it actually unlocked. Editable by the Owner and the
+          Developer; everyone else who can reach Settings sees it read-only. */}
+      <AccessMatrix
+        users={users}
+        canEdit={can(currentUser, "sys.accessAdmin")}
+        cfgs={{
+          offboard: offboardAccess, leaveOps: leaveOpsCfg, leavePayroll: leavePayrollCfg,
+          leaveBalances: leaveBalancesCfg, officeStaff: officeStaffCfg,
+          officeHours: officeHoursCfg, overtime: overtimeCfg, cashupReview: cashupReviewCfg
+        }}
+        onSave={(ref, next) => {
+          const save = {
+            offboard: onOffboardAccessSave, leaveOps: onLeaveOpsCfgSave,
+            leavePayroll: onLeavePayrollCfgSave, leaveBalances: onLeaveBalancesCfgSave,
+            officeStaff: onOfficeStaffCfgSave, officeHours: onOfficeHoursCfgSave,
+            overtime: onOvertimeCfgSave, cashupReview: onCashupReviewCfgSave
+          }[ref];
+          if (save) save(next);
+        }}
+      />
 
-          NOTE: this replaced the "🧪 Fresha — trial access" panel that used to
-          sit here. That panel wrote openerPins / viewerRoles / viewerPins to
-          boa_fresha_access_v1 and NOTHING read them back — Fresha To-Do is
-          gated by the ordinary tab permission grid, and the "Fresha due soon"
-          dashboard card by canSeeIncidents. It was pure UI theatre, so it is
-          gone rather than left to imply an access rule that never applied. */}
-      {onOffboardAccessSave && (
-        <OffboardAccessPanel cfg={offboardAccess} onSave={onOffboardAccessSave} users={users} />
-      )}
-
-      {/* ── Overtime recording access ── who may record overtime on the HR
-          portal. Owners always can; everyone else must be granted here. */}
-      {onOvertimeCfgSave && (() => {
-        const cfg = overtimeCfg || { roles: ["national"], pins: [] };
-        const userList = Object.keys(users || {})
-          .filter(pin => !(users[pin] && (users[pin].voucherEntryOnly || users[pin].demo)))
-          .map(pin => ({ pin, name: (users[pin] && users[pin].name) || pin, role: (users[pin] && users[pin].role) || "", isOwner: !!(users[pin] && users[pin].isOwner) }))
-          .sort((a, b) => a.name.localeCompare(b.name));
-        const toggleArr = (arr, val) => (arr || []).includes(val) ? (arr || []).filter(x => x !== val) : [...(arr || []), val];
-        const setCfg = (patch) => onOvertimeCfgSave({ ...cfg, ...patch });
-        const roleOpts = [{ key: "national", label: "National Ops Managers" }, { key: "regional", label: "Regional managers (all ROM variants)" }];
-        const chk = { width: 15, height: 15, accentColor: "#0f766e" };
-        const colHead = { fontSize: 10, fontWeight: 800, color: "#0f766e", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 8 };
-        const rowL = { display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 13, color: "#134e4a", cursor: "pointer" };
-        return (
-          <div style={{ marginTop: 26, background: "#f0fdfa", border: "2px solid #99f6e4", borderRadius: 14, padding: "18px 20px" }}>
-            <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 18, color: "#0f766e", fontWeight: 700, marginBottom: 2 }}>⏱️ Overtime — who can record it</div>
-            <div style={{ fontSize: 12, color: "#0d9488", marginBottom: 16 }}>Overtime is recorded only from the HR portal (not the kiosk). Owners can always record it; grant other people below. Anyone not listed sees the Overtime tab read-only.</div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 20 }}>
-              <div>
-                <div style={colHead}>Allowed by role</div>
-                {roleOpts.map(r => (
-                  <label key={r.key} style={rowL}>
-                    <input type="checkbox" style={chk} checked={(cfg.roles || []).includes(r.key)} onChange={() => setCfg({ roles: toggleArr(cfg.roles, r.key) })} />
-                    {r.label}
-                  </label>
-                ))}
-              </div>
-              <div>
-                <div style={colHead}>…or specific people</div>
-                {userList.map(u => (
-                  <label key={u.pin} style={{ ...rowL, opacity: u.isOwner ? 0.6 : 1 }}>
-                    <input type="checkbox" style={chk} checked={u.isOwner || (cfg.pins || []).includes(u.pin)} disabled={u.isOwner} onChange={() => setCfg({ pins: toggleArr(cfg.pins, u.pin) })} />
-                    {u.name} <span style={{ color: "#5eead4", fontSize: 11 }}>· {u.role}{u.isOwner ? " · always" : ""}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-            <div style={{ fontSize: 11, color: "#0d9488", marginTop: 14, fontStyle: "italic" }}>Owners always have access. Changes save automatically.</div>
-          </div>
-        );
-      })()}
-
-      {/* ── Cash-up review access ── who may tick off a store's daily cash-up
-          as reviewed. Owners always can; everyone else must be granted here. */}
-      {onCashupReviewCfgSave && (() => {
-        const cfg = cashupReviewCfg || { roles: ["regional"], pins: [] };
-        const userList = Object.keys(users || {})
-          .filter(pin => !(users[pin] && (users[pin].voucherEntryOnly || users[pin].demo)))
-          .map(pin => ({ pin, name: (users[pin] && users[pin].name) || pin, role: (users[pin] && users[pin].role) || "", isOwner: !!(users[pin] && users[pin].isOwner) }))
-          .sort((a, b) => a.name.localeCompare(b.name));
-        const toggleArr = (arr, val) => (arr || []).includes(val) ? (arr || []).filter(x => x !== val) : [...(arr || []), val];
-        const setCfg = (patch) => onCashupReviewCfgSave({ ...cfg, ...patch });
-        const roleOpts = [{ key: "national", label: "National Ops Managers" }, { key: "regional", label: "Regional managers (all ROM variants)" }];
-        const chk = { width: 15, height: 15, accentColor: "#BE185D" };
-        const colHead = { fontSize: 10, fontWeight: 800, color: "#BE185D", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 8 };
-        const rowL = { display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 13, color: "#831843", cursor: "pointer" };
-        return (
-          <div style={{ marginTop: 26, background: "#FDF2F8", border: "2px solid #FBCFE8", borderRadius: 14, padding: "18px 20px" }}>
-            <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 18, color: "#831843", fontWeight: 700, marginBottom: 2 }}>💰 Cash-up review — who can review</div>
-            <div style={{ fontSize: 12, color: "#BE185D", marginBottom: 16 }}>The reviewer (e.g. your portfolio / regional ops manager) ticks off each store's daily cash-up on the Cash Ups tab once they've checked it matches, and can leave a comment. Owners can always review; grant other people below. Anyone not listed sees the review status read-only.</div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 20 }}>
-              <div>
-                <div style={colHead}>Allowed by role</div>
-                {roleOpts.map(r => (
-                  <label key={r.key} style={rowL}>
-                    <input type="checkbox" style={chk} checked={(cfg.roles || []).includes(r.key)} onChange={() => setCfg({ roles: toggleArr(cfg.roles, r.key) })} />
-                    {r.label}
-                  </label>
-                ))}
-              </div>
-              <div>
-                <div style={colHead}>…or specific people</div>
-                {userList.map(u => (
-                  <label key={u.pin} style={{ ...rowL, opacity: u.isOwner ? 0.6 : 1 }}>
-                    <input type="checkbox" style={chk} checked={u.isOwner || (cfg.pins || []).includes(u.pin)} disabled={u.isOwner} onChange={() => setCfg({ pins: toggleArr(cfg.pins, u.pin) })} />
-                    {u.name} <span style={{ color: "#F472B6", fontSize: 11 }}>· {u.role}{u.isOwner ? " · always" : ""}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-            <div style={{ fontSize: 11, color: "#BE185D", marginTop: 14, fontStyle: "italic" }}>Owners always have access. Changes save automatically.</div>
-          </div>
-        );
-      })()}
-
-      {/* ── Leave workflow gates ── who clears the operational check and who
-          does the payroll / leave-balance check on the Leave Requests tab. */}
-      {onLeaveOpsCfgSave && (
-        <AccessPanel
-          title="🌴 Leave — operational check"
-          blurb="When staff request leave, an operational reviewer confirms the store can spare them (max 1 manager / 20% of techs on leave at once — the portal flags clashes automatically). Owners can always do this; grant others below."
-          cfg={leaveOpsCfg} onSave={onLeaveOpsCfgSave} users={users}
-          roleOpts={[{ key: "national", label: "National Ops Managers" }, { key: "regional", label: "Regional managers (all ROM variants)" }]}
-          accent="#7c3aed" accentBg="#faf5ff" border="#e9d5ff"
-        />
-      )}
-      {onLeavePayrollCfgSave && (
-        <AccessPanel
-          title="🧮 Leave — payroll / balance check"
-          blurb="Your payroll officer checks the leave balance on Sage, records how many days the person has, and ticks it off. Once both this and the operational check are done, the request is auto-approved and added to the Leave Planner. Owners can always do this; grant others below."
-          cfg={leavePayrollCfg} onSave={onLeavePayrollCfgSave} users={users}
-          roleOpts={[{ key: "national", label: "National Ops Managers" }, { key: "payroll", label: "Payroll / wages / finance roles" }, { key: "hr", label: "HR roles" }]}
-          accent="#0f766e" accentBg="#f0fdfa" border="#99f6e4"
-        />
-      )}
-      {onLeaveBalancesCfgSave && (
-        <AccessPanel
-          title="🧾 Leave Balances tab"
-          blurb="Who can see and edit the Payroll → Leave Balances tab (upload the payroll balance file + add/remove adjustment days). Starts private to owners only — tick people below to give them access."
-          cfg={leaveBalancesCfg} onSave={onLeaveBalancesCfgSave} users={users}
-          roleOpts={[{ key: "payroll", label: "Payroll / wages / finance roles" }, { key: "hr", label: "HR roles" }]}
-          accent="#9333ea" accentBg="#faf5ff" border="#e9d5ff"
-        />
-      )}
-      {onOfficeStaffCfgSave && (
-        <AccessPanel
-          title="🏢 Add office staff (Head Office & Call Centre / Sales)"
-          blurb="Who can add people on the Office Staff List — the ➕ Add Head Office Staff and ➕ Add Call Centre & Sales Staff buttons. The role picked there sets their shift hours, whether they're a trainer, and whether they sit on the Call Centre & Sales floor, so it starts private to owners only — tick people below to give them access. Viewing the list is controlled separately, in the tab grid above."
-          cfg={officeStaffCfg} onSave={onOfficeStaffCfgSave} users={users}
-          roleOpts={[{ key: "hr", label: "HR roles" }, { key: "payroll", label: "Payroll / wages / finance roles" }]}
-          accent="#3730a3" accentBg="#eef2ff" border="#c7d2fe"
-        />
-      )}
-      {onOfficeHoursCfgSave && (
-        <AccessPanel
-          title="⏰ Office Hours alerts (Payroll)"
-          blurb="Who sees the Payroll → Office Hours queue: office staff who worked short of their 9-hour day, who never clocked out, and the live list of anyone 30+ minutes past their start with no clock-in. Defaults to payroll roles — note the role match is on the words “payroll”, “wages” or “finance” in a person's role text, so if the payroll officer's role says something else, tick them by name below."
-          cfg={officeHoursCfg} onSave={onOfficeHoursCfgSave} users={users}
-          roleOpts={[{ key: "payroll", label: "Payroll / wages / finance roles" }, { key: "hr", label: "HR roles" }, { key: "national", label: "National Ops" }]}
-          accent="#b45309" accentBg="#fffbeb" border="#fde68a"
-        />
-      )}
       {onSmCriteriaSave && <SmCriteriaPanel cfg={smCriteriaCfg} onSave={onSmCriteriaSave} />}
 
       {/* ── Add / edit modal ── */}
@@ -25966,6 +26032,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     isOwner: !!currentUser?.isOwner,
     isOwnerOrMaster: _isOwnerOrMaster(currentUser),
     isNationalOps: can(currentUser, "sys.nationalOps"),
+    isDev: can(currentUser, "sys.accessAdmin"),
     isRom: isRomRole(currentUser?.role),
     canOffboard, canCompliance,
     canIncidents: canSeeIncidents(currentUser),
