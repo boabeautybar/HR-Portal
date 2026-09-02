@@ -131,30 +131,114 @@ function installDemoMode() {
 // flag is true the call short-circuits with a friendly alert instead of
 // hitting Supabase, so a user with view-only access can still see the
 // edit UI but their changes never persist.
-const READ_ONLY_GUARDED_METHODS = [
-  "saveStaff", "saveMat", "saveManager", "saveSchedule", "saveAttendance", "saveEarlyLeaves",
-  "saveOnboarding", "saveOffboarding", "saveLeaveRecords", "saveMgrRequests",
-  "saveTechRequests", "saveManagerPins", "saveTrialPeriod", "saveInterviews", "deleteMat", "deleteManager", "deleteSchedule",
-  "saveAttendanceUndo", "clearAttendanceUndo", "saveOfficeHoursReview", "saveOfficeHoursFixes"
-];
+// DENY-LIST (Phase 4). Every function on window.BOA_DB is guarded EXCEPT the
+// reads and pure helpers named below.
+//
+// This was an ALLOW-list of ~30 names against 202 exports, so roughly seventy
+// write paths ignored view-only access entirely — a person marked view-only on
+// Locations could still add, rename and delete branches. Worse, the allow-list
+// had to be remembered: every new save* added to data.js defaulted to
+// unguarded, so the hole quietly reopened over time. Inverting it makes the
+// safe direction the default — a new write is guarded unless someone
+// deliberately exempts it here.
+const READ_ONLY_EXEMPT = new Set([
+  "isReady", "sb",
+  // Pure helpers — string/date maths, no I/O.
+  "schedKey", "schedApprovedKey", "schedHistKey",
+  "currentAttYm", "currentSchedYm", "shiftYm", "periodDays", "periodLabel",
+  // Read-shaped names the prefix test below does not catch.
+  "giftCardTxnStats", "latestVoucherUpload",
+  // The activity log stays writable on purpose: a view-only session should
+  // still leave an audit trail, and blocking it would erase the record of who
+  // was looking at what.
+  "appendActivity"
+]);
+// Anything named like a read is left alone. Everything else is treated as a
+// write, which is the conservative default: mis-guarding a read shows one
+// dialog, mis-allowing a write loses data.
+const READ_ONLY_READ_RX = /^(load|get|list|fetch|read|count|find|audit|probe|is[A-Z]|has[A-Z])/;
+function isReadOnlyGuardedName(name, fn) {
+  return typeof fn === "function"
+    && !READ_ONLY_EXEMPT.has(name)
+    && !READ_ONLY_READ_RX.test(name);
+}
+// The blocked call REJECTS rather than resolving with null. Returning null made
+// every caller that does not inspect the return value carry on down its success
+// path: adding a branch as a view-only user alerted, then still ran
+// SALONS.push(), closed the modal and wrote "Added new location" to the
+// activity log — a branch that looked saved, and a false audit entry, until the
+// next reload. A rejection puts those callers in their catch block instead,
+// where they already reset state and report the failure honestly.
+const RO_MESSAGE = "🔒 View-only access — your role can't make changes on this tab. Nothing was saved. Switching tabs lets you edit again where allowed.";
+function _readOnlyError() {
+  const e = new Error(RO_MESSAGE);
+  e.__boaReadOnly = true;   // tag so the global handler below can spot it
+  return e;
+}
+// ── View-only AFFORDANCE (not enforcement) ───────────────────────────────────
+// The BOA_DB guard above is the enforcement layer and stands alone: it refuses
+// the write whichever button was clicked, even one nobody remembered to dress.
+// These two helpers are the affordance layer. Without them a view-only user is
+// walked all the way through a multi-step wizard — or a "PERMANENTLY DELETE"
+// confirm — before anything tells them no, which reads as a broken portal
+// rather than a permission. They grey the control and swap its tooltip for the
+// reason. Deliberately dumb: no gating logic lives here, so a helper that is
+// forgotten (or wrong) can never grant access the guard would have refused.
+const RO_LOCK_HINT = "🔒 View-only — your role can browse this tab but can't make changes here.";
+function roStyle(locked, style) {
+  return locked ? { ...(style || {}), opacity: 0.4, cursor: "not-allowed", boxShadow: "none" } : style;
+}
+function roTitle(locked, title) {
+  return locked ? RO_LOCK_HINT : title;
+}
+// AUTOMATIC MAINTENANCE WRITES. The portal repairs itself on load: it settles
+// transfers whose date has passed and auto-files leave-expiry incidents. Those
+// are not the signed-in person's edits, and reloadCoreData re-runs on a timer
+// and on tab focus — so if someone happens to be sitting on a view-only tab
+// when a background refresh lands, blocking them would both skip the repair and
+// pop a bogus "you can't make changes" dialog they did nothing to trigger.
+// Wrap such work in boaSystemWrite() so the guard lets it through. A counter,
+// not a boolean, because these blocks nest and run concurrently.
+window.__BOA_RO_SYSTEM = 0;
+async function boaSystemWrite(fn) {
+  window.__BOA_RO_SYSTEM++;
+  try { return await fn(); }
+  finally { window.__BOA_RO_SYSTEM = Math.max(0, window.__BOA_RO_SYSTEM - 1); }
+}
 function installReadOnlyGuard() {
   const apply = () => {
     if (!window.BOA_DB) { setTimeout(apply, 100); return; }
     if (window.__BOA_RO_INSTALLED) return;
     window.__BOA_RO_INSTALLED = true;
     window.__BOA_RO_ACTIVE = false;
-    READ_ONLY_GUARDED_METHODS.forEach(n => {
+    // Safety net for the writes that are fired without a try/catch: without
+    // this they would now fail silently (the user gets no dialog at all), which
+    // is the one outcome worse than the old false success. Callers that DO
+    // catch show their own message, so this never double-alerts.
+    if (!window.__BOA_RO_REJECTION_HOOK) {
+      window.__BOA_RO_REJECTION_HOOK = true;
+      window.addEventListener("unhandledrejection", (ev) => {
+        if (ev && ev.reason && ev.reason.__boaReadOnly) {
+          ev.preventDefault();
+          alert(ev.reason.message);
+        }
+      });
+    }
+    const guarded = [];
+    Object.keys(window.BOA_DB).forEach(n => {
       const fn = window.BOA_DB[n];
-      if (typeof fn !== "function") return;
+      if (!isReadOnlyGuardedName(n, fn)) return;
       const orig = fn.bind(window.BOA_DB);
       window.BOA_DB[n] = async (...args) => {
-        if (window.__BOA_RO_ACTIVE) {
-          alert("🔒 View-only access — your role can't make changes on this tab. Switching tabs lets you edit again where allowed.");
-          return null;
-        }
+        // __BOA_RO_SYSTEM lets automatic maintenance through — see boaSystemWrite.
+        if (window.__BOA_RO_ACTIVE && !window.__BOA_RO_SYSTEM) throw _readOnlyError();
         return orig(...args);
       };
+      guarded.push(n);
     });
+    // Surfaced so the coverage can be checked in the console rather than by
+    // reading this file: window.__BOA_RO_GUARDED.length
+    window.__BOA_RO_GUARDED = guarded.sort();
   };
   apply();
 }
@@ -4197,7 +4281,7 @@ function MatModal({ rec, onClose, onSave, onDelete, people }) {
 }
 
 // ─── STAFF MODAL ──────────────────────────────────────────────────────────────────
-function StaffModal({ s, onClose, onSave, onTransfer, allStaff, isOwner, onHardDelete }) {
+function StaffModal({ s, onClose, onSave, onTransfer, allStaff, isOwner, onHardDelete, canCompliance }) {
   // Split existing "name" into firstName / surname for the form. New records
   // start blank. Combined back into `name` on save.
   const splitName = (full) => {
@@ -4297,10 +4381,16 @@ function StaffModal({ s, onClose, onSave, onTransfer, allStaff, isOwner, onHardD
               <option>Permanent</option><option>Fixed Term</option><option>3 Month</option><option>NO CONTRACT</option><option>2 Weeks</option><option>Induction</option>
             </select>
           </div>
-          <div style={{ gridColumn: "1/-1", background: "#FCE7F3", borderRadius: 12, padding: "14px 16px", border: "1px solid #FBCFE8" }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: "#BE185D", marginBottom: 10, textTransform: "uppercase", letterSpacing: "0.08em" }}>Compliance / Work Status</div>
-            <CompliancePicker f={f} set={set} />
-          </div>
+          {/* Immigration status is gated by canSeeCompliance, exactly like the
+              Compliance tab and the Compliance column. Without this the modal
+              was a back door: anyone who could open a staff row read AND edited
+              permit type, asylum ref, DHA status and expiry. */}
+          {canCompliance && (
+            <div style={{ gridColumn: "1/-1", background: "#FCE7F3", borderRadius: 12, padding: "14px 16px", border: "1px solid #FBCFE8" }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: "#BE185D", marginBottom: 10, textTransform: "uppercase", letterSpacing: "0.08em" }}>Compliance / Work Status</div>
+              <CompliancePicker f={f} set={set} />
+            </div>
+          )}
           {/* BOA Pathways — flags staff recruited through the BOA Pathways
               programme for unemployed South Africans. Drives the 🎓 badge on
               the Employee list and the Locations overview, and the BOA Pathways
@@ -4355,7 +4445,7 @@ function StaffModal({ s, onClose, onSave, onTransfer, allStaff, isOwner, onHardD
 }
 
 // ─── TRANSFER MODAL ───────────────────────────────────────────────────────────────
-function TransferModal({ s, onClose, onConfirm, onCancelTransfer }) {
+function TransferModal({ s, onClose, onConfirm, onCancelTransfer, readOnly }) {
   // If this person already has a pending transfer, pre-fill the form
   const isEditing = !!s.transferring && !s.isShadow;
   const [toBranch, setToBranch] = useState(s.transferTo || SALONS.find(sl => sl.name !== s.branch)?.name || "");
@@ -4458,17 +4548,19 @@ function TransferModal({ s, onClose, onConfirm, onCancelTransfer }) {
         <div style={{ display: "flex", gap: 10, marginTop: 22, justifyContent: "space-between", alignItems: "center" }}>
           {/* Delete transfer button — only shown when editing */}
           {isEditing && !confirmDelete && (
-            <button onClick={() => setConfirmDelete(true)}
-              style={{ padding: "9px 16px", borderRadius: 9, border: "none", background: "#FBCFE8", color: "#831843", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700 }}>
+            <button onClick={() => setConfirmDelete(true)} disabled={readOnly}
+              title={roTitle(readOnly, undefined)}
+              style={roStyle(readOnly, { padding: "9px 16px", borderRadius: 9, border: "none", background: "#FBCFE8", color: "#831843", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700 })}>
               🗑 Delete Transfer
             </button>
           )}
           <div style={{ display: "flex", gap: 10, marginLeft: "auto" }}>
             <button onClick={onClose} style={{ padding: "9px 20px", borderRadius: 9, border: "1px solid #FBCFE8", background: "#FFFFFF", cursor: "pointer", fontFamily: "inherit", fontSize: 13 }}>Cancel</button>
             <button onClick={() => toBranch && transferDate && onConfirm({ staff: s, toBranch, transferDate, note, isPending })}
-              disabled={!toBranch || !transferDate}
-              style={{ padding: "9px 22px", borderRadius: 9, border: "none", background: !toBranch || !transferDate ? "#d1d5db" : "#0c4a6e", color: "#fff", cursor: !toBranch || !transferDate ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 }}>
-              {isEditing ? "💾 Save Changes" : isPending ? "Schedule Transfer" : "Confirm Transfer Now"}
+              disabled={readOnly || !toBranch || !transferDate}
+              title={roTitle(readOnly, undefined)}
+              style={roStyle(readOnly, { padding: "9px 22px", borderRadius: 9, border: "none", background: !toBranch || !transferDate ? "#d1d5db" : "#0c4a6e", color: "#fff", cursor: !toBranch || !transferDate ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 })}>
+              {readOnly ? "🔒 View-only" : isEditing ? "💾 Save Changes" : isPending ? "Schedule Transfer" : "Confirm Transfer Now"}
             </button>
           </div>
         </div>
@@ -4478,7 +4570,7 @@ function TransferModal({ s, onClose, onConfirm, onCancelTransfer }) {
 }
 
 // ─── MANAGER MODAL ────────────────────────────────────────────────────────────────
-function ManagerModal({ m, pin, onClose, onSave, onDelete, smTrialActive, smTrialOpenRec, smCooldown, smTenure, smCfg, onStartSmTrial }) {
+function ManagerModal({ m, pin, onClose, onSave, onDelete, smTrialActive, smTrialOpenRec, smCooldown, smTenure, smCfg, onStartSmTrial, canCompliance }) {
   const parseName = (t) => {
     if (!t) return { firstName: "", surname: "" };
     const i = t.indexOf(" ");
@@ -4557,11 +4649,14 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete, smTrialActive, smTria
             <input style={inp} value={f.notes || ""} onChange={e => set("notes", e.target.value)} placeholder="e.g. Transfer from Sandown, Pregnant..." /></div>
 
           {/* Compliance / work-permit status. Same options the staff modal
-              uses; persists to the same `permit` column on the staff row. */}
-          <div>
-            <label style={lbl}>Compliance / Work Permit</label>
-            <CompliancePicker f={f} set={set} compact />
-          </div>
+              uses; persists to the same `permit` column on the staff row.
+              Gated by canSeeCompliance — see the note in StaffModal. */}
+          {canCompliance && (
+            <div>
+              <label style={lbl}>Compliance / Work Permit</label>
+              <CompliancePicker f={f} set={set} compact />
+            </div>
+          )}
 
           {/* BOA Pathways — same flag as the staff modal; shows the 🎓 badge
               next to the manager's name on the Locations overview and lists. */}
@@ -4719,7 +4814,7 @@ function ManagerModal({ m, pin, onClose, onSave, onDelete, smTrialActive, smTria
 // Head Office kiosk (its roster query is .eq("branch","Head Office")) and drop
 // the person from ccStaff. So `dept` here is a VIEW concept: it picks the role
 // list and the label, never the stored branch.
-function OfficeStaffModal({ s, pin, dept, onClose, onSave, onDelete }) {
+function OfficeStaffModal({ s, pin, dept, onClose, onSave, onDelete, canCompliance }) {
   const parseName = (t) => {
     if (!t) return { firstName: "", surname: "" };
     const i = t.indexOf(" ");
@@ -4850,11 +4945,13 @@ function OfficeStaffModal({ s, pin, dept, onClose, onSave, onDelete }) {
             <input style={inp} value={f.notes || ""} onChange={e => set("notes", e.target.value)} placeholder="e.g. started on the Cape Town desk" /></div>
 
           {/* Compliance / work-permit status — same options + column as the
-              staff and manager modals. */}
-          <div>
-            <label style={lbl}>Compliance / Work Permit</label>
-            <CompliancePicker f={f} set={set} compact />
-          </div>
+              staff and manager modals, and the same canSeeCompliance gate. */}
+          {canCompliance && (
+            <div>
+              <label style={lbl}>Compliance / Work Permit</label>
+              <CompliancePicker f={f} set={set} compact />
+            </div>
+          )}
 
           <label style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 14px", borderRadius: 10, border: `2px solid ${f.boaPathways ? "#6EE7B7" : "#e5e7eb"}`, background: f.boaPathways ? "#ECFDF5" : "#fff", cursor: "pointer" }}>
             <input type="checkbox" checked={!!f.boaPathways} onChange={e => set("boaPathways", e.target.checked)} style={{ width: 17, height: 17, accentColor: "#059669", cursor: "pointer" }} />
@@ -9242,7 +9339,7 @@ function PinLogin(props) {
       setPin("");
       return;
     }
-    const session = { pin, name: u.name, role: u.role, demo: !!u.demo, isOwner: !!u.isOwner, voucherEntryOnly: !!u.voucherEntryOnly, ccOnly: !!u.ccOnly, hideCategories: u.hideCategories || [], hideTabs: u.hideTabs || [], showTabs: u.showTabs || [], readOnlyTabs: u.readOnlyTabs || [], stores: Array.isArray(u.stores) ? u.stores.slice() : [], signedInAt: new Date().toISOString() };
+    const session = { pin, name: u.name, role: u.role, demo: !!u.demo, isOwner: !!u.isOwner, voucherEntryOnly: !!u.voucherEntryOnly, ccOnly: !!u.ccOnly, hideCategories: u.hideCategories || [], hideTabs: u.hideTabs || [], showTabs: u.showTabs || [], grantTabs: u.grantTabs || [], readOnlyTabs: u.readOnlyTabs || [], stores: Array.isArray(u.stores) ? u.stores.slice() : [], signedInAt: new Date().toISOString() };
     try { sessionStorage.setItem(PIN_SESSION_KEY, JSON.stringify(session)); } catch (_) { }
     window.BOA_CURRENT_USER = session;
     onUnlock(session);
@@ -10526,6 +10623,22 @@ function AppGate() {
             u.hideTabs = [...ht, "officeStaff"];
           }
         });
+        // V5 migration: move the hardcoded Called in Sick grant into DATA.
+        // 3030 (Rochelle) reached that tab only because her PIN was written
+        // into the code — the Settings tick for it could never take effect.
+        // grantTabs now makes the tick real, so the grant becomes an ordinary
+        // record entry the owner can see and revoke like any other. Additive
+        // and idempotent; it never removes anything.
+        Object.keys(dynamic).forEach(pin => {
+          const u = dynamic[pin];
+          if (u._calledInSickGrantMigrated) return;
+          u._calledInSickGrantMigrated = true;
+          dashMigrated = true;
+          if (pin !== "3030") return;
+          const gt = Array.isArray(u.grantTabs) ? u.grantTabs : [];
+          if (!gt.includes("calledInSick")) u.grantTabs = [...gt, "calledInSick"];
+          if (Array.isArray(u.hideTabs)) u.hideTabs = u.hideTabs.filter(t => t !== "calledInSick");
+        });
         if (dashMigrated) { try { await saveAppUsersToDb(dynamic); } catch (_) { } }
       }
       if (cancelled) return;
@@ -10548,6 +10661,7 @@ function AppGate() {
               hideCategories: u.hideCategories || [],
               hideTabs: u.hideTabs || [],
               showTabs: u.showTabs || [],
+              grantTabs: u.grantTabs || [],
               readOnlyTabs: u.readOnlyTabs || [],
               stores: Array.isArray(u.stores) ? u.stores.slice() : []
             };
@@ -10580,6 +10694,7 @@ function AppGate() {
         demo: !!u.demo, isOwner: !!u.isOwner,
         hideCategories: u.hideCategories || [],
         hideTabs: u.hideTabs || [],
+        grantTabs: u.grantTabs || [],
         readOnlyTabs: u.readOnlyTabs || []
       };
       // ROM store allocation — only stamp the field when actually set, so
@@ -10604,6 +10719,7 @@ function AppGate() {
         ccOnly: !!u.ccOnly,
         hideCategories: u.hideCategories || [],
         hideTabs: u.hideTabs || [],
+        grantTabs: u.grantTabs || [],
         readOnlyTabs: u.readOnlyTabs || [],
         stores: Array.isArray(u.stores) ? u.stores.slice() : []
       };
@@ -10917,17 +11033,57 @@ function StaffRankedBars({ rows, refValue, refLabel }) {
 // owner add new ones, edit permissions, reset PINs and delete accounts.
 // All changes flow through `onUsersUpdate` (defined in AppGate) which
 // upserts the live user store into Supabase under APP_USERS_KEY.
+/* Dashboard cards. Twelve of the twenty had no Settings key at all, so they
+   could not be turned off for anybody — the grid listed eight rows for a
+   surface that renders twenty things. Registering them here means dashAlert()
+   applies the hide itself and a new card is toggleable the moment it is added,
+   rather than the moment someone remembers to add a row below.
+
+   `legacy` keeps an older, coarser key working: Called in Sick used to be ONE
+   key covering both the manager and nail-tech cards, so a record that still
+   carries dashCalledInSick must keep hiding both. */
+const DASH_CARDS = [
+  { id: "securityAlerts", key: "dashSecurityAlerts", l: "Security Alerts", icon: "🚨" },
+  { id: "hrActions", key: "dashHrActions", l: "HR Actions & Tasks", icon: "📝" },
+  { id: "mgrAbsences", key: "dashMgrAbsences", l: "Manager Absences (Action required)", icon: "📌" },
+  { id: "mgrSick", key: "dashMgrSick", legacy: "dashCalledInSick", l: "Called in Sick · Managers", icon: "🤒" },
+  { id: "techSick", key: "dashTechSick", legacy: "dashCalledInSick", l: "Called in Sick · Nail Techs", icon: "🤒" },
+  { id: "abscond", key: "dashAbscond", l: "Abscond / Absence Warnings", icon: "🚨" },
+  { id: "edOffers", key: "dashEdRequests", l: "Extra-Day Offers (review)", icon: "✨" },
+  { id: "dailyUpdates", key: "dashNews", l: "Daily Updates (kiosk feed)", icon: "📰" },
+  // The twelve that had no toggle until now.
+  { id: "myAlert", key: "dashMyAlerts", l: "My Alerts", icon: "🔔" },
+  { id: "offboardPayroll", key: "dashOffboardPayroll", l: "Off-boarding · payroll sign-off due", icon: "👋" },
+  { id: "sageReanchor", key: "dashSageReanchor", l: "Leave balances · Sage re-anchor due", icon: "🧾" },
+  { id: "officeHours", key: "dashOfficeHours", l: "Office Hours · findings", icon: "⏰" },
+  { id: "mgrHoursDocked", key: "dashMgrHoursDocked", l: "Manager hours docked", icon: "⏱️" },
+  { id: "mgrNoClockOut", key: "dashMgrNoClockOut", l: "Managers with no clock-out", icon: "🕐" },
+  { id: "leaveExpiry", key: "dashLeaveExpiry", l: "Leave expiry · auto-filed", icon: "⏳" },
+  { id: "unpublishedSched", key: "dashUnpublishedSched", l: "Unpublished schedule changes", icon: "📅" },
+  { id: "freshaDue", key: "dashFreshaDue", l: "Fresha · due soon", icon: "💇‍♀️" },
+  { id: "probationEnding", key: "dashProbationEnding", l: "Probation ending", icon: "📋" },
+  { id: "trialHrActions", key: "dashTrialHrActions", l: "Trial · HR actions", icon: "🧪" },
+  { id: "storeOpenings", key: "dashStoreOpenings", l: "Store openings", icon: "🔓" }
+];
+const DASH_BY_ID = DASH_CARDS.reduce((m, c) => { m[c.id] = c; return m; }, {});
+// Is this dashboard card hidden for this user? One place, so a card can never
+// be "registered but unhideable" again.
+// Grid rows that are dashboard cards / in-tab notices rather than tabs. They
+// have no editable state, so offering CAN EDIT on them was a checkbox that
+// saved a value nothing ever read.
+const DASH_ROW_KEYS = new Set(DASH_CARDS.map(c => c.key).concat(["trialAmCheckinAlert"]));
+function dashCardHidden(user, id) {
+  const c = DASH_BY_ID[id];
+  if (!c) return false;
+  const hidden = new Set((user && user.hideTabs) || []);
+  return hidden.has(c.key) || (!!c.legacy && hidden.has(c.legacy));
+}
+
 const SETTINGS_TABS = [
-  { t: "dashSecurityAlerts", l: "Security Alerts", cat: "Home/Dashboard", icon: "🚨" },
-  { t: "dashHrActions", l: "HR Actions & Tasks", cat: "Home/Dashboard", icon: "📝" },
-  { t: "dashMgrAbsences", l: "Manager Absences (Action required)", cat: "Home/Dashboard", icon: "📌" },
-  { t: "dashCalledInSick", l: "Called in Sick / Absent (today & tomorrow)", cat: "Home/Dashboard", icon: "🤒" },
-  { t: "dashAbscond", l: "Abscond / Absence Warnings", cat: "Home/Dashboard", icon: "🚨" },
-  // These two gates were already checked on the dashboard but never listed
-  // here, so there was no way to actually turn them off for a user.
-  { t: "dashEdRequests", l: "Extra-Day Offers (review)", cat: "Home/Dashboard", icon: "✨" },
-  { t: "dashNews", l: "Daily Updates (kiosk feed)", cat: "Home/Dashboard", icon: "📰" },
-  { t: "trialAmCheckinAlert", l: "AM Trial · missing check-in (trainers)", cat: "Home/Dashboard", icon: "⚠️" },
+  ...DASH_CARDS.map(c => ({ t: c.key, l: c.l, cat: "Home/Dashboard", icon: c.icon })),
+  // Renders inside the Trial Period tab, not on the dashboard — it was filed
+  // under Home/Dashboard, where nobody would look for it.
+  { t: "trialAmCheckinAlert", l: "AM Trial · missing check-in (trainers)", cat: "People", icon: "⚠️" },
   // Tab KEY stays "staff" — it's persisted in every user's hideTabs /
   // showTabs / readOnlyTabs and in NAV_TAB_TO_CATEGORY, so renaming the key
   // would silently orphan those. Label only.
@@ -10995,24 +11151,35 @@ const CC_ONLY_TABS = new Set(["scheduling", "ccCheckins"]);
 
 // Convert a stored user record (hideCategories + hideTabs + readOnlyTabs)
 // into a per-tab matrix the editor can flip checkboxes against.
-function userToPerms(u) {
-  const hideCats = new Set(u.hideCategories || []);
-  const hideTabs = new Set(u.hideTabs || []);
-  const showTabs = new Set(u.showTabs || []);
+// `gctx` (optional) is the gate context for the user BEING EDITED. With it,
+// each row also reports what the tab's default audience says and whether a tick
+// can change that — which is how the grid stops offering ticks that do nothing.
+// Without it the function degrades to the old visible/editable pair, so callers
+// that only need the shape (e.g. a save round-trip) don't have to build one.
+function userToPerms(u, gctx) {
   const roTabs = new Set(u.readOnlyTabs || []);
+  const acl = deriveAcl(u, gctx || {});
   const perms = {};
-  SETTINGS_TABS.forEach(({ t, cat }) => {
+  SETTINGS_TABS.forEach(({ t }) => {
     // A CC&S-only account is authoritative: it sees EXACTLY the CC&S tabs
     // (editable) and nothing else, regardless of the stored hide/showTabs — so
     // the toggle both grants the six surfaces and hides everything else.
     if (u.ccOnly) {
       const vis = CC_ONLY_TABS.has(t);
-      perms[t] = { visible: vis, editable: vis };
+      perms[t] = { visible: vis, editable: vis, byDefault: vis, grantable: false, tier: "locked" };
       return;
     }
-    const visible = (!hideCats.has(cat) || showTabs.has(t)) && !hideTabs.has(t);
-    const editable = visible && !roTabs.has(t);
-    perms[t] = { visible, editable };
+    const e = TAB_ACCESS[t] || { tier: "open" };
+    // Dashboard pseudo-tabs (dash*) have no TAB_ACCESS entry — they are cards,
+    // not tabs — so they keep the plain hide/show semantics they always had.
+    const visible = TAB_ACCESS[t] ? acl.visible.has(t) : !(new Set(u.hideTabs || [])).has(t);
+    perms[t] = {
+      visible,
+      editable: visible && !roTabs.has(t),
+      byDefault: gctx ? tabAllowedByDefault(t, gctx) : true,
+      grantable: e.tier === "normal",
+      tier: e.tier
+    };
   });
   return perms;
 }
@@ -11030,14 +11197,50 @@ function permsToUser(base, perms, stores) {
   // survives a ccOnly on→off round-trip intact.
   const hideTabs = [];
   const readOnlyTabs = [];
+  const hideCategories = [];
+  const grantTabs = [];
   if (base.ccOnly) {
     hideTabs.push(...(base.hideTabs || []));
     readOnlyTabs.push(...(base.readOnlyTabs || []));
+    hideCategories.push(...(base.hideCategories || []));
+    grantTabs.push(...(base.grantTabs || []));
   } else {
     SETTINGS_TABS.forEach(({ t }) => {
       const p = perms[t] || { visible: true, editable: true };
       if (!p.visible) { hideTabs.push(t); return; }
+      // Ticked visible on a tab the person would NOT reach by default: that is
+      // a grant, and recording it is the whole point of this phase. Before
+      // grantTabs existed the tick only removed a hideTabs entry that was never
+      // there, so it saved happily and changed nothing — the Called in Sick bug.
+      // Only "normal" tier can be granted here; list/locked rows render
+      // disabled in the editor, so p.visible can't have been flipped on them.
+      if (p.byDefault === false && p.grantable) grantTabs.push(t);
       if (!p.editable) readOnlyTabs.push(t);
+    });
+    // Same unknown-key preservation hideTabs gets below.
+    const gridKeysG = new Set(SETTINGS_TABS.map(x => x.t));
+    (base.grantTabs || []).forEach(t => {
+      if (!gridKeysG.has(t) && !grantTabs.includes(t)) grantTabs.push(t);
+    });
+    // Carry over hidden tabs the permission grid does not model. hideTabs is
+    // rebuilt from SETTINGS_TABS, so any stored key that has no row there --
+    // "mgrPlanner", "hrLibrary" -- used to be silently dropped on save, which
+    // un-hid Manager Planner for good (nothing in the UI could re-hide it).
+    const gridKeys = new Set(SETTINGS_TABS.map(x => x.t));
+    (base.hideTabs || []).forEach(t => {
+      if (!gridKeys.has(t) && !hideTabs.includes(t)) hideTabs.push(t);
+    });
+    // hideCategories is RE-DERIVED rather than passed through or wiped. Wiping
+    // it (the old behaviour) permanently killed the body-level lock screens on
+    // Attendance / Payroll Reports / Staffing & Shifts, which test it directly.
+    // Passing the stored value through would be worse: userToPerms re-hides any
+    // tab whose category is hidden, so a per-tab "visible" tick would silently
+    // undo itself. A category counts as hidden only when every tab in it is.
+    SETTINGS_CATS.forEach(cat => {
+      const inCat = SETTINGS_TABS.filter(x => x.cat === cat);
+      if (inCat.length && inCat.every(({ t }) => !(perms[t] || { visible: true }).visible)) {
+        hideCategories.push(cat);
+      }
     });
   }
   const out = {
@@ -11047,15 +11250,16 @@ function permsToUser(base, perms, stores) {
     demo: !!base.demo,
     isOwner: !!base.isOwner,
     ccOnly: !!base.ccOnly,  // whole-account "Call Centre & Sales only" flag
-    hideCategories: base.ccOnly ? (base.hideCategories || []) : [],  // superseded by hideTabs when packed
+    hideCategories,
     hideTabs,
+    grantTabs,
     readOnlyTabs
   };
-  // ROM store allocation. Only persisted when the user actually has stores
-  // assigned — keeps the user record tidy for non-ROM roles.
-  if (Array.isArray(stores) && stores.length > 0) {
-    out.stores = stores.slice();
-  }
+  // ROM store allocation. Always written, including an empty list — writing it
+  // only when non-empty (the old behaviour) meant `out` fell back to the spread
+  // `base.stores`, so clearing a ROM's stores in the editor silently kept the
+  // old allocation and left _hasStoreScope true.
+  out.stores = Array.isArray(stores) ? stores.slice() : (base.stores || []);
   return out;
 }
 
@@ -11063,20 +11267,19 @@ function permsToUser(base, perms, stores) {
 // abbreviations like "ROM" or longer "Regional Operations Manager" also match
 // so a typo or legacy seed doesn't accidentally drop the scope toggle).
 function isRomRole(role) {
-  const r = (role || "").toLowerCase().trim();
-  return r === "regional ops manager" || r === "regional operations manager" || r === "rom";
+  return ROLE_BY_ID.regional_ops.match(String(role || "").toLowerCase().trim());
 }
 
 // Who may see confidential staff incident reports: the Owner, HR, and senior
 // ops (National Ops + Regional Ops). Store managers use the kiosk, never the
 // portal, so they're already excluded — this is belt-and-braces for the portal.
+// Roles are free text (Settings → Users), so match on WORD BOUNDARIES, never
+// bare substrings: a plain .includes("hr") fired on any role containing those
+// two letters ("Chris…"), and .includes("national") let an "International …"
+// role through. Same style as canSeeCompliance below.
+// Audience now lives in CAPABILITIES["tab.incidents"] below.
 function canSeeIncidents(user) {
-  if (!user) return false;
-  if (user.isOwner) return true;
-  const r = (user.role || "").toLowerCase();
-  return r === "master admin" ||
-    r.includes("hr") || r.includes("human res") ||
-    r.includes("national") || isRomRole(user.role);
+  return can(user, "tab.incidents");
 }
 
 // TEMPORARY named-PIN grant for the Called in Sick tab ONLY.
@@ -11091,10 +11294,9 @@ function canSeeIncidents(user) {
 // extra-day requests and HR Reports, so this grants the one tab instead.
 // Remove once the permission model is reworked to make the Settings toggle
 // authoritative for this tab.
-const CALLED_IN_SICK_PINS = new Set(["3030"]); // Rochelle - Ops Admin
+// The pin now lives in CAPABILITIES["tab.calledInSick"].audience.pins.
 function canSeeCalledInSick(user) {
-  if (canSeeIncidents(user)) return true;
-  return !!(user && user.pin && CALLED_IN_SICK_PINS.has(String(user.pin)));
+  return can(user, "tab.calledInSick");
 }
 
 // Who may see permit / asylum / DHA status. Narrower than canSeeIncidents on
@@ -11107,18 +11309,9 @@ function canSeeCalledInSick(user) {
 // boundaries: a bare .includes("hr") would fire on unrelated role names.
 // Gates BOTH the Compliance tab and the Compliance column on every staff list,
 // so there is no back door into the same data.
+// Audience now lives in CAPABILITIES["tab.compliance"] (tier: locked).
 function canSeeCompliance(user) {
-  if (!user) return false;
-  if (user.isOwner) return true;
-  const r = String(user.role || "").toLowerCase().trim();
-  if (!r) return false;
-  return r === "master admin"
-    || /\bhr\b/.test(r) || /human\s*res/.test(r)   // HR, HR Manager, HR / Payroll, Human Resources
-    || /national/.test(r)                          // National Ops
-    || /recruit/.test(r)                           // Recruiter, Recruitment
-    || /payroll/.test(r)                           // Payroll, Payroll Manager
-    || /project/.test(r)                           // Project Manager
-    || /\bdev(eloper|ops)?\b/.test(r);              // Dev, Developer, DevOps
+  return can(user, "tab.compliance");
 }
 
 // ─── RECRUITMENT / INTERVIEW ROLE GATES ──────────────────────────────────────
@@ -11172,99 +11365,785 @@ function offboardSignOffPins(cfg) {
   const pins = cfg && Array.isArray(cfg.signOffPins) ? cfg.signOffPins.filter(Boolean) : null;
   return (pins && pins.length) ? pins.map(String) : OFFBOARD_DEFAULT_SIGNOFF_PINS.slice();
 }
-// Who is chased about the queue.
+// All three read the same stored config, so all three take it as an argument
+// and pass it to the resolver as ctx. The "membership of the access list is
+// still required" rule that sign-off and payroll-officer share is now the
+// registry's `requires: "tab.offboard"`, not a repeated first line.
 function isOffboardPayrollOfficer(user, cfg) {
-  if (!canSeeOffboarding(user, cfg)) return false;
-  return offboardPayrollPins(cfg).indexOf(String(user.pin)) >= 0;
+  return can(user, "act.offboard.payrollOfficer", { offboard: cfg });
 }
 function canSeeOffboarding(user, cfg) {
-  if (!user || !user.pin) return false;
-  return offboardPins(cfg).indexOf(String(user.pin)) >= 0;
+  return can(user, "tab.offboard", { offboard: cfg });
 }
-// Who may sign a record off. Membership of the access list is still required,
-// so widening this list can never let someone in who cannot open the tab.
 function canSignOffPayroll(user, cfg) {
-  if (!canSeeOffboarding(user, cfg)) return false;
-  return offboardSignOffPins(cfg).indexOf(String(user.pin)) >= 0;
+  return can(user, "act.offboard.signoff", { offboard: cfg });
 }
 
 function _isOwnerOrMaster(user) {
-  if (!user) return false;
-  if (user.isOwner) return true;
-  return (user.role || "").toLowerCase().trim() === "master admin";
+  return can(user, "sys.ownerOrMaster");
 }
 function canRecruitInterviews(user) {
-  if (!user) return false;
-  if (_isOwnerOrMaster(user)) return true;
-  return /recruit/i.test(user.role || "");
+  return can(user, "act.interviews.recruit");
 }
 function canTrainInterviews(user) {
-  if (!user) return false;
-  if (_isOwnerOrMaster(user)) return true;
-  const r = (user.role || "");
-  return /\btrainer\b/i.test(r) && !/manager/i.test(r);
+  return can(user, "act.interviews.train");
 }
 
 // Shared access-gate check: does this user fall inside an access config
 // ({ roles:[...], pins:[...] })? Owners always pass. Role keys are matched
 // loosely against the user's role title so seed/typo variants still work.
 function accessAllows(user, cfg) {
-  if (!user) return false;
-  if (user.isOwner) return true;
-  const role = (user.role || "").toLowerCase();
-  const roleMatch = (cfg && cfg.roles || []).some(k =>
-    k === "national" ? (role.includes("national ops") || role.includes("national operations") || role.includes("national"))
-      : k === "regional" ? (role.includes("regional") || /\brom\b/.test(role) || role.includes("regional ops"))
-        : k === "payroll" ? (role.includes("payroll") || role.includes("wages") || role.includes("finance"))
-          : k === "hr" ? (role.includes("hr") || role.includes("human res"))
-            : false
-  );
-  if (roleMatch) return true;
-  return (cfg && cfg.pins || []).includes(user.pin);
+  return _cfgAllows(user, cfg, ACCESS_KEY_MATCH, true);
 }
 
-// Reusable Settings panel for granting an access list by role and/or by named
-// person (owners always included). Used for the leave-workflow gates.
-function AccessPanel({ title, blurb, cfg, onSave, users, roleOpts, accent, accentBg, border }) {
-  const c = cfg || { roles: [], pins: [] };
-  const userList = Object.keys(users || {})
+/* ═══ CAPABILITY REGISTRY ═══════════════════════════════════════════════════
+   Phase 2 of docs/permissions-audit-and-rework.md. One resolver over one
+   registry, replacing role tests that had been hand-rolled ten different ways
+   and drifted apart — the drift is what made Settings → Users lie about the
+   Called in Sick tab (Rochelle, 3030) in the first place.
+
+   BEHAVIOUR-PRESERVING BY CONSTRUCTION. Every entry encodes what the gate it
+   replaces did on the day it was written, quirks included, and each gate
+   function below becomes a one-line wrapper over can(). Nobody's access
+   changes in this phase. That is the point: Phase 3 can only safely make the
+   Settings grid authoritative once the answer lives in exactly one place, and
+   proving "same answers, new plumbing" is much easier than proving a
+   simultaneous rewrite of plumbing AND policy.
+
+   NOT handled here, deliberately: ccOnly / demo / voucherEntryOnly. Those are
+   account-SHAPE flags — they decide which subset of the registry exists for an
+   account rather than answering a capability question, they are enforced in
+   the nav filters today, and folding them in now would change what these
+   wrappers return. Phase 3 moves them in alongside deriveAcl().              */
+
+// ─── Canonical roles ────────────────────────────────────────────────────────
+// Role titles are free text (Settings → Users), so every matcher runs on the
+// lower-cased, trimmed title and tests WORD BOUNDARIES. Bare substrings are
+// what let "International Ops" satisfy a national gate and any role holding
+// the letters h-r satisfy an HR gate (defect I in the audit).
+const ROLES = [
+  { id: "master_admin", label: "Master Admin", match: r => r === "master admin" },
+  { id: "hr", label: "HR", match: r => /\bhr\b/.test(r) || /human\s*res/.test(r) },
+  { id: "national_ops", label: "National Ops Manager", match: r => /\bnational\b/.test(r) },
+  { id: "regional_ops", label: "Regional Ops Manager", match: r => r === "regional ops manager" || r === "regional operations manager" || r === "rom" },
+  { id: "payroll", label: "Payroll", match: r => /\bpayroll\b/.test(r) || /\bwages\b/.test(r) || /\bfinance\b/.test(r) },
+  { id: "recruiter", label: "Recruitment", match: r => /recruit/.test(r) },
+  { id: "nailtech_trainer", label: "Nail Tech Trainer", match: r => /\btrainer\b/.test(r) && !/manager/.test(r) },
+  { id: "project", label: "Project Manager", match: r => /project/.test(r) },
+  { id: "dev", label: "Developer", match: r => /\bdev(eloper|ops)?\b/.test(r) }
+];
+const ROLE_BY_ID = ROLES.reduce((m, x) => { m[x.id] = x; return m; }, {});
+function roleIdsOf(user) {
+  const r = String((user && user.role) || "").toLowerCase().trim();
+  return ROLES.filter(x => x.match(r)).map(x => x.id);
+}
+
+// LEGACY matchers — looser tests that are STILL LIVE behind specific gates.
+// They exist so the registry could be adopted without moving anyone's access.
+// Each is a defect-I instance that Phase 3 retires against a verified roster;
+// none is a pattern to copy. `loose` is the lower-cased but UNTRIMMED title,
+// which two of these gates compare against.
+const LEGACY_ROLE_MATCH = {
+  // canSeeCompliance's national test never got the Phase-1 word boundaries,
+  // so "International …" still opens the immigration-status gate.
+  national_substr: r => /national/.test(r),
+  // canSeeCompliance matches "payroll" as a bare substring and NOTHING else.
+  // The canonical payroll role also admits wages/finance titles, so using it
+  // here would have quietly handed a "Wages Clerk" access to permit and asylum
+  // status. Narrower on purpose — keep it narrow.
+  payroll_substr: r => /payroll/.test(r),
+  // Two different "national" audiences existed inline across the file: the
+  // dashboard/senior crowd tested a bare "national" substring (so
+  // "International Ops" qualified), while Store Allocation and the PIN
+  // directories required an explicit National Ops / Operations title. They are
+  // genuinely different sizes, so they stay two capabilities rather than being
+  // merged into whichever one happened to be read first.
+  national_ops_titled: r => r.includes("national ops") || r.includes("national operations"),
+  // The SM-trial evaluate/decide gates use bare substrings AND compare an
+  // untrimmed title, so " Master Admin " fails there but passes elsewhere.
+  hr_substr: (r, loose) => loose.includes("hr"),
+  humanres_substr: (r, loose) => loose.includes("human res"),
+  master_untrimmed: (r, loose) => loose === "master admin"
+};
+
+// Config-driven role KEYS ({roles:["national","hr"], pins:[…]} access lists).
+// Two sets, because two of the consumers hand-rolled their own and so missed
+// the Phase-1 word-boundary fix that accessAllows received.
+const ACCESS_KEY_MATCH = {
+  national: r => /\bnational\b/.test(r),
+  regional: r => /\bregional\b/.test(r) || /\brom\b/.test(r),
+  payroll: r => /\bpayroll\b/.test(r) || /\bwages\b/.test(r) || /\bfinance\b/.test(r),
+  hr: r => /\bhr\b/.test(r) || /human\s*res/.test(r)
+};
+const LEGACY_CFG_KEY_MATCH = {
+  national: r => r.includes("national ops") || r.includes("national operations") || r.includes("national"),
+  regional: r => r.includes("regional") || /\brom\b/.test(r) || r.includes("regional ops")
+};
+function _cfgAllows(user, cfg, keyMatch, ownerImplicit) {
+  if (!user) return false;
+  if (ownerImplicit && user.isOwner) return true;
+  const role = String(user.role || "").toLowerCase().trim();
+  const roleMatch = ((cfg && cfg.roles) || []).some(k => keyMatch[k] ? keyMatch[k](role) : false);
+  if (roleMatch) return true;
+  return ((cfg && cfg.pins) || []).includes(user.pin);
+}
+
+// Named PIN lists that live in a stored config with a seeded fallback. Kept as
+// functions, not a static array, because the fallback only applies when the
+// stored key is missing or empty — see offboardPins() above.
+const CAP_LISTS = {
+  "offboard.pins": ctx => offboardPins(ctx && ctx.offboard),
+  "offboard.payrollPins": ctx => offboardPayrollPins(ctx && ctx.offboard),
+  "offboard.signOffPins": ctx => offboardSignOffPins(ctx && ctx.offboard)
+};
+
+/* Entry shape:
+     tier          "normal" grid grants+revokes | "list" AccessPanel grants |
+                   "locked" code-change only. Carried now, enforced in Phase 3.
+     surface       "tab" | "action"
+     gridKey       matching SETTINGS_TABS key, where one exists
+     ownerImplicit false = the Owner does NOT get a free pass. Two gates mean
+                   this: the off-boarding list (an owner not on the list stays
+                   out — it was an explicit instruction) and the schedule
+                   alerts (the owner deliberately isn't paged).
+     requires      parent capability, ANDed — mirrors canSignOffPayroll
+     inherits      parent capability, ORed  — mirrors canSeeCalledInSick
+     audience      { roles[], legacy[], pins[], list, cfgRef, cfgKeys }        */
+const CAPABILITIES = {
+  "sys.ownerOrMaster": {
+    tier: "locked", surface: "action",
+    audience: { roles: ["master_admin"] }
+  },
+  // Who may hand out access. Deliberately narrower than "can open Settings":
+  // granting someone the Off-boarding list or Cash-up delete is a different
+  // act from editing a tab toggle, so it gets its own capability rather than
+  // riding on whoever happens to reach the page.
+  "sys.accessAdmin": {
+    tier: "locked", surface: "action",
+    audience: { roles: ["dev"] },
+    desc: "🔐 Grant or revoke any of the access lists above.",
+  },
+  // Owner + anyone whose title contains "national" — the crowd that sees
+  // senior dashboard cards (ED offers, unpublished schedules, daily updates)
+  // and the manager-hours queue.
+  "sys.seniorOps": {
+    tier: "normal", surface: "action",
+    audience: { legacy: ["national_substr"] }
+  },
+  // Owner + an explicit National Ops / National Operations title. Narrower:
+  // gates Store Allocation and the kiosk/manager PIN directories.
+  "sys.nationalOps": {
+    tier: "normal", surface: "action",
+    desc: "🏬 Store Allocation, 🔑 Kiosk PINs and 🆔 Manager PINs tabs.",
+    audience: { legacy: ["national_ops_titled"] }
+  },
+  "tab.incidents": {
+    tier: "normal", surface: "tab", gridKey: "incidents",
+    desc: "🛡️ Incident Reports, 💰 Extra-Day Requests and 📈 HR Reports tabs.",
+    audience: { roles: ["master_admin", "hr", "national_ops", "regional_ops"] }
+  },
+  // The named-PIN grant this whole rework existed to delete — now deleted.
+  //
+  // It was here because the Settings tick for this tab could never take effect:
+  // the nav built the item inside canSeeIncidents, which keys off a free-text
+  // role, so an "Ops Admin" failed it no matter what the grid said. The only
+  // way to give Rochelle (3030) the tab was to write her PIN into the code.
+  //
+  // The tab is "normal" tier now, so the tick is real, and the V5 migration
+  // moved her access into grantTabs on her own record — confirmed present
+  // before this hardcode came out. It inherits tab.incidents so the HR / ops
+  // audience still reaches it by default; everyone else is a grid decision.
+  "tab.calledInSick": {
+    tier: "normal", surface: "tab", gridKey: "calledInSick",
+    inherits: "tab.incidents"
+  },
+  // LOCKED: immigration status. Regional Ops sit outside this on purpose even
+  // though they see incidents — they manage stores, they don't chase permits.
+  "tab.compliance": {
+    tier: "locked", surface: "tab", gridKey: "compliance",
+    desc: "📋 Compliance tab, the permit / DHA column on every staff list, and the permit fields inside a staff record.",
+    audience: {
+      roles: ["master_admin", "hr", "recruiter", "project", "dev"],
+      legacy: ["national_substr", "payroll_substr"]
+    }
+  },
+  "tab.offboard": {
+    tier: "list", surface: "tab", gridKey: "offboard",
+    ownerImplicit: false,
+    audience: { list: "offboard.pins" }
+  },
+  "act.offboard.signoff": {
+    tier: "list", surface: "action", requires: "tab.offboard",
+    ownerImplicit: false,
+    audience: { list: "offboard.signOffPins" }
+  },
+  "act.offboard.payrollOfficer": {
+    tier: "list", surface: "action", requires: "tab.offboard",
+    ownerImplicit: false,
+    audience: { list: "offboard.payrollPins" }
+  },
+  "act.interviews.recruit": {
+    tier: "normal", surface: "action",
+    desc: "🎯 Recruitment — add candidates, schedule interviews, book inductions.",
+    audience: { roles: ["master_admin", "recruiter"] }
+  },
+  "act.interviews.train": {
+    tier: "normal", surface: "action",
+    desc: "🎓 Recruitment — mark interview attendance and pass / fail.",
+    audience: { roles: ["master_admin", "nailtech_trainer"] }
+  },
+  // Manager-trial evaluate/decide. Evaluate additionally admits Regional Ops;
+  // only HR / National / owner close a trial out.
+  "act.smtrial.evaluate": {
+    tier: "normal", surface: "action",
+    desc: "⭐ SM Trials — record an evaluation against the criteria.",
+    audience: {
+      roles: ["regional_ops"],
+      legacy: ["master_untrimmed", "hr_substr", "humanres_substr", "national_substr"]
+    }
+  },
+  "act.smtrial.decide": {
+    tier: "normal", surface: "action",
+    desc: "⭐ SM Trials — close a trial out (pass / fail).",
+    audience: { legacy: ["master_untrimmed", "hr_substr", "humanres_substr", "national_substr"] }
+  },
+  "act.overtime.record": {
+    tier: "list", surface: "action",
+    audience: { cfgRef: "overtime", cfgKeys: "legacy" }
+  },
+  "act.cashups.review": {
+    tier: "list", surface: "action",
+    audience: { cfgRef: "cashupReview", cfgKeys: "legacy" }
+  },
+  // Publishing the current cycle writes live schedules for every branch. It
+  // was reachable from two places with two DIFFERENT audiences: the Scheduling
+  // tab button checked isOwner inline, while the dashboard "unpublished
+  // schedule" card checked owner-or-national. The wider door was the real
+  // answer, so that is what both now use — nobody loses access, and the two
+  // stop disagreeing.
+  "act.schedule.publishCycle": {
+    tier: "normal", surface: "action",
+    audience: { legacy: ["national_substr"] },
+    desc: "⚡ Publish current cycle — scan every branch for mid-cycle schedule edits and push them live to staff, kiosk and My BOA."
+  },
+  // ownerImplicit:false — the owner is deliberately not paged about missing
+  // schedules; this is a worklist, not a permission to see something.
+  "act.schedule.alerts": {
+    tier: "normal", surface: "action",
+    desc: "📅 Paged when a branch has not saved next month's schedule by the 15th. The Owner is deliberately NOT on this worklist.",
+    ownerImplicit: false,
+    audience: { pins: ["1993", "2023", "3030"] }   // Master, Kelly, Rochelle
+  }
+};
+
+// Render a capability's audience as a sentence. Generated from the registry
+// entry, so the reference table under the access matrix cannot drift from the
+// rule it is describing — which is what happened to every hand-written
+// "who can do this" note this rework replaced.
+const AUDIENCE_WORDS = {
+  master_admin: "Master Admin", hr: "HR", national_ops: "National Ops",
+  regional_ops: "Regional Ops Manager", payroll: "Payroll / wages / finance",
+  recruiter: "Recruitment", nailtech_trainer: "Nail-tech trainer (not manager trainers)",
+  project: "Project Manager", dev: "Developer",
+  national_substr: "any role containing \u201cnational\u201d",
+  national_ops_titled: "a National Ops / National Operations title",
+  payroll_substr: "any role containing \u201cpayroll\u201d",
+  hr_substr: "any role containing \u201chr\u201d", humanres_substr: "Human Resources",
+  master_untrimmed: "Master Admin"
+};
+function describeAudience(capKey) {
+  const cap = CAPABILITIES[capKey];
+  if (!cap) return "";
+  const a = cap.audience || {};
+  const parts = [];
+  if (cap.ownerImplicit !== false) parts.push("the Owner");
+  (a.roles || []).forEach(r => parts.push(AUDIENCE_WORDS[r] || r));
+  (a.legacy || []).forEach(r => parts.push(AUDIENCE_WORDS[r] || r));
+  if (a.pins && a.pins.length) parts.push("named PINs (" + a.pins.join(", ") + ")");
+  if (cap.inherits) parts.push("anyone who passes " + cap.inherits);
+  if (!parts.length) return "nobody by default";
+  return parts.join(", ");
+}
+// The one resolver. ctx supplies the runtime access configs a capability names
+// ({ offboard, overtime, cashupReview, … }); capabilities that need none can be
+// called with two arguments. An unknown key is CLOSED, never open.
+function can(user, capKey, ctx) {
+  const cap = CAPABILITIES[capKey];
+  if (!cap) return false;
+  if (!user) return false;
+  if (cap.ownerImplicit !== false && user.isOwner) return true;
+  if (cap.requires && !can(user, cap.requires, ctx)) return false;
+  if (cap.inherits && can(user, cap.inherits, ctx)) return true;
+  return _audienceAllows(user, cap.audience, ctx);
+}
+
+/* ═══ TAB ACCESS REGISTRY ═══════════════════════════════════════════════════
+   Phase 3. One manifest of every tab's audience, replacing the role tests that
+   were inlined into the nav-group builder. The builder still decides an item's
+   LABEL and badge count; it no longer decides who may see it.
+
+   tier — what the Settings grid may do to this tab:
+     "open"    everyone by default; the grid can hide it
+     "normal"  a role / access-list DEFAULT; the grid can both grant and hide
+     "locked"  the grid can hide, never grant
+
+   Roles and access lists are DEFAULTS, not ceilings: they decide what someone
+   gets without anyone touching their record, and the per-user grid overrides
+   them in both directions. That is the whole point — changing who can reach a
+   tab should never require a code change.
+
+   "locked" is deliberately down to ONE entry: Settings. A tab grid that could
+   hand out Settings would be self-granting — anyone given it could then edit
+   their own record and everyone else's, including the Owner's, so the grant
+   could never be taken back. Every other restriction is a default worth
+   overriding from the UI; that one is a privilege boundary.
+
+   `sensitive` doesn't restrict anything. It makes the grid ASK before handing
+   out a tab whose data would embarrass you if a mis-click exposed it — the
+   protection a hard lock was standing in for, without the code round-trip.
+
+   ignoreCategoryHide — set on tabs that used to carry forceShow. Deleting
+   forceShow makes them hideable, which is the fix; but hideCategories is a
+   blunt instrument that predates these tabs, and a user who is on the
+   leave-payroll access list yet has "Payroll" collapsed in their record would
+   have silently lost the Payroll Inbox. So an EXPLICIT per-tab hide revokes
+   them and a whole-category hide does not. Phase 5 can revisit once the live
+   records are known.                                                        */
+const TAB_ACCESS = {
+  // ── People ───────────────────────────────────────────────────────────────
+  onboard: { tier: "open", cat: "People" },
+  trialPeriod: { tier: "open", cat: "People" },
+  smTrial: { tier: "open", cat: "People" },
+  offboard: { tier: "normal", cat: "People", ignoreCategoryHide: true, sensitive: "Off-boarding holds terminations, resignations and disciplinary records.", allow: g => g.canOffboard,
+    grantedIn: "Default: the Off-boarding column in the access matrix below (named PINs only — not even the Owner is automatic). Ticking here grants it directly instead." },
+  staff: { tier: "open", cat: "People" },
+  officeStaff: { tier: "normal", cat: "People", allow: g => !!(g.hoStaffCount || g.canAddOfficeStaff) },
+  officeTrials: { tier: "normal", cat: "People", allow: g => !!(g.canAddOfficeStaff || g.officeTrialCount) },
+  recruitment: { tier: "open", cat: "People" },
+  hrLibrary: { tier: "normal", cat: "People", sensitive: "Employee Files holds every scanned document on record.", allow: g => g.isOwnerOrMaster,
+    grantedIn: "Default: Owner and Master Admin." },
+  maternity: { tier: "open", cat: "People" },
+  unpaidLegal: { tier: "open", cat: "People" },
+  compliance: { tier: "normal", cat: "People", sensitive: "Compliance exposes immigration status — permit, asylum and DHA data.", allow: g => g.canCompliance,
+    grantedIn: "Default: HR, National Ops, Recruitment, Payroll, Project, Dev and the Owner." },
+  incidents: { tier: "normal", cat: "People", allow: g => g.canIncidents },
+  leaveExpiry: { tier: "normal", cat: "People", allow: g => g.canLeaveExpiry },
+  // ── Operations ───────────────────────────────────────────────────────────
+  scheduling: { tier: "open", cat: "Operations" },
+  locations: { tier: "open", cat: "Operations" },
+  checkins: { tier: "open", cat: "Operations" },
+  mgrclockins: { tier: "open", cat: "Operations" },
+  hoCheckins: { tier: "normal", cat: "Operations", allow: g => !!g.hoOnlyCount },
+  ccCheckins: { tier: "normal", cat: "Operations", allow: g => !!g.ccStaffCount },
+  leave: { tier: "open", cat: "Operations" },
+  leaveRequests: { tier: "normal", cat: "Operations", allow: g => g.canLeaveRequests },
+  calledInSick: { tier: "normal", cat: "Operations", allow: g => g.canCalledInSick },
+  extraDayRequests: { tier: "normal", cat: "Operations", allow: g => g.canIncidents },
+  freshaTodo: { tier: "open", cat: "Operations" },
+  storeOpenings: { tier: "open", cat: "Operations" },
+  storeHours: { tier: "normal", cat: "Operations", allow: g => g.isOwnerOrMaster },
+  movements: { tier: "open", cat: "Operations" },
+  dailyTasks: { tier: "open", cat: "Operations" },
+  mgrCoverage: { tier: "open", cat: "Operations" },
+  cashups: { tier: "open", cat: "Operations" },
+  mgrPlanner: { tier: "open", cat: "Operations" },
+  // ── Payroll ──────────────────────────────────────────────────────────────
+  attendance: { tier: "open", cat: "Payroll" },
+  payrollProgress: { tier: "open", cat: "Payroll" },
+  payrollReports: { tier: "open", cat: "Payroll" },
+  overtime: { tier: "open", cat: "Payroll" },
+  officeHours: { tier: "normal", cat: "Payroll", ignoreCategoryHide: true, allow: g => g.canOfficeHours,
+    grantedIn: "Default: the Office Hours column in the access matrix below. Ticking here grants it directly instead." },
+  payrollInbox: { tier: "normal", cat: "Payroll", ignoreCategoryHide: true, allow: g => g.canPayrollInbox },
+  leaveBalances: { tier: "normal", cat: "Payroll", ignoreCategoryHide: true, allow: g => g.canLeaveBalances },
+  frl: { tier: "normal", cat: "Payroll", ignoreCategoryHide: true, allow: g => g.canLeaveBalances },
+  bargainingCouncil: { tier: "normal", cat: "Payroll", ignoreCategoryHide: true, allow: g => g.canLeaveBalances },
+  bonusConfig: { tier: "normal", cat: "Payroll", allow: g => g.isOwnerOrMaster },
+  // ── Insights ─────────────────────────────────────────────────────────────
+  alerts: { tier: "open", cat: "Insights" },
+  staffingReport: { tier: "open", cat: "Insights" },
+  storeReports: { tier: "open", cat: "Insights" },
+  hrReports: { tier: "normal", cat: "Insights", allow: g => g.canIncidents },
+  activity: { tier: "open", cat: "Insights" },
+  // ── Admin ────────────────────────────────────────────────────────────────
+  kioskPins: { tier: "normal", cat: "Admin", allow: g => !!(g.isNationalOps || g.isRom) },
+  managerPins: { tier: "normal", cat: "Admin", allow: g => !!(g.isNationalOps || g.isRom) },
+  storeAllocation: { tier: "normal", cat: "Admin", allow: g => g.isNationalOps },
+  voucherAdmin: { tier: "normal", cat: "Admin", allow: g => g.isOwnerOrMaster },
+  // Settings edits everyone else's permissions, so it is the one tab the grid
+  // must never be able to hand out. The Developer is admitted because they are
+  // the second person who may grant access (sys.accessAdmin) and the matrix
+  // lives on this page — without this that capability could never be used.
+  settings: { tier: "locked", allow: g => g.isOwner || g.isDev }
+};
+
+/* ═══ ACCESS LISTS ══════════════════════════════════════════════════════════
+   The named grant lists, in one place. These used to be nine separate Settings
+   panels stacked down the page, each with its own layout and its own wording,
+   and none of them said what it actually unlocked — so the only way to answer
+   "what does this give someone" was to read the code.
+
+   `unlocks` is that answer, written in terms of what the person will SEE or be
+   able to DO, and it is rendered next to the column rather than hidden in a
+   tooltip. `roleOpts` are the role keys that config understands; a role grant
+   applies to everyone holding that role and cannot be removed per person.     */
+const ACCESS_LISTS = [
+  {
+    id: "offboard", cfgRef: "offboard", field: "pins", ownerImplicit: false,
+    icon: "👋", label: "Off-boarding",
+    unlocks: "Opens the Off-boarding tab — terminations, resignations, disciplinary records and exit checklists. This list is the ONLY way in: an Owner who is not on it does not get in either.",
+    roleOpts: []
+  },
+  {
+    id: "offboardPayroll", cfgRef: "offboard", field: "payrollPins", ownerImplicit: false, requires: "offboard",
+    icon: "📮", label: "Sign-off chase",
+    unlocks: "Receives the dashboard reminder listing off-boarding records still waiting for payroll sign-off. Notification only — it grants no extra access.",
+    roleOpts: []
+  },
+  {
+    id: "offboardSignoff", cfgRef: "offboard", field: "signOffPins", ownerImplicit: false, requires: "offboard",
+    icon: "✍️", label: "Payroll sign-off",
+    unlocks: "Can mark an off-boarding record as payroll-signed-off — the final confirmation that the last payout was checked.",
+    roleOpts: []
+  },
+  {
+    id: "leaveOps", cfgRef: "leaveOps",
+    icon: "🌴", label: "Leave · ops check",
+    unlocks: "Shows the Leave Requests tab and allows the operational step — confirming the store can spare the person before the leave is approved.",
+    roleOpts: [{ key: "national", label: "National Ops" }, { key: "regional", label: "Regional managers" }, { key: "hr", label: "HR" }]
+  },
+  {
+    id: "leavePayroll", cfgRef: "leavePayroll",
+    icon: "🧮", label: "Leave · payroll",
+    unlocks: "Shows the Payroll Inbox and Leave Expiry Reports tabs, and allows the balance check on a leave request (days available, recorded against Sage).",
+    roleOpts: [{ key: "national", label: "National Ops" }, { key: "payroll", label: "Payroll / wages / finance" }, { key: "hr", label: "HR" }]
+  },
+  {
+    id: "leaveBalances", cfgRef: "leaveBalances",
+    icon: "🧾", label: "Leave Balances",
+    unlocks: "Shows three Payroll tabs: Leave Balances (upload the balance file, add adjustments), Family Responsibility, and Bargaining Council.",
+    roleOpts: [{ key: "payroll", label: "Payroll / wages / finance" }, { key: "hr", label: "HR" }]
+  },
+  {
+    id: "officeStaff", cfgRef: "officeStaff",
+    icon: "🏢", label: "Office staff",
+    unlocks: "Shows the Office Staff List and HQ Trials tabs, including the ➕ Add Head Office Staff and ➕ Add Call Centre & Sales Staff buttons.",
+    roleOpts: [{ key: "hr", label: "HR" }, { key: "payroll", label: "Payroll / wages / finance" }]
+  },
+  {
+    id: "officeHours", cfgRef: "officeHours",
+    icon: "⏰", label: "Office Hours",
+    unlocks: "Shows the Payroll → Office Hours queue and its dashboard card: office staff who worked short of a 9-hour day, never clocked out, or were absent.",
+    roleOpts: [{ key: "payroll", label: "Payroll / wages / finance" }, { key: "hr", label: "HR" }, { key: "national", label: "National Ops" }]
+  },
+  {
+    id: "overtime", cfgRef: "overtime", legacyKeys: true,
+    icon: "⏱️", label: "Overtime",
+    unlocks: "Can record and manage overtime on the Overtime tab. Overtime is portal-only — it is never captured at the kiosk.",
+    roleOpts: [{ key: "national", label: "National Ops" }, { key: "regional", label: "Regional managers" }]
+  },
+  {
+    id: "cashupReview", cfgRef: "cashupReview", legacyKeys: true,
+    icon: "💰", label: "Cash-up review",
+    unlocks: "Can tick off a store's daily cash-up as reviewed, reopen one so the store can resubmit, and permanently delete a test or duplicate entry.",
+    roleOpts: [{ key: "national", label: "National Ops" }, { key: "regional", label: "Regional managers" }]
+  }
+];
+
+// The gate inputs TAB_ACCESS predicates read, computed for ANY user — not just
+// the signed-in one. That matters: the Settings grid has to answer "what would
+// this OTHER person see by default" to know whether a tick is a grant or a
+// no-op, and before this it simply couldn't ask.
+//   env: the runtime access configs + global data counts.
+function gateCtxFor(user, env) {
+  const e = env || {};
+  const n = e.counts || {};
+  return {
+    isOwner: !!(user && user.isOwner),
+    isOwnerOrMaster: _isOwnerOrMaster(user),
+    isNationalOps: can(user, "sys.nationalOps"),
+    isDev: can(user, "sys.accessAdmin"),
+    isRom: isRomRole(user && user.role),
+    canOffboard: canSeeOffboarding(user, e.offboardAccess),
+    canCompliance: canSeeCompliance(user),
+    canIncidents: canSeeIncidents(user),
+    canCalledInSick: canSeeCalledInSick(user),
+    canLeaveExpiry: canSeeIncidents(user) || accessAllows(user, e.leavePayrollCfg),
+    canLeaveRequests: canSeeIncidents(user) || accessAllows(user, e.leaveOpsCfg) || accessAllows(user, e.leavePayrollCfg),
+    canOfficeHours: accessAllows(user, e.officeHoursCfg),
+    canAddOfficeStaff: accessAllows(user, e.officeStaffCfg),
+    canPayrollInbox: accessAllows(user, e.leavePayrollCfg),
+    canLeaveBalances: accessAllows(user, e.leaveBalancesCfg),
+    hoStaffCount: n.hoStaff || 0,
+    hoOnlyCount: n.hoOnly || 0,
+    ccStaffCount: n.ccStaff || 0,
+    officeTrialCount: n.officeTrial || 0
+  };
+}
+// Would this user reach the tab with no per-user overrides at all?
+function tabAllowedByDefault(t, g) {
+  const e = TAB_ACCESS[t];
+  if (!e) return true;
+  return e.allow ? !!e.allow(g) : true;
+}
+
+// Build the whole answer once: which tabs this user may see, and which of
+// those are view-only. Every consumer (nav filter, tryChangeTab, the
+// normalisation effect, the Settings grid) reads THIS, so they cannot disagree
+// about what exists — which is exactly how the nav and the grid drifted apart.
+function deriveAcl(user, g) {
+  const visible = new Set(["dashboard"]);   // always reachable; the fallback target
+  if (!user) return { visible, readOnly: new Set(), grantable: () => false };
+  const hideTabs = new Set(user.hideTabs || []);
+  const hideCats = new Set(user.hideCategories || []);
+  const showTabs = new Set(user.showTabs || []);
+  const grantTabs = new Set(user.grantTabs || []);
+  Object.keys(TAB_ACCESS).forEach(t => {
+    const e = TAB_ACCESS[t];
+    // A CC&S-only account is absolute: exactly the CC&S tabs, nothing added by
+    // a grant and nothing removed by a hide.
+    if (user.ccOnly) { if (CC_ONLY_TABS.has(t)) visible.add(t); return; }
+    let allowed = e.allow ? !!e.allow(g) : true;
+    if (!allowed && e.tier === "normal" && grantTabs.has(t)) allowed = true;
+    if (!allowed) return;
+    if (hideTabs.has(t)) return;
+    if (!e.ignoreCategoryHide && e.cat && hideCats.has(e.cat) && !showTabs.has(t)) return;
+    visible.add(t);
+  });
+  return {
+    visible,
+    readOnly: new Set(user.readOnlyTabs || []),
+    // Does a grid tick on this tab do anything? Drives the Settings UI so it
+    // can stop offering ticks that are inert (the original complaint).
+    grantable: (t) => !!(TAB_ACCESS[t] && TAB_ACCESS[t].tier === "normal")
+  };
+}
+
+// Console audit: the effective capability matrix for the REAL stored roster.
+// The registry made this possible to write at all — before it, answering "what
+// can 3030 actually do" meant reading ten gates in six places. Owner-only in
+// practice (nothing is exposed that the caller can't already see in Settings).
+// Run window.__BOA_ACL_AUDIT() in the browser console; pass a pin to focus one
+// person, e.g. __BOA_ACL_AUDIT("3030").
+function aclAudit(users, ctx, onlyPin) {
+  const keys = Object.keys(CAPABILITIES).sort();
+  const rows = [];
+  Object.keys(users || {}).forEach(pin => {
+    if (onlyPin && String(pin) !== String(onlyPin)) return;
+    const u = Object.assign({ pin }, users[pin]);
+    const row = { pin, name: u.name || "", role: u.role || "", owner: !!u.isOwner };
+    keys.forEach(k => { row[k] = can(u, k, ctx) ? "✓" : ""; });
+    row["(roles matched)"] = roleIdsOf(u).join(",") || "—";
+    rows.push(row);
+  });
+  rows.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  if (console.table) console.table(rows);
+  return rows;
+}
+
+function _audienceAllows(user, aud, ctx) {
+  if (!aud) return false;
+  const loose = String(user.role || "").toLowerCase();
+  const r = loose.trim();
+  if ((aud.roles || []).some(id => ROLE_BY_ID[id] && ROLE_BY_ID[id].match(r, loose))) return true;
+  if ((aud.legacy || []).some(k => LEGACY_ROLE_MATCH[k] && LEGACY_ROLE_MATCH[k](r, loose))) return true;
+  if (aud.pins && aud.pins.indexOf(String(user.pin)) >= 0) return true;
+  if (aud.list && CAP_LISTS[aud.list] && CAP_LISTS[aud.list](ctx).indexOf(String(user.pin)) >= 0) return true;
+  if (aud.cfgRef) {
+    const cfg = (ctx && ctx[aud.cfgRef]) || {};
+    const keys = aud.cfgKeys === "legacy" ? LEGACY_CFG_KEY_MATCH : ACCESS_KEY_MATCH;
+    // owner was already settled above, so never re-grant here
+    if (_cfgAllows(user, cfg, keys, false)) return true;
+  }
+  return false;
+}
+
+
+// ─── ACCESS MATRIX ───────────────────────────────────────────────────────────
+// One table for every named grant list. This replaced nine stacked panels that
+// each rendered their own layout, their own user list and their own wording —
+// ~450 lines of near-duplicate markup in which the same person appeared nine
+// times and no panel said what it actually unlocked.
+//
+// A cell is one of three things, and the difference matters:
+//   ✓  granted here — a tick against this person's PIN; removable
+//   ◆  granted by their ROLE or by being the Owner; NOT removable per person,
+//      because it follows from who they are (change the role, or the role
+//      grant at the top of the column)
+//   ·  no access
+// Showing role grants as a distinct, non-clickable state is the point: the old
+// panels showed an empty checkbox for someone who already had access through
+// their role, which read as "denied" and invited a pointless second grant.
+//
+// The off-boarding columns are the exception the old shared panel got wrong: it
+// force-ticked owners as "always" without ever writing them into pins, which is
+// right where the gate short-circuits on isOwner but WRONG for off-boarding,
+// where membership is PIN-only with no owner bypass — saving through it would
+// have quietly dropped the owner off their own list. Hence ownerImplicit on the
+// column, and a cell that only shows ◆ where the resolver really would pass.
+function AccessMatrix({ users, cfgs, onSave, canEdit }) {
+  const [openCol, setOpenCol] = useState(null);
+  const people = Object.keys(users || {})
     .filter(pin => !(users[pin] && (users[pin].voucherEntryOnly || users[pin].demo)))
-    .map(pin => ({ pin, name: (users[pin] && users[pin].name) || pin, role: (users[pin] && users[pin].role) || "", isOwner: !!(users[pin] && users[pin].isOwner) }))
-    .sort((a, b) => a.name.localeCompare(b.name));
-  const toggleArr = (arr, val) => (arr || []).includes(val) ? (arr || []).filter(x => x !== val) : [...(arr || []), val];
-  const setCfg = (patch) => onSave({ ...c, ...patch });
-  const ac = accent || "#BE185D";
-  const chk = { width: 15, height: 15, accentColor: ac };
-  const colHead = { fontSize: 10, fontWeight: 800, color: ac, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 8 };
-  const rowL = { display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 13, color: "#831843", cursor: "pointer" };
+    .map(pin => ({ pin, ...(users[pin] || {}) }))
+    .sort((a, b) => String(a.name || a.pin).localeCompare(String(b.name || b.pin)));
+
+  const cfgOf = (col) => (cfgs && cfgs[col.cfgRef]) || {};
+  const pinsOf = (col) => {
+    const c = cfgOf(col);
+    const arr = c[col.field || "pins"];
+    return Array.isArray(arr) ? arr.map(String) : [];
+  };
+  // Why does this person have it? Mirrors the resolver rather than guessing.
+  const cellState = (col, u) => {
+    if (pinsOf(col).indexOf(String(u.pin)) >= 0) return "granted";
+    if (col.ownerImplicit !== false && u.isOwner) return "owner";
+    const role = String(u.role || "").toLowerCase().trim();
+    const keys = col.legacyKeys ? LEGACY_CFG_KEY_MATCH : ACCESS_KEY_MATCH;
+    const cfgRoles = Array.isArray(cfgOf(col).roles) ? cfgOf(col).roles : [];
+    if (cfgRoles.some(k => keys[k] && keys[k](role))) return "role";
+    return "none";
+  };
+  const toggle = (col, pin) => {
+    if (!canEdit) return;
+    const field = col.field || "pins";
+    const cur = pinsOf(col);
+    const next = cur.indexOf(String(pin)) >= 0 ? cur.filter(x => x !== String(pin)) : [...cur, String(pin)];
+    onSave(col.cfgRef, { ...cfgOf(col), [field]: next });
+  };
+  const toggleRole = (col, key) => {
+    if (!canEdit) return;
+    const cur = Array.isArray(cfgOf(col).roles) ? cfgOf(col).roles : [];
+    const next = cur.indexOf(key) >= 0 ? cur.filter(x => x !== key) : [...cur, key];
+    onSave(col.cfgRef, { ...cfgOf(col), roles: next });
+  };
+
+  const th = { padding: "8px 6px", fontSize: 10, fontWeight: 800, color: "#831843", textAlign: "center", verticalAlign: "bottom", borderLeft: "1px solid #FCE7F3", minWidth: 74 };
+  const td = { padding: "6px", textAlign: "center", borderLeft: "1px solid #FCE7F3", borderTop: "1px solid #FCE7F3" };
+  const mark = { granted: "✓", owner: "◆", role: "◆", none: "·" };
+  const markStyle = {
+    granted: { color: "#15803d", fontWeight: 900 },
+    owner: { color: "#a16207", fontWeight: 800 },
+    role: { color: "#a16207", fontWeight: 800 },
+    none: { color: "#d4d4d8" }
+  };
+  const whyText = { owner: "Has this as the Owner — not removable per person.", role: "Granted by their role — change the role grant at the top of this column, or their role.", granted: "Granted to this person here. Click to remove.", none: canEdit ? "No access. Click to grant." : "No access." };
+
   return (
-    <div style={{ marginTop: 26, background: accentBg || "#FDF2F8", border: "2px solid " + (border || "#FBCFE8"), borderRadius: 14, padding: "18px 20px" }}>
-      <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 18, color: ac, fontWeight: 700, marginBottom: 2 }}>{title}</div>
-      <div style={{ fontSize: 12, color: ac, marginBottom: 16, opacity: 0.85 }}>{blurb}</div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 20 }}>
-        <div>
-          <div style={colHead}>Allowed by role</div>
-          {roleOpts.map(r => (
-            <label key={r.key} style={rowL}>
-              <input type="checkbox" style={chk} checked={(c.roles || []).includes(r.key)} onChange={() => setCfg({ roles: toggleArr(c.roles, r.key) })} />
-              {r.label}
-            </label>
-          ))}
-        </div>
-        <div>
-          <div style={colHead}>…or specific people</div>
-          {userList.map(u => (
-            <label key={u.pin} style={{ ...rowL, opacity: u.isOwner ? 0.6 : 1 }}>
-              <input type="checkbox" style={chk} checked={u.isOwner || (c.pins || []).includes(u.pin)} disabled={u.isOwner} onChange={() => setCfg({ pins: toggleArr(c.pins, u.pin) })} />
-              {u.name} <span style={{ color: "#F472B6", fontSize: 11 }}>· {u.role}{u.isOwner ? " · always" : ""}</span>
-            </label>
-          ))}
-        </div>
+    <div style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 13, padding: "18px 20px", marginBottom: 18 }}>
+      <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 19, color: "#831843", fontWeight: 700 }}>🔐 Access lists</div>
+      <div style={{ fontSize: 12, color: "#9F1A4F", marginTop: 3, marginBottom: 4 }}>
+        Named grants that sit outside the tab grid above. Click a column heading to see exactly what it unlocks.
       </div>
-      <div style={{ fontSize: 11, color: ac, marginTop: 14, fontStyle: "italic", opacity: 0.85 }}>Owners always have access. Changes save automatically.</div>
+      <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 12, display: "flex", gap: 14, flexWrap: "wrap" }}>
+        <span><b style={markStyle.granted}>✓</b> granted here (click to remove)</span>
+        <span><b style={markStyle.role}>◆</b> via their role or Owner — not removable per person</span>
+        <span><b style={markStyle.none}>·</b> no access</span>
+      </div>
+      {!canEdit && (
+        <div style={{ background: "#FEF3C7", border: "1px solid #FDE68A", borderRadius: 9, padding: "8px 12px", fontSize: 11.5, color: "#92400e", marginBottom: 12, fontWeight: 600 }}>
+          🔒 View only — access is granted by the <strong>Owner</strong> and the <strong>Developer</strong>.
+        </div>
+      )}
+
+      {openCol && (() => {
+        const col = ACCESS_LISTS.find(c => c.id === openCol);
+        if (!col) return null;
+        return (
+          <div style={{ background: "#FDF2F8", border: "1px solid #FBCFE8", borderRadius: 10, padding: "12px 14px", marginBottom: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+              <div style={{ fontSize: 13, fontWeight: 800, color: "#831843" }}>{col.icon} {col.label}</div>
+              <button onClick={() => setOpenCol(null)} style={{ background: "transparent", border: "none", color: "#9F1A4F", cursor: "pointer", fontSize: 16, lineHeight: 1 }}>×</button>
+            </div>
+            <div style={{ fontSize: 12, color: "#9F1A4F", marginTop: 5 }}>{col.unlocks}</div>
+            {col.requires && <div style={{ fontSize: 11, color: "#a16207", marginTop: 6 }}>⚠ Also requires <strong>{(ACCESS_LISTS.find(c => c.id === col.requires) || {}).label}</strong> — this one does nothing on its own.</div>}
+            {col.roleOpts && col.roleOpts.length > 0 && (
+              <div style={{ marginTop: 9 }}>
+                <div style={{ fontSize: 10, fontWeight: 800, color: "#831843", letterSpacing: "0.05em", marginBottom: 5 }}>GRANT TO A WHOLE ROLE</div>
+                <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+                  {col.roleOpts.map(ro => {
+                    const on = (Array.isArray(cfgOf(col).roles) ? cfgOf(col).roles : []).indexOf(ro.key) >= 0;
+                    return (
+                      <label key={ro.key} style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 9px", borderRadius: 7, fontSize: 11.5, fontWeight: 700, cursor: canEdit ? "pointer" : "default", background: on ? "#FCE7F3" : "#fff", border: "1px solid " + (on ? "#F9A8D4" : "#FBCFE8"), color: "#831843", opacity: canEdit ? 1 : 0.7 }}>
+                        <input type="checkbox" checked={on} disabled={!canEdit} onChange={() => toggleRole(col, ro.key)} style={{ accentColor: "#BE185D" }} />
+                        {ro.label}
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            {(!col.roleOpts || col.roleOpts.length === 0) && (
+              <div style={{ fontSize: 11, color: "#a16207", marginTop: 7 }}>This list is by named person only — no role shortcut, and the Owner is not automatically included.</div>
+            )}
+          </div>
+        );
+      })()}
+
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <thead>
+            <tr style={{ background: "#FCE7F3" }}>
+              <th style={{ padding: "8px 10px", textAlign: "left", fontSize: 10, fontWeight: 800, color: "#831843", position: "sticky", left: 0, background: "#FCE7F3", minWidth: 170 }}>PERSON</th>
+              {ACCESS_LISTS.map(col => (
+                <th key={col.id} style={th}>
+                  <button onClick={() => setOpenCol(openCol === col.id ? null : col.id)}
+                    title={col.unlocks}
+                    style={{ background: openCol === col.id ? "#F9A8D4" : "transparent", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 10, fontWeight: 800, color: "#831843", padding: "3px 4px", borderRadius: 6, lineHeight: 1.25 }}>
+                    <div style={{ fontSize: 14 }}>{col.icon}</div>
+                    {col.label}
+                    <div style={{ fontSize: 9, opacity: 0.65, fontWeight: 600 }}>what?</div>
+                  </button>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {people.map(u => (
+              <tr key={u.pin}>
+                <td style={{ padding: "7px 10px", color: "#831843", position: "sticky", left: 0, background: "#fff", borderTop: "1px solid #FCE7F3" }}>
+                  <div style={{ fontWeight: 700 }}>{u.name || "(unnamed)"} {u.isOwner && <span style={{ fontSize: 9, background: "#FCE7F3", color: "#BE185D", borderRadius: 99, padding: "1px 6px", fontWeight: 800 }}>OWNER</span>}</div>
+                  <div style={{ fontSize: 10, color: "#9ca3af" }}>{u.pin}{u.role ? " · " + u.role : ""}</div>
+                </td>
+                {ACCESS_LISTS.map(col => {
+                  const st = cellState(col, u);
+                  const clickable = canEdit && st !== "owner" && st !== "role";
+                  return (
+                    <td key={col.id} style={td}>
+                      <button onClick={() => clickable && toggle(col, u.pin)} disabled={!clickable}
+                        title={whyText[st]}
+                        style={{ background: "transparent", border: "none", cursor: clickable ? "pointer" : "default", fontSize: 15, lineHeight: 1, padding: "2px 8px", borderRadius: 6, ...markStyle[st] }}>
+                        {mark[st]}
+                      </button>
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Granted by role only — no list to edit, so state the rule instead of
+          leaving people to guess why somebody has something. */}
+      <div style={{ marginTop: 18, borderTop: "1px solid #FCE7F3", paddingTop: 14 }}>
+        <div style={{ fontSize: 11, fontWeight: 800, color: "#831843", letterSpacing: "0.05em", marginBottom: 3 }}>GRANTED BY ROLE — NOT EDITABLE HERE</div>
+        <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 9 }}>These follow from someone&apos;s role. To change one, change their role in the user list above — or ask for the rule itself to be changed.</div>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
+          <tbody>
+            {Object.keys(CAPABILITIES).filter(k => CAPABILITIES[k].desc).map(k => (
+              <tr key={k}>
+                <td style={{ padding: "6px 8px", borderTop: "1px solid #FCE7F3", color: "#831843", width: "58%" }}>{CAPABILITIES[k].desc}</td>
+                <td style={{ padding: "6px 8px", borderTop: "1px solid #FCE7F3", color: "#6b7280" }}>{describeAudience(k)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
+
 
 // ── Settings: SM classification criteria, evaluation form & trial policy ────
 // National ops / HR define what "ready to be an SM" means. Everything here is
@@ -11457,7 +12336,7 @@ function SmCriteriaPanel({ cfg, onSave }) {
   );
 }
 
-function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFreshaCfgSave, overtimeCfg, onOvertimeCfgSave, cashupReviewCfg, onCashupReviewCfgSave, leaveOpsCfg, onLeaveOpsCfgSave, leavePayrollCfg, onLeavePayrollCfgSave, leaveBalancesCfg, onLeaveBalancesCfgSave, officeStaffCfg, onOfficeStaffCfgSave, officeHoursCfg, onOfficeHoursCfgSave, smCriteriaCfg, onSmCriteriaSave }) {
+function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, dataCounts, offboardAccess, onOffboardAccessSave, overtimeCfg, onOvertimeCfgSave, cashupReviewCfg, onCashupReviewCfgSave, leaveOpsCfg, onLeaveOpsCfgSave, leavePayrollCfg, onLeavePayrollCfgSave, leaveBalancesCfg, onLeaveBalancesCfgSave, officeStaffCfg, onOfficeStaffCfgSave, officeHoursCfg, onOfficeHoursCfgSave, smCriteriaCfg, onSmCriteriaSave }) {
   const users = appUsers || {};
   const [editing, setEditing] = useState(null);   // {pin, isNew, name, role, demo, isOwner, perms, originalPin}
   const [busy, setBusy] = useState(false);
@@ -11480,6 +12359,7 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFres
       demo: false,
       isOwner: false,
       ccOnly: false,
+      voucherEntryOnly: false,
       perms: blankPerms,
       stores: []
     });
@@ -11496,11 +12376,22 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFres
       demo: !!u.demo,
       isOwner: !!u.isOwner,
       ccOnly: !!u.ccOnly,
-      perms: userToPerms(u),
+      voucherEntryOnly: !!u.voucherEntryOnly,
+      perms: userToPerms(u, _gctx(u)),
       stores: Array.isArray(u.stores) ? u.stores.slice() : []
     });
   };
   const cancelEdit = () => setEditing(null);
+
+  // Gate context for an arbitrary user record. Lets each grid row answer "would
+  // THIS person reach the tab by default", which is what tells a real tick apart
+  // from a no-op — the question the old grid never asked, and the reason it
+  // cheerfully saved a Called in Sick tick that could never take effect.
+  const _gctxEnv = useMemo(() => ({
+    offboardAccess, leaveOpsCfg, leavePayrollCfg, leaveBalancesCfg,
+    officeHoursCfg, officeStaffCfg, counts: dataCounts || {}
+  }), [offboardAccess, leaveOpsCfg, leavePayrollCfg, leaveBalancesCfg, officeHoursCfg, officeStaffCfg, dataCounts]);
+  const _gctx = (u) => gateCtxFor(u, _gctxEnv);
 
   const persist = async (next) => {
     setBusy(true);
@@ -11528,7 +12419,8 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFres
       role: editing.role.trim() || (editing.isOwner ? "Owner" : "Staff"),
       demo: editing.demo,
       isOwner: editing.isOwner,
-      ccOnly: !!editing.ccOnly
+      ccOnly: !!editing.ccOnly,
+      voucherEntryOnly: !!editing.voucherEntryOnly
     }, editing.perms, editing.stores);
     const next = { ...users };
     if (!editing.isNew && editing.originalPin && editing.originalPin !== pin) {
@@ -11572,6 +12464,16 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFres
 
   const togglePerm = (tab, field) => {
     if (!editing) return;
+    // Granting a sensitive tab asks first. These used to be hard-locked in
+    // code, which meant a legitimate grant needed a developer; the real risk
+    // was never that the Owner would decide to grant one, it was a mis-click
+    // in a 60-row checkbox matrix. So confirm the intent instead of forbidding
+    // it. Only on the way ON, and only when they don't already have it.
+    const meta = TAB_ACCESS[tab];
+    const cur0 = editing.perms[tab] || {};
+    if (field === "visible" && !cur0.visible && meta && meta.sensitive && cur0.byDefault === false) {
+      if (!window.confirm(meta.sensitive + "\n\nGive " + (editing.name || "this user") + " access to it?")) return;
+    }
     setEditing(prev => {
       const cur = prev.perms[tab] || { visible: true, editable: true };
       const next = { ...cur, [field]: !cur[field] };
@@ -11587,7 +12489,12 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFres
     setEditing(prev => {
       const np = { ...prev.perms };
       SETTINGS_TABS.filter(x => x.cat === cat).forEach(({ t }) => {
-        np[t] = { visible, editable: visible && editable };
+        const cur = prev.perms[t] || {};
+        // "Show all" must not appear to grant a tab the grid can't grant —
+        // those rows are disabled individually, so honour that in bulk too.
+        const inert = cur.byDefault === false && cur.grantable === false;
+        const vis = inert ? !!cur.visible : visible;
+        np[t] = { ...cur, visible: vis, editable: vis && editable };
       });
       return { ...prev, perms: np };
     });
@@ -11626,7 +12533,7 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFres
           <tbody>
             {sortedPins.map(pin => {
               const u = users[pin];
-              const perms = userToPerms(u);
+              const perms = userToPerms(u, _gctx(u));
               const visibleCount = SETTINGS_TABS.filter(({ t }) => perms[t].visible).length;
               const totalCount = SETTINGS_TABS.length;
               const roList = SETTINGS_TABS.filter(({ t }) => perms[t].visible && !perms[t].editable).map(x => x.l);
@@ -11678,189 +12585,30 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFres
         </table>
       </div>
 
-      {/* ── Fresha trial access ── who opens trial techs on Fresha and who
-          sees the dashboard reminders. Changes save immediately. */}
-      {onFreshaCfgSave && (() => {
-        const cfg = freshaCfg || { openerPins: [], viewerRoles: [], viewerPins: [] };
-        const userList = Object.keys(users || {})
-          .filter(pin => !(users[pin] && (users[pin].voucherEntryOnly || users[pin].demo)))
-          .map(pin => ({ pin, name: (users[pin] && users[pin].name) || pin, role: (users[pin] && users[pin].role) || "" }))
-          .sort((a, b) => a.name.localeCompare(b.name));
-        const toggleArr = (arr, val) => (arr || []).includes(val) ? (arr || []).filter(x => x !== val) : [...(arr || []), val];
-        const setCfg = (patch) => onFreshaCfgSave({ ...cfg, ...patch });
-        const roleOpts = [{ key: "national", label: "National Ops Managers" }, { key: "regional", label: "Regional managers (all ROM variants)" }];
-        const chk = { width: 15, height: 15, accentColor: "#7c3aed" };
-        const colHead = { fontSize: 10, fontWeight: 800, color: "#7c3aed", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 8 };
-        const rowL = { display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 13, color: "#3b0764", cursor: "pointer" };
-        return (
-          <div style={{ marginTop: 26, background: "#faf5ff", border: "2px solid #d8b4fe", borderRadius: 14, padding: "18px 20px" }}>
-            <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 18, color: "#6b21a8", fontWeight: 700, marginBottom: 2 }}>🧪 Fresha — trial access</div>
-            <div style={{ fontSize: 12, color: "#9333ea", marginBottom: 16 }}>Choose who is responsible for opening trial techs on Fresha (they can tick the reminders done on the dashboard) and who can see those reminders.</div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 20 }}>
-              <div>
-                <div style={colHead}>Opens techs on Fresha</div>
-                {userList.map(u => (
-                  <label key={u.pin} style={rowL}>
-                    <input type="checkbox" style={chk} checked={(cfg.openerPins || []).includes(u.pin)} onChange={() => setCfg({ openerPins: toggleArr(cfg.openerPins, u.pin) })} />
-                    {u.name} <span style={{ color: "#a78bfa", fontSize: 11 }}>· {u.role}</span>
-                  </label>
-                ))}
-              </div>
-              <div>
-                <div style={colHead}>Can see reminders (by role)</div>
-                {roleOpts.map(r => (
-                  <label key={r.key} style={rowL}>
-                    <input type="checkbox" style={chk} checked={(cfg.viewerRoles || []).includes(r.key)} onChange={() => setCfg({ viewerRoles: toggleArr(cfg.viewerRoles, r.key) })} />
-                    {r.label}
-                  </label>
-                ))}
-                <div style={{ ...colHead, marginTop: 14 }}>…or specific people</div>
-                {userList.map(u => (
-                  <label key={u.pin} style={rowL}>
-                    <input type="checkbox" style={chk} checked={(cfg.viewerPins || []).includes(u.pin)} onChange={() => setCfg({ viewerPins: toggleArr(cfg.viewerPins, u.pin) })} />
-                    {u.name} <span style={{ color: "#a78bfa", fontSize: 11 }}>· {u.role}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-            <div style={{ fontSize: 11, color: "#9333ea", marginTop: 14, fontStyle: "italic" }}>Owners always see the reminders. Changes save automatically.</div>
-          </div>
-        );
-      })()}
+      {/* One matrix for every named grant list. Nine separate panels used to
+          live here — each with its own layout, its own copy of the user list
+          and its own wording — so the same person appeared nine times and no
+          panel said what it actually unlocked. Editable by the Owner and the
+          Developer; everyone else who can reach Settings sees it read-only. */}
+      <AccessMatrix
+        users={users}
+        canEdit={can(currentUser, "sys.accessAdmin")}
+        cfgs={{
+          offboard: offboardAccess, leaveOps: leaveOpsCfg, leavePayroll: leavePayrollCfg,
+          leaveBalances: leaveBalancesCfg, officeStaff: officeStaffCfg,
+          officeHours: officeHoursCfg, overtime: overtimeCfg, cashupReview: cashupReviewCfg
+        }}
+        onSave={(ref, next) => {
+          const save = {
+            offboard: onOffboardAccessSave, leaveOps: onLeaveOpsCfgSave,
+            leavePayroll: onLeavePayrollCfgSave, leaveBalances: onLeaveBalancesCfgSave,
+            officeStaff: onOfficeStaffCfgSave, officeHours: onOfficeHoursCfgSave,
+            overtime: onOvertimeCfgSave, cashupReview: onCashupReviewCfgSave
+          }[ref];
+          if (save) save(next);
+        }}
+      />
 
-      {/* ── Overtime recording access ── who may record overtime on the HR
-          portal. Owners always can; everyone else must be granted here. */}
-      {onOvertimeCfgSave && (() => {
-        const cfg = overtimeCfg || { roles: ["national"], pins: [] };
-        const userList = Object.keys(users || {})
-          .filter(pin => !(users[pin] && (users[pin].voucherEntryOnly || users[pin].demo)))
-          .map(pin => ({ pin, name: (users[pin] && users[pin].name) || pin, role: (users[pin] && users[pin].role) || "", isOwner: !!(users[pin] && users[pin].isOwner) }))
-          .sort((a, b) => a.name.localeCompare(b.name));
-        const toggleArr = (arr, val) => (arr || []).includes(val) ? (arr || []).filter(x => x !== val) : [...(arr || []), val];
-        const setCfg = (patch) => onOvertimeCfgSave({ ...cfg, ...patch });
-        const roleOpts = [{ key: "national", label: "National Ops Managers" }, { key: "regional", label: "Regional managers (all ROM variants)" }];
-        const chk = { width: 15, height: 15, accentColor: "#0f766e" };
-        const colHead = { fontSize: 10, fontWeight: 800, color: "#0f766e", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 8 };
-        const rowL = { display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 13, color: "#134e4a", cursor: "pointer" };
-        return (
-          <div style={{ marginTop: 26, background: "#f0fdfa", border: "2px solid #99f6e4", borderRadius: 14, padding: "18px 20px" }}>
-            <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 18, color: "#0f766e", fontWeight: 700, marginBottom: 2 }}>⏱️ Overtime — who can record it</div>
-            <div style={{ fontSize: 12, color: "#0d9488", marginBottom: 16 }}>Overtime is recorded only from the HR portal (not the kiosk). Owners can always record it; grant other people below. Anyone not listed sees the Overtime tab read-only.</div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 20 }}>
-              <div>
-                <div style={colHead}>Allowed by role</div>
-                {roleOpts.map(r => (
-                  <label key={r.key} style={rowL}>
-                    <input type="checkbox" style={chk} checked={(cfg.roles || []).includes(r.key)} onChange={() => setCfg({ roles: toggleArr(cfg.roles, r.key) })} />
-                    {r.label}
-                  </label>
-                ))}
-              </div>
-              <div>
-                <div style={colHead}>…or specific people</div>
-                {userList.map(u => (
-                  <label key={u.pin} style={{ ...rowL, opacity: u.isOwner ? 0.6 : 1 }}>
-                    <input type="checkbox" style={chk} checked={u.isOwner || (cfg.pins || []).includes(u.pin)} disabled={u.isOwner} onChange={() => setCfg({ pins: toggleArr(cfg.pins, u.pin) })} />
-                    {u.name} <span style={{ color: "#5eead4", fontSize: 11 }}>· {u.role}{u.isOwner ? " · always" : ""}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-            <div style={{ fontSize: 11, color: "#0d9488", marginTop: 14, fontStyle: "italic" }}>Owners always have access. Changes save automatically.</div>
-          </div>
-        );
-      })()}
-
-      {/* ── Cash-up review access ── who may tick off a store's daily cash-up
-          as reviewed. Owners always can; everyone else must be granted here. */}
-      {onCashupReviewCfgSave && (() => {
-        const cfg = cashupReviewCfg || { roles: ["regional"], pins: [] };
-        const userList = Object.keys(users || {})
-          .filter(pin => !(users[pin] && (users[pin].voucherEntryOnly || users[pin].demo)))
-          .map(pin => ({ pin, name: (users[pin] && users[pin].name) || pin, role: (users[pin] && users[pin].role) || "", isOwner: !!(users[pin] && users[pin].isOwner) }))
-          .sort((a, b) => a.name.localeCompare(b.name));
-        const toggleArr = (arr, val) => (arr || []).includes(val) ? (arr || []).filter(x => x !== val) : [...(arr || []), val];
-        const setCfg = (patch) => onCashupReviewCfgSave({ ...cfg, ...patch });
-        const roleOpts = [{ key: "national", label: "National Ops Managers" }, { key: "regional", label: "Regional managers (all ROM variants)" }];
-        const chk = { width: 15, height: 15, accentColor: "#BE185D" };
-        const colHead = { fontSize: 10, fontWeight: 800, color: "#BE185D", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 8 };
-        const rowL = { display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 13, color: "#831843", cursor: "pointer" };
-        return (
-          <div style={{ marginTop: 26, background: "#FDF2F8", border: "2px solid #FBCFE8", borderRadius: 14, padding: "18px 20px" }}>
-            <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 18, color: "#831843", fontWeight: 700, marginBottom: 2 }}>💰 Cash-up review — who can review</div>
-            <div style={{ fontSize: 12, color: "#BE185D", marginBottom: 16 }}>The reviewer (e.g. your portfolio / regional ops manager) ticks off each store's daily cash-up on the Cash Ups tab once they've checked it matches, and can leave a comment. Owners can always review; grant other people below. Anyone not listed sees the review status read-only.</div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 20 }}>
-              <div>
-                <div style={colHead}>Allowed by role</div>
-                {roleOpts.map(r => (
-                  <label key={r.key} style={rowL}>
-                    <input type="checkbox" style={chk} checked={(cfg.roles || []).includes(r.key)} onChange={() => setCfg({ roles: toggleArr(cfg.roles, r.key) })} />
-                    {r.label}
-                  </label>
-                ))}
-              </div>
-              <div>
-                <div style={colHead}>…or specific people</div>
-                {userList.map(u => (
-                  <label key={u.pin} style={{ ...rowL, opacity: u.isOwner ? 0.6 : 1 }}>
-                    <input type="checkbox" style={chk} checked={u.isOwner || (cfg.pins || []).includes(u.pin)} disabled={u.isOwner} onChange={() => setCfg({ pins: toggleArr(cfg.pins, u.pin) })} />
-                    {u.name} <span style={{ color: "#F472B6", fontSize: 11 }}>· {u.role}{u.isOwner ? " · always" : ""}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-            <div style={{ fontSize: 11, color: "#BE185D", marginTop: 14, fontStyle: "italic" }}>Owners always have access. Changes save automatically.</div>
-          </div>
-        );
-      })()}
-
-      {/* ── Leave workflow gates ── who clears the operational check and who
-          does the payroll / leave-balance check on the Leave Requests tab. */}
-      {onLeaveOpsCfgSave && (
-        <AccessPanel
-          title="🌴 Leave — operational check"
-          blurb="When staff request leave, an operational reviewer confirms the store can spare them (max 1 manager / 20% of techs on leave at once — the portal flags clashes automatically). Owners can always do this; grant others below."
-          cfg={leaveOpsCfg} onSave={onLeaveOpsCfgSave} users={users}
-          roleOpts={[{ key: "national", label: "National Ops Managers" }, { key: "regional", label: "Regional managers (all ROM variants)" }]}
-          accent="#7c3aed" accentBg="#faf5ff" border="#e9d5ff"
-        />
-      )}
-      {onLeavePayrollCfgSave && (
-        <AccessPanel
-          title="🧮 Leave — payroll / balance check"
-          blurb="Your payroll officer checks the leave balance on Sage, records how many days the person has, and ticks it off. Once both this and the operational check are done, the request is auto-approved and added to the Leave Planner. Owners can always do this; grant others below."
-          cfg={leavePayrollCfg} onSave={onLeavePayrollCfgSave} users={users}
-          roleOpts={[{ key: "national", label: "National Ops Managers" }, { key: "payroll", label: "Payroll / wages / finance roles" }, { key: "hr", label: "HR roles" }]}
-          accent="#0f766e" accentBg="#f0fdfa" border="#99f6e4"
-        />
-      )}
-      {onLeaveBalancesCfgSave && (
-        <AccessPanel
-          title="🧾 Leave Balances tab"
-          blurb="Who can see and edit the Payroll → Leave Balances tab (upload the payroll balance file + add/remove adjustment days). Starts private to owners only — tick people below to give them access."
-          cfg={leaveBalancesCfg} onSave={onLeaveBalancesCfgSave} users={users}
-          roleOpts={[{ key: "payroll", label: "Payroll / wages / finance roles" }, { key: "hr", label: "HR roles" }]}
-          accent="#9333ea" accentBg="#faf5ff" border="#e9d5ff"
-        />
-      )}
-      {onOfficeStaffCfgSave && (
-        <AccessPanel
-          title="🏢 Add office staff (Head Office & Call Centre / Sales)"
-          blurb="Who can add people on the Office Staff List — the ➕ Add Head Office Staff and ➕ Add Call Centre & Sales Staff buttons. The role picked there sets their shift hours, whether they're a trainer, and whether they sit on the Call Centre & Sales floor, so it starts private to owners only — tick people below to give them access. Viewing the list is controlled separately, in the tab grid above."
-          cfg={officeStaffCfg} onSave={onOfficeStaffCfgSave} users={users}
-          roleOpts={[{ key: "hr", label: "HR roles" }, { key: "payroll", label: "Payroll / wages / finance roles" }]}
-          accent="#3730a3" accentBg="#eef2ff" border="#c7d2fe"
-        />
-      )}
-      {onOfficeHoursCfgSave && (
-        <AccessPanel
-          title="⏰ Office Hours alerts (Payroll)"
-          blurb="Who sees the Payroll → Office Hours queue: office staff who worked short of their 9-hour day, who never clocked out, and the live list of anyone 30+ minutes past their start with no clock-in. Defaults to payroll roles — note the role match is on the words “payroll”, “wages” or “finance” in a person's role text, so if the payroll officer's role says something else, tick them by name below."
-          cfg={officeHoursCfg} onSave={onOfficeHoursCfgSave} users={users}
-          roleOpts={[{ key: "payroll", label: "Payroll / wages / finance roles" }, { key: "hr", label: "HR roles" }, { key: "national", label: "National Ops" }]}
-          accent="#b45309" accentBg="#fffbeb" border="#fde68a"
-        />
-      )}
       {onSmCriteriaSave && <SmCriteriaPanel cfg={smCriteriaCfg} onSave={onSmCriteriaSave} />}
 
       {/* ── Add / edit modal ── */}
@@ -11922,11 +12670,25 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFres
                   // record so unticking restores the pre-ccOnly tab set.
                   const v = e.target.checked;
                   const stored = (editing.originalPin && users[editing.originalPin]) || {};
-                  setEditing({ ...editing, ccOnly: v, perms: userToPerms({ ...stored, ccOnly: v }) });
+                  setEditing({ ...editing, ccOnly: v, perms: userToPerms({ ...stored, ccOnly: v }, _gctx({ ...stored, ccOnly: v })) });
                 }} />
                 📞 Call Centre &amp; Sales only — sees ONLY CC&amp;S Scheduling and Check-ins; every other tab hidden
               </label>
+              {/* voucherEntryOnly had no editor at all, yet it is the single
+                  most restrictive flag on a record: AppGate swaps the whole App
+                  shell for the Voucher Entry grid. It could only be set by
+                  hand-editing Supabase, and an owner reading the permission
+                  grid had no way to tell why the account ignored every tick. */}
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#831843", fontWeight: 600, cursor: "pointer" }}>
+                <input type="checkbox" checked={!!editing.voucherEntryOnly} onChange={e => setEditing({ ...editing, voucherEntryOnly: e.target.checked })} />
+                💳 Voucher entry only — replaces the whole portal with the Voucher Entry grid
+              </label>
             </div>
+            {editing.voucherEntryOnly && (
+              <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 10, padding: "10px 13px", marginBottom: 18, fontSize: 11.5, color: "#92400e", lineHeight: 1.5 }}>
+                ⚠️ This account will see <strong>only</strong> the Voucher Entry grid — no nav, no dashboard, and none of the tab permissions below apply.
+              </div>
+            )}
 
             <div style={{ background: "#FFFFFF", border: "1px solid #FBCFE8", borderRadius: 11, overflow: "hidden", marginBottom: 18 }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
@@ -11961,16 +12723,32 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFres
                         </tr>
                         {inCat.map(({ t, l, icon }) => {
                           const p = editing.perms[t] || { visible: true, editable: true };
+                          // Inert now means one thing only: Settings, which
+                          // must not be self-granting. Everything else is a
+                          // default you can override right here.
+                          const meta = TAB_ACCESS[t] || {};
+                          const inert = p.byDefault === false && p.grantable === false;
+                          const where = meta.grantedIn;
+                          const why = inert
+                            ? "Settings can grant every other tab, so it can't grant itself — that would let whoever received it re-grant it to anyone, permanently."
+                            : where || "";
                           return (
-                            <tr key={t} style={{ borderTop: "1px solid #FCE7F3" }}>
+                            <tr key={t} style={{ borderTop: "1px solid #FCE7F3", opacity: inert ? 0.65 : 1 }}>
                               <td style={{ padding: "7px 10px 7px 26px", color: "#831843" }}>
                                 <span style={{ marginRight: 6 }}>{icon}</span>{l}
+                                {inert && <span title={why} style={{ marginLeft: 6, fontSize: 9, fontWeight: 800, color: "#92400e", background: "#FEF3C7", border: "1px solid #FDE68A", borderRadius: 99, padding: "1px 7px", cursor: "help" }}>OWNER ONLY</span>}
+                                {!inert && meta.sensitive && <span title={meta.sensitive} style={{ marginLeft: 6, fontSize: 9, fontWeight: 800, color: "#9a3412", background: "#ffedd5", border: "1px solid #fed7aa", borderRadius: 99, padding: "1px 7px", cursor: "help" }}>SENSITIVE</span>}
+                                {!inert && p.byDefault === false && p.visible && <span title="Not in this tab's default audience — visible because you granted it here." style={{ marginLeft: 6, fontSize: 9, fontWeight: 800, color: "#166534", background: "#dcfce7", border: "1px solid #bbf7d0", borderRadius: 99, padding: "1px 7px", cursor: "help" }}>GRANTED</span>}
+                                {!inert && p.byDefault === true && where && <span title={"Already has it by default. " + where} style={{ marginLeft: 6, fontSize: 9, fontWeight: 800, color: "#a16207", background: "#fef9c3", border: "1px solid #fde68a", borderRadius: 99, padding: "1px 7px", cursor: "help" }}>VIA ROLE / LIST</span>}
+                                {!inert && where && <div style={{ fontSize: 10.5, color: "#a16207", marginTop: 2, fontWeight: 500 }}>↳ {where}</div>}
                               </td>
                               <td style={{ padding: "7px 10px", textAlign: "center" }}>
-                                <input type="checkbox" checked={!!p.visible} onChange={() => togglePerm(t, "visible")} />
+                                <input type="checkbox" checked={!!p.visible} disabled={inert} title={inert ? why : undefined} onChange={() => togglePerm(t, "visible")} />
                               </td>
                               <td style={{ padding: "7px 10px", textAlign: "center" }}>
-                                <input type="checkbox" checked={!!p.editable} disabled={!p.visible} onChange={() => togglePerm(t, "editable")} />
+                                {DASH_ROW_KEYS.has(t)
+                                  ? <span title="A dashboard card is shown or hidden — there is nothing to edit on it." style={{ color: "#9ca3af", fontSize: 11 }}>—</span>
+                                  : <input type="checkbox" checked={!!p.editable} disabled={!p.visible} onChange={() => togglePerm(t, "editable")} />}
                               </td>
                             </tr>
                           );
@@ -11986,7 +12764,7 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, freshaCfg, onFres
               🏬 <strong>Store allocation</strong> is now managed on the dedicated <strong>Store Allocation</strong> tab (under Admin), so a National Ops Manager can be granted edit rights to it without full Settings access.
             </div>
             <div style={{ background: "#FEF3C7", border: "1px solid #FDE68A", borderRadius: 9, padding: "9px 13px", fontSize: 11, color: "#92400e", marginBottom: 14 }}>
-              🛡️ <strong>Admin tabs</strong> (Kiosk PINs, Manager PINs, Store Allocation) only appear for senior ops roles — <strong>Owner</strong>, <strong>National Ops</strong> and <strong>Regional Ops</strong> — so PINs are never exposed to regular staff. For those users the toggles below still apply: untick <strong>Visible</strong> to hide an admin tab from them. Ticking it on for any other role has no effect.
+              🛡️ <strong>Admin tabs</strong> (Kiosk PINs, Manager PINs, Store Allocation) default to senior ops roles — <strong>Owner</strong>, <strong>National Ops</strong> and <strong>Regional Ops</strong> — so PINs are never exposed to regular staff by accident. Ticking <strong>Visible</strong> now genuinely grants one to somebody outside those roles, and the row is badged <strong>GRANTED</strong> so it is obvious later why they have it. Rows badged <strong>ACCESS LIST</strong> or <strong>ROLE-LOCKED</strong> can only be hidden from here, never handed out.
             </div>
 
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
@@ -17950,7 +18728,7 @@ async function clearTechScheduleLeaveGrid(lv, remaining, ctx) {
 //     is already validated + built; onComplete just persists it.
 // deps: { enriched, managers, leaveRecs, leaveBalances, schedCache, ymdToSchedYm, today, requests }
 // r is request-shaped: { id?, ec, name, start_date, end_date, store, ref_code?, emergency?, reason? }
-function LeaveApprovalWizard({ r, mode, deps, actor, onReverse, onComplete, onCancel }) {
+function LeaveApprovalWizard({ r, mode, deps, actor, onReverse, onComplete, onCancel, readOnly }) {
   const [step, setStep] = useState(1);
   const [busy, setBusy] = useState(false);
   const [balInput, setBalInput] = useState("");   // "" = use the recommended figure
@@ -18060,7 +18838,7 @@ function LeaveApprovalWizard({ r, mode, deps, actor, onReverse, onComplete, onCa
                   {ov.calOverlaps.map((lv, i) => (
                     <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginTop: 5, flexWrap: "wrap" }}>
                       <span style={{ fontSize: 12.5 }}>• {fmtIncidentDate(lv.startDate)} → {fmtIncidentDate(lv.endDate)}{lv.type && lv.type !== "Annual leave" ? " (" + lv.type + ")" : ""}{lv.emergency ? " · emergency" : ""}</span>
-                      {onReverse && <button disabled={busy} onClick={() => doReverse(lv)} style={btn("#b45309", "#fff", "#b45309")}>↩ Reverse this & continue</button>}
+                      {onReverse && <button disabled={busy || readOnly} onClick={() => doReverse(lv)} title={roTitle(readOnly, undefined)} style={roStyle(readOnly, btn("#b45309", "#fff", "#b45309"))}>↩ Reverse this & continue</button>}
                     </div>
                   ))}
                   <div style={{ fontSize: 11.5, marginTop: 6 }}>Reversing removes the old approved leave from the planner and schedule so this request can take its place.</div>
@@ -18171,7 +18949,7 @@ function LeaveApprovalWizard({ r, mode, deps, actor, onReverse, onComplete, onCa
               <div style={verdict("#f0fdf4", "#bbf7d0", "#15803d")}>On complete: the leave is <strong>approved</strong>, added to the planner &amp; schedule, and the balance is recorded. {mode === "request" ? "The employee sees it on My BOA." : ""}</div>
               <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginTop: 8 }}>
                 <button disabled={busy} onClick={() => setStep(2)} style={btn("#fff", "#9d6a82", "#e7c6d4")}>← Back</button>
-                <button disabled={busy} onClick={complete} style={btn("#15803d", "#fff", "#15803d")}>{busy ? "Working…" : "✓ Complete approval"}</button>
+                <button disabled={busy || readOnly} onClick={complete} title={roTitle(readOnly, undefined)} style={roStyle(readOnly, btn("#15803d", "#fff", "#15803d"))}>{readOnly ? "🔒 View-only" : busy ? "Working…" : "✓ Complete approval"}</button>
               </div>
             </div>
           )}
@@ -18181,7 +18959,7 @@ function LeaveApprovalWizard({ r, mode, deps, actor, onReverse, onComplete, onCa
   );
 }
 
-function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLeaveRecs, enriched: enrichedBase, managers, staff, opsCfg, logActivity, schedCache, ymdToSchedYm, hoStaff, ccOnly, reverseLeave }) {
+function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLeaveRecs, enriched: enrichedBase, managers, staff, opsCfg, logActivity, schedCache, ymdToSchedYm, hoStaff, ccOnly, reverseLeave, readOnly }) {
   // Head Office people resolve through the same person-lookup pool as techs, so an
   // HO leave request enriches (name/branch) and writes to the planner on approval
   // instead of dropping into "Nail Techs" with a "not on planner" badge. HO carry
@@ -18430,7 +19208,7 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
                   <span>📅 {fmtIncidentDate(r.start_date)} → {fmtIncidentDate(r.end_date)}</span>
                   {g && g.person && g.days > 0 && <span style={{ color: "#b91c1c", fontWeight: 700 }}>· {g.days} day{g.days === 1 ? "" : "s"} missing</span>}
                   {p ? (
-                    <button onClick={() => repairPlanner(r)} disabled={busy} title={"Add this approved leave to the Leave Planner now."} style={{ marginLeft: "auto", fontSize: 11.5, fontWeight: 800, color: "#fff", background: "#dc2626", border: "none", borderRadius: 8, padding: "5px 12px", cursor: "pointer", opacity: busy ? 0.6 : 1 }}>➕ Add to planner now</button>
+                    <button onClick={() => repairPlanner(r)} disabled={busy || readOnly} title={roTitle(readOnly, "Add this approved leave to the Leave Planner now.")} style={roStyle(readOnly, { marginLeft: "auto", fontSize: 11.5, fontWeight: 800, color: "#fff", background: "#dc2626", border: "none", borderRadius: 8, padding: "5px 12px", cursor: "pointer", opacity: busy ? 0.6 : 1 })}>➕ Add to planner now</button>
                   ) : (
                     <span style={{ marginLeft: "auto", fontSize: 11, fontWeight: 700, color: "#92400e", background: "#fef3c7", border: "1px solid #f59e0b", borderRadius: 999, padding: "2px 9px" }} title={"No staff member or manager matches employee code \"" + (r.ec || "—") + "\" — add it on the Leave Planner manually."}>no EC match — add manually</span>
                   )}
@@ -18465,7 +19243,7 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
                     if (!g) return null;
                     if (!g.person) return <span style={{ fontSize: 11, fontWeight: 700, color: "#92400e", background: "#fef3c7", border: "1px solid #f59e0b", borderRadius: 999, padding: "2px 9px" }} title={"Approved, but no staff member or manager matches employee code \"" + (r.ec || "—") + "\" — add this leave on the Leave Planner manually."}>⚠ not on planner — no EC match</span>;
                     if (g.days <= 0) return null;
-                    return <button onClick={() => repairPlanner(r)} disabled={busy} title={g.days + " day(s) of this approved leave are missing from the Leave Planner. Click to add them now."} style={{ fontSize: 11, fontWeight: 800, color: "#92400e", background: "#fef3c7", border: "1px solid #f59e0b", borderRadius: 999, padding: "2px 10px", cursor: "pointer" }}>⚠ not on planner · add now</button>;
+                    return <button onClick={() => repairPlanner(r)} disabled={busy || readOnly} title={roTitle(readOnly, g.days + " day(s) of this approved leave are missing from the Leave Planner. Click to add them now.")} style={roStyle(readOnly, { fontSize: 11, fontWeight: 800, color: "#92400e", background: "#fef3c7", border: "1px solid #f59e0b", borderRadius: 999, padding: "2px 10px", cursor: "pointer" })}>{readOnly ? "⚠ not on planner" : "⚠ not on planner · add now"}</button>;
                   })()}
                   <span style={{ marginLeft: "auto", fontSize: 11, color: "#6b7280" }}>✓ {r.decided_by || "—"}{r.decided_at ? " · " + fmtAppr(r.decided_at) : ""}</span>
                 </div>
@@ -18639,7 +19417,7 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
                             <div style={amber}>
                               <strong>⚠ Approved, but {g.days} day{g.days === 1 ? "" : "s"} of this leave {g.days === 1 ? "is" : "are"} not on the Leave Planner.</strong> It may show on the schedule (the grid was stamped at approval) while the planner — which drives the 20% cap, balances and Fresha blocking — doesn't know about it.
                               <div style={{ marginTop: 8 }}>
-                                <button onClick={() => repairPlanner(r)} disabled={busy} style={{ background: "#b45309", color: "#fff", border: "none", borderRadius: 8, padding: "7px 14px", fontWeight: 800, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>➕ Add to Leave Planner now</button>
+                                <button onClick={() => repairPlanner(r)} disabled={busy || readOnly} title={roTitle(readOnly, undefined)} style={roStyle(readOnly, { background: "#b45309", color: "#fff", border: "none", borderRadius: 8, padding: "7px 14px", fontWeight: 800, fontSize: 12, cursor: "pointer", fontFamily: "inherit" })}>➕ Add to Leave Planner now</button>
                               </div>
                             </div>
                           );
@@ -18702,11 +19480,11 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
                                 {approved ? (
                                   <span style={{ fontSize: 12.5, color: "#15803d", fontWeight: 800 }}>✅ Approved{r.balance_days != null ? " · balance " + fmtDays(r.balance_days) + "d" : ""}</span>
                                 ) : canOps ? (
-                                  <button disabled={busy} onClick={() => openWizard(r)} style={btn("#be185d", "#fff", "#be185d")}>▶ Approve — review &amp; confirm</button>
+                                  <button disabled={busy || readOnly} onClick={() => openWizard(r)} title={roTitle(readOnly, undefined)} style={roStyle(readOnly, btn("#be185d", "#fff", "#be185d"))}>{readOnly ? "🔒 Approving is view-only for you" : <>▶ Approve — review &amp; confirm</>}</button>
                                 ) : (
                                   <span style={{ fontSize: 12, color: "#9d6a82", fontStyle: "italic" }}>Awaiting an approver.</span>
                                 )}
-                                {!approved && <button disabled={busy} onClick={() => { setDeclineId(r.id); setDeclineText(r.decision_note || ""); }} style={btn("#fff", "#b91c1c", "#b91c1c")}>Decline</button>}
+                                {!approved && <button disabled={busy || readOnly} onClick={() => { setDeclineId(r.id); setDeclineText(r.decision_note || ""); }} title={roTitle(readOnly, undefined)} style={roStyle(readOnly, btn("#fff", "#b91c1c", "#b91c1c"))}>Decline</button>}
                               </div>
                             </div>
                           );
@@ -18714,9 +19492,10 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
 
                         {r.status === "declined" && (
                           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
-                            <button disabled={busy} onClick={() => { setDeclineId(r.id); setDeclineText(r.decision_note || ""); }}
-                              style={{ border: "1.5px solid #b91c1c", background: "#b91c1c", color: "#fff", borderRadius: 9, padding: "7px 16px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: "pointer" }}>
-                              ● Declined — edit reason
+                            <button disabled={busy || readOnly} onClick={() => { setDeclineId(r.id); setDeclineText(r.decision_note || ""); }}
+                              title={roTitle(readOnly, undefined)}
+                              style={roStyle(readOnly, { border: "1.5px solid #b91c1c", background: "#b91c1c", color: "#fff", borderRadius: 9, padding: "7px 16px", fontWeight: 700, fontSize: 12.5, fontFamily: "inherit", cursor: "pointer" })}>
+                              {readOnly ? "● Declined" : "● Declined — edit reason"}
                             </button>
                           </div>
                         )}
@@ -18747,8 +19526,9 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
                           <input value={noteDraft[r.id] || ""} onChange={e => setNoteDraft({ ...noteDraft, [r.id]: e.target.value })}
                             placeholder="Add an internal note…" onKeyDown={e => { if (e.key === "Enter") addNote(r); }}
                             style={{ flex: 1, fontFamily: "inherit", fontSize: 13, padding: "8px 11px", borderRadius: 9, border: "1.5px solid #e7c6d4" }} />
-                          <button disabled={busy || !(noteDraft[r.id] || "").trim()} onClick={() => addNote(r)}
-                            style={{ background: "#831843", color: "#fff", border: "none", borderRadius: 9, padding: "8px 14px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: "pointer", opacity: (noteDraft[r.id] || "").trim() ? 1 : 0.5 }}>Add</button>
+                          <button disabled={busy || readOnly || !(noteDraft[r.id] || "").trim()} onClick={() => addNote(r)}
+                            title={roTitle(readOnly, undefined)}
+                            style={roStyle(readOnly, { background: "#831843", color: "#fff", border: "none", borderRadius: 9, padding: "8px 14px", fontWeight: 700, fontSize: 13, fontFamily: "inherit", cursor: "pointer", opacity: (noteDraft[r.id] || "").trim() ? 1 : 0.5 })}>Add</button>
                         </div>
                       </div>
                     );
@@ -18768,6 +19548,7 @@ function LeaveRequestsTab({ requests, setRequests, currentUser, leaveRecs, setLe
           onReverse={wizardReverse}
           onComplete={wizardComplete}
           onCancel={() => setWizard(null)}
+          readOnly={readOnly}
         />
       )}
     </div>
@@ -22643,9 +23424,14 @@ function CtStorePicker({ value, onChange, selectedBranch, onPickStore, salonName
   );
 }
 
-function InterviewsView({ interviewList, persistInterviews, trialList, persistTrialList, staff, managers, currentUser, branchNeed }) {
-  const canRecruit = canRecruitInterviews(currentUser);
-  const canTrain = canTrainInterviews(currentUser);
+function InterviewsView({ interviewList, persistInterviews, trialList, persistTrialList, staff, managers, currentUser, branchNeed, readOnly }) {
+  // A tab-level view-only grant lands the user in the SAME state as someone who
+  // is neither the recruiter nor the trainer — this view already has a designed,
+  // complete viewer-only path, so read-only reuses it rather than bolting a
+  // second one alongside. Only the explanatory line below has to distinguish
+  // the two, because the reason differs even though the UI doesn't.
+  const canRecruit = canRecruitInterviews(currentUser) && !readOnly;
+  const canTrain = canTrainInterviews(currentUser) && !readOnly;
   const viewerOnly = !canRecruit && !canTrain;
   const [form, setForm] = useState(null);          // null = closed; else candidate draft (+ _editId when editing)
   const [filter, setFilter] = useState("active");  // active | needsAction | today | all
@@ -22776,10 +23562,11 @@ function InterviewsView({ interviewList, persistInterviews, trialList, persistTr
         <div>
           <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 22, fontWeight: 700, color: "#4f46e5" }}>📋 Nail Tech Interviews</div>
           <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>
-            {canRecruit && canTrain ? "You can schedule interviews and record outcomes."
-              : canRecruit ? "You're set up as the recruiter — schedule interviews and book inductions."
-                : canTrain ? "You're set up as the nail-tech trainer — mark attendance and pass/fail."
-                  : "View only — interview actions are limited to the recruiter and the nail-tech trainer."}
+            {readOnly ? "🔒 View only — your role can browse recruitment but can't make changes here."
+              : canRecruit && canTrain ? "You can schedule interviews and record outcomes."
+                : canRecruit ? "You're set up as the recruiter — schedule interviews and book inductions."
+                  : canTrain ? "You're set up as the nail-tech trainer — mark attendance and pass/fail."
+                    : "View only — interview actions are limited to the recruiter and the nail-tech trainer."}
           </div>
         </div>
         {canRecruit && <button onClick={openAdd} style={{ background: "#4f46e5", color: "#fff", border: "none", borderRadius: 9, padding: "9px 16px", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>+ Add candidate</button>}
@@ -24704,7 +25491,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   };
   useEffect(() => {
     if (tab !== "dashboard") return;
-    const _senior = currentUser?.isOwner || (currentUser?.role || "").toLowerCase().includes("national");
+    const _senior = can(currentUser, "sys.seniorOps");
     if (!_senior) return;
     // Names must be loaded first, or every row misreads as a placeholder
     // (isPlaceholder = no resolvable name) and the alert under-counts.
@@ -24738,6 +25525,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Scan every branch's draft-vs-published for the current cycle and open the
   // review modal. Mirrors SQL Q7 — see computeCyclePendingRows.
   const openPublishCycle = async () => {
+    // Pre-flight, not a render-site check. This action is reachable from the
+    // Scheduling tab AND from a dashboard card, so gating only where the button
+    // is drawn left two problems: the two sites disagreed about the audience,
+    // and read-only is scoped to the tab you are LOOKING AT — so someone with
+    // Scheduling set to view-only could publish schedules from the dashboard,
+    // where the BOA_DB guard is not armed. Checking the schedule's own
+    // permissions here holds whichever door was used.
+    if (!can(currentUser, "act.schedule.publishCycle")) {
+      alert("You don't have permission to publish the schedule cycle.");
+      return;
+    }
+    // Read the stored list directly rather than `acl`, which is declared
+    // further down the component body — this closure would resolve it fine at
+    // click time, but not depending on that ordering is one less trap.
+    if ((currentUser?.readOnlyTabs || []).includes("scheduling")) { alert(RO_MESSAGE); return; }
     setPubCycleErr(""); setPubCycleRows(null); setPubCycleSkip({});
     setPubCycleOpen(true); setPubCycleBusy(true);
     try {
@@ -25023,23 +25825,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [probation, setProbation] = useState({});     // boa_probation_v1: { [EC]: {start,end,confirmedAt,confirmedBy} }
   const [showArchivedTrials, setShowArchivedTrials] = useState(false); // reveal archived (completed) trial candidates
   const [interviewList, setInterviewList] = useState([]); // nail-tech interview candidates (pre-trial; boa_nt_interviews_v1)
-  const [freshaAccess, setFreshaAccess] = useState({}); // who opens/sees trial Fresha reminders (boa_fresha_access_v1)
-  // Resolved Fresha-access config with sensible defaults: Rochelle (3030)
-  // and Farida (4040) open techs on Fresha; National Ops + Regional Ops
-  // managers can see the reminders. All editable under Settings.
-  const freshaCfg = useMemo(() => {
-    const c = freshaAccess || {};
-    return {
-      openerPins: Array.isArray(c.openerPins) && c.openerPins.length ? c.openerPins : ["3030", "4040"],
-      viewerRoles: Array.isArray(c.viewerRoles) ? c.viewerRoles : ["national", "regional"],
-      viewerPins: Array.isArray(c.viewerPins) ? c.viewerPins : []
-    };
-  }, [freshaAccess]);
-  const saveFreshaCfg = async (next) => {
-    setFreshaAccess(next);
-    try { if (window.BOA_DB.saveFreshaAccess) await window.BOA_DB.saveFreshaAccess(next); }
-    catch (e) { window.alert("Could not save Fresha access: " + (e.message || e)); }
-  };
+  // boa_fresha_access_v1. Loaded but INTENTIONALLY UNREAD. Its Settings panel
+  // (openerPins / viewerRoles / viewerPins) was removed because no surface ever
+  // consulted it: the Fresha To-Do tab is gated by the ordinary tab permission
+  // grid, and the "Fresha due soon" dashboard card by canSeeIncidents — so the
+  // panel implied an access rule that did not exist. The row and its loader are
+  // kept only because the load sits at a fixed position in the reloadCoreData
+  // Promise.all; wire it to a real gate or drop both together.
+  const [freshaAccess, setFreshaAccess] = useState({});
   // Who may RECORD overtime from the HR portal (boa_overtime_access_v1).
   // Default: National Ops managers (owners always allowed). Editable in Settings.
   const [overtimeAccess, setOvertimeAccess] = useState({});
@@ -25173,9 +25966,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Manager minus-hours alert audience: National Ops + whoever sees the payroll
   // Office-Hours queue (payroll officer), plus owners. Same "investigate now"
   // crowd, since a wrong manager deduction is a payroll error to catch early.
-  const canSeeMgrHours = !!(currentUser?.isOwner
-    || (currentUser?.role || "").toLowerCase().includes("national")
-    || canSeeOfficeHours);
+  const canSeeMgrHours = !!(can(currentUser, "sys.seniorOps") || canSeeOfficeHours);
   // Who may REVIEW ("tick off") a store's daily cash-up (boa_cashup_review_access_v1).
   // Default: Regional Ops managers (owners always allowed). Editable in Settings.
   const [cashupReviewAccess, setCashupReviewAccess] = useState({});
@@ -25204,6 +25995,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const c = leavePayrollAccess || {};
     return { roles: Array.isArray(c.roles) ? c.roles : ["payroll"], pins: Array.isArray(c.pins) ? c.pins : [] };
   }, [leavePayrollAccess]);
+  // Expose the capability audit once the access configs are loaded, so
+  // __BOA_ACL_AUDIT() in the console answers from real data rather than
+  // defaults. Read-only: it computes, it never writes.
+  useEffect(() => {
+    window.__BOA_ACL_AUDIT = (pin) => aclAudit(appUsers, {
+      offboard: offboardAccess, overtime: overtimeCfg, cashupReview: cashupReviewCfg
+    }, pin);
+    return () => { delete window.__BOA_ACL_AUDIT; };
+  }, [appUsers, offboardAccess, overtimeCfg, cashupReviewCfg]);
   // Who can see the Leave Requests tab: the broad incident roles PLUS anyone
   // granted the operational or payroll leave check in Settings (e.g. an Ops
   // person ticked for the operational gate). Previously this only used
@@ -25238,6 +26038,35 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const c = leaveBalancesAccess || {};
     return { roles: Array.isArray(c.roles) ? c.roles : [], pins: Array.isArray(c.pins) ? c.pins : [] };
   }, [leaveBalancesAccess]);
+
+  // ── THE access-control answer ──────────────────────────────────────────────
+  // Computed once and read by the nav filter, tryChangeTab, the tab-body
+  // normalisation effect and the Settings grid. Before this, each of those
+  // worked it out for itself, which is how the grid ended up showing ticks the
+  // nav ignored. Data-presence gates (hoStaff.length, …) live here rather than
+  // in TAB_ACCESS because they depend on loaded state, not on policy.
+  const acl = useMemo(() => deriveAcl(currentUser, {
+    isOwner: !!currentUser?.isOwner,
+    isOwnerOrMaster: _isOwnerOrMaster(currentUser),
+    isNationalOps: can(currentUser, "sys.nationalOps"),
+    isDev: can(currentUser, "sys.accessAdmin"),
+    isRom: isRomRole(currentUser?.role),
+    canOffboard, canCompliance,
+    canIncidents: canSeeIncidents(currentUser),
+    canLeaveExpiry: canSeeLeaveExpiry,
+    canLeaveRequests: canSeeLeaveRequests,
+    canCalledInSick: canSeeCalledInSick(currentUser),
+    canOfficeHours: canSeeOfficeHours,
+    canAddOfficeStaff,
+    canPayrollInbox: accessAllows(currentUser, leavePayrollCfg),
+    canLeaveBalances: accessAllows(currentUser, leaveBalancesCfg),
+    hoStaffCount: hoStaff.length,
+    hoOnlyCount: hoOnlyStaff.length,
+    ccStaffCount: ccStaff.length,
+    officeTrialCount: (officeTrialList || []).length
+  }), [currentUser, canOffboard, canCompliance, canSeeLeaveExpiry, canSeeLeaveRequests,
+    canSeeOfficeHours, canAddOfficeStaff, leavePayrollCfg, leaveBalancesCfg,
+    hoStaff.length, hoOnlyStaff.length, ccStaff.length, officeTrialList]);
   // Is the balance anchor behind Sage? (state declared up with the other
   // dashboard alerts; the effect must sit below leaveBalancesCfg's declaration.)
   useEffect(() => {
@@ -26674,11 +27503,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // ── Upcoming-cycle schedule check ── flags branches whose tech / manager
   // schedule for the coming month hasn't been saved. Deadline is the 15th.
   // Surfaces as a dashboard "Needs attention" item and as an Alerts entry.
-  const SCHED_ALERT_PINS = new Set(["1993", "2023", "3030"]); // Master, Kelly, Rochelle
+  // Who is paged about it now lives in CAPABILITIES["act.schedule.alerts"]
+  // (ownerImplicit:false — the owner is deliberately not on this worklist).
+  const _schedAlertsForMe = can(currentUser, "act.schedule.alerts");
   const [upcomingMissing, setUpcomingMissing] = useState([]); // [{ branch, type, ym }]
   const [upcomingChecked, setUpcomingChecked] = useState(false);
   useEffect(() => {
-    if (!SCHED_ALERT_PINS.has(currentUser.pin)) return;
+    if (!_schedAlertsForMe) return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
     if (!(tab === "dashboard" || tab === "alerts")) return;
     let cancelled = false;
@@ -26733,7 +27564,26 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     const _ftHideCats = new Set((currentUser && currentUser.hideCategories) || []);
     const _ftShowTabs = new Set((currentUser && currentUser.showTabs) || []);
     const _canSeeFreshaTodo = !_ftHideTabs.has("freshaTodo") && (!_ftHideCats.has("Operations") || _ftShowTabs.has("freshaTodo"));
-    const _needRequests = canSeeIncidents(currentUser) || _canSeeFreshaTodo || canSeeCalledInSick(currentUser);
+    // TWO-WAVE LOAD. Whether the leave + extra-day requests are needed also
+    // depends on the two leave ACCESS LISTS — they are what reveal the Leave
+    // Requests tab (canSeeLeaveRequests) and the Payroll Inbox. Those lists were
+    // being fetched inside the same Promise.all whose conditionals needed them,
+    // and reloadCoreData only depends on [currentUser], so a person granted
+    // access by PIN got both tabs in the nav with a permanently empty list.
+    // Kick the two configs off first and CHAIN the request loads on them; the
+    // same promises are reused in the array below, so nothing is fetched twice.
+    const _pLeaveOps = window.BOA_DB.loadLeaveOpsAccess ? window.BOA_DB.loadLeaveOpsAccess() : Promise.resolve({});
+    const _pLeavePayroll = window.BOA_DB.loadLeavePayrollAccess ? window.BOA_DB.loadLeavePayrollAccess() : Promise.resolve({});
+    const _asCfg = (c, defRoles) => ({
+      roles: Array.isArray(c && c.roles) ? c.roles : defRoles,
+      pins: Array.isArray(c && c.pins) ? c.pins : []
+    });
+    const _needRequestsP = (canSeeIncidents(currentUser) || _canSeeFreshaTodo || canSeeCalledInSick(currentUser))
+      ? Promise.resolve(true)
+      : Promise.all([_pLeaveOps, _pLeavePayroll])
+        .then(([o, p]) => accessAllows(currentUser, _asCfg(o, ["regional"]))
+          || accessAllows(currentUser, _asCfg(p, ["payroll"])))
+        .catch(() => false);
     Promise.all([
       window.BOA_DB.loadAll(),
       window.BOA_DB.loadOnboarding(),
@@ -26749,12 +27599,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       window.BOA_DB.loadOfficeStaffAccess ? window.BOA_DB.loadOfficeStaffAccess() : Promise.resolve({}),
       window.BOA_DB.loadOfficeHoursAccess ? window.BOA_DB.loadOfficeHoursAccess() : Promise.resolve({}),
       window.BOA_DB.loadCashupReviewAccess ? window.BOA_DB.loadCashupReviewAccess() : Promise.resolve({}),
-      window.BOA_DB.loadLeaveOpsAccess ? window.BOA_DB.loadLeaveOpsAccess() : Promise.resolve({}),
-      window.BOA_DB.loadLeavePayrollAccess ? window.BOA_DB.loadLeavePayrollAccess() : Promise.resolve({}),
+      _pLeaveOps,
+      _pLeavePayroll,
       window.BOA_DB.loadLeaveBalancesAccess ? window.BOA_DB.loadLeaveBalancesAccess() : Promise.resolve({}),
       (window.BOA_DB.loadIncidentReports && canSeeLeaveExpiry) ? window.BOA_DB.loadIncidentReports() : Promise.resolve([]),
-      (window.BOA_DB.loadLeaveRequests && _needRequests) ? window.BOA_DB.loadLeaveRequests() : Promise.resolve([]),
-      (window.BOA_DB.loadExtraDayRequests && _needRequests) ? window.BOA_DB.loadExtraDayRequests() : Promise.resolve([]),
+      _needRequestsP.then(n => (window.BOA_DB.loadLeaveRequests && n) ? window.BOA_DB.loadLeaveRequests() : []),
+      _needRequestsP.then(n => (window.BOA_DB.loadExtraDayRequests && n) ? window.BOA_DB.loadExtraDayRequests() : []),
       window.BOA_DB.loadFreshaExtraOpenings ? window.BOA_DB.loadFreshaExtraOpenings() : Promise.resolve({}),
       window.BOA_DB.loadFreshaBlocks ? window.BOA_DB.loadFreshaBlocks() : Promise.resolve({}),
       window.BOA_DB.loadInterviews ? window.BOA_DB.loadInterviews() : Promise.resolve([]),
@@ -26835,8 +27685,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       if (_xfTechs.length || _xfMgrs.length) {
         (async () => {
           try {
-            for (const s of _xfTechs) { await window.BOA_DB.saveStaff(_xfSettle(s)); await _xfCleanOldBranch(s.ec, s.branch, false); }
-            for (const m of _xfMgrs) { await window.BOA_DB.saveManager(_xfSettle(m)); await _xfCleanOldBranch(m.ec, m.branch, true); }
+            // boaSystemWrite: this is automatic repair, not the signed-in
+            // person's edit. reloadCoreData re-runs on a timer and on tab
+            // focus, so without the bypass a view-only user could be sitting
+            // on a view-only tab when it fires — the settle would be skipped
+            // and they would get a "you can't make changes" dialog for work
+            // they never asked for.
+            await boaSystemWrite(async () => {
+              for (const s of _xfTechs) { await window.BOA_DB.saveStaff(_xfSettle(s)); await _xfCleanOldBranch(s.ec, s.branch, false); }
+              for (const m of _xfMgrs) { await window.BOA_DB.saveManager(_xfSettle(m)); await _xfCleanOldBranch(m.ec, m.branch, true); }
+            });
             console.log("[transfer finalize] settled " + _xfTechs.length + " tech + " + _xfMgrs.length + " mgr transfer(s) dated on/before " + _xfCycleStart);
           } catch (e) { console.warn("[transfer finalize] persist failed (continuing):", e); }
         })();
@@ -28608,7 +29466,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               const key = String(person.ec).toUpperCase() + "|" + cy.deadline;
               if (ledger[key]) continue;                  // already filed for this deadline
               try {
-                const ref = await window.BOA_DB.submitIncidentReport({
+                // boaSystemWrite: auto-filed by the radar, not by the viewer.
+                const ref = await boaSystemWrite(() => window.BOA_DB.submitIncidentReport({
                   // The RPC rejects a blank store ('store required') and the throw
                   // would silently retry forever — a branch-less person still gets
                   // an incident, just filed under a placeholder store.
@@ -28622,12 +29481,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   description: LEAVE_EXPIRY_TAG + " — " + cy.atRisk + " day(s) of annual leave for " + (person.name || person.ec) + " (" + person.ec + ") expire on " + cy.deadline + " (about " + cy.monthsLeft + " month(s) away). Accrued in the employment year " + cy.cycleStart + " – " + cy.cycleEnd + ". Annual leave is use-it-or-lose-it — there is no payout — so it must be booked and taken before the deadline. Please arrange for this leave to be scheduled.",
                   reporter_name: LEAVE_EXPIRY_REPORTER,
                   urgent: true
-                });
+                }));
                 ledger[key] = { createdAt: new Date().toISOString(), refCode: ref, days: cy.atRisk };
                 // Persist the dedup key IMMEDIATELY after each filing — the RPC is
                 // insert-only and can't be undone, so a later batch-save failure
                 // must never let this incident be re-filed on the next scan.
-                try { await window.BOA_DB.saveLeaveExpiryAlerts(ledger); }
+                try { await boaSystemWrite(() => window.BOA_DB.saveLeaveExpiryAlerts(ledger)); }
                 catch (e) { console.warn("[expiry radar] ledger save failed after filing " + key + " — may re-file:", e); }
                 if (logActivity) logActivity("Leave expiry incident filed", (person.name || "") + " (" + person.ec + ")", cy.atRisk + "d expire " + cy.deadline + (ref ? " · " + ref : ""), "Leave");
               } catch (e) { console.warn("[expiry radar] incident file failed for " + key, e); }
@@ -29940,6 +30799,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   useEffect(() => {
     if (currentUser && currentUser.ccOnly && !CC_ONLY_TABS.has(tab)) setTab("scheduling");
   }, [currentUser, tab]);
+  // TAB-BODY NORMALISATION. ~27 tab bodies render on a tab-key match alone, so
+  // anything that set `tab` without going through tryChangeTab — a deep link,
+  // a stale session, a raw setTab, a permission edited in another session —
+  // rendered a body the nav had already hidden. Bouncing off a non-visible tab
+  // here closes all of them at once, and self-heals rather than needing 27
+  // separate guards in the highest-churn file in the repo.
+  useEffect(() => {
+    if (!currentUser || currentUser.ccOnly) return;   // ccOnly has its own rule above
+    if (!TAB_ACCESS[tab]) return;                     // sub-tabs / unregistered keys
+    if (!acl.visible.has(tab)) setTab("dashboard");
+  }, [currentUser, tab, acl]);
   // Lock every CC&S-only surface to Call Centre & Sales data: the schedule and
   // leave sub-tabs to the CC&S pill, and the attendance store to CC&S.
   useEffect(() => {
@@ -29948,14 +30818,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     if (leaveSubTab !== "callcentre") setLeaveSubTab("callcentre");
     if (attBranch !== CALL_CENTRE) setAttBranch(CALL_CENTRE);
   }, [ccOnly, schedSubTab, leaveSubTab, attBranch]);
-  // Access revoked while sitting on the tab (Settings edited in another
-  // session): don't leave the records on screen.
-  useEffect(() => { if (tab === "offboard" && !canOffboard) setTab("dashboard"); }, [tab, canOffboard]);
-
   const tryChangeTab = (t) => {
     if (t === tab) return;
-    if (currentUser && currentUser.ccOnly && !CC_ONLY_TABS.has(t)) return;   // CC&S-only guard
-    if (t === "offboard" && !canOffboard) return;   // named-PIN list only — see canSeeOffboarding
+    // Single choke point. Every nav tile, dashboard quick-link and cross-tab
+    // button routes through here, so one check covers all of them — including
+    // the offboard and CC&S rules that used to be spelled out separately.
+    if (TAB_ACCESS[t] && !acl.visible.has(t)) return;
     if (tab === "scheduling" && schedSubTab === "managers" && mgrSchedDirty) {
       if (!window.confirm("Are you sure? The manager schedule has unsaved changes. They will be lost if you leave.")) return;
       setMgrSchedDirty(false);
@@ -30221,7 +31089,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t: "onboard", l: onboardLbl },
                   { t: "trialPeriod", l: trialLbl },
                   { t: "smTrial", l: smTrialLbl },
-                  ...(canOffboard ? [{ t: "offboard", l: offboardLbl, forceShow: true }] : []),
+                  { t: "offboard", l: offboardLbl },
                   { t: "staff", l: "💅 Salon Staff" },
                   // Office Staff List appears once there are office people —
                   // OR for anyone allowed to add them: this tab holds the only
@@ -30230,26 +31098,24 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   // (fresh-install chicken-and-egg). Still a no-op for
                   // salon-only users: the V4 migration hides the key for
                   // non-owners, and accessAllows gates canAddOfficeStaff.
-                  ...(hoStaff.length || canAddOfficeStaff ? [{ t: "officeStaff", l: "🏢 Office Staff List" }] : []),
+                  { t: "officeStaff", l: "🏢 Office Staff List" },
                   // HQ / CC&S trial pipeline — same gate as the Office Staff List
                   // (canAddOfficeStaff), since it feeds that list. Also shown once
                   // any office trial exists so an in-flight trial is never hidden.
-                  ...(canAddOfficeStaff || (officeTrialList || []).length ? [{ t: "officeTrials", l: officeTrialLbl }] : []),
+                  { t: "officeTrials", l: officeTrialLbl },
                   { t: "recruitment", l: "🎯 Recruitment" },
-                  ...(currentUser?.role === "Master Admin" || currentUser?.isOwner ? [
-                    { t: "hrLibrary", l: "📁 Employee Files" }
-                  ] : []),
+                  { t: "hrLibrary", l: "📁 Employee Files" },
                   { t: "maternity", l: matLbl },
                   { t: "unpaidLegal", l: "⏸️ Unpaid Leave (Legal)" },
-                  ...(canCompliance ? [{ t: "compliance", l: "📋 Compliance" }] : []),
-                  ...(canSeeIncidents(currentUser) ? [(() => {
+                  { t: "compliance", l: "📋 Compliance" },
+                  (() => {
                     const unread = incidentReports.filter(r => !r.reviewed && !isLeaveExpiryReport(r)).length;
                     return { t: "incidents", l: "🛡️ Incident Reports" + (unread ? "  (" + unread + ")" : "") };
-                  })()] : []),
-                  ...(canSeeLeaveExpiry ? [(() => {
+                  })(),
+                  (() => {
                     const unread = incidentReports.filter(r => !r.reviewed && isLeaveExpiryReport(r)).length;
                     return { t: "leaveExpiry", l: "⏳ Leave Expiry Reports" + (unread ? "  (" + unread + ")" : "") };
-                  })()] : [])
+                  })()
                 ]
               },
               {
@@ -30260,21 +31126,21 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t: "locations", l: "📍 Locations" },
                   { t: "checkins", l: "📲 Nail Tech Check-ins" },
                   { t: "mgrclockins", l: "🕐 Manager Check-ins" },
-                  ...(hoOnlyStaff.length ? [{ t: "hoCheckins", l: "🏢 Head Office Check-ins" }] : []),
-                  ...(ccStaff.length ? [{ t: "ccCheckins", l: "📞 Call Centre & Sales Check-ins" }] : []),
+                  { t: "hoCheckins", l: "🏢 Head Office Check-ins" },
+                  { t: "ccCheckins", l: "📞 Call Centre & Sales Check-ins" },
                   { t: "leave", l: "🌴 Leave Planner" },
-                  ...(canSeeLeaveRequests ? [(() => {
+                  (() => {
                     const pend = leaveRequests.filter(r => r.status === "pending" && r.leave_type !== "Sick" && r.leave_type !== "Absent").length;
                     return { t: "leaveRequests", l: "📨 Leave Requests" + (pend ? "  (" + pend + ")" : "") };
-                  })()] : []),
-                  ...(canSeeCalledInSick(currentUser) ? [(() => {
+                  })(),
+                  (() => {
                     const n = calledInSickWindow(leaveRequests).list.length;
                     return { t: "calledInSick", l: "🤒 Called in Sick" + (n ? "  (" + n + ")" : "") };
-                  })()] : []),
-                  ...(canSeeIncidents(currentUser) ? [(() => {
+                  })(),
+                  (() => {
                     const n = extraDayRequests.filter(r => r.status === "pending").length;
                     return { t: "extraDayRequests", l: "💰 Extra-Day Requests" + (n ? "  (" + n + ")" : "") };
-                  })()] : []),
+                  })(),
                   // Fresha To-Do is granted via the normal Settings show/hide
                   // permissions (not canSeeIncidents) so the owner can give it
                   // to the Fresha openers (e.g. Farida) who don't pass the HR
@@ -30304,7 +31170,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     return { t: "freshaTodo", l: "💇‍♀️ Fresha To-Do" + (n ? "  (" + n + ")" : "") };
                   })(),
                   { t: "storeOpenings", l: "🔓 Store Openings" },
-                  ...((currentUser?.isOwner || currentUser?.role === "Master Admin") ? [{ t: "storeHours", l: "🕖 Store Opening Hours" }] : []),
+                  { t: "storeHours", l: "🕖 Store Opening Hours" },
                   { t: "movements", l: "🔀 Today's Movements" },
                   { t: "dailyTasks", l: "📋 Daily Tasks" },
                   { t: "mgrCoverage", l: "🗓 Manager Coverage" },
@@ -30327,21 +31193,20 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   // Badge counts only what payroll must ACTION (short / no
                   // clock-out / absent, minus anything already reviewed) — the
                   // live "not in yet" list clears itself and would keep it lit.
-                  ...(canSeeOfficeHours ? [{
+                  {
                     t: "officeHours",
-                    l: "⏰ Office Hours" + (officeOpenFindings.length ? "  (" + officeOpenFindings.length + ")" : ""),
-                    forceShow: true
-                  }] : []),
-                  ...(accessAllows(currentUser, leavePayrollCfg) ? [(() => {
+                    l: "⏰ Office Hours" + (officeOpenFindings.length ? "  (" + officeOpenFindings.length + ")" : "")
+                  },
+                  (() => {
                     const nReq = (leaveRequests || []).filter(r => r.status !== "declined" && r.leave_type !== "Sick" && r.leave_type !== "Absent" && !r.balance_checked_at).length;
                     const nCal = (leaveRecs || []).filter(lv => lv && lv.balancePending && !lv.emergency).length;
                     const n = nReq + nCal;
-                    return { t: "payrollInbox", l: "📥 Payroll Inbox" + (n ? "  (" + n + ")" : ""), forceShow: true };
-                  })()] : []),
-                  ...(accessAllows(currentUser, leaveBalancesCfg) ? [{ t: "leaveBalances", l: "🧾 Leave Balances", forceShow: true }] : []),
-                  ...(accessAllows(currentUser, leaveBalancesCfg) ? [{ t: "frl", l: "👪 Family Responsibility", forceShow: true }] : []),
-                  ...(accessAllows(currentUser, leaveBalancesCfg) ? [{ t: "bargainingCouncil", l: "🤝 Bargaining Council", forceShow: true }] : []),
-                  ...((currentUser?.isOwner || currentUser?.role === "Master Admin") ? [{ t: "bonusConfig", l: "🧮 Bonus & Commission" }] : [])
+                    return { t: "payrollInbox", l: "📥 Payroll Inbox" + (n ? "  (" + n + ")" : "") };
+                  })(),
+                  { t: "leaveBalances", l: "🧾 Leave Balances" },
+                  { t: "frl", l: "👪 Family Responsibility" },
+                  { t: "bargainingCouncil", l: "🤝 Bargaining Council" },
+                  { t: "bonusConfig", l: "🧮 Bonus & Commission" }
                 ]
               },
               {
@@ -30354,7 +31219,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   // HR Reports carries incident, conduct and watch-list data, so
                   // it rides the same gate as the Incidents tab rather than being
                   // hideable per user like the other Insights entries.
-                  ...(canSeeIncidents(currentUser) ? [{ t: "hrReports", l: "📈 HR Reports" }] : []),
+                  { t: "hrReports", l: "📈 HR Reports" },
                   { t: "activity", l: "📜 Activity Log" }
                 ]
               },
@@ -30366,48 +31231,31 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               // grid still applies on top, so the Owner can hide any of these
               // from a specific senior user via Settings.
               ...(() => {
-                const role = (currentUser?.role || "").toLowerCase();
-                const isNationalOps = role.includes("national ops") || role.includes("national operations");
-                const adminItems = [];
-                if (currentUser?.isOwner || isNationalOps || isRomRole(currentUser?.role)) {
-                  adminItems.push({ t: "kioskPins", l: "🔑 Kiosk PINs" });
-                  adminItems.push({ t: "managerPins", l: "🆔 Manager PINs" });
-                }
-                if (currentUser?.isOwner) {
-                  adminItems.push({ t: "settings", l: "⚙️ Settings" });
-                }
-                if (currentUser?.isOwner || isNationalOps) {
-                  adminItems.push({ t: "storeAllocation", l: "🏬 Store Allocation" });
-                }
-                if (currentUser?.isOwner || currentUser?.role === "Master Admin") {
-                  adminItems.push({ t: "voucherAdmin", l: "💳 Voucher Admin" });
-                }
-                return adminItems.length > 0 ? [{
+                const adminItems = [
+                  { t: "kioskPins", l: "🔑 Kiosk PINs" },
+                  { t: "managerPins", l: "🆔 Manager PINs" },
+                  { t: "settings", l: "⚙️ Settings" },
+                  { t: "storeAllocation", l: "🏬 Store Allocation" },
+                  { t: "voucherAdmin", l: "💳 Voucher Admin" }
+                ];
+                return adminItems.some(it => acl.visible.has(it.t)) ? [{
                   key: "Admin", icon: "🛡️", title: "Admin",
                   color: { bg: "#FEF3C7", bgActive: "#FDE68A", ink: "#92400e" },
                   items: adminItems
                 }] : [];
               })()
             ];
-            // Category that owns the currently-active tab.
-            // Permission filter: hide entire categories AND/OR individual tabs.
-            const hideCats = new Set(currentUser.hideCategories || []);
-            const hideTabs = new Set(currentUser.hideTabs || []);
-            // showTabs allow-lists specific tabs back in even when their whole
-            // category is hidden (e.g. Rochelle keeps People hidden but still
-            // gets the Trial Period tab).
-            const showTabs = new Set(currentUser.showTabs || []);
+            // hideCategories / hideTabs / showTabs are still the stored keys —
+            // they are just read by deriveAcl now instead of being unpacked and
+            // re-interpreted here.
             const visibleGroups = groups
-              // forceShow items (access-gated tabs like the Payroll Inbox) bypass
-              // the category/tab hide filter — access is governed by their own
-              // admin access list, so a locked-down account still sees them. A
-              // ccOnly account is authoritative and absolute: it sees EXACTLY the
-              // CC&S tabs (even a forceShow tab outside the set is hidden, and a
-              // CC&S tab in its stored hideTabs is still shown).
+              // One filter, one source of truth. This used to re-derive
+              // visibility from hideTabs/hideCats/showTabs/forceShow inline,
+              // which is precisely how it drifted out of step with the grid
+              // that writes those keys. An item with no TAB_ACCESS entry is a
+              // pseudo-item (sub-tab routing) and stays as-is.
               .map(g => ({
-                ...g, items: g.items.filter(it => currentUser.ccOnly
-                ? CC_ONLY_TABS.has(it.t)
-                  : (it.forceShow || (!hideTabs.has(it.t) && (!hideCats.has(g.key) || showTabs.has(it.t)))))
+                ...g, items: g.items.filter(it => !TAB_ACCESS[it.t] || acl.visible.has(it.t))
               }))
               .filter(g => g.items.length > 0);
             const tabToCategory = {};
@@ -30539,9 +31387,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         { t: "recruitment", l: "🎯 Recruitment" },
                         { t: "leave", l: "🌴 Leave Planner" }
                       ]
-                        .filter(it => currentUser.ccOnly
-                          ? CC_ONLY_TABS.has(it.t)
-                          : (!hideCats.has(NAV_TAB_TO_CATEGORY[it.t]) && !hideTabs.has(it.t)))
+                        .filter(it => acl.visible.has(it.t))
                         .map(it => tabBtn(it.t, it.l))}
                     </div>
                   </div>
@@ -30626,7 +31472,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             { l: "No Contract", v: stats.noContract, i: "📄", c: "#7f1d1d", bg: "#fee2e2" },
             { l: "Still To Hire", v: recruitFuture.vacancies, i: "🎯", c: "#7c3aed", bg: "#ede9fe", note: recruitFuture.pendingMoves > 0 ? `after transfers · now ${recruitFuture.vacanciesNow}` : "across all branches" },
             { l: "Understaffed", v: recruitFuture.understaffed, i: "📍", c: "#78350f", bg: "#fef3c7" },
-          ].map(c => (
+            // Z/NA counts staff with no valid permit — immigration data, so it
+            // carries the same canSeeCompliance gate as the identical dashboard
+            // tile. "No Contract" is an employment fact, not immigration, and
+            // stays visible (the Contract column is ungated too).
+          ].filter(c => canCompliance || c.l !== "Z/NA (Risk)").map(c => (
             <div key={c.l} style={{ background: c.bg, borderRadius: 13, padding: "12px 14px" }}>
               <div style={{ fontSize: 18 }}>{c.i}</div>
               <div style={{ fontSize: 24, fontWeight: 800, color: c.c, lineHeight: 1.1 }}>{c.v}</div>
@@ -30877,6 +31727,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // was the last one) simply doesn't render.
           const dashAlertEntries = [];
           const dashAlert = (id, group, severity, res) => {
+            // The per-user hide lives here, not at each call site. Twelve cards
+            // simply never got one because adding it was a separate step that
+            // was easy to forget — now every registered card is toggleable and
+            // an unregistered id is a no-op you notice immediately.
+            if (dashCardHidden(currentUser, id)) return;
             if (!res) return;                       // gate false, or nothing to report
             const node = res.node !== undefined ? res.node : res;
             if (!node) return;
@@ -30885,8 +31740,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
               /* ── SECTION: EXTRA-DAY REQUESTS (Owner + National Ops) ── */
               dashAlert("edOffers", "people", "info",
-              (currentUser?.isOwner || (currentUser?.role || "").toLowerCase().includes("national"))
-                && !(new Set(currentUser?.hideTabs || []).has("dashEdRequests"))
+              can(currentUser, "sys.seniorOps")
                 && (() => {
                   const openOffers = (edOffers || []).filter(o => o && o.status === "open");
                   const pendingByOffer = {};
@@ -31201,7 +32055,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </div>
               ));
               dashAlert("unpublishedSched", "scheduling", "warning",
-              (currentUser?.isOwner || (currentUser?.role || "").toLowerCase().includes("national")) && pubCycleAlert && pubCycleAlert.count > 0 && (() => {
+              can(currentUser, "sys.seniorOps") && pubCycleAlert && pubCycleAlert.count > 0 && (() => {
                 const a = pubCycleAlert;
                 const kindsTxt = Object.keys(a.kinds)
                   .sort((x, y) => a.kinds[y] - a.kinds[x])
@@ -31413,7 +32267,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   the "Abscond / Absence Warnings" permission (owner-only by
                   default; grant others in Settings). */
               dashAlert("abscond", "people", "critical",
-              !(new Set(currentUser?.hideTabs || []).has("dashAbscond")) && (() => {
+              (() => {
                 // What counts toward an abscond streak: NO SHOW and ABSENT.
                 const MISSED = { no: 1, absent: 1 };
                 // A day they actually WORKED — counts as a return to work and
@@ -31561,7 +32415,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   owners and ROMs; admins can grant it to other roles in
                   Settings → Users → Edit. */
               dashAlert("mgrAbsences", "people", "warning",
-              !(new Set(currentUser?.hideTabs || []).has("dashMgrAbsences")) && (() => {
+              (() => {
                 const _t = new Date();
                 const _todayYmd = _t.getFullYear() + "-" + String(_t.getMonth() + 1).padStart(2, "0") + "-" + String(_t.getDate()).padStart(2, "0");
                 if (dashTodayMgrClockinEcs == null) return null;     // still loading
@@ -31664,7 +32518,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   action and a "Mark done" so it can be cleared off the dashboard.
                   Scoped to the ROM's own stores. */
               dashAlert("mgrSick", "people", "info",
-              !(new Set(currentUser?.hideTabs || []).has("dashCalledInSick")) && canSeeIncidents(currentUser) && (() => {
+              canSeeIncidents(currentUser) && (() => {
                 const { today, tomorrow, list } = calledInSickWindow(leaveRequests);
                 const isMgrEc = (ec) => isManagerEc(ec);
                 const mgrSick = list.filter(r => isMgrEc(r.ec) && !r.reviewed
@@ -31727,7 +32581,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   summary; click through to the Called in Sick tab for details.
                   (Managers are handled by the ROM-action card above.) */
               dashAlert("techSick", "people", "info",
-              !(new Set(currentUser?.hideTabs || []).has("dashCalledInSick")) && canSeeIncidents(currentUser) && (() => {
+              canSeeIncidents(currentUser) && (() => {
                 const { today, tomorrow, list: _list } = calledInSickWindow(leaveRequests);
                 const list = _list.filter(r => !isManagerEc(r.ec));
                 if (!list.length) return null;
@@ -31829,8 +32683,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   extra-day events. Most ED posts self-expire, but legacy/untagged
                   ones linger — this card lets an owner prune or clear them. */
               dashAlert("dailyUpdates", "operations", "info",
-              (currentUser?.isOwner || (currentUser?.role || "").toLowerCase().includes("national"))
-                && !(new Set(currentUser?.hideTabs || []).has("dashNews"))
+              can(currentUser, "sys.seniorOps")
+
                 && Array.isArray(newsPosts) && newsPosts.length > 0 && (() => {
                   const fmtWhen = (iso) => { try { return new Date(iso).toLocaleString(undefined, { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }); } catch (_) { return ""; } };
                   const posts = newsPosts.slice().sort((a, b) => String(b.ts || "").localeCompare(String(a.ts || "")));
@@ -31864,7 +32718,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               /* ── SECTION: SECURITY ALERTS ── */
               /* Only visible to users who have the dashSecurityAlerts permission (not in hideTabs) */
               dashAlert("securityAlerts", "security", "critical",
-              !(new Set(currentUser?.hideTabs || []).has("dashSecurityAlerts")) && securityLogs && securityLogs.length > 0 && (
+              securityLogs && securityLogs.length > 0 && (
                 <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 14, padding: "16px", marginBottom: 18, boxShadow: "0 1px 4px rgba(220,38,38,0.06)" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -31987,7 +32841,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   not something a Regional Ops Manager would action.
                   Also gated by the dashHrActions permission. */
               dashAlert("hrActions", "people", "warning",
-              !_hasStoreScope && !(new Set(currentUser?.hideTabs || []).has("dashHrActions")) && (() => {
+              !_hasStoreScope && (() => {
                 const pendingTasks = obList.filter(o =>
                   o.status === "Pending Trainer Review" ||
                   o.status === "Pending Trial 1 Review" ||
@@ -32563,7 +33417,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   {(() => {
                     // Schedule alert: only for users responsible for scheduling.
                     let schedAlert = null;
-                    if (SCHED_ALERT_PINS.has(currentUser.pin) && upcomingChecked && upcomingMissing.length > 0) {
+                    if (_schedAlertsForMe && upcomingChecked && upcomingMissing.length > 0) {
                       const today = new Date();
                       // Display the COVERED (end) month — that's what users mean by
                       // "the schedule for June". Deadline is the 15th of the start month.
@@ -32603,7 +33457,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     </div>
                   ))}
                   {scopedAttn.zna === 0 && scopedAttn.noContract === 0 && recentDepartures.length === 0 &&
-                    (!SCHED_ALERT_PINS.has(currentUser.pin) || (upcomingChecked && upcomingMissing.length === 0)) && (
+                    (!_schedAlertsForMe || (upcomingChecked && upcomingMissing.length === 0)) && (
                       <div style={{ background: "#dcfce7", border: "1px solid #86efac", borderRadius: 14, padding: "14px 16px", color: "#14532d", fontWeight: 700, fontSize: 13 }}>
                         ✅ Nothing urgent — everything in good shape.
                       </div>
@@ -33056,10 +33910,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   mirrored to attendance / kiosk / My BOA, and this covers BOTH
                   nail techs and managers — it is the "publish the latest draft"
                   step, done in one pass for every branch's current-cycle edits. */}
-              {currentUser?.isOwner && (
-                <button onClick={openPublishCycle} disabled={pubCycleBusy}
-                  title="Scan every branch — nail techs AND managers — for schedule edits made mid-cycle (leave approvals, extra days, day-off swaps) and publish them live to staff, kiosk and My BOA. Scoped to the CURRENT payroll cycle only; you review every change before anything goes live."
-                  style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6, padding: "12px 18px", borderRadius: 11, fontSize: 14, fontWeight: 800, background: pubCycleBusy ? "#FBCFE8" : "#831843", color: "#fff", border: "none", cursor: pubCycleBusy ? "default" : "pointer", boxShadow: pubCycleBusy ? "none" : "0 4px 12px rgba(131,24,67,0.28)", whiteSpace: "nowrap" }}>
+              {can(currentUser, "act.schedule.publishCycle") && (
+                <button onClick={openPublishCycle} disabled={pubCycleBusy || currentTabIsReadOnly}
+                  title={roTitle(currentTabIsReadOnly, "Scan every branch — nail techs AND managers — for schedule edits made mid-cycle (leave approvals, extra days, day-off swaps) and publish them live to staff, kiosk and My BOA. Scoped to the CURRENT payroll cycle only; you review every change before anything goes live.")}
+                  style={roStyle(currentTabIsReadOnly, { marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6, padding: "12px 18px", borderRadius: 11, fontSize: 14, fontWeight: 800, background: pubCycleBusy ? "#FBCFE8" : "#831843", color: "#fff", border: "none", cursor: pubCycleBusy ? "default" : "pointer", boxShadow: pubCycleBusy ? "none" : "0 4px 12px rgba(131,24,67,0.28)", whiteSpace: "nowrap" })}>
                   {pubCycleBusy && !pubCycleOpen ? "Scanning…" : "⚡ Publish current cycle"}
                 </button>
               )}
@@ -33179,7 +34033,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 22, fontWeight: 700, color: "#831843" }}>📍 Locations</div>
                 <button
                   onClick={() => setAddLocationModal({ name: "", mani: "", pedi: "", capacity: "", lowDemand: false, targetCapacity: "", region: "wc", openingDate: "", saving: false })}
-                  style={{ background: accent, color: "#fff", border: "none", borderRadius: 8, padding: "9px 16px", cursor: "pointer", fontSize: 12, fontWeight: 700, letterSpacing: "0.04em" }}
+                  disabled={currentTabIsReadOnly}
+                  title={roTitle(currentTabIsReadOnly, undefined)}
+                  style={roStyle(currentTabIsReadOnly, { background: accent, color: "#fff", border: "none", borderRadius: 8, padding: "9px 16px", cursor: "pointer", fontSize: 12, fontWeight: 700, letterSpacing: "0.04em" })}
                 >+ Add new location</button>
               </div>
 
@@ -33698,9 +34554,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               {m.isShadow && <span style={{ fontSize: 9, marginLeft: 4, color: "#BE185D" }}>from {m.transferFrom} {m.transferDate ? new Date(m.transferDate).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" }) : ""}</span>}
                             </span>
                             {m.level && <LevelBadge level={m.level} />}
-                            <DhaBadge p={m} compact />
-                            <VfsBadge act={complianceActions[m.ec]} compact />
-                            <span title={(COMPLIANCE[m.permit] || COMPLIANCE.z_na).label} style={{ fontSize: 13 }}>{(COMPLIANCE[m.permit] || COMPLIANCE.z_na).icon}</span>
+                            {/* Permit / DHA status is immigration data — same
+                                canSeeCompliance gate as the Compliance tab and
+                                column. These tiles used to show it to everyone
+                                who could open Locations. */}
+                            {canCompliance && <>
+                              <DhaBadge p={m} compact />
+                              <VfsBadge act={complianceActions[m.ec]} compact />
+                              <span title={(COMPLIANCE[m.permit] || COMPLIANCE.z_na).label} style={{ fontSize: 13 }}>{(COMPLIANCE[m.permit] || COMPLIANCE.z_na).icon}</span>
+                            </>}
                           </div>
                         ))}
                         {/* Arriving (pending transfer) staff — shown but not counted */}
@@ -35674,7 +36536,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         {/* ── LEAVE REQUESTS TAB ── */}
         {tab === "leaveRequests" && canSeeLeaveRequests && (
-          <LeaveRequestsTab requests={leaveRequests} setRequests={setLeaveRequests} currentUser={currentUser} leaveRecs={leaveRecs} setLeaveRecs={setLeaveRecs} enriched={enriched} managers={managers} staff={staff} hoStaff={hoStaff} ccOnly={ccOnly} opsCfg={leaveOpsCfg} logActivity={logActivity} schedCache={schedCache} ymdToSchedYm={ymdToSchedYm} reverseLeave={reverseLeave} />
+          <LeaveRequestsTab requests={leaveRequests} setRequests={setLeaveRequests} currentUser={currentUser} leaveRecs={leaveRecs} setLeaveRecs={setLeaveRecs} enriched={enriched} managers={managers} staff={staff} hoStaff={hoStaff} ccOnly={ccOnly} opsCfg={leaveOpsCfg} logActivity={logActivity} schedCache={schedCache} ymdToSchedYm={ymdToSchedYm} reverseLeave={reverseLeave} readOnly={currentTabIsReadOnly} />
         )}
 
         {/* ── PAYROLL INBOX TAB ── */}
@@ -35718,7 +36580,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const active = enriched.filter(s => !s.onMat && !s.onUnpaidLegal && !s.offboarded);
           // Upcoming-cycle schedule alerts (only for users responsible for scheduling).
           const schedAlerts = [];
-          if (SCHED_ALERT_PINS.has(currentUser.pin) && upcomingChecked && upcomingMissing.length > 0) {
+          if (_schedAlertsForMe && upcomingChecked && upcomingMissing.length > 0) {
             const today = new Date();
             const m0 = upcomingMissing[0];
             const monthLbl = new Date(m0.endY, m0.endM, 1).toLocaleDateString("en-ZA", { month: "long", year: "numeric" });
@@ -35774,7 +36636,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       {items.map((item, i) => (
                         <div key={i} style={{ background: cfg.bg, border: `1px solid ${cfg.bdr}`, borderRadius: 11, padding: "11px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
                           <span style={{ fontSize: 12.5, color: cfg.c, fontWeight: 500 }}>{cfg.icon} {item.msg}</span>
-                          {item.rec && <button onClick={() => { setMatModal(item.rec); setTab("maternity"); }} style={{ background: cfg.btn, color: "#fff", border: "none", borderRadius: 7, padding: "5px 14px", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>Update</button>}
+                          {item.rec && <button onClick={() => { setMatModal(item.rec); tryChangeTab("maternity"); }} style={{ background: cfg.btn, color: "#fff", border: "none", borderRadius: 7, padding: "5px 14px", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>Update</button>}
                           {item.council && <button onClick={async () => {
                             if (!window.confirm("Mark " + item.council.name + " as deregistered from the bargaining council?\n\nThis clears their council flag (so their sick days are no longer treated as council-covered). Do this once you've notified the council that they've left.")) return;
                             try {
@@ -35782,7 +36644,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                               if (logActivity) logActivity("Deregistered bargaining-council member", item.council.name + (item.council.ec ? " (" + item.council.ec + ")" : ""), "On off-boarding", "Payroll");
                             } catch (e) { window.alert(e.message || String(e)); }
                           }} style={{ background: cfg.btn, color: "#fff", border: "none", borderRadius: 7, padding: "5px 14px", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>Mark deregistered</button>}
-                          {item.s && <button onClick={() => { setStaffModal(item.s); setTab("staff"); }} style={{ background: cfg.btn, color: "#fff", border: "none", borderRadius: 7, padding: "5px 14px", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>Resolve</button>}
+                          {item.s && <button onClick={() => { setStaffModal(item.s); tryChangeTab("staff"); }} style={{ background: cfg.btn, color: "#fff", border: "none", borderRadius: 7, padding: "5px 14px", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>Resolve</button>}
                         </div>
                       ))}
                     </div>
@@ -35937,6 +36799,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               managers={managers}
               currentUser={currentUser}
               branchNeed={recruitFuture.perBranch}
+              readOnly={currentTabIsReadOnly}
             />
           )}
 
@@ -36217,7 +37080,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           }
                           setManagers(plannerMgrs.map(m => ({ ...m })));
                           alert("Plan applied to live data!");
-                          setTab("locations");
+                          tryChangeTab("locations");
                         }}
                           style={{ padding: "8px 16px", borderRadius: 9, border: "none", background: "#BE185D", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700 }}>
                           ✓ Apply to Live Data
@@ -36905,7 +37768,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           // that form is actually SUBMITTED (see submitOb). Marking it as
           // promoted now would drop the candidate from BOTH the trial "passed"
           // list and the onboarded list if the form is left unfinished.
-          setTab("onboard");
+          tryChangeTab("onboard");
           setObShowForm(true);
         };
         const deleteTrial = (id) => {
@@ -37920,21 +38783,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // is that the region's ROM evaluates, and a second ROM who has been in
         // the store may add their own. HR/national/owner can also record one
         // (e.g. capturing a paper form).
-        const canEvaluate = (() => {
-          const u = currentUser;
-          if (!u) return false;
-          if (u.isOwner) return true;
-          const r = String(u.role || "").toLowerCase();
-          return isRomRole(u.role) || r === "master admin" || r.includes("hr") || r.includes("human res") || r.includes("national");
-        })();
+        const canEvaluate = can(currentUser, "act.smtrial.evaluate");
         // Only HR / national ops / owner close a trial out.
-        const canDecide = (() => {
-          const u = currentUser;
-          if (!u) return false;
-          if (u.isOwner) return true;
-          const r = String(u.role || "").toLowerCase();
-          return r === "master admin" || r.includes("hr") || r.includes("human res") || r.includes("national");
-        })();
+        const canDecide = can(currentUser, "act.smtrial.decide");
         const myStores = (currentUser && Array.isArray(currentUser.stores)) ? currentUser.stores : [];
 
         // Keep only sections/labels in the snapshot — the guidance text is long
@@ -38401,7 +39252,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           );
                         })}
                       </div>
-                      <button onClick={() => setTab("incidents")}
+                      <button onClick={() => tryChangeTab("incidents")}
                         style={{ marginTop: 8, padding: "5px 10px", borderRadius: 6, border: "1px solid #fed7aa", background: "#fff", color: "#9a3412", cursor: "pointer", fontFamily: "inherit", fontSize: 10, fontWeight: 700 }}>Open Incidents tab →</button>
                     </div>
                   )}
@@ -39130,6 +39981,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         };
 
         const reverseOnboarding = async (id) => {
+          // PRE-FLIGHT. This routine writes several times in sequence. The
+          // read-only guard blocks each call individually, which is worse than
+          // useless here: it used to let deleteStaff through (unguarded), retire
+          // the EC, then block saveOnboarding — leaving the hire HALF-reversed
+          // with no way back. Refuse the whole operation before the first write.
+          if (currentTabIsReadOnly) {
+            alert("🔒 View-only access — you can't reverse an onboarding on this tab.");
+            return;
+          }
           const rec = obList.find(r => r._id === id);
           if (!rec) return;
           const ec = String(rec.ec || "").trim();
@@ -39348,10 +40208,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
                     <button
                       onClick={submitOb}
-                      disabled={obSubmitting}
-                      style={{ width: "100%", padding: "16px", borderRadius: 10, border: "none", background: obSubmitting ? "#f472b6" : "#BE185D", color: "#fff", cursor: obSubmitting ? "wait" : "pointer", fontFamily: "inherit", fontSize: 15, fontWeight: 800, boxShadow: "0 4px 14px rgba(190, 24, 93, 0.3)" }}
+                      disabled={obSubmitting || currentTabIsReadOnly}
+                      title={roTitle(currentTabIsReadOnly, undefined)}
+                      style={roStyle(currentTabIsReadOnly, { width: "100%", padding: "16px", borderRadius: 10, border: "none", background: obSubmitting ? "#f472b6" : "#BE185D", color: "#fff", cursor: obSubmitting ? "wait" : "pointer", fontFamily: "inherit", fontSize: 15, fontWeight: 800, boxShadow: "0 4px 14px rgba(190, 24, 93, 0.3)" })}
                     >
-                      {obSubmitting ? "⏳ Registering Employee & Uploading..." : "🎉 Complete Registration"}
+                      {currentTabIsReadOnly ? "🔒 View-only — you can't register staff on this tab" : obSubmitting ? "⏳ Registering Employee & Uploading..." : "🎉 Complete Registration"}
                     </button>
                   </div>
                 </div>
@@ -39437,10 +40298,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                     {/* Undoing a hire is a different act from tidying
                                         the history list — Remove only hides the row and
                                         would strand a live employee behind it. */}
-                                    <button onClick={() => reverseOnboarding(r._id)}
-                                      title="They shouldn't have been onboarded — delete the staff record, retire the code and put the trial back"
-                                      style={{ background: "none", border: "1px solid #c4b5fd", borderRadius: 6, padding: "4px 8px", cursor: "pointer", fontSize: 11, color: "#6b21a8", fontFamily: "inherit", fontWeight: 700 }}>↩ Reverse</button>
-                                    <button onClick={() => delOb(r._id)} title="Remove this row from the history view only — the staff record stays" style={{ background: "none", border: "1px solid #fca5a5", borderRadius: 6, padding: "4px 8px", cursor: "pointer", fontSize: 11, color: "#991b1b" }}>✕ Remove</button>
+                                    <button onClick={() => reverseOnboarding(r._id)} disabled={currentTabIsReadOnly}
+                                      title={roTitle(currentTabIsReadOnly, "They shouldn't have been onboarded — delete the staff record, retire the code and put the trial back")}
+                                      style={roStyle(currentTabIsReadOnly, { background: "none", border: "1px solid #c4b5fd", borderRadius: 6, padding: "4px 8px", cursor: "pointer", fontSize: 11, color: "#6b21a8", fontFamily: "inherit", fontWeight: 700 })}>↩ Reverse</button>
+                                    <button onClick={() => delOb(r._id)} disabled={currentTabIsReadOnly} title={roTitle(currentTabIsReadOnly, "Remove this row from the history view only — the staff record stays")} style={roStyle(currentTabIsReadOnly, { background: "none", border: "1px solid #fca5a5", borderRadius: 6, padding: "4px 8px", cursor: "pointer", fontSize: 11, color: "#991b1b" })}>✕ Remove</button>
                                   </>}
                               </div>
                             </div>
@@ -39663,7 +40524,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           <div style={{ fontSize: 10, fontFamily: "monospace", color: "#991b1b", fontWeight: 700 }}>{p.ec}{p.branch ? " · " + p.branch : ""}</div>
                           {p.leftDate && <div style={{ fontSize: 11, color: "#991b1b", marginTop: 3 }}>{onNotice ? "Last day " : "Left "}{fmt(p.leftDate)}</div>}
                         </div>
-                        <button className="boa-btn" onClick={() => deregisterCouncil(p)} style={{ padding: "8px 14px", borderRadius: 9, border: "none", background: "linear-gradient(180deg,#e0393a,#b91c1c)", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap", boxShadow: "0 8px 18px -9px rgba(185,28,28,0.85)" }}>Mark deregistered</button>
+                        <button className="boa-btn" onClick={() => deregisterCouncil(p)} disabled={currentTabIsReadOnly} title={roTitle(currentTabIsReadOnly, undefined)} style={roStyle(currentTabIsReadOnly, { padding: "8px 14px", borderRadius: 9, border: "none", background: "linear-gradient(180deg,#e0393a,#b91c1c)", color: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap", boxShadow: "0 8px 18px -9px rgba(185,28,28,0.85)" })}>Mark deregistered</button>
                       </div>
                     );
                   })}
@@ -39709,7 +40570,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   <input id="_qpNotes" placeholder="e.g. final salary processed" style={{ ...GLASS_INPUT, marginBottom: 20 }} />
                   <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
                     <button className="boa-btn" onClick={() => setQuickPick(null)} style={BTN_GHOST}>Cancel</button>
-                    <button className="boa-btn" onClick={submitQuickPick} style={BTN_PRIMARY}>Confirm off-board</button>
+                    <button className="boa-btn" onClick={submitQuickPick} disabled={currentTabIsReadOnly} title={roTitle(currentTabIsReadOnly, undefined)} style={roStyle(currentTabIsReadOnly, BTN_PRIMARY)}>Confirm off-board</button>
                   </div>
                 </div>
               </div>
@@ -39748,7 +40609,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 <label style={GLASS_LABEL}>Notes (optional)</label>
                 <input id="_offNotes" placeholder="e.g. Moving to JHB" style={GLASS_INPUT} />
               </div>
-              <button className="boa-btn" onClick={submitOff} style={{ ...BTN_PRIMARY, fontSize: 13, padding: "11px 22px", letterSpacing: "0.04em" }}>Off-board</button>
+              <button className="boa-btn" onClick={submitOff} disabled={currentTabIsReadOnly} title={roTitle(currentTabIsReadOnly, undefined)} style={roStyle(currentTabIsReadOnly, { ...BTN_PRIMARY, fontSize: 13, padding: "11px 22px", letterSpacing: "0.04em" })}>Off-board</button>
             </div>
 
             {/* Working Notice card */}
@@ -39777,7 +40638,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           Last day {dStr}<span style={{ opacity: 0.75 }}> · {daysUntil === 0 ? "today" : daysUntil === 1 ? "tomorrow" : "in " + daysUntil + " days"}</span>
                         </div>
                         {o.notes && <div style={{ fontSize: 11.5, color: "#7d5068", marginTop: 9, fontStyle: "italic", whiteSpace: "pre-wrap", lineHeight: 1.55 }}>{o.notes}</div>}
-                        <button onClick={() => undoOff(o.ec)} className="boa-btn" style={{ marginTop: 12, marginRight: 8, background: "rgba(255,255,255,0.7)", border: "1px solid rgba(217,119,6,0.28)", color: "#92400e", padding: "6px 12px", borderRadius: 8, fontSize: 10.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>↺ Cancel</button>{renderExitBadge(o)}
+                        <button onClick={() => undoOff(o.ec)} className="boa-btn" disabled={currentTabIsReadOnly} title={roTitle(currentTabIsReadOnly, undefined)} style={roStyle(currentTabIsReadOnly, { marginTop: 12, marginRight: 8, background: "rgba(255,255,255,0.7)", border: "1px solid rgba(217,119,6,0.28)", color: "#92400e", padding: "6px 12px", borderRadius: 8, fontSize: 10.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" })}>↺ Cancel</button>{renderExitBadge(o)}
                       </div>
                     );
                   })}
@@ -39814,7 +40675,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           Left {dStr}<span style={{ opacity: 0.7 }}> · {daysAgo === 0 ? "today" : daysAgo === 1 ? "yesterday" : daysAgo + " days ago"}</span>
                         </div>
                         {o.notes && <div style={{ fontSize: 11.5, color: "#7d5068", marginTop: 9, fontStyle: "italic", whiteSpace: "pre-wrap", lineHeight: 1.55 }}>{o.notes}</div>}
-                        <button onClick={() => undoOff(o.ec)} className="boa-btn" style={{ marginTop: 12, marginRight: 8, background: "rgba(255,255,255,0.7)", border: "1px solid rgba(190,24,93,0.20)", color: "#9d174d", padding: "6px 12px", borderRadius: 8, fontSize: 10.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>↺ Restore</button>{renderExitBadge(o)}
+                        <button onClick={() => undoOff(o.ec)} className="boa-btn" disabled={currentTabIsReadOnly} title={roTitle(currentTabIsReadOnly, undefined)} style={roStyle(currentTabIsReadOnly, { marginTop: 12, marginRight: 8, background: "rgba(255,255,255,0.7)", border: "1px solid rgba(190,24,93,0.20)", color: "#9d174d", padding: "6px 12px", borderRadius: 8, fontSize: 10.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" })}>↺ Restore</button>{renderExitBadge(o)}
                       </div>
                     );
                   })}
@@ -39859,7 +40720,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                             Left {dStr}<span style={{ opacity: 0.7 }}> · {daysAgo} days ago</span>
                           </div>
                           {o.notes && <div style={{ fontSize: 11.5, color: "#7d5068", marginTop: 9, fontStyle: "italic", whiteSpace: "pre-wrap", lineHeight: 1.55 }}>{o.notes}</div>}
-                          <button onClick={() => undoOff(o.ec)} className="boa-btn" style={{ marginTop: 12, marginRight: 8, background: "rgba(255,255,255,0.7)", border: "1px solid rgba(190,24,93,0.20)", color: "#9d174d", padding: "6px 12px", borderRadius: 8, fontSize: 10.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>↺ Restore</button>{renderExitBadge(o)}
+                          <button onClick={() => undoOff(o.ec)} className="boa-btn" disabled={currentTabIsReadOnly} title={roTitle(currentTabIsReadOnly, undefined)} style={roStyle(currentTabIsReadOnly, { marginTop: 12, marginRight: 8, background: "rgba(255,255,255,0.7)", border: "1px solid rgba(190,24,93,0.20)", color: "#9d174d", padding: "6px 12px", borderRadius: 8, fontSize: 10.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" })}>↺ Restore</button>{renderExitBadge(o)}
                         </div>
                       );
                     })}
@@ -40843,6 +41704,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         // Persist a single cell change (and update local React state)
         const setCell = async (ec, d, v) => {
+          // Pre-flight for view-only users. The BOA_DB guard would refuse the
+          // write anyway, but only AFTER pushUndo() has polluted the session's
+          // undo stack with an edit that never happened — and the grid is the
+          // one surface where a refusal per cell would fire dozens of dialogs.
+          if (currentTabIsReadOnly) { alert(RO_MESSAGE); return; }
           pushUndo("cell edit");
           const prev = attGrid[ec] && attGrid[ec][d];
           const next = { ...attGrid, [ec]: { ...(attGrid[ec] || {}) } };
@@ -42267,37 +43133,37 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <div style={{ flex: 1 }} />
               {attLoading && <span style={{ fontSize: 11, color: "#9ca3af", fontStyle: "italic" }}>Loading…</span>}
               {allExport && <span style={{ fontSize: 11, color: "#BE185D", fontStyle: "italic", fontWeight: 600 }}>Building all-stores CSV… {allExport.idx + 1}/{allExport.stores.length} ({allExport.stores[allExport.idx]})</span>}
-              <button onClick={autoFill} style={{ padding: "7px 14px", background: "#fef3c7", color: "#78350f", border: "1px solid #fbbf24", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Fill empty cells from schedule (faded, still unconfirmed)">✓ Auto-fill from Schedule</button>
+              <button onClick={autoFill} disabled={currentTabIsReadOnly} style={roStyle(currentTabIsReadOnly, { padding: "7px 14px", background: "#fef3c7", color: "#78350f", border: "1px solid #fbbf24", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 })} title={roTitle(currentTabIsReadOnly, "Fill empty cells from schedule (faded, still unconfirmed)")}>✓ Auto-fill from Schedule</button>
               <button onClick={downloadAttendanceCsv} disabled={!!allExport} style={{ padding: "7px 14px", background: "#FFFFFF", color: "#BE185D", border: "1px solid #FBCFE8", borderRadius: 8, cursor: allExport ? "default" : "pointer", opacity: allExport ? 0.5 : 1, fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Download a CSV of the side totals for THIS store — employee code, name, role, new-starter start date, all day counts (incl. sick + note, unpaid) and whether the bonus is lost">⬇ CSV totals</button>
               <button onClick={downloadTrialCsv} disabled={!!allExport} style={{ padding: "7px 14px", background: "#FEF9C3", color: "#854d0e", border: "1px solid #FDE047", borderRadius: 8, cursor: allExport ? "default" : "pointer", opacity: allExport ? 0.5 : 1, fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Download a CSV of JUST the trial people for THIS store (the 🧪 yellow rows — still on paid trial, not yet promoted to onboarding, so they're excluded from the CSV totals). One row per trial person with their paid trial days, store vs head-office split, and absent days.">🧪 Trial days CSV</button>
               <button onClick={downloadAllStoresCsv} disabled={!!allExport} style={{ padding: "7px 14px", background: "#BE185D", color: "#FFFFFF", border: "1px solid #BE185D", borderRadius: 8, cursor: allExport ? "default" : "pointer", opacity: allExport ? 0.6 : 1, fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Download ONE CSV covering every store for this pay cycle — one row per person, at their current store (transfers and loaned days folded in exactly as on each store's own sheet). Walks each store in turn, so it takes a few seconds.">⬇ All stores CSV</button>
               <button onClick={downloadAllTrialCsv} disabled={!!allExport} style={{ padding: "7px 14px", background: "#FACC15", color: "#713f12", border: "1px solid #CA8A04", borderRadius: 8, cursor: allExport ? "default" : "pointer", opacity: allExport ? 0.6 : 1, fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Download ONE CSV of every store's trial people (the 🧪 yellow rows, not yet promoted to onboarding) for this pay cycle — one row per trial person with a Branch column, paid trial days, store vs head-office split, and absent days. Instant (no per-store walk).">🧪 Trial — all stores</button>
-              <button onClick={importFresha} style={{ padding: "7px 14px", background: "#dbeafe", color: "#1e3a8a", border: "1px solid #93c5fd", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Upload a Fresha appointments CSV — every nail tech with a completed appointment that day is marked On Time">📤 Import Fresha CSV</button>
-              <button onClick={importCheckins} style={{ padding: "7px 14px", background: "#dcfce7", color: "#14532d", border: "1px solid #86efac", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Pull every clock-in from the staff check-in app and stamp those days as On Time (or Extra Day if scheduled off). Confirmed cells are preserved. Use ↩ Undo to roll the import back.">✓ Import Check-ins</button>
+              <button onClick={importFresha} disabled={currentTabIsReadOnly} style={roStyle(currentTabIsReadOnly, { padding: "7px 14px", background: "#dbeafe", color: "#1e3a8a", border: "1px solid #93c5fd", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 })} title={roTitle(currentTabIsReadOnly, "Upload a Fresha appointments CSV — every nail tech with a completed appointment that day is marked On Time")}>📤 Import Fresha CSV</button>
+              <button onClick={importCheckins} disabled={currentTabIsReadOnly} style={roStyle(currentTabIsReadOnly, { padding: "7px 14px", background: "#dcfce7", color: "#14532d", border: "1px solid #86efac", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 })} title={roTitle(currentTabIsReadOnly, "Pull every clock-in from the staff check-in app and stamp those days as On Time (or Extra Day if scheduled off). Confirmed cells are preserved. Use ↩ Undo to roll the import back.")}>✓ Import Check-ins</button>
               {attCheckinSnapshot && (
-                <button onClick={undoCheckinsImport} style={{ padding: "7px 14px", background: "#fef3c7", color: "#78350f", border: "1px solid #fbbf24", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Restore the attendance grid to its state right before the last check-in import">↩ Undo Check-in Import</button>
+                <button onClick={undoCheckinsImport} disabled={currentTabIsReadOnly} style={roStyle(currentTabIsReadOnly, { padding: "7px 14px", background: "#fef3c7", color: "#78350f", border: "1px solid #fbbf24", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 })} title={roTitle(currentTabIsReadOnly, "Restore the attendance grid to its state right before the last check-in import")}>↩ Undo Check-in Import</button>
               )}
               {(attEditStack.length > 0 || attPersistUndo) && (() => {
                 const top = attEditStack[0] || attPersistUndo;
                 const persistedOnly = attEditStack.length === 0 && !!attPersistUndo;
                 const when = top && top.ts ? new Date(top.ts).toLocaleString("en-ZA", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "";
                 return (
-                  <button onClick={undoLastEdit}
-                    title={"Undo the last change to " + attBranch + "'s sheet: " + (top.label || "edit") + (when ? " (" + when + ")" : "") + (persistedOnly ? "\n\n(Saved change — undoable even though it was made earlier or by someone else.)" : "\n\n" + attEditStack.length + " action" + (attEditStack.length === 1 ? "" : "s") + " in this session's history")}
-                    style={{ padding: "7px 14px", background: "#fef3c7", color: "#78350f", border: "1px solid #fbbf24", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }}>
+                  <button onClick={undoLastEdit} disabled={currentTabIsReadOnly}
+                    title={roTitle(currentTabIsReadOnly, "Undo the last change to " + attBranch + "'s sheet: " + (top.label || "edit") + (when ? " (" + when + ")" : "") + (persistedOnly ? "\n\n(Saved change — undoable even though it was made earlier or by someone else.)" : "\n\n" + attEditStack.length + " action" + (attEditStack.length === 1 ? "" : "s") + " in this session's history"))}
+                    style={roStyle(currentTabIsReadOnly, { padding: "7px 14px", background: "#fef3c7", color: "#78350f", border: "1px solid #fbbf24", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 })}>
                     ↶ Undo {top.label || "last change"}{attEditStack.length > 1 ? " (" + attEditStack.length + ")" : ""}
                   </button>
                 );
               })()}
-              <button onClick={resetCycle} style={{ padding: "7px 14px", background: "#fee2e2", color: "#7f1d1d", border: "1px solid #fca5a5", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }} title="Clear every cell for this branch + cycle (with confirmation)">↺ Reset Cycle</button>
-              <button onClick={totalResetCycle} style={{ padding: "7px 14px", background: "#7f1d1d", color: "#fff", border: "1px solid #7f1d1d", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 }} title="Permanently delete the attendance grid, kiosk audit log, proofs and absence sidecars for this branch + cycle">⚠ Total Reset</button>
+              <button onClick={resetCycle} disabled={currentTabIsReadOnly} style={roStyle(currentTabIsReadOnly, { padding: "7px 14px", background: "#fee2e2", color: "#7f1d1d", border: "1px solid #fca5a5", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 })} title={roTitle(currentTabIsReadOnly, "Clear every cell for this branch + cycle (with confirmation)")}>↺ Reset Cycle</button>
+              <button onClick={totalResetCycle} disabled={currentTabIsReadOnly} style={roStyle(currentTabIsReadOnly, { padding: "7px 14px", background: "#7f1d1d", color: "#fff", border: "1px solid #7f1d1d", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700 })} title={roTitle(currentTabIsReadOnly, "Permanently delete the attendance grid, kiosk audit log, proofs and absence sidecars for this branch + cycle")}>⚠ Total Reset</button>
             </div>
 
             {mirrorSuppressed && (
               <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 8, padding: "11px 15px", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8, fontSize: 12.5, color: "#854d0e", fontWeight: 600 }}>
                 <span style={{ fontSize: 16 }}>⚠</span>
                 <span>Schedule mirror is <strong>OFF</strong> for {attBranch} · {cycLabel} — a <strong>Total Reset</strong> cleared this sheet, so off-days and the kiosk/Fresha checks are hidden until you rebuild from the schedule.</span>
-                <button onClick={autoFill} style={{ marginLeft: "auto", padding: "6px 13px", background: "#854d0e", color: "#fff", border: "none", borderRadius: 7, cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, whiteSpace: "nowrap" }}>✓ Auto-fill from Schedule</button>
+                <button onClick={autoFill} disabled={currentTabIsReadOnly} title={roTitle(currentTabIsReadOnly, undefined)} style={roStyle(currentTabIsReadOnly, { marginLeft: "auto", padding: "6px 13px", background: "#854d0e", color: "#fff", border: "none", borderRadius: 7, cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, whiteSpace: "nowrap" })}>✓ Auto-fill from Schedule</button>
               </div>
             )}
 
@@ -43095,13 +43961,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       <tbody>
                         {sorted.map(e => (
                           <tr key={e.branch} style={{ background: e.open > 0 ? "#fef2f2" : (e.total > 0 ? "#f0fdf4" : "transparent"), cursor: "pointer" }}
-                            onClick={() => { setAttBranch(e.branch); setTab("attendance"); }}>
+                            onClick={() => { setAttBranch(e.branch); tryChangeTab("attendance"); }}>
                             <td style={{ padding: "8px 12px", borderBottom: "1px solid #FBF1F5", color: "#831843", fontWeight: 600 }}>{e.branch}{e.approx ? <span title="Estimated — open this branch's attendance sheet once so it can publish its exact count." style={{ marginLeft: 6, fontSize: 10, color: "#b45309", fontWeight: 700 }}>~ est.</span> : null}</td>
                             <td style={{ padding: "8px 12px", borderBottom: "1px solid #FBF1F5", textAlign: "right", color: e.open > 0 ? "#7f1d1d" : "#9ca3af", fontWeight: 700 }}>{e.open}</td>
                             <td style={{ padding: "8px 12px", borderBottom: "1px solid #FBF1F5", textAlign: "right", color: "#166534", fontWeight: 600 }}>{e.reviewed}</td>
                             <td style={{ padding: "8px 12px", borderBottom: "1px solid #FBF1F5", textAlign: "right", color: "#831843", fontWeight: 600 }}>{e.total}</td>
                             <td style={{ padding: "8px 12px", borderBottom: "1px solid #FBF1F5", textAlign: "right" }}>
-                              <button onClick={(ev) => { ev.stopPropagation(); setAttBranch(e.branch); setTab("attendance"); }} style={{ background: "transparent", border: "1px solid #F9A8D4", color: "#831843", cursor: "pointer", padding: "4px 10px", borderRadius: 5, fontSize: 11 }}>Open →</button>
+                              <button onClick={(ev) => { ev.stopPropagation(); setAttBranch(e.branch); tryChangeTab("attendance"); }} style={{ background: "transparent", border: "1px solid #F9A8D4", color: "#831843", cursor: "pointer", padding: "4px 10px", borderRadius: 5, fontSize: 11 }}>Open →</button>
                             </td>
                           </tr>
                         ))}
@@ -43800,18 +44666,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         const ym = attYM;
         // Only owners + people granted in Settings → Overtime access may record
         // overtime. Everyone else gets the tab read-only (view, no submit).
-        const canRecordOvertime = (() => {
-          if (!currentUser) return false;
-          if (currentUser.isOwner) return true;
-          const role = (currentUser.role || "").toLowerCase();
-          const roleMatch = (overtimeCfg.roles || []).some(k =>
-            k === "national" ? (role.includes("national ops") || role.includes("national operations") || role.includes("national"))
-              : k === "regional" ? (role.includes("regional") || /\brom\b/.test(role) || role.includes("regional ops"))
-                : false
-          );
-          if (roleMatch) return true;
-          return (overtimeCfg.pins || []).includes(currentUser.pin);
-        })();
+        const canRecordOvertime = can(currentUser, "act.overtime.record", { overtime: overtimeCfg });
         const ymPretty = (() => {
           try {
             const [yy, mm] = ym.split("-").map(Number);
@@ -45117,7 +45972,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
                 {m._id ? (
                   <button onClick={() => { if (window.confirm("Cancel this loan?")) { cancelLoan(m._id); setLoanModal(null); } }}
-                    style={{ background: "#fff", color: "#b91c1c", border: "1px solid #fecaca", borderRadius: 8, padding: "9px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}
+                    disabled={currentTabIsReadOnly}
+                    title={roTitle(currentTabIsReadOnly, undefined)}
+                    style={roStyle(currentTabIsReadOnly, { background: "#fff", color: "#b91c1c", border: "1px solid #fecaca", borderRadius: 8, padding: "9px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700 })}
                   >Cancel loan</button>
                 ) : <span />}
                 <div style={{ display: "flex", gap: 8 }}>
@@ -45125,10 +45982,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     style={{ background: "#f3f4f6", color: "#374151", border: "none", borderRadius: 8, padding: "9px 16px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}
                   >Close</button>
                   <button
-                    disabled={loanSaving || !m.ec || !m.toBranch || !m.date || !!onLeaveBlocker || (fromBranch && fromBranch === m.toBranch)}
+                    disabled={currentTabIsReadOnly || loanSaving || !m.ec || !m.toBranch || !m.date || !!onLeaveBlocker || (fromBranch && fromBranch === m.toBranch)}
                     onClick={() => saveLoan({ ...m, fromBranch })}
-                    style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 8, padding: "9px 18px", cursor: loanSaving ? "wait" : "pointer", fontSize: 12, fontWeight: 700, opacity: (loanSaving || !m.ec || !m.toBranch || !m.date || !!onLeaveBlocker || (fromBranch && fromBranch === m.toBranch)) ? 0.5 : 1 }}
-                  >{loanSaving ? "Saving…" : (m._id ? "Save changes" : "Log borrow")}</button>
+                    title={roTitle(currentTabIsReadOnly, undefined)}
+                    style={roStyle(currentTabIsReadOnly, { background: "#BE185D", color: "#fff", border: "none", borderRadius: 8, padding: "9px 18px", cursor: loanSaving ? "wait" : "pointer", fontSize: 12, fontWeight: 700, opacity: (loanSaving || !m.ec || !m.toBranch || !m.date || !!onLeaveBlocker || (fromBranch && fromBranch === m.toBranch)) ? 0.5 : 1 })}
+                  >{currentTabIsReadOnly ? "🔒 View-only" : loanSaving ? "Saving…" : (m._id ? "Save changes" : "Log borrow")}</button>
                 </div>
               </div>
             </div>
@@ -50497,8 +51355,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               </button>
               <button
                 onClick={() => setEdPublish({ branch: "", date: "", shiftCode: "W", start: "09:00", end: "18:00", note: "", busy: false, err: "" })}
-                title="Offer a published off-day as an extra day. It alerts every kiosk; off-duty managers claim it and Ops approves the best one."
-                style={{ background: "linear-gradient(135deg,#BE185D,#E84B9B)", color: "#fff", border: "none", borderRadius: 8, padding: "7px 12px", cursor: "pointer", fontSize: 12, fontWeight: 800, boxShadow: "0 4px 12px rgba(190,24,93,0.28)" }}>
+                disabled={currentTabIsReadOnly}
+                title={roTitle(currentTabIsReadOnly, "Offer a published off-day as an extra day. It alerts every kiosk; off-duty managers claim it and Ops approves the best one.")}
+                style={roStyle(currentTabIsReadOnly, { background: "linear-gradient(135deg,#BE185D,#E84B9B)", color: "#fff", border: "none", borderRadius: 8, padding: "7px 12px", cursor: "pointer", fontSize: 12, fontWeight: 800, boxShadow: "0 4px 12px rgba(190,24,93,0.28)" })}>
                 ✨ Publish an ED
               </button>
               <div style={{ fontSize: 11, display: "flex", gap: 12 }}>
@@ -50553,9 +51412,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                     style={{ background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 8, padding: "8px 14px", cursor: mgrCoverageDraftApplying ? "not-allowed" : "pointer", fontSize: 12, fontWeight: 700, opacity: mgrCoverageDraftApplying ? 0.6 : 1 }}>
                     ↺ Discard
                   </button>
-                  <button onClick={_applyDraft} disabled={mgrCoverageDraftApplying}
-                    style={{ background: mgrCoverageDraftApplying ? "#FBCFE8" : "#16A34A", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", cursor: mgrCoverageDraftApplying ? "not-allowed" : "pointer", fontSize: 13, fontWeight: 800 }}>
-                    {mgrCoverageDraftApplying ? "Applying…" : "✓ Apply to live"}
+                  <button onClick={_applyDraft} disabled={mgrCoverageDraftApplying || currentTabIsReadOnly}
+                    title={roTitle(currentTabIsReadOnly, undefined)}
+                    style={roStyle(currentTabIsReadOnly, { background: mgrCoverageDraftApplying ? "#FBCFE8" : "#16A34A", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", cursor: mgrCoverageDraftApplying ? "not-allowed" : "pointer", fontSize: 13, fontWeight: 800 })}>
+                    {currentTabIsReadOnly ? "🔒 View-only" : mgrCoverageDraftApplying ? "Applying…" : "✓ Apply to live"}
                   </button>
                 </div>
               );
@@ -50725,18 +51585,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         // Only owners + people granted in Settings → Cash-up review may tick a
         // cash-up off as reviewed. Everyone else sees the review status read-only.
-        const canReviewCashups = (() => {
-          if (!currentUser) return false;
-          if (currentUser.isOwner) return true;
-          const role = (currentUser.role || "").toLowerCase();
-          const roleMatch = (cashupReviewCfg.roles || []).some(k =>
-            k === "national" ? (role.includes("national ops") || role.includes("national operations") || role.includes("national"))
-              : k === "regional" ? (role.includes("regional") || /\brom\b/.test(role) || role.includes("regional ops"))
-                : false
-          );
-          if (roleMatch) return true;
-          return (cashupReviewCfg.pins || []).includes(currentUser.pin);
-        })();
+        const canReviewCashups = can(currentUser, "act.cashups.review", { cashupReview: cashupReviewCfg });
 
         const filtered = cashupRows.filter(r => {
           if (_hasStoreScope && !scopedSalonNames.has(r.branch)) return false;
@@ -51052,15 +51901,16 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                   {r.review_comment && <span title={r.review_comment} style={{ color: "#9ca3af", cursor: "help" }}>💬</span>}
                                 </span>
                                 <span style={{ fontSize: 10, color: "#9ca3af" }}>{r.reviewed_by || "—"}{r.reviewed_at ? " · " + _fmtStamp(r.reviewed_at) : ""}</span>
-                                {canReviewCashups && (
+                                {canReviewCashups && !currentTabIsReadOnly && (
                                   <a href="#" onClick={e => { e.preventDefault(); setCashupReviewModal({ row: r, comment: r.review_comment || "" }); }} style={{ fontSize: 10, color: "#BE185D", fontWeight: 700 }}>edit / undo</a>
                                 )}
                               </div>
                             ) : canReviewCashups ? (
                               <button
                                 onClick={() => setCashupReviewModal({ row: r, comment: "" })}
-                                title="Tick off — confirm you've reviewed this cash-up and it matches"
-                                style={{ background: "#fff", color: "#14532d", border: "1px solid #bbf7d0", borderRadius: 7, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}
+                                disabled={currentTabIsReadOnly}
+                                title={roTitle(currentTabIsReadOnly, "Tick off — confirm you've reviewed this cash-up and it matches")}
+                                style={roStyle(currentTabIsReadOnly, { background: "#fff", color: "#14532d", border: "1px solid #bbf7d0", borderRadius: 7, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700 })}
                               >✓ Tick off</button>
                             ) : (
                               <span style={{ color: "#9ca3af", fontSize: 11 }}>Not yet</span>
@@ -51068,7 +51918,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                           </td>
                           <td style={cell}>
                             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                              {!isArchived && (
+                              {/* Reopen and Delete follow the SAME cash-up review
+                                  access list as "tick off" (Settings). They used
+                                  to be looser than the tick they undo: Reopen was
+                                  ungated entirely and Delete — which is
+                                  irreversible and also wipes the store's kiosk
+                                  copy — was gated only on not being a ROM. */}
+                              {!isArchived && canReviewCashups && (
                                 <button
                                   onClick={async () => {
                                     if (!window.confirm("Reopen this cash-up?\n\nStore: " + r.branch + "\nDate: " + r.date + "\nTotal: " + _fmtMoney(r.total) + "\n\nThe store will be able to submit a new cash-up for this day. The current entry stays in the history as 'Reopened'.")) return;
@@ -51080,11 +51936,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                       window.alert("Couldn't reopen: " + ((e && e.message) || e));
                                     }
                                   }}
-                                  title="Reopen — let the store submit again for this day"
-                                  style={{ background: "#fff", color: "#BE185D", border: "1px solid #FBCFE8", borderRadius: 7, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}
+                                  disabled={currentTabIsReadOnly}
+                                  title={roTitle(currentTabIsReadOnly, "Reopen — let the store submit again for this day")}
+                                  style={roStyle(currentTabIsReadOnly, { background: "#fff", color: "#BE185D", border: "1px solid #FBCFE8", borderRadius: 7, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700 })}
                                 >↻ Reopen</button>
                               )}
-                              {!_hasStoreScope && (
+                              {!_hasStoreScope && canReviewCashups && (
                                 <button
                                   onClick={async () => {
                                     if (!window.confirm("PERMANENTLY DELETE this cash-up?\n\nStore: " + r.branch + "\nDate: " + r.date + "\nTotal: " + _fmtMoney(r.total) + "\n\nThis removes it completely — from the HR portal AND the store's kiosk. Use only for test or duplicate entries. This cannot be undone.")) return;
@@ -51096,8 +51953,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                                       window.alert("Couldn't delete: " + ((e && e.message) || e));
                                     }
                                   }}
-                                  title="Delete permanently — removes this cash-up everywhere (for test / duplicate entries)"
-                                  style={{ background: "#fff", color: "#b91c1c", border: "1px solid #fecaca", borderRadius: 7, padding: "4px 9px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}
+                                  disabled={currentTabIsReadOnly}
+                                  title={roTitle(currentTabIsReadOnly, "Delete permanently — removes this cash-up everywhere (for test / duplicate entries)")}
+                                  style={roStyle(currentTabIsReadOnly, { background: "#fff", color: "#b91c1c", border: "1px solid #fecaca", borderRadius: 7, padding: "4px 9px", cursor: "pointer", fontSize: 11, fontWeight: 700 })}
                                 >🗑 Delete</button>
                               )}
                               {isArchived && _hasStoreScope && <span style={{ color: "#9ca3af", fontSize: 11 }}>—</span>}
@@ -51341,8 +52199,9 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           appUsers={appUsers}
           onUsersUpdate={onUsersUpdate}
           currentUser={currentUser}
-          freshaCfg={freshaCfg}
-          onFreshaCfgSave={saveFreshaCfg}
+          dataCounts={{ hoStaff: hoStaff.length, hoOnly: hoOnlyStaff.length, ccStaff: ccStaff.length, officeTrial: (officeTrialList || []).length }}
+          offboardAccess={offboardAccess}
+          onOffboardAccessSave={saveOffboardAccess}
           overtimeCfg={overtimeCfg}
           onOvertimeCfgSave={saveOvertimeCfg}
           officeStaffCfg={officeStaffCfg}
@@ -51363,9 +52222,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       )}
 
       {tab === "storeAllocation" && (() => {
-        const role = (currentUser?.role || "").toLowerCase();
-        const isNationalOps = role.includes("national ops") || role.includes("national operations");
-        const allowed = !!currentUser?.isOwner || isNationalOps;
+        const allowed = can(currentUser, "sys.nationalOps");
         if (!allowed) {
           return (
             <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: 11, padding: "20px 22px", color: "#7f1d1d", fontFamily: "'Outfit',system-ui,sans-serif" }}>
@@ -51384,15 +52241,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         );
       })()}
 
-      {tab === "voucherAdmin" && (currentUser?.isOwner || currentUser?.role === "Master Admin") && (
+      {tab === "voucherAdmin" && _isOwnerOrMaster(currentUser) && (
         <div style={{ padding: "0 24px" }}><VoucherAdmin currentUser={currentUser} /></div>
       )}
 
-      {tab === "bonusConfig" && (currentUser?.isOwner || currentUser?.role === "Master Admin") && (
+      {tab === "bonusConfig" && _isOwnerOrMaster(currentUser) && (
         <div style={{ padding: "0 24px" }}><BonusConfig /></div>
       )}
 
-      {tab === "storeHours" && (currentUser?.isOwner || currentUser?.role === "Master Admin") && (
+      {tab === "storeHours" && _isOwnerOrMaster(currentUser) && (
         <div style={{ padding: "0 24px" }}><StoreHoursConfig /></div>
       )}
 
@@ -51406,7 +52263,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         /></div>
       )}
 
-      {tab === "hrLibrary" && (currentUser?.role === "Master Admin" || currentUser?.isOwner) && (
+      {tab === "hrLibrary" && _isOwnerOrMaster(currentUser) && (
         <div style={{ padding: "0 24px" }}>{window.EmployeeDataLibrary ? React.createElement(window.EmployeeDataLibrary, { staff: staff, currentUser: currentUser, managers: managers, obList: obList, offList: offList }) : <div style={{ padding: 24 }}>Loading Employee Files...</div>}</div>
       )}
 
@@ -52481,15 +53338,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         </div>
       )}
 
-      {staffModal && <StaffModal s={(() => { const mr = (matRecs || []).find(r => r && r.ec && staffModal.ec && r.ec.trim() === staffModal.ec.trim()); return mr ? { ...staffModal, matStatus: staffModal.matStatus || mr.matStatus, matStart: staffModal.matStart || mr.matStart, matEnd: staffModal.matEnd || mr.matEnd, matReturn: staffModal.matReturn || mr.returnDate, matNotes: staffModal.matNotes || mr.notes } : staffModal; })()} onClose={() => setStaffModal(null)} onSave={saveStaff} onTransfer={(s) => setTransferModal(s)} allStaff={staff} isOwner={!!currentUser?.isOwner} onHardDelete={hardDeleteStaff} />}
+      {staffModal && <StaffModal s={(() => { const mr = (matRecs || []).find(r => r && r.ec && staffModal.ec && r.ec.trim() === staffModal.ec.trim()); return mr ? { ...staffModal, matStatus: staffModal.matStatus || mr.matStatus, matStart: staffModal.matStart || mr.matStart, matEnd: staffModal.matEnd || mr.matEnd, matReturn: staffModal.matReturn || mr.returnDate, matNotes: staffModal.matNotes || mr.notes } : staffModal; })()} onClose={() => setStaffModal(null)} onSave={saveStaff} onTransfer={(s) => setTransferModal(s)} allStaff={staff} isOwner={!!currentUser?.isOwner} onHardDelete={hardDeleteStaff} canCompliance={canCompliance} />}
       {mgrModal && <ManagerModal m={(() => { const mr = (matRecs || []).find(r => r && r.ec && mgrModal.ec && r.ec.trim() === mgrModal.ec.trim()); return mr ? { ...mgrModal, matStatus: mgrModal.matStatus || mr.matStatus, matStart: mgrModal.matStart || mr.matStart, matEnd: mgrModal.matEnd || mr.matEnd, matReturn: mgrModal.matReturn || mr.returnDate, matNotes: mgrModal.matNotes || mr.notes } : mgrModal; })()} pin={mgrPins[mgrModal.ec] || ""} onClose={() => setMgrModal(null)} onSave={saveMgr} onDelete={delMgr}
         smTrialActive={!!(smTrialList || []).find(r => r.ec === mgrModal.ec && r.status === "active")}
         smTrialOpenRec={(smTrialList || []).find(r => r.ec === mgrModal.ec && (r.status === "active" || r.status === "applied")) || null}
         smCooldown={smCooldownFor(mgrModal.ec)}
         smTenure={smTenureFor(mgrModal)}
         smCfg={smCriteriaCfg}
-        onStartSmTrial={startSmTrialFor} />}
-      {officeModal && <OfficeStaffModal s={(() => { const mr = (matRecs || []).find(r => r && r.ec && officeModal.ec && r.ec.trim() === officeModal.ec.trim()); return mr ? { ...officeModal, matStatus: officeModal.matStatus || mr.matStatus, matStart: officeModal.matStart || mr.matStart, matEnd: officeModal.matEnd || mr.matEnd, matReturn: officeModal.matReturn || mr.returnDate, matNotes: officeModal.matNotes || mr.notes } : officeModal; })()} pin={mgrPins[officeModal.ec] || ""} dept={officeModal._dept} onClose={() => setOfficeModal(null)} onSave={saveOfficeStaff} onDelete={delOfficeStaff} />}
+        onStartSmTrial={startSmTrialFor} canCompliance={canCompliance} />}
+      {officeModal && <OfficeStaffModal s={(() => { const mr = (matRecs || []).find(r => r && r.ec && officeModal.ec && r.ec.trim() === officeModal.ec.trim()); return mr ? { ...officeModal, matStatus: officeModal.matStatus || mr.matStatus, matStart: officeModal.matStart || mr.matStart, matEnd: officeModal.matEnd || mr.matEnd, matReturn: officeModal.matReturn || mr.returnDate, matNotes: officeModal.matNotes || mr.notes } : officeModal; })()} pin={mgrPins[officeModal.ec] || ""} dept={officeModal._dept} onClose={() => setOfficeModal(null)} onSave={saveOfficeStaff} onDelete={delOfficeStaff} canCompliance={canCompliance} />}
       {officeOffboardModal && (() => {
         const person = officeOffboardModal.person;
         // Derive `existing` fresh from offList each render so a checklist toggle
@@ -52542,7 +53399,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           onClose={() => setOfficeCellModal(null)}
         />
       )}
-      {transferModal && <TransferModal s={transferModal} onClose={() => setTransferModal(null)} onConfirm={handleTransfer} onCancelTransfer={cancelTransfer} />}
+      {transferModal && <TransferModal s={transferModal} onClose={() => setTransferModal(null)} onConfirm={handleTransfer} onCancelTransfer={cancelTransfer} readOnly={currentTabIsReadOnly} />}
       {matModal && <MatModal rec={matModal} onClose={() => setMatModal(null)} onSave={saveMat} onDelete={delMat} people={matPickerPool} />}
       <AlertModal data={uiDialog} onResolve={resolveUiDialog} />
       {plannerWizard && (
@@ -52554,6 +53411,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           onReverse={null}
           onComplete={async () => { await plannerWizard.commit(leaveRecs); setPlannerWizard(null); }}
           onCancel={() => setPlannerWizard(null)}
+          readOnly={currentTabIsReadOnly}
         />
       )}
     </div>
