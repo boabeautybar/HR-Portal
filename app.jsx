@@ -5316,7 +5316,17 @@ function OfficeOffboardModal({ person, existing, isCc, todayStr, currentUserName
 }
 
 // ─── SCHEDULE EDITOR (Phase 2a — manual editing, save to Supabase) ──────────────
-function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, leaveRecs, obList, techLoans, onTechLoansChange, initialBranch, isOwner, branchList, requestStore }) {
+function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, leaveRecs, obList, techLoans, onTechLoansChange, initialBranch, isOwner, branchList, requestStore, readOnly }) {
+  // View-only. Sub-tab permissions made this reachable: "read the nail-tech
+  // roster, edit only the manager one" is now something you can configure, and
+  // without this the tech roster would look fully editable and then refuse at
+  // the database. The DB guard is still the enforcement — these pre-flights
+  // make the refusal honest and immediate instead of a surprise after work.
+  const _roStop = () => {
+    if (!readOnly) return false;
+    alert("View-only — your access to this schedule lets you look but not change it.");
+    return true;
+  };
   // requestStore (optional, "ho" | "cc") names the persistence target for
   // off-day request edits — default is the nail-tech key. The Head Office
   // scheduler passes "ho" (boa_ho_requests_v1) and the Call Centre & Sales
@@ -5327,6 +5337,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
   // salon tech request with the HO/CC array. Failing loudly is the only safe
   // degradation.
   const _saveReqs = (arr) => {
+    if (readOnly) return Promise.reject(new Error("View-only — you can't change schedule requests here."));
     if (requestStore === "ho") {
       if (!window.BOA_DB.saveHoRequests) throw new Error("This portal build can't save Head Office requests yet — refresh the page to load the latest data.js.");
       return window.BOA_DB.saveHoRequests(arr);
@@ -5750,6 +5761,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
   };
 
   function setCell(ec, day, val) {
+    if (_roStop()) return;
     setGrid(g => {
       const next = { ...g };
       const ecRow = { ...(next[ec] || {}) };
@@ -5766,6 +5778,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
     setCell(ec, day, nxt);
   }
   function clearAll() {
+    if (_roStop()) return;
     if (!confirm("Clear all entries for this period? Cannot be undone after Save.")) return;
     setUndoSnap({ grid: JSON.parse(JSON.stringify(grid || {})), label: "Clear period" });
     setGrid({}); setDirty(true);
@@ -7484,6 +7497,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
   }
 
   async function save() {
+    if (_roStop()) return;
     // Strengthened overwrite confirmation. If a saved schedule already
     // exists, surface its last-saved time and remind the manager that the
     // previous version will be backed up to history (up to 5 versions
@@ -7550,6 +7564,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
   }
 
   async function deleteVersion(v) {
+    if (_roStop()) return;
     if (!v) return;
     if (!window.confirm("Delete saved version \"" + v.name + "\"?\n\nThis cannot be undone.")) return;
     try {
@@ -7563,6 +7578,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
   }
 
   async function saveFinalVersion() {
+    if (_roStop()) return;
     // Visible-without-DevTools diagnostic. Reports exactly which check
     // fails (API missing / empty grid / cancel / save error / persisted-
     // but-not-found) via an alert chain so we don't have to chase a
@@ -11672,6 +11688,25 @@ const CAPABILITIES = {
   // schedule" card checked owner-or-national. The wider door was the real
   // answer, so that is what both now use — nobody loses access, and the two
   // stop disagreeing.
+  /* The two destructive actions that were gated on a shared PIN typed into
+     a prompt. "2002" was in the source, so it was in every browser that ever
+     loaded the page, and it identified nobody — the audit log recorded the
+     account that happened to be signed in, not the person who knew the
+     number. §4.7: the capability is the authorisation; the typed word keeps
+     the fat-finger protection that was the only thing the PIN really did.
+     `tier: "locked"` means the Settings grid cannot hand these out.        */
+  // The Owner is implicit in can(), so they are not listed — there is no
+  // "owner" entry in ROLES and naming one here would match nobody.
+  "act.locations.delete": {
+    tier: "locked", surface: "action",
+    audience: { roles: ["master_admin", "dev"], legacy: ["master_untrimmed"] },
+    desc: "Delete a custom location — removes the branch and everything filed under it."
+  },
+  "act.attendance.totalReset": {
+    tier: "locked", surface: "action",
+    audience: { roles: ["master_admin", "dev"], legacy: ["master_untrimmed"] },
+    desc: "Total Reset — permanently delete a branch+cycle's attendance grid, kiosk audit log, proofs and absence sidecars."
+  },
   "act.schedule.publishCycle": {
     tier: "normal", surface: "action",
     audience: { legacy: ["national_substr"] },
@@ -12754,6 +12789,13 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, dataCounts, offbo
         <button onClick={beginAdd} disabled={busy}
           style={{ padding: "9px 18px", background: "#BE185D", color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 }}>
           + Add user
+        </button>
+        {/* The permission grid says what someone SHOULD see. This is how you
+            check what they DO see, without borrowing their PIN. */}
+        <button onClick={() => { try { const u = new URL(window.location.href); u.searchParams.set("simulate", "1"); window.location.href = u.toString(); } catch (_e) { } }}
+          title="Open the portal as any user — their nav, their tabs, their sub-tabs and the data inside them. Read-only is forced on and the activity log still names you."
+          style={{ padding: "9px 18px", background: "#1f2937", color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 }}>
+          👁 View as…
         </button>
         {busy && <span style={{ alignSelf: "center", fontSize: 11, color: "#9F1A4F", fontStyle: "italic" }}>Saving…</span>}
       </div>
@@ -13920,7 +13962,16 @@ function IncidentQR({ url, size }) {
   return <div ref={ref} />;
 }
 
-function IncidentReportsTab({ reports, setReports, currentUser, mode, people, subAcl, onSubChange }) {
+function IncidentReportsTab({ reports, setReports, currentUser, mode, people, subAcl, onSubChange, readOnly }) {
+  // View-only. Reachable now that one inbox can be granted edit and the other
+  // not — marking a report resolved is the write this has to stop, and it has
+  // to stop it before the optimistic local patch, or the row would show as
+  // actioned until the next reload.
+  const _roStop = () => {
+    if (!readOnly) return false;
+    alert("View-only — you can read these reports but not action them.");
+    return true;
+  };
   // Same component, two inboxes: the default view hides the auto-filed leave-
   // expiry alerts so genuine staff reports aren't buried; mode="leaveExpiry"
   // shows ONLY those. Everything else (status/store filters, review actions,
@@ -13960,6 +14011,7 @@ function IncidentReportsTab({ reports, setReports, currentUser, mode, people, su
   // review, so it is an explicit HR action with an audit note, never inferred
   // from the reporter's free-text "people involved".
   const saveTags = async (r, ecs) => {
+    if (_roStop()) return;
     setBusy(true);
     try {
       await window.BOA_DB.setIncidentTags(r.id, ecs, currentUser.name || currentUser.pin || "");
@@ -13991,11 +14043,12 @@ function IncidentReportsTab({ reports, setReports, currentUser, mode, people, su
   const onOpen = async (r) => {
     const next = openId === r.id ? null : r.id;
     setOpenId(next);
-    if (next && !r.reviewed) {
+    if (next && !r.reviewed && !readOnly) {
       try { await window.BOA_DB.markIncidentReviewed(r.id); patchLocal(r.id, { reviewed: true }); } catch (_e) { }
     }
   };
   const changeStatus = async (r, status) => {
+    if (_roStop()) return;
     // Closing a report requires a written resolution — open the note box first.
     if (status === "resolved") {
       setResolvingId(r.id);
@@ -14008,6 +14061,7 @@ function IncidentReportsTab({ reports, setReports, currentUser, mode, people, su
     setBusy(false);
   };
   const doResolve = async (r) => {
+    if (_roStop()) return;
     const text = (resolveText || "").trim();
     if (!text) return;
     setBusy(true);
@@ -24178,7 +24232,45 @@ function AlertModal({ data, onResolve }) {
   );
 }
 
-function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
+function App({ currentUser: _realUser, onSignOut, appUsers, onUsersUpdate }) {
+  /* ═══ VIEW AS ════════════════════════════════════════════════════════════
+     Every permission bug in this rework was found the same way: sign in as
+     the person, look, sign out. That is slow, it needs their PIN, and it
+     only ever gets done after somebody complains.
+
+     Enforcement is centralised now, so impersonation is nearly free: swap
+     the record `deriveAcl` reads and the whole app answers as that person.
+     `currentUser` is deliberately SHADOWED below — every consumer keeps
+     working unchanged, which is the property that makes this trustworthy.
+     `_realUser` survives for the two things that must never be simulated:
+     who the audit log names, and who may leave simulation.
+
+     The simulated record is forced read-only on every tab and every
+     sub-tab. The point is to see what they see, never to act as them, and
+     because the DB write guard reads the same field the block is the real
+     one rather than a promise not to click anything.                      */
+  const _simEligible = !!(_realUser && (_realUser.isOwner || can(_realUser, "sys.accessAdmin")));
+  const [simulateAs, setSimulateAs] = useState(() => {
+    try {
+      const q = new URLSearchParams(window.location.search);
+      const v = q.get("simulate");
+      return v && v !== "1" ? v : null;
+    } catch (_e) { return null; }
+  });
+  const simOffered = _simEligible && (() => {
+    try { return new URLSearchParams(window.location.search).has("simulate"); } catch (_e) { return false; }
+  })();
+  const simulatedUser = useMemo(() => {
+    if (!_simEligible || !simulateAs) return null;
+    const u = (appUsers || {})[simulateAs];
+    if (!u) return null;
+    const ro = Object.keys(TAB_ACCESS).concat(
+      Object.keys(TAB_SUBS).reduce((a, pt) => a.concat(subsOf(pt).map(s => subKey(pt, s.k))), [])
+    );
+    return { ...u, pin: simulateAs, readOnlyTabs: ro, _simulated: true };
+  }, [_simEligible, simulateAs, appUsers]);
+  const currentUser = simulatedUser || _realUser;
+
   // ── Activity logger — records who did what to the boa_activity_log_v1 row.
   // Failures are swallowed so a logging hiccup never blocks the actual edit.
   // Signature: logActivity(action, target, details, category?). If category is
@@ -24205,7 +24297,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   };
   const logActivity = async (action, target, details, category) => {
     if (!window.BOA_DB || !window.BOA_DB.appendActivity) return;
-    const u = currentUser || window.BOA_CURRENT_USER || {};
+    const u = _realUser || window.BOA_CURRENT_USER || {};
     try {
       await window.BOA_DB.appendActivity({
         who: u.name || "Unknown",
@@ -25387,17 +25479,23 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     }
   };
 
-  // PIN-gated delete for custom locations. Removes the branch from the
+  // Delete for custom locations. Removes the branch from the
   // boa_custom_salons app_state row and splices it out of the in-memory
-  // SALONS array so the Locations grid re-renders without it. The PIN
-  // ("2002") is checked client-side; this is a soft guard against
-  // misclicks, not a security boundary.
-  const DELETE_LOCATION_PIN = "2002";
+  // SALONS array so the Locations grid re-renders without it.
+  //
+  // This used to ask for a shared PIN ("2002") that was written in the
+  // source, so everyone who had ever loaded the page had it and it named
+  // nobody. The capability is now the authorisation; typing the branch name
+  // is what is left of the PIN's actual job, which was stopping a misclick.
   const submitDeleteLocation = async () => {
     const m = deleteLocationModal;
     if (!m || !m.salon) return;
-    if ((m.pin || "").trim() !== DELETE_LOCATION_PIN) {
-      setDeleteLocationModal({ ...m, error: "Incorrect PIN." });
+    if (!can(currentUser, "act.locations.delete")) {
+      setDeleteLocationModal({ ...m, error: "You don't have permission to delete a location." });
+      return;
+    }
+    if ((m.pin || "").trim() !== String(m.salon.name || "").trim()) {
+      setDeleteLocationModal({ ...m, error: "Type the branch name exactly to confirm." });
       return;
     }
     const target = m.salon.name;
@@ -31464,7 +31562,34 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         </div>
       )}
 
-      {currentTabIsReadOnly && !currentUser?.demo && (
+      {/* View As. Deliberately the first thing on the page and impossible to
+          miss: the failure mode of an impersonation tool is forgetting you
+          are in one and reporting what you saw as your own account. */}
+      {simOffered && (
+        <div style={{ background: simulatedUser ? "#7c2d12" : "#1f2937", color: "#fff", padding: "8px 24px", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", fontSize: 12.5, fontWeight: 700 }}>
+          <span style={{ letterSpacing: "0.04em" }}>{simulatedUser ? "👁 VIEWING AS" : "👁 VIEW AS"}</span>
+          <select value={simulateAs || ""} onChange={e => { setSimulateAs(e.target.value || null); setTab("dashboard"); }}
+            style={{ fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, padding: "4px 8px", borderRadius: 7, border: "none", maxWidth: 320 }}>
+            <option value="">— nobody (your own account) —</option>
+            {Object.keys(appUsers || {}).sort((a, b) => String((appUsers[a] || {}).name || "").localeCompare(String((appUsers[b] || {}).name || ""))).map(pin => (
+              <option key={pin} value={pin}>{(appUsers[pin] || {}).name || pin} · {(appUsers[pin] || {}).role || "—"}</option>
+            ))}
+          </select>
+          {simulatedUser && (
+            <>
+              <span style={{ fontWeight: 500, opacity: 0.92 }}>
+                Everything below is exactly what <strong>{simulatedUser.name}</strong> sees — the nav, the tabs, the sub-tabs and the data inside them.
+                Read-only is forced on, so nothing here can be saved and the activity log still names you.
+              </span>
+              <button onClick={() => { setSimulateAs(null); setTab("dashboard"); }}
+                style={{ marginLeft: "auto", background: "#fff", color: "#7c2d12", border: "none", borderRadius: 8, padding: "5px 14px", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 800 }}>
+                Stop viewing as
+              </button>
+            </>
+          )}
+        </div>
+      )}
+      {currentTabIsReadOnly && !currentUser?.demo && !simulatedUser && (
         <div style={{ background: "#dbeafe", color: "#1e3a8a", borderBottom: "2px solid #60a5fa", padding: "8px 24px", textAlign: "center", fontSize: 12, fontWeight: 700, letterSpacing: "0.02em" }}>
           🔒 VIEW-ONLY — Your role ({currentUser?.role}) can browse this tab but can't save changes here. Edit access is enabled on the tabs your role allows.
         </div>
@@ -31845,7 +31970,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             );
           })()}
           <div style={{ display: isMobile ? "none" : "flex", justifyContent: "flex-end", alignItems: "center", gap: 10, paddingTop: 8, fontSize: 11, color: "#831843" }}>
-            <span>Signed in as <strong>{currentUser.name}</strong> · {currentUser.role}</span>
+            <span>Signed in as <strong>{_realUser.name}</strong> · {_realUser.role}{simulatedUser ? <em style={{ fontStyle: "normal", fontWeight: 700, color: "#7c2d12" }}>{" · viewing as " + simulatedUser.name}</em> : ""}</span>
             <button onClick={onSignOut}
               style={{ background: "#fff", border: "1px solid #FBCFE8", color: "#831843", borderRadius: 7, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "inherit" }}>
               Sign out
@@ -34381,6 +34506,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             }}
             initialBranch={_myStores[0] || SALONS[0].name}
             isOwner={!!(currentUser && currentUser.isOwner)}
+            readOnly={currentTabIsReadOnly}
           />
         )}
         {tab === "scheduling" && schedSubTab === "headoffice" && hoOnlyStaff.length > 0 && (
@@ -35429,12 +35555,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       Any staff or managers currently assigned to this branch will still exist but their branch field will need to be reassigned.
                     </div>
 
-                    <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>PIN to confirm</label>
-                    <input type="password" autoFocus value={deleteLocationModal.pin || ""}
+                    <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>
+                      Type <strong style={{ color: "#991b1b" }}>{deleteLocationModal.salon && deleteLocationModal.salon.name}</strong> to confirm
+                    </label>
+                    <input type="text" autoFocus value={deleteLocationModal.pin || ""}
                       onChange={e => setDeleteLocationModal({ ...deleteLocationModal, pin: e.target.value, error: null })}
                       onKeyDown={e => { if (e.key === "Enter" && !deleteLocationModal.saving) submitDeleteLocation(); }}
-                      placeholder="••••"
-                      style={{ width: "100%", padding: "9px 11px", border: `1px solid ${deleteLocationModal.error ? "#fca5a5" : "#e5e7eb"}`, borderRadius: 8, fontSize: 16, letterSpacing: "0.3em", marginBottom: 6, fontFamily: "monospace" }}
+                      placeholder={(deleteLocationModal.salon && deleteLocationModal.salon.name) || "Branch name"}
+                      style={{ width: "100%", padding: "9px 11px", border: `1px solid ${deleteLocationModal.error ? "#fca5a5" : "#e5e7eb"}`, borderRadius: 8, fontSize: 14, marginBottom: 6, fontFamily: "inherit" }}
                     />
                     {deleteLocationModal.error && (
                       <div style={{ fontSize: 11, color: "#991b1b", marginBottom: 6 }}>{deleteLocationModal.error}</div>
@@ -36973,12 +37101,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         {/* ── INCIDENT REPORTS TAB ── */}
         {tab === "incidents" && acl.visible.has("incidents") && (
           <IncidentReportsTab reports={incidentReports} setReports={setIncidentReports} currentUser={currentUser} people={taggablePeople}
-            subAcl={incidentsSubAcl} onSubChange={reportIncidentsSub} />
+            subAcl={incidentsSubAcl} onSubChange={reportIncidentsSub} readOnly={currentTabIsReadOnly} />
         )}
 
         {/* ── LEAVE EXPIRY REPORTS TAB (same component, expiry-only slice) ── */}
         {tab === "leaveExpiry" && acl.visible.has("leaveExpiry") && (
-          <IncidentReportsTab reports={incidentReports} setReports={setIncidentReports} currentUser={currentUser} mode="leaveExpiry" />
+          <IncidentReportsTab reports={incidentReports} setReports={setIncidentReports} currentUser={currentUser} mode="leaveExpiry" readOnly={currentTabIsReadOnly} />
         )}
 
         {/* ── LEAVE REQUESTS TAB ── */}
@@ -42754,10 +42882,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             + "  • Schedule version history and approved versions\n\n"
             + "Re-import Check-ins or Auto-fill to repopulate the grid.\n\n"
             + "Continue?";
+          if (!can(currentUser, "act.attendance.totalReset")) {
+            alert("You don't have permission to run a Total Reset on the attendance grid.");
+            return;
+          }
           if (!confirm(step1)) return;
-          const step2 = window.prompt("Enter the Total Reset PIN to confirm.");
+          // Was a shared PIN in the source. The capability above is the
+          // authorisation now; this is the fat-finger guard it was standing in
+          // for, and typing RESET cannot be shoulder-surfed into a password.
+          const step2 = window.prompt("This cannot be undone.\n\nType RESET to confirm.");
           if (step2 === null) return;
-          if ((step2 || "").trim() !== "2002") { alert("Cancelled — incorrect PIN."); return; }
+          if ((step2 || "").trim().toUpperCase() !== "RESET") { alert("Cancelled."); return; }
           pushUndo("Total Reset");
           const nextGrid = {};
           const nextMeta = { freshaWorked: {}, reviewedWarnings: {}, adminOverrides: {}, freshaCoverage: null, mirrorSuppressed: true };
