@@ -11893,6 +11893,24 @@ const TAB_SUBS = {
       { k: "CC", l: "Call Centre & Sales", icon: "📞" }
     ]
   },
+  // These two live in child components (IncidentReportsTab, HRReportsTab)
+  // rather than in App state, so they report their active child upward — see
+  // reportSub — instead of App reading it directly. The permission model is
+  // identical either way; only the wiring differs.
+  incidents: {
+    state: "domainTab (IncidentReportsTab)",
+    subs: [
+      { k: "hr", l: "People & Conduct inbox", icon: "🧑" },
+      { k: "hs", l: "Safety, Health & Premises inbox", icon: "🦺" }
+    ]
+  },
+  hrReports: {
+    state: "sub (HRReportsTab)",
+    subs: [
+      { k: "outlook", l: "HR Outlook", icon: "🧭" },
+      { k: "hs", l: "H&S Reports", icon: "🦺" }
+    ]
+  },
   recruitment: {
     state: "recruitSubTab",
     subs: [
@@ -12975,18 +12993,27 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, dataCounts, offbo
                             <React.Fragment key={t}>
                             <tr style={{ borderTop: "1px solid #FCE7F3", opacity: inert ? 0.65 : 1 }}>
                               <td style={{ padding: "7px 10px 7px 26px", color: "#831843" }}>
-                                <span style={{ marginRight: 6 }}>{icon}</span>{l}
-                                {!!subs.length && (
-                                  <button onClick={() => setExpanded(e => ({ ...e, [t]: !e[t] }))}
-                                    title={open ? "Hide sub-tabs" : "Set permissions per sub-tab"}
-                                    style={{ marginLeft: 8, background: open ? "#FCE7F3" : "transparent", border: "1px solid #FBCFE8", color: "#9F1A4F", borderRadius: 99, padding: "1px 9px", cursor: "pointer", fontSize: 9.5, fontWeight: 800, fontFamily: "inherit", letterSpacing: "0.03em" }}>
-                                    {open ? "\u25be" : "\u25b8"} {subs.length} SUB-TABS
-                                  </button>
-                                )}
-                                {inert && <span title={why} style={{ marginLeft: 6, fontSize: 9, fontWeight: 800, color: "#92400e", background: "#FEF3C7", border: "1px solid #FDE68A", borderRadius: 99, padding: "1px 7px", cursor: "help" }}>OWNER ONLY</span>}
-                                {!inert && meta.sensitive && <span title={meta.sensitive} style={{ marginLeft: 6, fontSize: 9, fontWeight: 800, color: "#9a3412", background: "#ffedd5", border: "1px solid #fed7aa", borderRadius: 99, padding: "1px 7px", cursor: "help" }}>SENSITIVE</span>}
-                                {!inert && p.byDefault === false && p.visible && <span title="Not in this tab's default audience — visible because you granted it here." style={{ marginLeft: 6, fontSize: 9, fontWeight: 800, color: "#166534", background: "#dcfce7", border: "1px solid #bbf7d0", borderRadius: 99, padding: "1px 7px", cursor: "help" }}>GRANTED</span>}
-                                {!inert && p.byDefault === true && where && <span title={"Already has it by default. " + where} style={{ marginLeft: 6, fontSize: 9, fontWeight: 800, color: "#a16207", background: "#fef9c3", border: "1px solid #fde68a", borderRadius: 99, padding: "1px 7px", cursor: "help" }}>VIA ROLE / LIST</span>}
+                                {/* One flex row so the sub-tabs control lands
+                                    at the right edge of this cell — a straight
+                                    column immediately left of the checkboxes,
+                                    instead of trailing whatever length the tab
+                                    name happens to be. */}
+                                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                                  <div style={{ flex: 1, minWidth: 0 }}>
+                                  <span style={{ marginRight: 6 }}>{icon}</span>{l}
+                                  {inert && <span title={why} style={{ marginLeft: 6, fontSize: 9, fontWeight: 800, color: "#92400e", background: "#FEF3C7", border: "1px solid #FDE68A", borderRadius: 99, padding: "1px 7px", cursor: "help" }}>OWNER ONLY</span>}
+                                  {!inert && meta.sensitive && <span title={meta.sensitive} style={{ marginLeft: 6, fontSize: 9, fontWeight: 800, color: "#9a3412", background: "#ffedd5", border: "1px solid #fed7aa", borderRadius: 99, padding: "1px 7px", cursor: "help" }}>SENSITIVE</span>}
+                                  {!inert && p.byDefault === false && p.visible && <span title="Not in this tab's default audience — visible because you granted it here." style={{ marginLeft: 6, fontSize: 9, fontWeight: 800, color: "#166534", background: "#dcfce7", border: "1px solid #bbf7d0", borderRadius: 99, padding: "1px 7px", cursor: "help" }}>GRANTED</span>}
+                                  {!inert && p.byDefault === true && where && <span title={"Already has it by default. " + where} style={{ marginLeft: 6, fontSize: 9, fontWeight: 800, color: "#a16207", background: "#fef9c3", border: "1px solid #fde68a", borderRadius: 99, padding: "1px 7px", cursor: "help" }}>VIA ROLE / LIST</span>}
+                                  </div>
+                                  {!!subs.length && (
+                                    <button onClick={() => setExpanded(e => ({ ...e, [t]: !e[t] }))}
+                                      title={open ? "Hide sub-tabs" : "Set permissions per sub-tab"}
+                                      style={{ flexShrink: 0, background: open ? "#FCE7F3" : "transparent", border: "1px solid #FBCFE8", color: "#9F1A4F", borderRadius: 99, padding: "2px 10px", cursor: "pointer", fontSize: 9.5, fontWeight: 800, fontFamily: "inherit", letterSpacing: "0.03em", whiteSpace: "nowrap" }}>
+                                      {open ? "\u25be" : "\u25b8"} {subs.length} SUB-TABS
+                                    </button>
+                                  )}
+                                </div>
                                 {!inert && where && <div style={{ fontSize: 10.5, color: "#a16207", marginTop: 2, fontWeight: 500 }}>↳ {where}</div>}
                               </td>
                               <td style={{ padding: "7px 10px", textAlign: "center" }}>
@@ -13893,7 +13920,7 @@ function IncidentQR({ url, size }) {
   return <div ref={ref} />;
 }
 
-function IncidentReportsTab({ reports, setReports, currentUser, mode, people }) {
+function IncidentReportsTab({ reports, setReports, currentUser, mode, people, subAcl, onSubChange }) {
   // Same component, two inboxes: the default view hides the auto-filed leave-
   // expiry alerts so genuine staff reports aren't buried; mode="leaveExpiry"
   // shows ONLY those. Everything else (status/store filters, review actions,
@@ -13901,6 +13928,17 @@ function IncidentReportsTab({ reports, setReports, currentUser, mode, people }) 
   const leaveMode = mode === "leaveExpiry";
   const [statusFilter, setStatusFilter] = useState("open");   // open | all | new | reviewing | resolved
   const [domainTab, setDomainTab] = useState("hr");           // hr | hs — the two inboxes
+  // Sub-tab permissions. The visibility answer is folded into a primitive so
+  // the effects below key off a stable value rather than a prop object that is
+  // rebuilt on every parent render.
+  const _domVis = INC_DOMAINS.map(d => (!subAcl || subAcl.visible(d.k)) ? "1" : "0").join("");
+  const _domsShown = INC_DOMAINS.filter((d, i) => _domVis[i] === "1");
+  useEffect(() => { if (onSubChange) onSubChange(domainTab); }, [domainTab, onSubChange]);
+  useEffect(() => {
+    if (!subAcl) return;
+    if (subAcl.visible(domainTab)) return;
+    if (_domsShown.length) { setDomainTab(_domsShown[0].k); setOpenId(null); }
+  }, [_domVis, domainTab]);
   const [storeFilter, setStoreFilter] = useState("");
   const [openId, setOpenId] = useState(null);
   const [noteDraft, setNoteDraft] = useState({});
@@ -14056,7 +14094,7 @@ function IncidentReportsTab({ reports, setReports, currentUser, mode, people }) 
           leave-expiry mode, which is a single machine-filed stream. */}
       {!leaveMode && (
         <div style={{ display: "flex", gap: 0, padding: 6, background: "#FCE7F3", borderRadius: 14, border: "1px solid #FBCFE8", maxWidth: 620, marginBottom: 14 }}>
-          {INC_DOMAINS.map(d => {
+          {_domsShown.map(d => {
             const active = domainTab === d.k;
             const n = domainScoped.filter(r => incDomainOf(r) === d.k).length;
             const unread = domainScoped.filter(r => incDomainOf(r) === d.k && !r.reviewed).length;
@@ -21633,6 +21671,16 @@ const HR_HS_CLASS_KEY = "boa_hs_class_v1";
 function HRReportsTab(props) {
   const isMobile = useIsMobile();
   const [sub, setSub] = React.useState("outlook");
+  // Sub-tab permissions, same shape as the incidents tab: a primitive key so
+  // the effects don't re-fire on a prop object rebuilt every parent render.
+  const _hrSubs = ["outlook", "hs"];
+  const _hrVis = _hrSubs.map(k => (!props.subAcl || props.subAcl.visible(k)) ? "1" : "0").join("");
+  React.useEffect(() => { if (props.onSubChange) props.onSubChange(sub); }, [sub, props.onSubChange]);
+  React.useEffect(() => {
+    if (!props.subAcl || props.subAcl.visible(sub)) return;
+    const first = _hrSubs.find(k => props.subAcl.visible(k));
+    if (first) setSub(first);
+  }, [_hrVis, sub]);
   const [days, setDays] = React.useState(90);
   const [hz, setHz] = React.useState(90);
   const [ev, setEv] = React.useState("missed");
@@ -22440,7 +22488,8 @@ function HRReportsTab(props) {
       </div>
 
       <div style={{ display: "flex", gap: 0, padding: 6, background: "#FCE7F3", borderRadius: 14, border: "1px solid #FBCFE8", maxWidth: 680, marginBottom: 22 }}>
-        {[{ k: "outlook", l: "🧭 HR Outlook" }, { k: "hs", l: "🦺 H&S Reports" }].map(t => (
+        {[{ k: "outlook", l: "🧭 HR Outlook" }, { k: "hs", l: "🦺 H&S Reports" }]
+          .filter(t => !props.subAcl || props.subAcl.visible(t.k)).map(t => (
           <button key={t.k} onClick={() => setSub(t.k)} aria-pressed={sub === t.k}
             style={{ flex: 1, padding: "14px 22px", borderRadius: 10, border: "none", background: sub === t.k ? "#BE185D" : "transparent", color: sub === t.k ? "#FFFFFF" : "#831843", cursor: "pointer", fontFamily: "inherit", fontSize: 15, fontWeight: 700, transition: "all .18s", boxShadow: sub === t.k ? "0 4px 12px rgba(190,24,93,0.32)" : "none", letterSpacing: "0.01em" }}>
             {t.l}
@@ -25453,13 +25502,23 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [trialSubTab, setTrialSubTab] = useState("nt");             // "nt" | "am"
   const [officeTrialSubTab, setOfficeTrialSubTab] = useState("HO");  // "HO" | "CC" — HQ Trials dept toggle
   const [offSubTab, setOffSubTab] = useState("list");               // "list" | "term" | "disc"
+  // Two parents keep their sub-tab state inside their own component. They
+  // report it up here so read-only can still be answered per child — without
+  // this, a view-only mark on one incident inbox would save but never arm the
+  // write guard, which is the exact class of bug this rework exists to end.
+  const [subReport, setSubReport] = useState({});
+  const reportSub = React.useCallback((parentTab, k) => {
+    setSubReport(s => (s[parentTab] === k ? s : { ...s, [parentTab]: k }));
+  }, []);
+
   // Which child of each parent tab is on screen. Every entry maps a TAB_SUBS
   // key to the state that tab actually switches on — the join between the
   // permission registry and the running UI. A parent missing from here simply
   // has no sub-permissions.
   const ACTIVE_SUB = {
     scheduling: schedSubTab, leave: leaveSubTab, offboard: offSubTab,
-    trialPeriod: trialSubTab, officeTrials: officeTrialSubTab, recruitment: recruitSubTab
+    trialPeriod: trialSubTab, officeTrials: officeTrialSubTab, recruitment: recruitSubTab,
+    incidents: subReport.incidents, hrReports: subReport.hrReports
   };
   const SUB_SETTER = {
     scheduling: setSchedSubTab, leave: setLeaveSubTab, offboard: setOffSubTab,
@@ -25480,7 +25539,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     if (list.includes(tab)) return true;
     const s = ACTIVE_SUB[tab];
     return !!(s && list.includes(subKey(tab, s)));
-  }, [currentUser, tab, schedSubTab, leaveSubTab, offSubTab, trialSubTab, officeTrialSubTab, recruitSubTab]);
+  }, [currentUser, tab, schedSubTab, leaveSubTab, offSubTab, trialSubTab, officeTrialSubTab, recruitSubTab, subReport]);
   useEffect(() => {
     window.__BOA_RO_ACTIVE = !!currentTabIsReadOnly;
     return () => { window.__BOA_RO_ACTIVE = false; };
@@ -26391,6 +26450,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       if (first) set(first.k);
     });
   }, [currentUser, acl, schedSubTab, leaveSubTab, offSubTab, trialSubTab, officeTrialSubTab, recruitSubTab]);
+  // Handed to the two tabs that own their sub-tab state. Memoised on `acl`
+  // because the child effects take it as a dependency — a fresh object every
+  // render would re-fire them forever.
+  const incidentsSubAcl = useMemo(() => ({
+    visible: k => acl.subVisible("incidents", k), readOnly: k => acl.subReadOnly("incidents", k)
+  }), [acl]);
+  const hrReportsSubAcl = useMemo(() => ({
+    visible: k => acl.subVisible("hrReports", k), readOnly: k => acl.subReadOnly("hrReports", k)
+  }), [acl]);
+  const reportIncidentsSub = React.useCallback(k => reportSub("incidents", k), [reportSub]);
+  const reportHrReportsSub = React.useCallback(k => reportSub("hrReports", k), [reportSub]);
   // Is the balance anchor behind Sage? (state declared up with the other
   // dashboard alerts; the effect must sit below leaveBalancesCfg's declaration.)
   useEffect(() => {
@@ -36856,7 +36926,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
         {/* ── INCIDENT REPORTS TAB ── */}
         {tab === "incidents" && canSeeIncidents(currentUser) && (
-          <IncidentReportsTab reports={incidentReports} setReports={setIncidentReports} currentUser={currentUser} people={taggablePeople} />
+          <IncidentReportsTab reports={incidentReports} setReports={setIncidentReports} currentUser={currentUser} people={taggablePeople}
+            subAcl={incidentsSubAcl} onSubChange={reportIncidentsSub} />
         )}
 
         {/* ── LEAVE EXPIRY REPORTS TAB (same component, expiry-only slice) ── */}
@@ -48408,6 +48479,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       {/* ── HR REPORTS (HR Outlook + H&S) ── */}
       {tab === "hrReports" && (canSeeIncidents(currentUser) ? (
         <HRReportsTab
+          subAcl={hrReportsSubAcl} onSubChange={reportHrReportsSub}
           salonData={salonData} recruitFuture={recruitFuture}
           matRecs={matRecs} incidentReports={incidentReports}
           complianceActions={complianceActions} unpaidLegalRecs={unpaidLegalRecs}
