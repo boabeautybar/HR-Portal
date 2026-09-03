@@ -1,6 +1,6 @@
 # Portal Permissions — Audit & Rework Plan
 
-**Status: Phases 1–4 shipped to `main`. Phase 5 outstanding.** · drafted 2026-09-01, last revised 2026-09-03
+**Status: complete — all five phases shipped to `main`.** · drafted 2026-09-01, last revised 2026-09-03
 Scope: the HR portal's 4-digit-PIN logins (`app.jsx`). Kiosk/My BOA PINs are a different population and are deliberately out of scope.
 
 > Line numbers are as of today's working tree and will drift — every claim is keyed to a **symbol name** first; `grep -n "<symbol>" app.jsx` will always find it.
@@ -215,8 +215,8 @@ Invert the guard: wrap **every** `BOA_DB` function except an explicit read allow
 
 Each phase ships and verifies alone. Order: stop the bleeding → invisible plumbing → the headline promise → payroll-adjacent writes → lockout-risk last.
 
-**Status:** Phase 1 ✅ · Phase 2 ✅ · Phase 3 ✅ · Phase 4 ✅ + affordance pass ✅ · Phase 5 **not started**.
-Phases 1–4 merged as PR #27; the three follow-ups in §5.1 went straight to `main`.
+**Status:** Phase 1 ✅ · Phase 2 ✅ · Phase 3 ✅ · Phase 4 ✅ + affordance pass ✅ · Phase 5 ✅.
+Phases 1–4 merged as PR #27; §5.1 and Phase 5 went straight to `main`.
 
 **`CALLED_IN_SICK_PINS` is gone.** The hardcode that opened this whole review — the one whose own comment read *"Remove once the permission model is reworked to make the Settings toggle authoritative"* — was deleted once `__BOA_ACL_AUDIT("3030")` confirmed the V5 migration had moved her access into `grantTabs` on her own record. `SCHED_ALERT_PINS` went the same way in Phase 2. No permission is written into the code body any more; the only named-PIN list left is the schedule-alert worklist, which is a notification target rather than an access rule.
 Phases 1 and 4 were taken out of order deliberately: 4's read-only flip is what makes the *existing* grid ticks mean anything, and it needed no model change, so it could ship while 2–3 were still on paper.
@@ -270,8 +270,10 @@ Wrap-all denylist DB guard (**102 methods guarded, up from 30**; 0 reads mis-gua
 
 *Payroll-adjacent: attendance Total Reset, sign-off — the before/after payroll export diff is still outstanding (the attendance classifier is shared with payroll).*
 
-### Phase 5 — Seed & legacy retirement *(size S, lockout-risk, last)*
-AppGate seeds only when the store key is truly missing (stop per-boot re-insertion — defect K); drop the `STAFF_USERS` login fallback once all live records are verified in Supabase; keep **one break-glass owner recovery path**; delete deprecated wrappers, the `showTabs` write path, and the migration PIN literals.
+### Phase 5 — Seed & legacy retirement *(size S, lockout-risk, last)* — ✅ SHIPPED
+Deleting a login in Settings did not delete it: AppGate re-inserted any missing `STAFF_USERS` pin on every boot, and `store[pin] || STAFF_USERS[pin]` signed them in meanwhile. Session restore had the same hole and was harder to spot, because a tab that already held a session simply kept working. Gone: the per-boot re-insertion loop (seeding is once, on a genuine first run), both seed fallbacks, and the V3 / V3c / V5 migrations — one-shot repairs keyed on the PIN literals `"3030"` / `"4040"`, each confirmed in live data first. V3 and V3c were also the last writers of `showTabs`; the key is still **read**, so nobody loses a tab, but `grantTabs` is how a tab is handed out now.
+
+**Break-glass:** if the live roster holds no owner *at all*, a seed owner may still sign in. The owner can be lost two ways — deleted or demoted — and a demoted record still exists, so a "does the live record exist" test would hand back the demoted one and leave nobody able to promote anybody. The decision moved to module scope as `resolveLogin`, because it is the one place where being wrong either lets a deleted account keep working or locks the owner out. `login.js`, 31 assertions, covers both directions.
 
 ---
 
@@ -366,16 +368,31 @@ Three things landed after PR #27 that the plan above does not describe.
 
 ---
 
-### 5.2 What is left
+### 5.2 The rest of the plan — closed
 
-| Item | State |
+| Item | Outcome |
 |---|---|
-| **Phase 5 — defect K** | Not started. `STAFF_USERS` re-inserted every boot; login falls back to the seed map, so a deleted PIN still signs in; `showTabs` write path; migration PIN literals `"3030"`/`"4040"`. Needs one break-glass owner recovery kept. **Lockout risk — do it alone, with the roster confirmed.** |
-| **Magic `"2002"` PINs** | Still live: `DELETE_LOCATION_PIN` and attendance Total Reset. §4.7 wants locked capabilities + a type-the-word confirm instead. |
-| **`act.*` keys** | 10 of 13. `act.cashups.delete` / `.reopen` are functionally closed (both gated on `act.cashups.review` since Phase 1) but have no key of their own; the other three are the locked ones tied to `"2002"`. |
-| **"View as" simulator (`?simulate=1`)** | Never built — zero occurrences. §6 calls it the thing that replaces borrow-a-PIN testing, and every bug in §5.1 was found by signing in as somebody. |
+| **Phase 5 — defect K** | ✅ Above. |
+| **Magic `"2002"` PINs** | ✅ Both sites now resolve locked capabilities — `act.locations.delete`, `act.attendance.totalReset` — with the typed confirmation kept, because stopping a misclick was the only thing the PIN really did. A shared PIN in the source was in every browser that ever loaded the page and identified nobody. **Narrowing to note:** both actions are now Owner / Master Admin / Developer only. |
+| **`act.*` keys** | ✅ 12 of 13. `act.cashups.delete` / `.reopen` remain folded into `act.cashups.review` (gated since Phase 1) rather than getting keys of their own — the hole they described is closed, the key split earned nothing. |
+| **"View as" simulator** | ✅ `?simulate=1`, or the button in Settings. `currentUser` is **shadowed** in App, so every consumer answers as the impersonated person unchanged; `_realUser` survives for the audit log and for leaving simulation. Read-only is forced on every tab and sub-tab, so the block is the real write guard. |
+| **View-only affordances** | ✅ `Schedule` and `IncidentReportsTab` now take `readOnly` and pre-flight their write entry points, so a view-only sub-tab stops drawing live controls. |
 
-**Open decisions.** (1) `"International Ops"` satisfies `national_ops_titled` because the string contains `"national ops"` — preserved 1:1, one line to fix once the roster is confirmed. (2) `ignoreCategoryHide` on six tabs: a category hide does not strip them. (3) `PINK` and `isSMRole` are undefined identifiers — pre-existing, unrelated to permissions, latent until those branches render.
+**Open decisions — these need a call, not code.** (1) `"International Ops"` satisfies `national_ops_titled` because the string contains `"national ops"` — preserved 1:1, one line to fix once the roster is confirmed. (2) `ignoreCategoryHide` on six tabs: a category hide does not strip them. (3) `PINK` and `isSMRole` are undefined identifiers — pre-existing, unrelated to permissions, latent until those branches render.
+
+### 5.3 The harnesses
+
+No test suite exists, so each round left behind the check that would have caught it. All run against the working tree; `goldsub` also takes a git ref.
+
+| Harness | What it pins |
+|---|---|
+| `check.js` | app.jsx parses |
+| `undef.js` | scope analysis — every identifier resolves (2 findings, both pre-existing on `main`) |
+| `bodygates.js` | every registered tab body reads the ACL, not a role |
+| `onceanswered.js` | below the resolver, no role predicate is consulted at all |
+| `subtabs.js` | 195 assertions — registry, resolver, round-trip, the locked capabilities, and a block proving the consumer rename widened nobody |
+| `login.js` | 31 assertions — deleted logins refused, break-glass open only when no owner exists |
+| `goldsub.js` | 317,952 comparisons of old vs new, both sides sliced from source |
 
 ---
 
