@@ -11181,6 +11181,30 @@ function userToPerms(u, gctx) {
       tier: e.tier
     };
   });
+  // Child rows, keyed "parent:child". They carry their OWN intent — not the
+  // parent's answer multiplied in — so that hiding a parent and showing it
+  // again restores the child configuration instead of silently un-hiding
+  // everything. The editor multiplies for display; the packer re-reads intent.
+  const hideSet = new Set(u.hideTabs || []);
+  Object.keys(TAB_SUBS).forEach(t => {
+    const parent = perms[t];
+    if (!parent) return;   // parent has no grid row (e.g. payrollInbox) — skip
+    subsOf(t).forEach(s => {
+      const ck = subKey(t, s.k);
+      const vis = u.ccOnly ? s.k === "callcentre" : !hideSet.has(ck);
+      perms[ck] = {
+        visible: vis,
+        // A bare parent key in readOnlyTabs is the pre-sub-permission way of
+        // saying "the whole tab is view-only", so it still makes every child
+        // view-only. Only the packer decides which shape to write back.
+        editable: vis && !roTabs.has(t) && !roTabs.has(ck),
+        byDefault: parent.byDefault,
+        grantable: parent.grantable,
+        tier: parent.tier,
+        sub: true, parent: t, subKey: s.k
+      };
+    });
+  });
   return perms;
 }
 // Inverse: pack the matrix back into hideTabs / readOnlyTabs. We don't
@@ -11207,7 +11231,19 @@ function permsToUser(base, perms, stores) {
   } else {
     SETTINGS_TABS.forEach(({ t }) => {
       const p = perms[t] || { visible: true, editable: true };
-      if (!p.visible) { hideTabs.push(t); return; }
+      const subs = subsOf(t);
+      if (!p.visible) {
+        hideTabs.push(t);
+        // The parent hide subsumes its children, so we write no child keys —
+        // but we carry the STORED ones forward untouched. Otherwise hiding a
+        // tab and showing it again would come back with every sub-tab visible
+        // and editable, quietly discarding the configuration underneath.
+        if (subs.length) {
+          (base.hideTabs || []).forEach(k => { if (SUB_PARENT_OF[k] === t && hideTabs.indexOf(k) < 0) hideTabs.push(k); });
+          (base.readOnlyTabs || []).forEach(k => { if (SUB_PARENT_OF[k] === t && readOnlyTabs.indexOf(k) < 0) readOnlyTabs.push(k); });
+        }
+        return;
+      }
       // Ticked visible on a tab the person would NOT reach by default: that is
       // a grant, and recording it is the whole point of this phase. Before
       // grantTabs existed the tick only removed a hideTabs entry that was never
@@ -11215,20 +11251,35 @@ function permsToUser(base, perms, stores) {
       // Only "normal" tier can be granted here; list/locked rows render
       // disabled in the editor, so p.visible can't have been flipped on them.
       if (p.byDefault === false && p.grantable) grantTabs.push(t);
-      if (!p.editable) readOnlyTabs.push(t);
+      if (!subs.length) { if (!p.editable) readOnlyTabs.push(t); return; }
+      // A tab with children: the children carry the detail, and the parent key
+      // is written only when it is the whole truth.
+      const rows = subs.map(s => perms[subKey(t, s.k)] || { visible: true, editable: true });
+      subs.forEach((s, i) => { if (!rows[i].visible) hideTabs.push(subKey(t, s.k)); });
+      if (rows.every(r => !r.editable)) {
+        // Nothing inside is editable — store the bare parent key. That is the
+        // shape a record had before sub-permissions existed, and it is also
+        // the only shape that covers the controls living in the parent's own
+        // header, outside any child (Scheduling's publish button).
+        readOnlyTabs.push(t);
+      } else {
+        subs.forEach((s, i) => { if (!rows[i].editable) readOnlyTabs.push(subKey(t, s.k)); });
+      }
     });
     // Same unknown-key preservation hideTabs gets below.
     const gridKeysG = new Set(SETTINGS_TABS.map(x => x.t));
     (base.grantTabs || []).forEach(t => {
-      if (!gridKeysG.has(t) && !grantTabs.includes(t)) grantTabs.push(t);
+      if (!gridKeysG.has(t) && !SUB_PARENT_OF[t] && !grantTabs.includes(t)) grantTabs.push(t);
     });
     // Carry over hidden tabs the permission grid does not model. hideTabs is
     // rebuilt from SETTINGS_TABS, so any stored key that has no row there --
     // "mgrPlanner", "hrLibrary" -- used to be silently dropped on save, which
     // un-hid Manager Planner for good (nothing in the UI could re-hide it).
     const gridKeys = new Set(SETTINGS_TABS.map(x => x.t));
+    // Child keys are excluded: they ARE modelled above, so re-adding them here
+    // would resurrect a hide the admin just cleared.
     (base.hideTabs || []).forEach(t => {
-      if (!gridKeys.has(t) && !hideTabs.includes(t)) hideTabs.push(t);
+      if (!gridKeys.has(t) && !SUB_PARENT_OF[t] && !hideTabs.includes(t)) hideTabs.push(t);
     });
     // hideCategories is RE-DERIVED rather than passed through or wiped. Wiping
     // it (the old behaviour) permanently killed the body-level lock screens on
@@ -11777,6 +11828,87 @@ const TAB_ACCESS = {
   settings: { tier: "locked", allow: g => g.isOwner || g.isDev }
 };
 
+/* ═══ SUB-TABS ══════════════════════════════════════════════════════════════
+   Several tabs are really a parent with children: Scheduling has four rosters,
+   Off-boarding three views of a departure, Trial Period two intakes. Until now
+   a permission stopped at the parent — granting Scheduling granted the manager
+   roster too, and there was no way to say "read the nail-tech schedule, edit
+   only the manager one". This registry is the child half of TAB_ACCESS.
+
+   STORAGE. A child is stored as the composite key "parent:child" in the SAME
+   hideTabs / readOnlyTabs arrays the parent already uses. Nothing migrates:
+   every key stored today is a bare parent key, and a bare parent key keeps
+   meaning "the whole tab, children included". A child key only ever narrows,
+   so an old record resolves exactly as it did before.
+
+   `state` names the React state the tab switches on. It is documentation, and
+   it is also the contract: the `k` values here MUST equal the values passed to
+   that setter, because that is how a permission finds the sub-tab it governs.
+   Adding a sub-tab is two lines here plus filtering its pill bar on
+   acl.subVisible — the grid, the storage and the normalisation come free.
+
+   Depth stops at one. Manager Recruitment nests Coverage/Planner below
+   `recruitment.mgrRecruit`; those two are governed by their parent child-row,
+   not individually. Nothing else in the app nests that far.                  */
+const SUB_SEP = ":";
+const subKey = (t, s) => t + SUB_SEP + s;
+const TAB_SUBS = {
+  scheduling: {
+    state: "schedSubTab",
+    subs: [
+      { k: "techs", l: "Nail Tech Schedule", icon: "💅" },
+      { k: "managers", l: "Manager Schedule", icon: "👔" },
+      { k: "headoffice", l: "Head Office", icon: "🏢" },
+      { k: "callcentre", l: "Call Centre & Sales", icon: "📞" }
+    ]
+  },
+  leave: {
+    state: "leaveSubTab",
+    subs: [
+      { k: "techs", l: "Nail Tech Leave", icon: "💅" },
+      { k: "managers", l: "Manager Leave", icon: "👔" },
+      { k: "headoffice", l: "Head Office Leave", icon: "🏢" },
+      { k: "callcentre", l: "Call Centre & Sales Leave", icon: "📞" }
+    ]
+  },
+  offboard: {
+    state: "offSubTab",
+    subs: [
+      { k: "list", l: "Off-boarding List", icon: "👋" },
+      { k: "term", l: "Terminations & Resignations Tracker", icon: "📄" },
+      { k: "disc", l: "Disciplinary Tracker", icon: "⚖️" }
+    ]
+  },
+  trialPeriod: {
+    state: "trialSubTab",
+    subs: [
+      { k: "nt", l: "Nail Tech Trials", icon: "💅" },
+      { k: "am", l: "Assistant Manager Trials", icon: "⭐" }
+    ]
+  },
+  officeTrials: {
+    state: "officeTrialSubTab",
+    subs: [
+      { k: "HO", l: "Head Office", icon: "🏢" },
+      { k: "CC", l: "Call Centre & Sales", icon: "📞" }
+    ]
+  },
+  recruitment: {
+    state: "recruitSubTab",
+    subs: [
+      { k: "nailTech", l: "Nail Tech Recruitment", icon: "💅" },
+      { k: "interviews", l: "Nail Tech Interviews", icon: "📋" },
+      { k: "mgrRecruit", l: "Manager Recruitment", icon: "👔" }
+    ]
+  }
+};
+function subsOf(t) { return (TAB_SUBS[t] && TAB_SUBS[t].subs) || []; }
+// "scheduling:managers" -> "scheduling". Lets the round-trip tell a child key
+// apart from a stored key the grid simply doesn't model (mgrPlanner), which it
+// must carry forward rather than rebuild.
+const SUB_PARENT_OF = {};
+Object.keys(TAB_SUBS).forEach(p => subsOf(p).forEach(s => { SUB_PARENT_OF[subKey(p, s.k)] = p; }));
+
 /* ═══ ACCESS LISTS ══════════════════════════════════════════════════════════
    The named grant lists, in one place. These used to be nine separate Settings
    panels stacked down the page, each with its own layout and its own wording,
@@ -11910,12 +12042,27 @@ function deriveAcl(user, g) {
     if (!e.ignoreCategoryHide && e.cat && hideCats.has(e.cat) && !showTabs.has(t)) return;
     visible.add(t);
   });
+  const roSet = new Set(user.readOnlyTabs || []);
   return {
     visible,
-    readOnly: new Set(user.readOnlyTabs || []),
+    readOnly: roSet,
     // Does a grid tick on this tab do anything? Drives the Settings UI so it
     // can stop offering ticks that are inert (the original complaint).
-    grantable: (t) => !!(TAB_ACCESS[t] && TAB_ACCESS[t].tier === "normal")
+    grantable: (t) => !!(TAB_ACCESS[t] && TAB_ACCESS[t].tier === "normal"),
+    // ── Sub-tabs ────────────────────────────────────────────────────────────
+    // A child is visible only inside a visible parent, and read-only if EITHER
+    // its own key or its parent's is listed. That asymmetry is deliberate: a
+    // bare parent key is what every record written before sub-permissions
+    // existed contains, and it has to keep meaning "all of it".
+    subVisible: (t, s) => {
+      if (!visible.has(t)) return false;
+      // A CC&S-only account is absolute at this level too — it gets the Call
+      // Centre pill and nothing else, which is what the ccOnly effect already
+      // forces at runtime. Saying so here keeps the grid honest about it.
+      if (user.ccOnly) return s === "callcentre";
+      return !hideTabs.has(subKey(t, s));
+    },
+    subReadOnly: (t, s) => roSet.has(t) || roSet.has(subKey(t, s))
   };
 }
 
@@ -12336,10 +12483,24 @@ function SmCriteriaPanel({ cfg, onSave }) {
   );
 }
 
+// A checkbox with three states, because a tab with sub-tabs has three answers:
+// all children, no children, or some. `indeterminate` is a DOM property with no
+// React prop, so it has to be written through a ref after every render — the
+// usual reason people reach for a bespoke box here and end up with something
+// that doesn't look or behave like a checkbox.
+function TriBox({ checked, mixed, disabled, title, onChange }) {
+  const ref = React.useRef(null);
+  React.useEffect(() => { if (ref.current) ref.current.indeterminate = !!(mixed && !checked); });
+  return <input ref={ref} type="checkbox" checked={!!checked} disabled={!!disabled} title={title} onChange={onChange} />;
+}
+
 function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, dataCounts, offboardAccess, onOffboardAccessSave, overtimeCfg, onOvertimeCfgSave, cashupReviewCfg, onCashupReviewCfgSave, leaveOpsCfg, onLeaveOpsCfgSave, leavePayrollCfg, onLeavePayrollCfgSave, leaveBalancesCfg, onLeaveBalancesCfgSave, officeStaffCfg, onOfficeStaffCfgSave, officeHoursCfg, onOfficeHoursCfgSave, smCriteriaCfg, onSmCriteriaSave }) {
   const users = appUsers || {};
   const [editing, setEditing] = useState(null);   // {pin, isNew, name, role, demo, isOwner, perms, originalPin}
   const [busy, setBusy] = useState(false);
+  // Which parent rows have their sub-tabs unfolded. Collapsed by default: the
+  // grid is already 60 rows, and most tabs are configured at the parent.
+  const [expanded, setExpanded] = useState({});
 
   const sortedPins = Object.keys(users).sort((a, b) => {
     const ua = users[a], ub = users[b];
@@ -12349,7 +12510,10 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, dataCounts, offbo
 
   const beginAdd = () => {
     const blankPerms = {};
-    SETTINGS_TABS.forEach(({ t }) => { blankPerms[t] = { visible: true, editable: true }; });
+    SETTINGS_TABS.forEach(({ t }) => {
+      blankPerms[t] = { visible: true, editable: true };
+      subsOf(t).forEach(s => { blankPerms[subKey(t, s.k)] = { visible: true, editable: true, sub: true, parent: t, subKey: s.k }; });
+    });
     setEditing({
       pin: "",
       isNew: true,
@@ -12475,13 +12639,65 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, dataCounts, offbo
       if (!window.confirm(meta.sensitive + "\n\nGive " + (editing.name || "this user") + " access to it?")) return;
     }
     setEditing(prev => {
-      const cur = prev.perms[tab] || { visible: true, editable: true };
+      const np = { ...prev.perms };
+      const cur = np[tab] || { visible: true, editable: true };
+      const subs = subsOf(tab);
+
+      // ── A child row: it owns its own answer, then the parent is re-derived ──
+      if (cur.sub) {
+        const next = { ...cur, [field]: !cur[field] };
+        if (!next.visible) next.editable = false;
+        if (next.editable) next.visible = true;
+        np[tab] = next;
+        const par = cur.parent;
+        const sibs = subsOf(par).map(s => np[subKey(par, s.k)] || { visible: true, editable: true });
+        const parRow = np[par] || { visible: true, editable: true };
+        if (!sibs.some(r => r.visible)) {
+          // The last sub-tab just went. A parent with no children left would
+          // render as an empty shell, so it goes too — and re-showing it below
+          // brings the children back rather than leaving a tab you can't use.
+          np[par] = { ...parRow, visible: false, editable: false };
+        } else {
+          np[par] = { ...parRow, visible: true, editable: sibs.every(r => r.editable) };
+        }
+        return { ...prev, perms: np };
+      }
+
+      // ── A parent with children: VISIBLE is its own, CAN EDIT is bulk ────────
+      if (subs.length) {
+        if (field === "visible") {
+          const on = !cur.visible;
+          np[tab] = { ...cur, visible: on, editable: on && cur.editable };
+          if (on) {
+            const rows = subs.map(s => np[subKey(tab, s.k)] || { visible: true, editable: true });
+            // Showing a tab whose children are all hidden has to give something
+            // back, or the tick appears to do nothing — the exact complaint
+            // this whole rework started from.
+            if (!rows.some(r => r.visible)) {
+              subs.forEach((s, i) => { np[subKey(tab, s.k)] = { ...rows[i], visible: true }; });
+            }
+            np[tab].editable = subs.every(s => (np[subKey(tab, s.k)] || {}).editable);
+          }
+          return { ...prev, perms: np };
+        }
+        // CAN EDIT on the parent is the "all of them" switch: mixed or off
+        // becomes all-on, all-on becomes all-off.
+        const rows = subs.map(s => np[subKey(tab, s.k)] || { visible: true, editable: true });
+        const allEdit = rows.every(r => r.editable);
+        subs.forEach((s, i) => {
+          const r = rows[i];
+          np[subKey(tab, s.k)] = { ...r, editable: !allEdit && r.visible };
+        });
+        np[tab] = { ...cur, visible: true, editable: !allEdit };
+        return { ...prev, perms: np };
+      }
+
+      // ── A leaf tab: unchanged behaviour ────────────────────────────────────
       const next = { ...cur, [field]: !cur[field] };
-      // Hidden tabs can't be editable.
       if (!next.visible) next.editable = false;
-      // Editable tabs must be visible.
       if (next.editable) next.visible = true;
-      return { ...prev, perms: { ...prev.perms, [tab]: next } };
+      np[tab] = next;
+      return { ...prev, perms: np };
     });
   };
   const setAllInCategory = (cat, visible, editable) => {
@@ -12495,6 +12711,14 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, dataCounts, offbo
         const inert = cur.byDefault === false && cur.grantable === false;
         const vis = inert ? !!cur.visible : visible;
         np[t] = { ...cur, visible: vis, editable: vis && editable };
+        // A category sweep has to reach the children too, or "Hide all" would
+        // leave a tab hidden with its sub-tabs still marked editable and the
+        // parent box showing a partial state the row above contradicts.
+        subsOf(t).forEach(s => {
+          const ck = subKey(t, s.k);
+          const c = np[ck] || prev.perms[ck] || {};
+          np[ck] = { ...c, visible: vis, editable: vis && editable };
+        });
       });
       return { ...prev, perms: np };
     });
@@ -12732,10 +12956,33 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, dataCounts, offbo
                           const why = inert
                             ? "Settings can grant every other tab, so it can't grant itself — that would let whoever received it re-grant it to anyone, permanently."
                             : where || "";
+                          // Sub-tab state, folded into the two boxes on this
+                          // row: all children / none / some. "Some" is the
+                          // filled box — the answer the grid could not give
+                          // before, and the reason a parent tick used to look
+                          // like it had done more than it had.
+                          const subs = subsOf(t);
+                          const subRows = subs.map(s => editing.perms[subKey(t, s.k)] || { visible: true, editable: true });
+                          const nSubVis = subRows.filter(r => r.visible).length;
+                          const nSubEdit = subRows.filter(r => r.editable).length;
+                          const visMixed = !!subs.length && p.visible && nSubVis > 0 && nSubVis < subs.length;
+                          const editMixed = !!subs.length && p.visible && nSubEdit > 0 && nSubEdit < subs.length;
+                          const open = !!expanded[t];
+                          const subCount = (n) => (
+                            <div style={{ fontSize: 9, fontWeight: 800, color: "#a16207", marginTop: 1, letterSpacing: "0.02em" }}>{n} of {subs.length}</div>
+                          );
                           return (
-                            <tr key={t} style={{ borderTop: "1px solid #FCE7F3", opacity: inert ? 0.65 : 1 }}>
+                            <React.Fragment key={t}>
+                            <tr style={{ borderTop: "1px solid #FCE7F3", opacity: inert ? 0.65 : 1 }}>
                               <td style={{ padding: "7px 10px 7px 26px", color: "#831843" }}>
                                 <span style={{ marginRight: 6 }}>{icon}</span>{l}
+                                {!!subs.length && (
+                                  <button onClick={() => setExpanded(e => ({ ...e, [t]: !e[t] }))}
+                                    title={open ? "Hide sub-tabs" : "Set permissions per sub-tab"}
+                                    style={{ marginLeft: 8, background: open ? "#FCE7F3" : "transparent", border: "1px solid #FBCFE8", color: "#9F1A4F", borderRadius: 99, padding: "1px 9px", cursor: "pointer", fontSize: 9.5, fontWeight: 800, fontFamily: "inherit", letterSpacing: "0.03em" }}>
+                                    {open ? "\u25be" : "\u25b8"} {subs.length} SUB-TABS
+                                  </button>
+                                )}
                                 {inert && <span title={why} style={{ marginLeft: 6, fontSize: 9, fontWeight: 800, color: "#92400e", background: "#FEF3C7", border: "1px solid #FDE68A", borderRadius: 99, padding: "1px 7px", cursor: "help" }}>OWNER ONLY</span>}
                                 {!inert && meta.sensitive && <span title={meta.sensitive} style={{ marginLeft: 6, fontSize: 9, fontWeight: 800, color: "#9a3412", background: "#ffedd5", border: "1px solid #fed7aa", borderRadius: 99, padding: "1px 7px", cursor: "help" }}>SENSITIVE</span>}
                                 {!inert && p.byDefault === false && p.visible && <span title="Not in this tab's default audience — visible because you granted it here." style={{ marginLeft: 6, fontSize: 9, fontWeight: 800, color: "#166534", background: "#dcfce7", border: "1px solid #bbf7d0", borderRadius: 99, padding: "1px 7px", cursor: "help" }}>GRANTED</span>}
@@ -12743,14 +12990,44 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, dataCounts, offbo
                                 {!inert && where && <div style={{ fontSize: 10.5, color: "#a16207", marginTop: 2, fontWeight: 500 }}>↳ {where}</div>}
                               </td>
                               <td style={{ padding: "7px 10px", textAlign: "center" }}>
-                                <input type="checkbox" checked={!!p.visible} disabled={inert} title={inert ? why : undefined} onChange={() => togglePerm(t, "visible")} />
+                                <TriBox checked={!!p.visible && !visMixed} mixed={visMixed} disabled={inert}
+                                  title={inert ? why : (visMixed ? nSubVis + " of " + subs.length + " sub-tabs visible" : undefined)}
+                                  onChange={() => togglePerm(t, "visible")} />
+                                {visMixed && subCount(nSubVis)}
                               </td>
                               <td style={{ padding: "7px 10px", textAlign: "center" }}>
                                 {DASH_ROW_KEYS.has(t)
                                   ? <span title="A dashboard card is shown or hidden — there is nothing to edit on it." style={{ color: "#9ca3af", fontSize: 11 }}>—</span>
-                                  : <input type="checkbox" checked={!!p.editable} disabled={!p.visible} onChange={() => togglePerm(t, "editable")} />}
+                                  : <><TriBox checked={!!p.editable && !editMixed} mixed={editMixed} disabled={!p.visible}
+                                      title={editMixed ? nSubEdit + " of " + subs.length + " sub-tabs editable" : undefined}
+                                      onChange={() => togglePerm(t, "editable")} />
+                                    {editMixed && subCount(nSubEdit)}</>}
                               </td>
                             </tr>
+                            {open && subs.map((s, i) => {
+                              const sp = subRows[i];
+                              const ck = subKey(t, s.k);
+                              const shown = p.visible && sp.visible;
+                              return (
+                                <tr key={ck} style={{ borderTop: "1px dashed #FCE7F3", background: "#FFFBFD" }}>
+                                  <td style={{ padding: "5px 10px 5px 52px", color: "#9d174d", fontSize: 11.5 }}>
+                                    <span style={{ color: "#FBCFE8", marginRight: 6 }}>&#8627;</span>
+                                    <span style={{ marginRight: 5 }}>{s.icon}</span>{s.l}
+                                    {p.visible && sp.visible && !sp.editable && <span title="Visible on this sub-tab, but every control is disabled." style={{ marginLeft: 6, fontSize: 8.5, fontWeight: 800, color: "#0369a1", background: "#e0f2fe", border: "1px solid #bae6fd", borderRadius: 99, padding: "1px 6px", cursor: "help" }}>VIEW ONLY</span>}
+                                  </td>
+                                  <td style={{ padding: "5px 10px", textAlign: "center" }}>
+                                    <input type="checkbox" checked={!!shown} disabled={!p.visible || inert}
+                                      title={!p.visible ? "The whole tab is hidden." : undefined}
+                                      onChange={() => togglePerm(ck, "visible")} />
+                                  </td>
+                                  <td style={{ padding: "5px 10px", textAlign: "center" }}>
+                                    <input type="checkbox" checked={!!(shown && sp.editable)} disabled={!shown}
+                                      onChange={() => togglePerm(ck, "editable")} />
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                            </React.Fragment>
                           );
                         })}
                       </React.Fragment>
@@ -12760,6 +13037,9 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, dataCounts, offbo
               </table>
             </div>
 
+            <div style={{ background: "#EEF2FF", border: "1px solid #C7D2FE", borderRadius: 9, padding: "9px 13px", fontSize: 11, color: "#3730a3", marginBottom: 14, lineHeight: 1.55 }}>
+              🧩 <strong>Sub-tabs.</strong> Rows badged <strong>▸ SUB-TABS</strong> open into their children — Scheduling's four rosters, Off-boarding's three trackers, and so on. Set them individually to say things like <em>“can see the whole schedule, can only edit the manager roster”</em>. When a tab's children don't all agree, its box on the parent row shows <strong>filled rather than ticked</strong> and the count underneath says how many. Ticking the parent box sets every child at once.
+            </div>
             <div style={{ background: "#FDF2F8", border: "1px solid #FBCFE8", borderRadius: 9, padding: "9px 13px", fontSize: 11, color: "#9F1A4F", marginBottom: 14 }}>
               🏬 <strong>Store allocation</strong> is now managed on the dedicated <strong>Store Allocation</strong> tab (under Admin), so a National Ops Manager can be granted edit rights to it without full Settings access.
             </div>
@@ -25158,18 +25438,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     }
   };
 
-  // Whether the active tab is read-only for the signed-in user. Surfaced
-  // via a banner at the top of the page and used to flip the BOA_DB
-  // persistence guard so any save / delete call is short-circuited with
-  // a friendly alert instead of hitting Supabase.
-  const currentTabIsReadOnly = useMemo(() => {
-    const list = currentUser?.readOnlyTabs || [];
-    return list.includes(tab);
-  }, [currentUser, tab]);
-  useEffect(() => {
-    window.__BOA_RO_ACTIVE = !!currentTabIsReadOnly;
-    return () => { window.__BOA_RO_ACTIVE = false; };
-  }, [currentTabIsReadOnly]);
   // Regional Ops Managers may read the Kiosk/Manager PIN directories but not
   // change them, so every mutating control on those two tabs is hidden for
   // them. The Owner keeps full edit rights.
@@ -25183,6 +25451,40 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Leave Planner has a similar split.
   const [leaveSubTab, setLeaveSubTab] = useState("techs");          // "techs" | "managers" | "headoffice" | "callcentre"
   const [trialSubTab, setTrialSubTab] = useState("nt");             // "nt" | "am"
+  const [officeTrialSubTab, setOfficeTrialSubTab] = useState("HO");  // "HO" | "CC" — HQ Trials dept toggle
+  const [offSubTab, setOffSubTab] = useState("list");               // "list" | "term" | "disc"
+  // Which child of each parent tab is on screen. Every entry maps a TAB_SUBS
+  // key to the state that tab actually switches on — the join between the
+  // permission registry and the running UI. A parent missing from here simply
+  // has no sub-permissions.
+  const ACTIVE_SUB = {
+    scheduling: schedSubTab, leave: leaveSubTab, offboard: offSubTab,
+    trialPeriod: trialSubTab, officeTrials: officeTrialSubTab, recruitment: recruitSubTab
+  };
+  const SUB_SETTER = {
+    scheduling: setSchedSubTab, leave: setLeaveSubTab, offboard: setOffSubTab,
+    trialPeriod: setTrialSubTab, officeTrials: setOfficeTrialSubTab, recruitment: setRecruitSubTab
+  };
+
+  // Whether the active tab is read-only for the signed-in user. Surfaced via a
+  // banner at the top of the page and used to flip the BOA_DB persistence
+  // guard so any save / delete call is short-circuited with a friendly alert
+  // instead of hitting Supabase.
+  //
+  // Sub-tab aware: a bare parent key still locks the whole tab, but a record
+  // may now lock only some children, in which case the answer depends on which
+  // one is on screen. Read-only follows what you are looking at, which is what
+  // it always meant — there was simply nothing finer than a tab to look at.
+  const currentTabIsReadOnly = useMemo(() => {
+    const list = currentUser?.readOnlyTabs || [];
+    if (list.includes(tab)) return true;
+    const s = ACTIVE_SUB[tab];
+    return !!(s && list.includes(subKey(tab, s)));
+  }, [currentUser, tab, schedSubTab, leaveSubTab, offSubTab, trialSubTab, officeTrialSubTab, recruitSubTab]);
+  useEffect(() => {
+    window.__BOA_RO_ACTIVE = !!currentTabIsReadOnly;
+    return () => { window.__BOA_RO_ACTIVE = false; };
+  }, [currentTabIsReadOnly]);
   const [staffModal, setStaffModal] = useState(null);
   const [matModal, setMatModal] = useState(null);
   const [transferModal, setTransferModal] = useState(null);
@@ -25539,7 +25841,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     // Read the stored list directly rather than `acl`, which is declared
     // further down the component body — this closure would resolve it fine at
     // click time, but not depending on that ordering is one less trap.
-    if ((currentUser?.readOnlyTabs || []).includes("scheduling")) { alert(RO_MESSAGE); return; }
+    // This one action writes BOTH the nail-tech and the manager rosters, so a
+    // view-only mark on either sub-tab blocks it. Publishing from the manager
+    // sub-tab while the tech schedule is view-only would push tech changes the
+    // person is not allowed to make — the same cross-surface hole the pre-flight
+    // above exists to close, one level down.
+    const _roSched = currentUser?.readOnlyTabs || [];
+    if (_roSched.includes("scheduling") || _roSched.includes(subKey("scheduling", "techs")) || _roSched.includes(subKey("scheduling", "managers"))) {
+      alert(RO_MESSAGE); return;
+    }
     setPubCycleErr(""); setPubCycleRows(null); setPubCycleSkip({});
     setPubCycleOpen(true); setPubCycleBusy(true);
     try {
@@ -25819,7 +26129,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const [obFilter, setObFilter] = useState("recent"); // "recent" = last 31 days, "all" = every onboarded record
   const [trialList, setTrialList] = useState([]);     // trial period candidates (pre-contract)
   const [officeTrialList, setOfficeTrialList] = useState([]);  // HQ / CC&S trial candidates (boa_office_trial_v1)
-  const [officeTrialSubTab, setOfficeTrialSubTab] = useState("HO");  // "HO" | "CC" — HQ Trials tab dept toggle
   const [officeTrialModal, setOfficeTrialModal] = useState(null);    // add/edit HQ trial candidate modal
   const [officeTrialEvalModal, setOfficeTrialEvalModal] = useState(null); // { rec, which } evaluation form
   const [probation, setProbation] = useState({});     // boa_probation_v1: { [EC]: {start,end,confirmedAt,confirmedBy} }
@@ -25898,7 +26207,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   const canOffboard = canSeeOffboarding(currentUser, offboardAccess);
   const isPayrollOfficer = isOffboardPayrollOfficer(currentUser, offboardAccess);   // gets the nudge
   const canSignOffRecords = canSignOffPayroll(currentUser, offboardAccess);         // may sign off
-  const [offSubTab, setOffSubTab] = useState("list");     // list | term | disc
   const [trackerRows, setTrackerRows] = useState([]);
   const [trackerLoading, setTrackerLoading] = useState(false);
   const [trackerErr, setTrackerErr] = useState("");
@@ -26067,6 +26375,22 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   }), [currentUser, canOffboard, canCompliance, canSeeLeaveExpiry, canSeeLeaveRequests,
     canSeeOfficeHours, canAddOfficeStaff, leavePayrollCfg, leaveBalancesCfg,
     hoStaff.length, hoOnlyStaff.length, ccStaff.length, officeTrialList]);
+  // Sub-tab normalisation. The parent equivalent of this effect closed ~27
+  // unguarded tab bodies without editing 27 of them; this closes every sub-tab
+  // body the same way. Filtering the pill bars alone would not: the sub-tab
+  // state is also set from cross-tab buttons (the dashboard's sign-off chase
+  // jumps straight to offboard/term) and survives a permission change made
+  // while the page is open.
+  useEffect(() => {
+    if (!currentUser) return;
+    Object.keys(TAB_SUBS).forEach(pt => {
+      const cur = ACTIVE_SUB[pt], set = SUB_SETTER[pt];
+      if (!cur || !set) return;
+      if (acl.subVisible(pt, cur)) return;
+      const first = subsOf(pt).find(s => acl.subVisible(pt, s.k));
+      if (first) set(first.k);
+    });
+  }, [currentUser, acl, schedSubTab, leaveSubTab, offSubTab, trialSubTab, officeTrialSubTab, recruitSubTab]);
   // Is the balance anchor behind Sage? (state declared up with the other
   // dashboard alerts; the effect must sit below leaveBalancesCfg's declaration.)
   useEffect(() => {
@@ -31175,11 +31499,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t: "dailyTasks", l: "📋 Daily Tasks" },
                   { t: "mgrCoverage", l: "🗓 Manager Coverage" },
                   { t: "cashups", l: "💰 Cash Ups" },
-                  {
+                  ...(acl.subVisible("recruitment", "mgrRecruit") ? [{
                     t: "mgrPlanner", l: "🧩 Manager Planner",
                     isActive: tab === "recruitment" && recruitSubTab === "mgrRecruit" && mgrSubTab === "planner",
                     onClick: () => { setRecruitSubTab("mgrRecruit"); setMgrSubTab("planner"); tryChangeTab("recruitment"); }
-                  }
+                  }] : [])
                 ]
               },
               {
@@ -31442,7 +31766,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           ];
           return (
             <div style={{ display: "flex", gap: 10, marginBottom: 18, flexWrap: "wrap" }}>
-              {TABS.map(t => {
+              {TABS.filter(t => acl.subVisible("recruitment", t.k)).map(t => {
                 const active = recruitSubTab === t.k;
                 const n = counts[t.k];
                 return (
@@ -31880,7 +32204,13 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       HR has captured these. Confirm the dates and amounts, then mark each one complete so the last payout can be run against it.
                     </div>
                   </div>
-                  <button onClick={() => { setOffSubTab(trackerPending.term > 0 ? "term" : "disc"); tryChangeTab("offboard"); }}
+                  <button onClick={() => {
+                      // Land on a tracker they can actually see: the quick-link
+                      // used to pick purely on which had records waiting.
+                      const wantTerm = trackerPending.term > 0 && acl.subVisible("offboard", "term");
+                      setOffSubTab(wantTerm ? "term" : (acl.subVisible("offboard", "disc") ? "disc" : "list"));
+                      tryChangeTab("offboard");
+                    }}
                     title="Open the tracker and sign off the records waiting on payroll."
                     style={{ background: "#b45309", color: "#fff", border: "none", borderRadius: 10, padding: "10px 18px", fontWeight: 800, fontSize: 13, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap", boxShadow: "0 4px 12px rgba(180,83,9,0.3)" }}>
                     Check records →
@@ -33895,7 +34225,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   // hoOnlyStaff excludes Call Centre & Sales, which gets its own tab.
                   ...(hoOnlyStaff.length ? [{ k: "headoffice", label: "🏢 Head Office" }] : []),
                   ...(ccStaff.length ? [{ k: "callcentre", label: "📞 Call Centre & Sales" }] : [])
-                ]).map(t => {
+                ]).filter(t => acl.subVisible("scheduling", t.k)).map(t => {
                   const active = schedSubTab === t.k;
                   return (
                     <button key={t.k} onClick={() => tryChangeSchedSub(t.k)}
@@ -38006,7 +38336,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   {[
                     { k: "nt", l: "Nail Tech" },
                     { k: "am", l: "Assistant Manager" }
-                  ].map(t => {
+                  ].filter(t => acl.subVisible("trialPeriod", t.k)).map(t => {
                     const active = trialSubTab === t.k;
                     return (
                       <button key={t.k} onClick={() => setTrialSubTab(t.k)}
@@ -38093,7 +38423,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                         <div style={{ fontSize: 13, fontWeight: 700, color: "#9a3412" }}>{c.name}{c.branch ? <span style={{ fontWeight: 600, color: "#c2410c" }}> · 📍 {c.branch}</span> : null}</div>
                         <div style={{ fontSize: 11, color: "#c2410c", marginTop: 1 }}>{missing.length} missed · {missing.map(d => fmtDate(d)).join(" · ")}</div>
                       </div>
-                      {trialSubTab !== "am" && <button onClick={() => setTrialSubTab("am")} style={{ background: "#fff", color: "#9a3412", border: "1px solid #fed7aa", borderRadius: 8, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>View AM trials →</button>}
+                      {trialSubTab !== "am" && acl.subVisible("trialPeriod", "am") && <button onClick={() => setTrialSubTab("am")} style={{ background: "#fff", color: "#9a3412", border: "1px solid #fed7aa", borderRadius: 8, padding: "5px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>View AM trials →</button>}
                     </div>
                   ))}
                 </div>
@@ -38673,7 +39003,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
               <div style={{ display: "flex", gap: 6, background: "#eef2ff", border: "1px solid #c7d2fe", borderRadius: 10, padding: 4 }}>
-                {[["HO", "🏢 Head Office"], ["CC", "📞 Call Centre & Sales"]].map(([k, l]) => (
+                {[["HO", "🏢 Head Office"], ["CC", "📞 Call Centre & Sales"]]
+                  .filter(([k]) => acl.subVisible("officeTrials", k)).map(([k, l]) => (
                   <button key={k} onClick={() => setOfficeTrialSubTab(k)} style={{ padding: "6px 14px", borderRadius: 7, border: "none", background: dept === k ? "#4f46e5" : "transparent", color: dept === k ? "#fff" : "#3730a3", fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>{l}</button>
                 ))}
               </div>
@@ -40475,7 +40806,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             }}>
               {[{ k: "list", l: "Off-boarding List", icon: "\uD83D\uDC4B" },
               { k: "term", l: "Terminations & Resignations Tracker", icon: "\uD83D\uDCC4" },
-                { k: "disc", l: "Disciplinary Tracker", icon: "\u2696\uFE0F" }].map(t => {
+                { k: "disc", l: "Disciplinary Tracker", icon: "\u2696\uFE0F" }]
+                .filter(t => acl.subVisible("offboard", t.k)).map(t => {
                 const active = offSubTab === t.k;
                 const pending = t.k === "term" ? trackerPending.term : t.k === "disc" ? trackerPending.disc : 0;
                 return (
@@ -45325,7 +45657,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 // its population exists — a no-op for salon-only deployments.
                 ...(hoOnlyStaff.length ? [{ k: "headoffice", label: "🏢 Head Office Leave" }] : []),
                 ...(ccStaff.length ? [{ k: "callcentre", label: "📞 Call Centre & Sales Leave" }] : [])
-              ]).map(t => {
+              ]).filter(t => acl.subVisible("leave", t.k)).map(t => {
                 const active = leaveSubTab === t.k;
                 return (
                   <button key={t.k} onClick={() => { setLeaveSubTab(t.k); setLeaveForm({ ec: "", startDate: "", endDate: "", emergency: false, emergencyNote: "", balanceDays: "", balanceChecked: false }); }}
