@@ -11511,9 +11511,14 @@ function roleIdsOf(user) {
 // none is a pattern to copy. `loose` is the lower-cased but UNTRIMMED title,
 // which two of these gates compare against.
 const LEGACY_ROLE_MATCH = {
-  // canSeeCompliance's national test never got the Phase-1 word boundaries,
-  // so "International …" still opens the immigration-status gate.
-  national_substr: r => /national/.test(r),
+  // Word-boundary'd 2026-09-03. This was a bare /national/, which matched
+  // "International" — the substring is literally there: inter|national. It
+  // opened the immigration-status gate to a title nobody meant to admit.
+  // Preserved 1:1 through Phase 3 because the rule was to change no
+  // permission silently; closed now the roster is confirmed to hold no such
+  // title. \b is the whole fix: in "international" the character before
+  // "national" is a word character, so the boundary does not match.
+  national_substr: r => /\bnational/.test(r),
   // canSeeCompliance matches "payroll" as a bare substring and NOTHING else.
   // The canonical payroll role also admits wages/finance titles, so using it
   // here would have quietly handed a "Wages Clerk" access to permit and asylum
@@ -11525,7 +11530,7 @@ const LEGACY_ROLE_MATCH = {
   // directories required an explicit National Ops / Operations title. They are
   // genuinely different sizes, so they stay two capabilities rather than being
   // merged into whichever one happened to be read first.
-  national_ops_titled: r => r.includes("national ops") || r.includes("national operations"),
+  national_ops_titled: r => /\bnational (ops|operations)/.test(r),
   // The SM-trial evaluate/decide gates use bare substrings AND compare an
   // untrimmed title, so " Master Admin " fails there but passes elsewhere.
   hr_substr: (r, loose) => loose.includes("hr"),
@@ -11731,7 +11736,7 @@ const AUDIENCE_WORDS = {
   regional_ops: "Regional Ops Manager", payroll: "Payroll / wages / finance",
   recruiter: "Recruitment", nailtech_trainer: "Nail-tech trainer (not manager trainers)",
   project: "Project Manager", dev: "Developer",
-  national_substr: "any role containing \u201cnational\u201d",
+  national_substr: "a role whose title starts a word with \u201cnational\u201d",
   national_ops_titled: "a National Ops / National Operations title",
   payroll_substr: "any role containing \u201cpayroll\u201d",
   hr_substr: "any role containing \u201chr\u201d", humanres_substr: "Human Resources",

@@ -378,7 +378,9 @@ Three things landed after PR #27 that the plan above does not describe.
 | **"View as" simulator** | ✅ `?simulate=1`, or the button in Settings. `currentUser` is **shadowed** in App, so every consumer answers as the impersonated person unchanged; `_realUser` survives for the audit log and for leaving simulation. Read-only is forced on every tab and sub-tab, so the block is the real write guard. |
 | **View-only affordances** | ✅ `Schedule` and `IncidentReportsTab` now take `readOnly` and pre-flight their write entry points, so a view-only sub-tab stops drawing live controls. |
 
-**Open decisions — these need a call, not code.** (1) `"International Ops"` satisfies `national_ops_titled` because the string contains `"national ops"` — preserved 1:1, one line to fix once the roster is confirmed. (2) `ignoreCategoryHide` on six tabs: a category hide does not strip them. (3) `PINK` and `isSMRole` are undefined identifiers — pre-existing, unrelated to permissions, latent until those branches render.
+**Closed 2026-09-03.** `"International Ops"` satisfied both national gates because the substring is literally there — inter|national. Confirmed no role in the roster contains `"national"` at all, so both matchers are word-boundary'd: `/\bnational/` and `/\bnational (ops|operations)/`. In `"international"` the character before `"national"` is a word character, so the boundary does not match. Pinned by `subtabs.js` block L, which fails on the previous commit with exactly the nine `International` cases — the golden master cannot see this, because `deriveAcl` is handed pre-computed booleans and the role matchers only ever run inside `can()`.
+
+**Open decisions — these need a call, not code.** (2) `ignoreCategoryHide` on six tabs: a category hide does not strip them. (3) `PINK` and `isSMRole` are undefined identifiers — pre-existing, unrelated to permissions, latent until those branches render.
 
 ### 5.3 The harnesses
 
