@@ -68,6 +68,36 @@ async function saveAppUsersToDb(users) {
   if (!window.BOA_DB || !window.BOA_DB.sb) throw new Error("Supabase not ready");
   await window.BOA_DB.sb.from("app_state").upsert({ key: APP_USERS_KEY, value: users || {} });
 }
+// Who does this PIN sign in as? Pure, and deliberately at module scope rather
+// than inside the submit handler, because it is the one decision in the app
+// where being wrong either lets a deleted account keep working or locks the
+// owner out of their own portal. Both directions want a test.
+//
+// Defect K: this used to be `store[pin] || STAFF_USERS[pin]`, so a login
+// deleted in Settings kept working forever — the seed map is compiled into the
+// page and no amount of deleting reaches it. A PIN removed from the roster now
+// actually stops opening the door.
+//
+// BREAK-GLASS, the single exception. If the live store holds no owner at all,
+// a seed OWNER may still sign in. Deleting the last owner is otherwise
+// recoverable only with direct database access and there is no other way back
+// into this portal. Scoped as tightly as it can be: owner records only, and
+// only while no owner exists.
+function resolveLogin(pin, store) {
+  const s = store || {};
+  const seed = STAFF_USERS[pin];
+  // Break-glass is checked FIRST, and only in the state that needs it. The
+  // owner can be lost two ways — deleted, or demoted to a non-owner — and a
+  // demoted record still exists, so a "does the live record exist" test would
+  // hand back the demoted one and leave the portal with no way to promote
+  // anybody. Settings is owner/dev only, so nothing inside the app could
+  // repair it. The condition is the honest one: is there an owner at all?
+  if (seed && seed.isOwner) {
+    const liveHasOwner = Object.keys(s).some(k => s[k] && s[k].isOwner);
+    if (!liveHasOwner) return seed;
+  }
+  return s[pin] || null;
+}
 function lookupUserByPin(pin) {
   if (window.__BOA_APP_USERS && window.__BOA_APP_USERS[pin]) return window.__BOA_APP_USERS[pin];
   return STAFF_USERS[pin] || null;
@@ -9349,7 +9379,7 @@ function PinLogin(props) {
   const submit = (e) => {
     if (e && e.preventDefault) e.preventDefault();
     const store = (props && props.users) || window.__BOA_APP_USERS || STAFF_USERS;
-    const u = store[pin] || STAFF_USERS[pin];
+    const u = resolveLogin(pin, store);
     if (!u) {
       setError("Wrong PIN. Please try again.");
       setPin("");
@@ -10525,16 +10555,16 @@ function AppGate() {
         dynamic = JSON.parse(JSON.stringify(STAFF_USERS));
         try { await saveAppUsersToDb(dynamic); } catch (_) { }
       } else {
-        // Make sure any newly-shipped seed user (e.g. Theresa) is present
-        // even if the dynamic row was created before they were defined.
-        let mutated = false;
-        Object.keys(STAFF_USERS).forEach(pin => {
-          if (!dynamic[pin]) {
-            dynamic[pin] = { ...STAFF_USERS[pin] };
-            mutated = true;
-          }
-        });
-        if (mutated) { try { await saveAppUsersToDb(dynamic); } catch (_) { } }
+        // Seed users are NOT re-inserted here any more. This loop used to add
+        // back any STAFF_USERS pin missing from the live row, which meant
+        // deleting a seeded login in Settings was undone on the next page
+        // load — the record came back, and the PIN worked again in the
+        // meantime. Seeding now happens exactly once, on the genuine first
+        // run above, when the stored row does not exist at all.
+        //
+        // The cost is that a newly-shipped seed account no longer appears by
+        // itself. That is the right trade: new logins are created in Settings,
+        // and a delete that does not stay deleted is not a delete.
 
         // One-time migration: hide new Home/Dashboard widgets for all non-owner
         // users. We set `_dashMigrated*` so each migration step only ever runs
@@ -10589,37 +10619,18 @@ function AppGate() {
             u.hideTabs = [...ht, "dashAbscond"];
           }
         });
-        // V3 migration: Rochelle (3030) & Farida (4040) help run the
-        // nail-tech trials, so allow-list the Trial Period tab back in for
-        // them (Rochelle keeps the rest of People hidden). Runs once each.
-        Object.keys(dynamic).forEach(pin => {
-          const u = dynamic[pin];
-          if (u._trialTabMigrated) return;
-          u._trialTabMigrated = true;
-          dashMigrated = true;
-          if (pin === "3030" || pin === "4040") {
-            const st = Array.isArray(u.showTabs) ? u.showTabs : [];
-            if (!st.includes("trialPeriod")) u.showTabs = [...st, "trialPeriod"];
-          }
-        });
-        // V3c migration: Rochelle (3030) & Farida (4040) don't just VIEW the
-        // Trial Period tab — they run the trials, so they must be able to EDIT
-        // it (set start dates, mark the trial days). The earlier grant only
-        // made it visible; if the tab is stuck view-only (in readOnlyTabs) or
-        // hidden (in hideTabs) for them, the day editor's saves are silently
-        // blocked by the read-only guard. Force full edit access. Runs once each.
-        Object.keys(dynamic).forEach(pin => {
-          const u = dynamic[pin];
-          if (u._trialEditMigrated) return;
-          u._trialEditMigrated = true;
-          dashMigrated = true;
-          if (pin === "3030" || pin === "4040") {
-            if (Array.isArray(u.readOnlyTabs)) u.readOnlyTabs = u.readOnlyTabs.filter(t => t !== "trialPeriod");
-            if (Array.isArray(u.hideTabs)) u.hideTabs = u.hideTabs.filter(t => t !== "trialPeriod");
-            const st = Array.isArray(u.showTabs) ? u.showTabs : [];
-            if (!st.includes("trialPeriod")) u.showTabs = [...st, "trialPeriod"];
-          }
-        });
+        // The V3 / V3c / V5 migrations lived here. All three were one-shot
+        // repairs keyed on the PIN literals "3030" and "4040", they set their
+        // own flag on every record on the first boot after shipping, and their
+        // results were confirmed in the live data before this deletion. Their
+        // effects survive in the records themselves; re-running them could
+        // only overwrite a decision the owner has since made in Settings.
+        //
+        // V3 and V3c were also the last things that ever WROTE `showTabs`.
+        // The key is still read (deriveAcl honours a stored value, so nobody
+        // loses a tab) but nothing adds to it any more: `grantTabs` is how a
+        // tab is handed out now, and it says so on the record rather than
+        // depending on a category rule to mean anything.
         // V4 migration: introduces the Office Staff List tab. It exposes the
         // Head Office / CC&S directory (permits, maternity dates, tenure) —
         // the same sensitivity class as the salon Staff List, which owners
@@ -10639,22 +10650,6 @@ function AppGate() {
             u.hideTabs = [...ht, "officeStaff"];
           }
         });
-        // V5 migration: move the hardcoded Called in Sick grant into DATA.
-        // 3030 (Rochelle) reached that tab only because her PIN was written
-        // into the code — the Settings tick for it could never take effect.
-        // grantTabs now makes the tick real, so the grant becomes an ordinary
-        // record entry the owner can see and revoke like any other. Additive
-        // and idempotent; it never removes anything.
-        Object.keys(dynamic).forEach(pin => {
-          const u = dynamic[pin];
-          if (u._calledInSickGrantMigrated) return;
-          u._calledInSickGrantMigrated = true;
-          dashMigrated = true;
-          if (pin !== "3030") return;
-          const gt = Array.isArray(u.grantTabs) ? u.grantTabs : [];
-          if (!gt.includes("calledInSick")) u.grantTabs = [...gt, "calledInSick"];
-          if (Array.isArray(u.hideTabs)) u.hideTabs = u.hideTabs.filter(t => t !== "calledInSick");
-        });
         if (dashMigrated) { try { await saveAppUsersToDb(dynamic); } catch (_) { } }
       }
       if (cancelled) return;
@@ -10666,7 +10661,12 @@ function AppGate() {
         const raw = sessionStorage.getItem(PIN_SESSION_KEY);
         if (raw) {
           const s = JSON.parse(raw);
-          const u = (dynamic && dynamic[s.pin]) || STAFF_USERS[s.pin];
+          // No seed fallback here either — otherwise a deleted account stayed
+          // signed in on any tab that already had a session, which is the same
+          // hole as the login one and harder to notice. On a failed read
+          // `dynamic` is already the in-memory seed copy, so an outage still
+          // restores the session; a genuine delete does not.
+          const u = dynamic && dynamic[s.pin];
           if (u) {
             const merged = {
               ...s,
