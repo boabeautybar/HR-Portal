@@ -27971,11 +27971,30 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     // same promises are reused in the array below, so nothing is fetched twice.
     const _pLeaveOps = window.BOA_DB.loadLeaveOpsAccess ? window.BOA_DB.loadLeaveOpsAccess() : Promise.resolve({});
     const _pLeavePayroll = window.BOA_DB.loadLeavePayrollAccess ? window.BOA_DB.loadLeavePayrollAccess() : Promise.resolve({});
+    // Which tabs this loader should fetch for. It has to come from deriveAcl,
+    // not from the role predicates directly: a tab granted in the Settings grid
+    // is visible to someone no role test passes, and gating the FETCH on the
+    // role left exactly that person on a tab that opened fine and then said
+    // "No reports here yet" forever — the grid appearing to work and quietly
+    // not working, one layer below where the last fix looked.
+    // The context is built from the user record alone. The data-presence gates
+    // in the real `acl` (hoStaff.length, …) describe data this function has not
+    // fetched yet, and depending on `acl` here would re-run the loader every
+    // time its own results landed.
+    const _bootAcl = deriveAcl(currentUser, {
+      canIncidents: canSeeIncidents(currentUser),
+      canLeaveExpiry: canSeeLeaveExpiry,
+      canCalledInSick: canSeeCalledInSick(currentUser)
+    });
+    const _seeIncidents = _bootAcl.visible.has("incidents");
+    const _seeExtraDay = _bootAcl.visible.has("extraDayRequests");
+    const _seeCalledInSick = _bootAcl.visible.has("calledInSick");
+    const _seeLeaveExpiry = _bootAcl.visible.has("leaveExpiry");
     const _asCfg = (c, defRoles) => ({
       roles: Array.isArray(c && c.roles) ? c.roles : defRoles,
       pins: Array.isArray(c && c.pins) ? c.pins : []
     });
-    const _needRequestsP = (canSeeIncidents(currentUser) || _canSeeFreshaTodo || canSeeCalledInSick(currentUser))
+    const _needRequestsP = (_seeIncidents || _seeExtraDay || _canSeeFreshaTodo || _seeCalledInSick)
       ? Promise.resolve(true)
       : Promise.all([_pLeaveOps, _pLeavePayroll])
         .then(([o, p]) => accessAllows(currentUser, _asCfg(o, ["regional"]))
@@ -27999,7 +28018,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       _pLeaveOps,
       _pLeavePayroll,
       window.BOA_DB.loadLeaveBalancesAccess ? window.BOA_DB.loadLeaveBalancesAccess() : Promise.resolve({}),
-      (window.BOA_DB.loadIncidentReports && canSeeLeaveExpiry) ? window.BOA_DB.loadIncidentReports() : Promise.resolve([]),
+      (window.BOA_DB.loadIncidentReports && (_seeIncidents || _seeLeaveExpiry)) ? window.BOA_DB.loadIncidentReports() : Promise.resolve([]),
       _needRequestsP.then(n => (window.BOA_DB.loadLeaveRequests && n) ? window.BOA_DB.loadLeaveRequests() : []),
       _needRequestsP.then(n => (window.BOA_DB.loadExtraDayRequests && n) ? window.BOA_DB.loadExtraDayRequests() : []),
       window.BOA_DB.loadFreshaExtraOpenings ? window.BOA_DB.loadFreshaExtraOpenings() : Promise.resolve({}),
@@ -28124,7 +28143,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       // confidential Incident Reports tab. They only need the auto-filed expiry
       // notices, so drop genuine incidents before they ever enter session state.
       const _incidents = Array.isArray(incidents) ? incidents : [];
-      setIncidentReports(canSeeIncidents(currentUser) ? _incidents : _incidents.filter(isLeaveExpiryReport));
+      setIncidentReports(_seeIncidents ? _incidents : _incidents.filter(isLeaveExpiryReport));
       setLeaveRequests(Array.isArray(leaveReqs) ? leaveReqs : []);
       setExtraDayRequests(Array.isArray(extraReqs) ? extraReqs : []);
       setFreshaExtraOpen(freshaExtraOpenMap && typeof freshaExtraOpenMap === "object" ? freshaExtraOpenMap : {});
@@ -29147,7 +29166,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // costs nothing for everyone else. The clock feed itself is the effect above.
   useEffect(() => {
     const isOffice = tab === "attendance" && (attBranch === HEAD_OFFICE || attBranch === CALL_CENTRE);
-    if (!isOffice || !canSeeOfficeHours) return;
+    if (!isOffice || !acl.visible.has("officeHours")) return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
     let cancelled = false;
     const safeP = (p) => Promise.resolve(p).catch(() => null);
@@ -29172,7 +29191,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       if (fixes) setOfficeHoursFixes(typeof fixes === "object" ? fixes : {});
     })();
     return () => { cancelled = true; };
-  }, [tab, attBranch, attYM, canSeeOfficeHours, attOfficeCycle]);
+  }, [tab, attBranch, attYM, acl, attOfficeCycle]);
 
   // Load selfies for just the HO clock-ins on the selected day (same sidecar
   // + loader as managers), so stepping day-by-day stays snappy.
@@ -29825,7 +29844,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     // deliberately NOT a dependency: it only refines off-day estimates, and its
     // identity changes on every schedule prefetch.
     if (tab !== "dashboard" && tab !== "leaveBalances") return;
-    if (!canSeeIncidents(currentUser)) return;
+    if (!acl.visible.has("incidents")) return;
     if (!leaveBalancesData || !leaveBalancesData.entries) return;
     // Head Office + CC&S ride the same expiry radar/auto-incident as techs. They
     // live in enrichedOffice (declared below this effect, so only referenced in
@@ -29894,7 +29913,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       })();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, currentUser, leaveBalancesData, enriched, managers, leaveRecs]);
+  }, [tab, currentUser, acl, leaveBalancesData, enriched, managers, leaveRecs]);
   // Same enrichment for the office population (Head Office + Call Centre &
   // Sales). hoStaff is a THIRD population that never flows through `enriched`,
   // so without this the Office Staff List would have no Status / Return Date
