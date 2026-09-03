@@ -26263,21 +26263,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     })();
     return () => { dead = true; };
   }, []);
-  const canOffboard = canSeeOffboarding(currentUser, offboardAccess);
+  const _roleOffboard = canSeeOffboarding(currentUser, offboardAccess);
   const isPayrollOfficer = isOffboardPayrollOfficer(currentUser, offboardAccess);   // gets the nudge
   const canSignOffRecords = canSignOffPayroll(currentUser, offboardAccess);         // may sign off
   const [trackerRows, setTrackerRows] = useState([]);
   const [trackerLoading, setTrackerLoading] = useState(false);
   const [trackerErr, setTrackerErr] = useState("");
-  // Both trackers come back in one read and are split client-side — they are
-  // one table, and the payroll badge on the pill bar needs both counts anyway.
-  const loadTrackers = React.useCallback(async () => {
-    if (!canOffboard || !window.BOA_DB.listHrTrackerRecords) return;
-    setTrackerLoading(true); setTrackerErr("");
-    try { setTrackerRows(await window.BOA_DB.listHrTrackerRecords(null) || []); }
-    catch (e) { setTrackerErr((e && e.message) || String(e)); }
-    setTrackerLoading(false);
-  }, [canOffboard]);
   // What payroll still has to sign off. This is the number that decides whether
   // a final payout is safe to run, so it is surfaced on the pill bar and, for
   // the payroll officer, on the dashboard.
@@ -26328,11 +26319,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     logActivity("Updated SM trial criteria", "", "Classification criteria / evaluation form / trial policy", "Admin");
   };
   // Declared after officeHoursCfg — referencing it earlier is a TDZ crash.
-  const canSeeOfficeHours = accessAllows(currentUser, officeHoursCfg);
-  // Manager minus-hours alert audience: National Ops + whoever sees the payroll
-  // Office-Hours queue (payroll officer), plus owners. Same "investigate now"
-  // crowd, since a wrong manager deduction is a payroll error to catch early.
-  const canSeeMgrHours = !!(can(currentUser, "sys.seniorOps") || canSeeOfficeHours);
+  const _roleOfficeHours = accessAllows(currentUser, officeHoursCfg);
   // Who may REVIEW ("tick off") a store's daily cash-up (boa_cashup_review_access_v1).
   // Default: Regional Ops managers (owners always allowed). Editable in Settings.
   const [cashupReviewAccess, setCashupReviewAccess] = useState({});
@@ -26374,7 +26361,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // granted the operational or payroll leave check in Settings (e.g. an Ops
   // person ticked for the operational gate). Previously this only used
   // canSeeIncidents, so granting leave-ops access alone didn't reveal the tab.
-  const canSeeLeaveRequests = canSeeIncidents(currentUser) || accessAllows(currentUser, leaveOpsCfg) || accessAllows(currentUser, leavePayrollCfg);
+  const _roleLeaveRequests = canSeeIncidents(currentUser) || accessAllows(currentUser, leaveOpsCfg) || accessAllows(currentUser, leavePayrollCfg);
   // Who can see the Leave Expiry Reports tab (People): the confidential-incident
   // audience PLUS the payroll / balance-check team, since those auto-filed
   // "leave expiring" notices are administrative — the people who action leave
@@ -26384,8 +26371,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Permit / asylum / DHA status is restricted — see canSeeCompliance. Gates
   // the Compliance TAB and the Compliance COLUMN together; hiding one without
   // the other would leave the same data a click away.
-  const canCompliance = canSeeCompliance(currentUser);
-  const canSeeLeaveExpiry = canSeeIncidents(currentUser) || accessAllows(currentUser, leavePayrollCfg);
+  const _roleCompliance = canSeeCompliance(currentUser);
+  const _roleLeaveExpiry = canSeeIncidents(currentUser) || accessAllows(currentUser, leavePayrollCfg);
   const saveLeaveOpsCfg = async (next) => {
     setLeaveOpsAccess(next);
     try { if (window.BOA_DB.saveLeaveOpsAccess) await window.BOA_DB.saveLeaveOpsAccess(next); }
@@ -26417,12 +26404,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     isNationalOps: can(currentUser, "sys.nationalOps"),
     isDev: can(currentUser, "sys.accessAdmin"),
     isRom: isRomRole(currentUser?.role),
-    canOffboard, canCompliance,
+    canOffboard: _roleOffboard, canCompliance: _roleCompliance,
     canIncidents: canSeeIncidents(currentUser),
-    canLeaveExpiry: canSeeLeaveExpiry,
-    canLeaveRequests: canSeeLeaveRequests,
+    canLeaveExpiry: _roleLeaveExpiry,
+    canLeaveRequests: _roleLeaveRequests,
     canCalledInSick: canSeeCalledInSick(currentUser),
-    canOfficeHours: canSeeOfficeHours,
+    canOfficeHours: _roleOfficeHours,
     canAddOfficeStaff,
     canPayrollInbox: accessAllows(currentUser, leavePayrollCfg),
     canLeaveBalances: accessAllows(currentUser, leaveBalancesCfg),
@@ -26430,8 +26417,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     hoOnlyCount: hoOnlyStaff.length,
     ccStaffCount: ccStaff.length,
     officeTrialCount: (officeTrialList || []).length
-  }), [currentUser, canOffboard, canCompliance, canSeeLeaveExpiry, canSeeLeaveRequests,
-    canSeeOfficeHours, canAddOfficeStaff, leavePayrollCfg, leaveBalancesCfg,
+  }), [currentUser, _roleOffboard, _roleCompliance, _roleLeaveExpiry, _roleLeaveRequests,
+    _roleOfficeHours, canAddOfficeStaff, leavePayrollCfg, leaveBalancesCfg,
     hoStaff.length, hoOnlyStaff.length, ccStaff.length, officeTrialList]);
   // Sub-tab normalisation. The parent equivalent of this effect closed ~27
   // unguarded tab bodies without editing 27 of them; this closes every sub-tab
@@ -26449,10 +26436,45 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       if (first) set(first.k);
     });
   }, [currentUser, acl, schedSubTab, leaveSubTab, offSubTab, trialSubTab, officeTrialSubTab, recruitSubTab]);
-  // Off-boarding's trackers. Keyed on the ACL rather than the access list so a
-  // grid grant loads the data too — this sat above `acl` while it only needed
-  // canOffboard, and had to move down with it.
-  useEffect(() => { if (tab === "offboard" && acl.visible.has("offboard")) loadTrackers(); }, [tab, acl, loadTrackers]);
+  /* ═══ ONE ANSWER, EVERYWHERE ═════════════════════════════════════════════
+     Below this line the role predicates are gone. Every surface — the tab
+     body, the data that fills it, the columns inside it and the dashboard
+     cards that point at it — asks `sees`.
+
+     They are deliberately given the names the role predicates used to have,
+     because the whole file below already reads them. That is the point: a
+     grant made in the Settings grid now reaches ~45 call sites that used to
+     ask "what is your role" and answer "nothing to show".
+
+     The _role* originals live on above, and are consumed in exactly one
+     place — the gate context handed to deriveAcl. A role is the DEFAULT
+     audience for a tab; it stopped being the final word in the last phase,
+     and this is where the rest of the app catches up.                       */
+  const sees = React.useCallback((t) => acl.visible.has(t), [acl]);
+  const canOffboard = sees("offboard");
+  const canCompliance = sees("compliance");
+  const canSeeOfficeHours = sees("officeHours");
+  const canSeeLeaveExpiry = sees("leaveExpiry");
+  const canSeeLeaveRequests = sees("leaveRequests");
+  const canIncidents = sees("incidents");
+  // Manager minus-hours alert audience: National Ops + whoever sees the payroll
+  // Office-Hours queue (payroll officer), plus owners. Same "investigate now"
+  // crowd, since a wrong manager deduction is a payroll error to catch early.
+  const canSeeMgrHours = !!(can(currentUser, "sys.seniorOps") || canSeeOfficeHours);
+  // Both trackers come back in one read and are split client-side — they are
+  // one table, and the payroll badge on the pill bar needs both counts anyway.
+  // Keyed on the ACL so a grid grant loads the data: the term/disc sub-tabs
+  // are driven entirely by these rows, so gating them on the access list left
+  // a granted user with two sub-tabs that opened onto nothing.
+  const loadTrackers = React.useCallback(async () => {
+    if (!sees("offboard") || !window.BOA_DB.listHrTrackerRecords) return;
+    setTrackerLoading(true); setTrackerErr("");
+    try { setTrackerRows(await window.BOA_DB.listHrTrackerRecords(null) || []); }
+    catch (e) { setTrackerErr((e && e.message) || String(e)); }
+    setTrackerLoading(false);
+  }, [sees]);
+  useEffect(() => { if (tab === "offboard" && sees("offboard")) loadTrackers(); }, [tab, sees, loadTrackers]);
+
   // Handed to the two tabs that own their sub-tab state. Memoised on `acl`
   // because the child effects take it as a dependency — a fresh object every
   // render would re-fire them forever.
@@ -26468,7 +26490,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // dashboard alerts; the effect must sit below leaveBalancesCfg's declaration.)
   useEffect(() => {
     if (tab !== "dashboard") return;
-    if (!(currentUser?.isOwner || accessAllows(currentUser, leaveBalancesCfg))) return;
+    if (!sees("leaveBalances")) return;
     if (balAnchorAlert) return;   // once per session — asOf only moves on an upload
     if (!window.BOA_DB || !window.BOA_DB.loadLeaveBalances) return;
     let cancelled = false;
@@ -27983,7 +28005,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     // time its own results landed.
     const _bootAcl = deriveAcl(currentUser, {
       canIncidents: canSeeIncidents(currentUser),
-      canLeaveExpiry: canSeeLeaveExpiry,
+      canLeaveExpiry: _roleLeaveExpiry,
       canCalledInSick: canSeeCalledInSick(currentUser)
     });
     const _seeIncidents = _bootAcl.visible.has("incidents");
@@ -27996,9 +28018,11 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     });
     const _needRequestsP = (_seeIncidents || _seeExtraDay || _canSeeFreshaTodo || _seeCalledInSick)
       ? Promise.resolve(true)
-      : Promise.all([_pLeaveOps, _pLeavePayroll])
-        .then(([o, p]) => accessAllows(currentUser, _asCfg(o, ["regional"]))
-          || accessAllows(currentUser, _asCfg(p, ["payroll"])))
+      : _bootAcl.visible.has("leaveRequests")
+        ? Promise.resolve(true)
+        : Promise.all([_pLeaveOps, _pLeavePayroll])
+          .then(([o, p]) => accessAllows(currentUser, _asCfg(o, ["regional"]))
+            || accessAllows(currentUser, _asCfg(p, ["payroll"])))
         .catch(() => false);
     Promise.all([
       window.BOA_DB.loadAll(),
@@ -31426,7 +31450,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
       {/* Incident reports pop-up — greets HR/senior staff when reports are
           waiting. Louder (red) when any unread report is marked urgent. */}
-      {!loading && !incidentPopupSeen && canSeeIncidents(currentUser) && (
+      {!loading && !incidentPopupSeen && canIncidents && (
         <IncidentPopup
           reports={incidentReports}
           onView={() => { setIncidentPopupSeen(true); tryChangeTab("incidents"); }}
@@ -32310,7 +32334,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </div>
               ));
               dashAlert("sageReanchor", "payroll", "warning",
-              (currentUser?.isOwner || accessAllows(currentUser, leaveBalancesCfg)) && balAnchorAlert && balAnchorAlert.stale && (
+              sees("leaveBalances") && balAnchorAlert && balAnchorAlert.stale && (
                 <div style={{ background: "#f5f3ff", border: "1px solid #c4b5fd", borderRadius: 16, padding: "16px 20px", marginBottom: 20, boxShadow: "0 4px 14px rgba(109,40,217,0.10)", display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
                   <div style={{ flex: 1, minWidth: 280 }}>
                     <div style={{ fontSize: 15, fontWeight: 800, color: "#5b21b6", letterSpacing: "0.04em", textTransform: "uppercase" }}>🧾 Sage leave balances need re-anchoring</div>
@@ -32458,7 +32482,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   forfeiting. HR + National Ops audience; an incident is also
                   filed automatically (once per person per deadline). */
               dashAlert("leaveExpiry", "payroll", "warning",
-              canSeeIncidents(currentUser) && expiryRadar && expiryRadar.red.length > 0 && (
+              canIncidents && expiryRadar && expiryRadar.red.length > 0 && (
                 <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: 16, padding: "16px 20px", marginBottom: 20, boxShadow: "0 4px 14px rgba(185,28,28,0.10)", display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
                   <div style={{ flex: 1, minWidth: 280 }}>
                     <div style={{ fontSize: 15, fontWeight: 800, color: "#b91c1c", letterSpacing: "0.04em", textTransform: "uppercase" }}>⏳ Annual leave about to expire</div>
@@ -32509,7 +32533,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   closing (called in sick / absent) where that day is less than
                   3 days away and still not done. Links through to the tab. */
               dashAlert("freshaDue", "scheduling", "warning",
-              canSeeIncidents(currentUser) && (() => {
+              canIncidents && (() => {
                 const _now0 = new Date(); _now0.setHours(0, 0, 0, 0);
                 const daysUntil = (ymd) => ymd ? Math.ceil((new Date(ymd + "T00:00:00") - _now0) / 86400000) : null;
                 const isTech = (ec) => !isManagerEc(ec);
@@ -32633,7 +32657,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   onboarded. The trial itself runs automatically from the kiosk;
                   this card is the short list of things only HR can do. */
               dashAlert("trialHrActions", "people", "warning",
-              canSeeIncidents(currentUser) && (() => {
+              canIncidents && (() => {
                 const _nt = (c) => c && String(c.role || "nt").toLowerCase() === "nt";
                 const _trial = (c) => c && ["nt", "am"].includes(String(c.role || "nt").toLowerCase());
                 const _active = (c) => ["trial_w1", "trial_w2", "pending_mid_review", "pending_final_review"].includes(c.status);
@@ -32940,7 +32964,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   action and a "Mark done" so it can be cleared off the dashboard.
                   Scoped to the ROM's own stores. */
               dashAlert("mgrSick", "people", "info",
-              canSeeIncidents(currentUser) && (() => {
+              canIncidents && (() => {
                 const { today, tomorrow, list } = calledInSickWindow(leaveRequests);
                 const isMgrEc = (ec) => isManagerEc(ec);
                 const mgrSick = list.filter(r => isMgrEc(r.ec) && !r.reviewed
@@ -33003,7 +33027,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   summary; click through to the Called in Sick tab for details.
                   (Managers are handled by the ROM-action card above.) */
               dashAlert("techSick", "people", "info",
-              canSeeIncidents(currentUser) && (() => {
+              canIncidents && (() => {
                 const { today, tomorrow, list: _list } = calledInSickWindow(leaveRequests);
                 const list = _list.filter(r => !isManagerEc(r.ec));
                 if (!list.length) return null;
@@ -39442,7 +39466,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const daysLeft = endYmd ? daysBetween(today, endYmd) : 0;
           const endingSoon = isActive && daysLeft >= 0 && daysLeft <= 14;
           const overdueEnd = isActive && daysLeft < 0;
-          const irs = canSeeIncidents(currentUser) ? smIrsForTrial(r, incidentReports) : [];
+          const irs = canIncidents ? smIrsForTrial(r, incidentReports) : [];
           const summary = smTrialSummary(r, cfg, irs);
           const warnings = r.warnings || [];
           const cool = r.cooldown || null;
@@ -39639,7 +39663,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               )}
 
               {/* Incident reports */}
-              {!isApplied && canSeeIncidents(currentUser) && (
+              {!isApplied && canIncidents && (
                 <div style={{ marginTop: 12 }}>
                   <div style={{ fontSize: 10, fontWeight: 800, color: "#831843", letterSpacing: "0.07em", textTransform: "uppercase", marginBottom: 6 }}>
                     Incident reports in the trial window {irs.length > 0 && <span style={{ color: "#b45309" }}>({irs.length})</span>}
@@ -39806,8 +39830,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <SmDecisionModal
                 rec={decisionRec}
                 cfg={cfg}
-                irs={canSeeIncidents(currentUser) ? smIrsForTrial(decisionRec, incidentReports) : []}
-                summary={smTrialSummary(decisionRec, cfg, canSeeIncidents(currentUser) ? smIrsForTrial(decisionRec, incidentReports) : [])}
+                irs={canIncidents ? smIrsForTrial(decisionRec, incidentReports) : []}
+                summary={smTrialSummary(decisionRec, cfg, canIncidents ? smIrsForTrial(decisionRec, incidentReports) : [])}
                 onClose={() => setSmDecisionId(null)}
                 onPass={(d) => decidePass(decisionRec._id, d)}
                 onFail={(d) => decideFail(decisionRec._id, d)}
@@ -45425,7 +45449,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // person's leave balance (on Sage). Everyone else (e.g. National Ops)
         // can still log the leave, but it's added "balance pending" and lands in
         // the payroll officer's inbox to confirm the days.
-        const canCheckBalance = accessAllows(currentUser, leavePayrollCfg);
+        const canCheckBalance = sees("payrollInbox");
         const peopleType = isHoLikeSub ? "staff member" : (isTechMode ? "nail tech" : "manager");
         const peopleTypePlural = isHoLikeSub ? "staff" : (isTechMode ? "nail techs" : "managers");
         // Off-boarded people (leftDate in the past) should not appear in
