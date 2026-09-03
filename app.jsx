@@ -26278,7 +26278,6 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     catch (e) { setTrackerErr((e && e.message) || String(e)); }
     setTrackerLoading(false);
   }, [canOffboard]);
-  useEffect(() => { if (tab === "offboard" && canOffboard) loadTrackers(); }, [tab, canOffboard, loadTrackers]);
   // What payroll still has to sign off. This is the number that decides whether
   // a final payout is safe to run, so it is surfaced on the pill bar and, for
   // the payroll officer, on the dashboard.
@@ -26450,6 +26449,10 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       if (first) set(first.k);
     });
   }, [currentUser, acl, schedSubTab, leaveSubTab, offSubTab, trialSubTab, officeTrialSubTab, recruitSubTab]);
+  // Off-boarding's trackers. Keyed on the ACL rather than the access list so a
+  // grid grant loads the data too — this sat above `acl` while it only needed
+  // canOffboard, and had to move down with it.
+  useEffect(() => { if (tab === "offboard" && acl.visible.has("offboard")) loadTrackers(); }, [tab, acl, loadTrackers]);
   // Handed to the two tabs that own their sub-tab state. Memoised on `acl`
   // because the child effects take it as a dependency — a fresh object every
   // render would re-fire them forever.
@@ -28740,7 +28743,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // their "Not clocked in" roster can skip people who are simply off or on
   // leave. Only the FINDINGS are permission-gated, not the schedule itself.
   useEffect(() => {
-    const wantPayroll = canSeeOfficeHours && (tab === "officeHours" || tab === "dashboard");
+    const wantPayroll = acl.visible.has("officeHours") && (tab === "officeHours" || tab === "dashboard");
     const wantCheckins = tab === "hoCheckins" || tab === "ccCheckins";
     if (!wantPayroll && !wantCheckins) return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
@@ -35951,7 +35954,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             people (Z/NA or no permit on file). Tracking lives in
             app_state['boa_compliance_actions_v1'] so requests survive page
             reloads and other users. */}
-        {tab === "compliance" && canCompliance && (() => {
+        {tab === "compliance" && acl.visible.has("compliance") && (() => {
           // A transferred person belongs to their destination store once the
           // transfer has taken effect (transfer_date reached) — same rule the
           // schedule, check-in and Locations views use. Until then, and when
@@ -36925,47 +36928,47 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         })()}
 
         {/* ── INCIDENT REPORTS TAB ── */}
-        {tab === "incidents" && canSeeIncidents(currentUser) && (
+        {tab === "incidents" && acl.visible.has("incidents") && (
           <IncidentReportsTab reports={incidentReports} setReports={setIncidentReports} currentUser={currentUser} people={taggablePeople}
             subAcl={incidentsSubAcl} onSubChange={reportIncidentsSub} />
         )}
 
         {/* ── LEAVE EXPIRY REPORTS TAB (same component, expiry-only slice) ── */}
-        {tab === "leaveExpiry" && canSeeLeaveExpiry && (
+        {tab === "leaveExpiry" && acl.visible.has("leaveExpiry") && (
           <IncidentReportsTab reports={incidentReports} setReports={setIncidentReports} currentUser={currentUser} mode="leaveExpiry" />
         )}
 
         {/* ── LEAVE REQUESTS TAB ── */}
-        {tab === "leaveRequests" && canSeeLeaveRequests && (
+        {tab === "leaveRequests" && acl.visible.has("leaveRequests") && (
           <LeaveRequestsTab requests={leaveRequests} setRequests={setLeaveRequests} currentUser={currentUser} leaveRecs={leaveRecs} setLeaveRecs={setLeaveRecs} enriched={enriched} managers={managers} staff={staff} hoStaff={hoStaff} ccOnly={ccOnly} opsCfg={leaveOpsCfg} logActivity={logActivity} schedCache={schedCache} ymdToSchedYm={ymdToSchedYm} reverseLeave={reverseLeave} readOnly={currentTabIsReadOnly} />
         )}
 
         {/* ── PAYROLL INBOX TAB ── */}
-        {tab === "payrollInbox" && accessAllows(currentUser, leavePayrollCfg) && (
+        {tab === "payrollInbox" && acl.visible.has("payrollInbox") && (
           <PayrollInboxTab requests={leaveRequests} setRequests={setLeaveRequests} currentUser={currentUser} leaveRecs={leaveRecs} setLeaveRecs={setLeaveRecs} enriched={enriched} managers={managers} logActivity={logActivity} goTo={tryChangeTab} schedCache={schedCache} ymdToSchedYm={ymdToSchedYm} />
         )}
 
         {/* ── LEAVE BALANCES TAB ── */}
-        {tab === "leaveBalances" && accessAllows(currentUser, leaveBalancesCfg) && (
+        {tab === "leaveBalances" && acl.visible.has("leaveBalances") && (
           <LeaveBalancesTab enriched={enriched} managers={enrichedManagers} office={enrichedOffice} currentUser={currentUser} logActivity={logActivity} leaveRecs={leaveRecs} schedCache={schedCache} ymdToSchedYm={ymdToSchedYm} />
         )}
 
-        {tab === "frl" && accessAllows(currentUser, leaveBalancesCfg) && (
+        {tab === "frl" && acl.visible.has("frl") && (
           <FamilyResponsibilityTab enriched={enriched} managers={enrichedManagers} currentUser={currentUser} logActivity={logActivity} />
         )}
 
         {/* ── BARGAINING COUNCIL TAB ── */}
-        {tab === "bargainingCouncil" && accessAllows(currentUser, leaveBalancesCfg) && (
+        {tab === "bargainingCouncil" && acl.visible.has("bargainingCouncil") && (
           <BargainingCouncilTab enriched={enriched} managers={enrichedManagers} currentUser={currentUser} logActivity={logActivity} onApplyCouncil={applyCouncilFlags} />
         )}
 
         {/* ── CALLED IN SICK TAB ── */}
-        {tab === "calledInSick" && canSeeCalledInSick(currentUser) && (
+        {tab === "calledInSick" && acl.visible.has("calledInSick") && (
           <CalledInSickTab requests={leaveRequests} setRequests={setLeaveRequests} currentUser={currentUser} />
         )}
 
         {/* ── EXTRA-DAY REQUESTS TAB ── */}
-        {tab === "extraDayRequests" && canSeeIncidents(currentUser) && (
+        {tab === "extraDayRequests" && acl.visible.has("extraDayRequests") && (
           <ExtraDayRequestsTab requests={extraDayRequests} setRequests={setExtraDayRequests} currentUser={currentUser} />
         )}
 
@@ -40726,7 +40729,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       })()}
 
       {/* ── OFF-BOARDING TAB ── */}
-      {tab === "offboard" && canOffboard && (() => {
+      {tab === "offboard" && acl.visible.has("offboard") && (() => {
         const now = new Date();
         const p2 = z => String(z).padStart(2, "0");
         const todayStr = now.getFullYear() + "-" + p2(now.getMonth() + 1) + "-" + p2(now.getDate());
@@ -48477,7 +48480,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       {tab === "storeReports" && <StoreReportsTab extraDayRequests={extraDayRequests} managers={managers} />}
 
       {/* ── HR REPORTS (HR Outlook + H&S) ── */}
-      {tab === "hrReports" && (canSeeIncidents(currentUser) ? (
+      {tab === "hrReports" && (acl.visible.has("hrReports") ? (
         <HRReportsTab
           subAcl={hrReportsSubAcl} onSubChange={reportHrReportsSub}
           salonData={salonData} recruitFuture={recruitFuture}
@@ -49493,7 +49496,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         );
       })()}
 
-      {tab === "officeHours" && (!canSeeOfficeHours ? (
+      {tab === "officeHours" && (!acl.visible.has("officeHours") ? (
         <div style={{ padding: "0 24px" }}>
           <div style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 11, padding: 20, color: "#831843", fontSize: 13 }}>
             You don't have access to Office Hours. An owner can grant it under <b>Settings → ⏰ Office Hours alerts</b>.
@@ -52645,15 +52648,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         );
       })()}
 
-      {tab === "voucherAdmin" && _isOwnerOrMaster(currentUser) && (
+      {tab === "voucherAdmin" && acl.visible.has("voucherAdmin") && (
         <div style={{ padding: "0 24px" }}><VoucherAdmin currentUser={currentUser} /></div>
       )}
 
-      {tab === "bonusConfig" && _isOwnerOrMaster(currentUser) && (
+      {tab === "bonusConfig" && acl.visible.has("bonusConfig") && (
         <div style={{ padding: "0 24px" }}><BonusConfig /></div>
       )}
 
-      {tab === "storeHours" && _isOwnerOrMaster(currentUser) && (
+      {tab === "storeHours" && acl.visible.has("storeHours") && (
         <div style={{ padding: "0 24px" }}><StoreHoursConfig /></div>
       )}
 
@@ -52667,7 +52670,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         /></div>
       )}
 
-      {tab === "hrLibrary" && _isOwnerOrMaster(currentUser) && (
+      {tab === "hrLibrary" && acl.visible.has("hrLibrary") && (
         <div style={{ padding: "0 24px" }}>{window.EmployeeDataLibrary ? React.createElement(window.EmployeeDataLibrary, { staff: staff, currentUser: currentUser, managers: managers, obList: obList, offList: offList }) : <div style={{ padding: 24 }}>Loading Employee Files...</div>}</div>
       )}
 
