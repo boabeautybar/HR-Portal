@@ -11793,19 +11793,21 @@ function can(user, capKey, ctx) {
    out a tab whose data would embarrass you if a mis-click exposed it — the
    protection a hard lock was standing in for, without the code round-trip.
 
-   ignoreCategoryHide — set on tabs that used to carry forceShow. Deleting
-   forceShow makes them hideable, which is the fix; but hideCategories is a
-   blunt instrument that predates these tabs, and a user who is on the
-   leave-payroll access list yet has "Payroll" collapsed in their record would
-   have silently lost the Payroll Inbox. So an EXPLICIT per-tab hide revokes
-   them and a whole-category hide does not. Phase 5 can revisit once the live
-   records are known.                                                        */
+   ignoreCategoryHide is GONE (2026-09-04). Six ex-forceShow tabs carried it
+   as a transitional guard: deleting forceShow made them hideable, and there
+   was a worry that a user on the leave-payroll access list with "Payroll"
+   collapsed in their record would silently lose the Payroll Inbox. That made
+   a category hide mean one thing for most tabs and another for six of them,
+   which is a rule nobody can hold in their head while filling in a grid.
+   A category hide now strips every tab in the category, without exception —
+   and since hideCategories is only ever DERIVED, on save, from "every tab in
+   this category is hidden", the two now agree by construction.              */
 const TAB_ACCESS = {
   // ── People ───────────────────────────────────────────────────────────────
   onboard: { tier: "open", cat: "People" },
   trialPeriod: { tier: "open", cat: "People" },
   smTrial: { tier: "open", cat: "People" },
-  offboard: { tier: "normal", cat: "People", ignoreCategoryHide: true, sensitive: "Off-boarding holds terminations, resignations and disciplinary records.", allow: g => g.canOffboard,
+  offboard: { tier: "normal", cat: "People", sensitive: "Off-boarding holds terminations, resignations and disciplinary records.", allow: g => g.canOffboard,
     grantedIn: "Default: the Off-boarding column in the access matrix below (named PINs only — not even the Owner is automatic). Ticking here grants it directly instead." },
   staff: { tier: "open", cat: "People" },
   officeStaff: { tier: "normal", cat: "People", allow: g => !!(g.hoStaffCount || g.canAddOfficeStaff) },
@@ -11843,12 +11845,12 @@ const TAB_ACCESS = {
   payrollProgress: { tier: "open", cat: "Payroll" },
   payrollReports: { tier: "open", cat: "Payroll" },
   overtime: { tier: "open", cat: "Payroll" },
-  officeHours: { tier: "normal", cat: "Payroll", ignoreCategoryHide: true, allow: g => g.canOfficeHours,
+  officeHours: { tier: "normal", cat: "Payroll", allow: g => g.canOfficeHours,
     grantedIn: "Default: the Office Hours column in the access matrix below. Ticking here grants it directly instead." },
-  payrollInbox: { tier: "normal", cat: "Payroll", ignoreCategoryHide: true, allow: g => g.canPayrollInbox },
-  leaveBalances: { tier: "normal", cat: "Payroll", ignoreCategoryHide: true, allow: g => g.canLeaveBalances },
-  frl: { tier: "normal", cat: "Payroll", ignoreCategoryHide: true, allow: g => g.canLeaveBalances },
-  bargainingCouncil: { tier: "normal", cat: "Payroll", ignoreCategoryHide: true, allow: g => g.canLeaveBalances },
+  payrollInbox: { tier: "normal", cat: "Payroll", allow: g => g.canPayrollInbox },
+  leaveBalances: { tier: "normal", cat: "Payroll", allow: g => g.canLeaveBalances },
+  frl: { tier: "normal", cat: "Payroll", allow: g => g.canLeaveBalances },
+  bargainingCouncil: { tier: "normal", cat: "Payroll", allow: g => g.canLeaveBalances },
   bonusConfig: { tier: "normal", cat: "Payroll", allow: g => g.isOwnerOrMaster },
   // ── Insights ─────────────────────────────────────────────────────────────
   alerts: { tier: "open", cat: "Insights" },
@@ -12097,7 +12099,7 @@ function deriveAcl(user, g) {
     if (!allowed && e.tier === "normal" && grantTabs.has(t)) allowed = true;
     if (!allowed) return;
     if (hideTabs.has(t)) return;
-    if (!e.ignoreCategoryHide && e.cat && hideCats.has(e.cat) && !showTabs.has(t)) return;
+    if (e.cat && hideCats.has(e.cat) && !showTabs.has(t)) return;
     visible.add(t);
   });
   const roSet = new Set(user.readOnlyTabs || []);

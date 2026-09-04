@@ -380,7 +380,9 @@ Three things landed after PR #27 that the plan above does not describe.
 
 **Closed 2026-09-03.** `"International Ops"` satisfied both national gates because the substring is literally there — inter|national. Confirmed no role in the roster contains `"national"` at all, so both matchers are word-boundary'd: `/\bnational/` and `/\bnational (ops|operations)/`. In `"international"` the character before `"national"` is a word character, so the boundary does not match. Pinned by `subtabs.js` block L, which fails on the previous commit with exactly the nine `International` cases — the golden master cannot see this, because `deriveAcl` is handed pre-computed booleans and the role matchers only ever run inside `can()`.
 
-**Open decisions — these need a call, not code.** (2) `ignoreCategoryHide` on six tabs: a category hide does not strip them. (3) `PINK` and `isSMRole` are undefined identifiers — pre-existing, unrelated to permissions, latent until those branches render.
+**Closed 2026-09-04.** `ignoreCategoryHide` is deleted. A category hide now strips every tab in the category without exception, including the six ex-`forceShow` ones. It was a transitional guard, and it made a category hide mean one thing for most tabs and another for six of them — a rule nobody can hold in their head while filling in a grid. Measured rather than asserted: the golden master's matrix now varies `hideCategories` (it was fixed at `[]`, so it could not see the exception it was hiding) and reports **1,271,808 comparisons, 12,672 differences, all of them one of the six losing a hidden category and nothing else**. `hideCategories` is additionally re-derived where it could not be before — one of the six was the hold-out keeping a category "not fully hidden" — so `subtabs.js` block M pins the property that matters: the second save is a no-op, and the third.
+
+**Open decisions — these need a call, not code.** (3) `PINK` and `isSMRole` are undefined identifiers — pre-existing, unrelated to permissions, latent until those branches render.
 
 ### 5.3 The harnesses
 
