@@ -68,6 +68,36 @@ async function saveAppUsersToDb(users) {
   if (!window.BOA_DB || !window.BOA_DB.sb) throw new Error("Supabase not ready");
   await window.BOA_DB.sb.from("app_state").upsert({ key: APP_USERS_KEY, value: users || {} });
 }
+// Who does this PIN sign in as? Pure, and deliberately at module scope rather
+// than inside the submit handler, because it is the one decision in the app
+// where being wrong either lets a deleted account keep working or locks the
+// owner out of their own portal. Both directions want a test.
+//
+// Defect K: this used to be `store[pin] || STAFF_USERS[pin]`, so a login
+// deleted in Settings kept working forever — the seed map is compiled into the
+// page and no amount of deleting reaches it. A PIN removed from the roster now
+// actually stops opening the door.
+//
+// BREAK-GLASS, the single exception. If the live store holds no owner at all,
+// a seed OWNER may still sign in. Deleting the last owner is otherwise
+// recoverable only with direct database access and there is no other way back
+// into this portal. Scoped as tightly as it can be: owner records only, and
+// only while no owner exists.
+function resolveLogin(pin, store) {
+  const s = store || {};
+  const seed = STAFF_USERS[pin];
+  // Break-glass is checked FIRST, and only in the state that needs it. The
+  // owner can be lost two ways — deleted, or demoted to a non-owner — and a
+  // demoted record still exists, so a "does the live record exist" test would
+  // hand back the demoted one and leave the portal with no way to promote
+  // anybody. Settings is owner/dev only, so nothing inside the app could
+  // repair it. The condition is the honest one: is there an owner at all?
+  if (seed && seed.isOwner) {
+    const liveHasOwner = Object.keys(s).some(k => s[k] && s[k].isOwner);
+    if (!liveHasOwner) return seed;
+  }
+  return s[pin] || null;
+}
 function lookupUserByPin(pin) {
   if (window.__BOA_APP_USERS && window.__BOA_APP_USERS[pin]) return window.__BOA_APP_USERS[pin];
   return STAFF_USERS[pin] || null;
@@ -5316,7 +5346,17 @@ function OfficeOffboardModal({ person, existing, isCc, todayStr, currentUserName
 }
 
 // ─── SCHEDULE EDITOR (Phase 2a — manual editing, save to Supabase) ──────────────
-function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, leaveRecs, obList, techLoans, onTechLoansChange, initialBranch, isOwner, branchList, requestStore }) {
+function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, leaveRecs, obList, techLoans, onTechLoansChange, initialBranch, isOwner, branchList, requestStore, readOnly }) {
+  // View-only. Sub-tab permissions made this reachable: "read the nail-tech
+  // roster, edit only the manager one" is now something you can configure, and
+  // without this the tech roster would look fully editable and then refuse at
+  // the database. The DB guard is still the enforcement — these pre-flights
+  // make the refusal honest and immediate instead of a surprise after work.
+  const _roStop = () => {
+    if (!readOnly) return false;
+    alert("View-only — your access to this schedule lets you look but not change it.");
+    return true;
+  };
   // requestStore (optional, "ho" | "cc") names the persistence target for
   // off-day request edits — default is the nail-tech key. The Head Office
   // scheduler passes "ho" (boa_ho_requests_v1) and the Call Centre & Sales
@@ -5327,6 +5367,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
   // salon tech request with the HO/CC array. Failing loudly is the only safe
   // degradation.
   const _saveReqs = (arr) => {
+    if (readOnly) return Promise.reject(new Error("View-only — you can't change schedule requests here."));
     if (requestStore === "ho") {
       if (!window.BOA_DB.saveHoRequests) throw new Error("This portal build can't save Head Office requests yet — refresh the page to load the latest data.js.");
       return window.BOA_DB.saveHoRequests(arr);
@@ -5750,6 +5791,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
   };
 
   function setCell(ec, day, val) {
+    if (_roStop()) return;
     setGrid(g => {
       const next = { ...g };
       const ecRow = { ...(next[ec] || {}) };
@@ -5766,6 +5808,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
     setCell(ec, day, nxt);
   }
   function clearAll() {
+    if (_roStop()) return;
     if (!confirm("Clear all entries for this period? Cannot be undone after Save.")) return;
     setUndoSnap({ grid: JSON.parse(JSON.stringify(grid || {})), label: "Clear period" });
     setGrid({}); setDirty(true);
@@ -7484,6 +7527,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
   }
 
   async function save() {
+    if (_roStop()) return;
     // Strengthened overwrite confirmation. If a saved schedule already
     // exists, surface its last-saved time and remind the manager that the
     // previous version will be backed up to history (up to 5 versions
@@ -7550,6 +7594,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
   }
 
   async function deleteVersion(v) {
+    if (_roStop()) return;
     if (!v) return;
     if (!window.confirm("Delete saved version \"" + v.name + "\"?\n\nThis cannot be undone.")) return;
     try {
@@ -7563,6 +7608,7 @@ function Schedule({ allStaff, trialList, techRequests, onTechRequestsChange, lea
   }
 
   async function saveFinalVersion() {
+    if (_roStop()) return;
     // Visible-without-DevTools diagnostic. Reports exactly which check
     // fails (API missing / empty grid / cancel / save error / persisted-
     // but-not-found) via an alert chain so we don't have to chase a
@@ -9333,7 +9379,7 @@ function PinLogin(props) {
   const submit = (e) => {
     if (e && e.preventDefault) e.preventDefault();
     const store = (props && props.users) || window.__BOA_APP_USERS || STAFF_USERS;
-    const u = store[pin] || STAFF_USERS[pin];
+    const u = resolveLogin(pin, store);
     if (!u) {
       setError("Wrong PIN. Please try again.");
       setPin("");
@@ -10509,16 +10555,16 @@ function AppGate() {
         dynamic = JSON.parse(JSON.stringify(STAFF_USERS));
         try { await saveAppUsersToDb(dynamic); } catch (_) { }
       } else {
-        // Make sure any newly-shipped seed user (e.g. Theresa) is present
-        // even if the dynamic row was created before they were defined.
-        let mutated = false;
-        Object.keys(STAFF_USERS).forEach(pin => {
-          if (!dynamic[pin]) {
-            dynamic[pin] = { ...STAFF_USERS[pin] };
-            mutated = true;
-          }
-        });
-        if (mutated) { try { await saveAppUsersToDb(dynamic); } catch (_) { } }
+        // Seed users are NOT re-inserted here any more. This loop used to add
+        // back any STAFF_USERS pin missing from the live row, which meant
+        // deleting a seeded login in Settings was undone on the next page
+        // load — the record came back, and the PIN worked again in the
+        // meantime. Seeding now happens exactly once, on the genuine first
+        // run above, when the stored row does not exist at all.
+        //
+        // The cost is that a newly-shipped seed account no longer appears by
+        // itself. That is the right trade: new logins are created in Settings,
+        // and a delete that does not stay deleted is not a delete.
 
         // One-time migration: hide new Home/Dashboard widgets for all non-owner
         // users. We set `_dashMigrated*` so each migration step only ever runs
@@ -10573,37 +10619,18 @@ function AppGate() {
             u.hideTabs = [...ht, "dashAbscond"];
           }
         });
-        // V3 migration: Rochelle (3030) & Farida (4040) help run the
-        // nail-tech trials, so allow-list the Trial Period tab back in for
-        // them (Rochelle keeps the rest of People hidden). Runs once each.
-        Object.keys(dynamic).forEach(pin => {
-          const u = dynamic[pin];
-          if (u._trialTabMigrated) return;
-          u._trialTabMigrated = true;
-          dashMigrated = true;
-          if (pin === "3030" || pin === "4040") {
-            const st = Array.isArray(u.showTabs) ? u.showTabs : [];
-            if (!st.includes("trialPeriod")) u.showTabs = [...st, "trialPeriod"];
-          }
-        });
-        // V3c migration: Rochelle (3030) & Farida (4040) don't just VIEW the
-        // Trial Period tab — they run the trials, so they must be able to EDIT
-        // it (set start dates, mark the trial days). The earlier grant only
-        // made it visible; if the tab is stuck view-only (in readOnlyTabs) or
-        // hidden (in hideTabs) for them, the day editor's saves are silently
-        // blocked by the read-only guard. Force full edit access. Runs once each.
-        Object.keys(dynamic).forEach(pin => {
-          const u = dynamic[pin];
-          if (u._trialEditMigrated) return;
-          u._trialEditMigrated = true;
-          dashMigrated = true;
-          if (pin === "3030" || pin === "4040") {
-            if (Array.isArray(u.readOnlyTabs)) u.readOnlyTabs = u.readOnlyTabs.filter(t => t !== "trialPeriod");
-            if (Array.isArray(u.hideTabs)) u.hideTabs = u.hideTabs.filter(t => t !== "trialPeriod");
-            const st = Array.isArray(u.showTabs) ? u.showTabs : [];
-            if (!st.includes("trialPeriod")) u.showTabs = [...st, "trialPeriod"];
-          }
-        });
+        // The V3 / V3c / V5 migrations lived here. All three were one-shot
+        // repairs keyed on the PIN literals "3030" and "4040", they set their
+        // own flag on every record on the first boot after shipping, and their
+        // results were confirmed in the live data before this deletion. Their
+        // effects survive in the records themselves; re-running them could
+        // only overwrite a decision the owner has since made in Settings.
+        //
+        // V3 and V3c were also the last things that ever WROTE `showTabs`.
+        // The key is still read (deriveAcl honours a stored value, so nobody
+        // loses a tab) but nothing adds to it any more: `grantTabs` is how a
+        // tab is handed out now, and it says so on the record rather than
+        // depending on a category rule to mean anything.
         // V4 migration: introduces the Office Staff List tab. It exposes the
         // Head Office / CC&S directory (permits, maternity dates, tenure) —
         // the same sensitivity class as the salon Staff List, which owners
@@ -10623,22 +10650,6 @@ function AppGate() {
             u.hideTabs = [...ht, "officeStaff"];
           }
         });
-        // V5 migration: move the hardcoded Called in Sick grant into DATA.
-        // 3030 (Rochelle) reached that tab only because her PIN was written
-        // into the code — the Settings tick for it could never take effect.
-        // grantTabs now makes the tick real, so the grant becomes an ordinary
-        // record entry the owner can see and revoke like any other. Additive
-        // and idempotent; it never removes anything.
-        Object.keys(dynamic).forEach(pin => {
-          const u = dynamic[pin];
-          if (u._calledInSickGrantMigrated) return;
-          u._calledInSickGrantMigrated = true;
-          dashMigrated = true;
-          if (pin !== "3030") return;
-          const gt = Array.isArray(u.grantTabs) ? u.grantTabs : [];
-          if (!gt.includes("calledInSick")) u.grantTabs = [...gt, "calledInSick"];
-          if (Array.isArray(u.hideTabs)) u.hideTabs = u.hideTabs.filter(t => t !== "calledInSick");
-        });
         if (dashMigrated) { try { await saveAppUsersToDb(dynamic); } catch (_) { } }
       }
       if (cancelled) return;
@@ -10650,7 +10661,12 @@ function AppGate() {
         const raw = sessionStorage.getItem(PIN_SESSION_KEY);
         if (raw) {
           const s = JSON.parse(raw);
-          const u = (dynamic && dynamic[s.pin]) || STAFF_USERS[s.pin];
+          // No seed fallback here either — otherwise a deleted account stayed
+          // signed in on any tab that already had a session, which is the same
+          // hole as the login one and harder to notice. On a failed read
+          // `dynamic` is already the in-memory seed copy, so an outage still
+          // restores the session; a genuine delete does not.
+          const u = dynamic && dynamic[s.pin];
           if (u) {
             const merged = {
               ...s,
@@ -11495,9 +11511,14 @@ function roleIdsOf(user) {
 // none is a pattern to copy. `loose` is the lower-cased but UNTRIMMED title,
 // which two of these gates compare against.
 const LEGACY_ROLE_MATCH = {
-  // canSeeCompliance's national test never got the Phase-1 word boundaries,
-  // so "International …" still opens the immigration-status gate.
-  national_substr: r => /national/.test(r),
+  // Word-boundary'd 2026-09-03. This was a bare /national/, which matched
+  // "International" — the substring is literally there: inter|national. It
+  // opened the immigration-status gate to a title nobody meant to admit.
+  // Preserved 1:1 through Phase 3 because the rule was to change no
+  // permission silently; closed now the roster is confirmed to hold no such
+  // title. \b is the whole fix: in "international" the character before
+  // "national" is a word character, so the boundary does not match.
+  national_substr: r => /\bnational/.test(r),
   // canSeeCompliance matches "payroll" as a bare substring and NOTHING else.
   // The canonical payroll role also admits wages/finance titles, so using it
   // here would have quietly handed a "Wages Clerk" access to permit and asylum
@@ -11509,7 +11530,7 @@ const LEGACY_ROLE_MATCH = {
   // directories required an explicit National Ops / Operations title. They are
   // genuinely different sizes, so they stay two capabilities rather than being
   // merged into whichever one happened to be read first.
-  national_ops_titled: r => r.includes("national ops") || r.includes("national operations"),
+  national_ops_titled: r => /\bnational (ops|operations)/.test(r),
   // The SM-trial evaluate/decide gates use bare substrings AND compare an
   // untrimmed title, so " Master Admin " fails there but passes elsewhere.
   hr_substr: (r, loose) => loose.includes("hr"),
@@ -11672,6 +11693,25 @@ const CAPABILITIES = {
   // schedule" card checked owner-or-national. The wider door was the real
   // answer, so that is what both now use — nobody loses access, and the two
   // stop disagreeing.
+  /* The two destructive actions that were gated on a shared PIN typed into
+     a prompt. "2002" was in the source, so it was in every browser that ever
+     loaded the page, and it identified nobody — the audit log recorded the
+     account that happened to be signed in, not the person who knew the
+     number. §4.7: the capability is the authorisation; the typed word keeps
+     the fat-finger protection that was the only thing the PIN really did.
+     `tier: "locked"` means the Settings grid cannot hand these out.        */
+  // The Owner is implicit in can(), so they are not listed — there is no
+  // "owner" entry in ROLES and naming one here would match nobody.
+  "act.locations.delete": {
+    tier: "locked", surface: "action",
+    audience: { roles: ["master_admin", "dev"], legacy: ["master_untrimmed"] },
+    desc: "Delete a custom location — removes the branch and everything filed under it."
+  },
+  "act.attendance.totalReset": {
+    tier: "locked", surface: "action",
+    audience: { roles: ["master_admin", "dev"], legacy: ["master_untrimmed"] },
+    desc: "Total Reset — permanently delete a branch+cycle's attendance grid, kiosk audit log, proofs and absence sidecars."
+  },
   "act.schedule.publishCycle": {
     tier: "normal", surface: "action",
     audience: { legacy: ["national_substr"] },
@@ -11696,7 +11736,7 @@ const AUDIENCE_WORDS = {
   regional_ops: "Regional Ops Manager", payroll: "Payroll / wages / finance",
   recruiter: "Recruitment", nailtech_trainer: "Nail-tech trainer (not manager trainers)",
   project: "Project Manager", dev: "Developer",
-  national_substr: "any role containing \u201cnational\u201d",
+  national_substr: "a role whose title starts a word with \u201cnational\u201d",
   national_ops_titled: "a National Ops / National Operations title",
   payroll_substr: "any role containing \u201cpayroll\u201d",
   hr_substr: "any role containing \u201chr\u201d", humanres_substr: "Human Resources",
@@ -11753,19 +11793,21 @@ function can(user, capKey, ctx) {
    out a tab whose data would embarrass you if a mis-click exposed it — the
    protection a hard lock was standing in for, without the code round-trip.
 
-   ignoreCategoryHide — set on tabs that used to carry forceShow. Deleting
-   forceShow makes them hideable, which is the fix; but hideCategories is a
-   blunt instrument that predates these tabs, and a user who is on the
-   leave-payroll access list yet has "Payroll" collapsed in their record would
-   have silently lost the Payroll Inbox. So an EXPLICIT per-tab hide revokes
-   them and a whole-category hide does not. Phase 5 can revisit once the live
-   records are known.                                                        */
+   ignoreCategoryHide is GONE (2026-09-04). Six ex-forceShow tabs carried it
+   as a transitional guard: deleting forceShow made them hideable, and there
+   was a worry that a user on the leave-payroll access list with "Payroll"
+   collapsed in their record would silently lose the Payroll Inbox. That made
+   a category hide mean one thing for most tabs and another for six of them,
+   which is a rule nobody can hold in their head while filling in a grid.
+   A category hide now strips every tab in the category, without exception —
+   and since hideCategories is only ever DERIVED, on save, from "every tab in
+   this category is hidden", the two now agree by construction.              */
 const TAB_ACCESS = {
   // ── People ───────────────────────────────────────────────────────────────
   onboard: { tier: "open", cat: "People" },
   trialPeriod: { tier: "open", cat: "People" },
   smTrial: { tier: "open", cat: "People" },
-  offboard: { tier: "normal", cat: "People", ignoreCategoryHide: true, sensitive: "Off-boarding holds terminations, resignations and disciplinary records.", allow: g => g.canOffboard,
+  offboard: { tier: "normal", cat: "People", sensitive: "Off-boarding holds terminations, resignations and disciplinary records.", allow: g => g.canOffboard,
     grantedIn: "Default: the Off-boarding column in the access matrix below (named PINs only — not even the Owner is automatic). Ticking here grants it directly instead." },
   staff: { tier: "open", cat: "People" },
   officeStaff: { tier: "normal", cat: "People", allow: g => !!(g.hoStaffCount || g.canAddOfficeStaff) },
@@ -11803,12 +11845,12 @@ const TAB_ACCESS = {
   payrollProgress: { tier: "open", cat: "Payroll" },
   payrollReports: { tier: "open", cat: "Payroll" },
   overtime: { tier: "open", cat: "Payroll" },
-  officeHours: { tier: "normal", cat: "Payroll", ignoreCategoryHide: true, allow: g => g.canOfficeHours,
+  officeHours: { tier: "normal", cat: "Payroll", allow: g => g.canOfficeHours,
     grantedIn: "Default: the Office Hours column in the access matrix below. Ticking here grants it directly instead." },
-  payrollInbox: { tier: "normal", cat: "Payroll", ignoreCategoryHide: true, allow: g => g.canPayrollInbox },
-  leaveBalances: { tier: "normal", cat: "Payroll", ignoreCategoryHide: true, allow: g => g.canLeaveBalances },
-  frl: { tier: "normal", cat: "Payroll", ignoreCategoryHide: true, allow: g => g.canLeaveBalances },
-  bargainingCouncil: { tier: "normal", cat: "Payroll", ignoreCategoryHide: true, allow: g => g.canLeaveBalances },
+  payrollInbox: { tier: "normal", cat: "Payroll", allow: g => g.canPayrollInbox },
+  leaveBalances: { tier: "normal", cat: "Payroll", allow: g => g.canLeaveBalances },
+  frl: { tier: "normal", cat: "Payroll", allow: g => g.canLeaveBalances },
+  bargainingCouncil: { tier: "normal", cat: "Payroll", allow: g => g.canLeaveBalances },
   bonusConfig: { tier: "normal", cat: "Payroll", allow: g => g.isOwnerOrMaster },
   // ── Insights ─────────────────────────────────────────────────────────────
   alerts: { tier: "open", cat: "Insights" },
@@ -12057,7 +12099,7 @@ function deriveAcl(user, g) {
     if (!allowed && e.tier === "normal" && grantTabs.has(t)) allowed = true;
     if (!allowed) return;
     if (hideTabs.has(t)) return;
-    if (!e.ignoreCategoryHide && e.cat && hideCats.has(e.cat) && !showTabs.has(t)) return;
+    if (e.cat && hideCats.has(e.cat) && !showTabs.has(t)) return;
     visible.add(t);
   });
   const roSet = new Set(user.readOnlyTabs || []);
@@ -12754,6 +12796,13 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, dataCounts, offbo
         <button onClick={beginAdd} disabled={busy}
           style={{ padding: "9px 18px", background: "#BE185D", color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 }}>
           + Add user
+        </button>
+        {/* The permission grid says what someone SHOULD see. This is how you
+            check what they DO see, without borrowing their PIN. */}
+        <button onClick={() => { try { const u = new URL(window.location.href); u.searchParams.set("simulate", "1"); window.location.href = u.toString(); } catch (_e) { } }}
+          title="Open the portal as any user — their nav, their tabs, their sub-tabs and the data inside them. Read-only is forced on and the activity log still names you."
+          style={{ padding: "9px 18px", background: "#1f2937", color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700 }}>
+          👁 View as…
         </button>
         {busy && <span style={{ alignSelf: "center", fontSize: 11, color: "#9F1A4F", fontStyle: "italic" }}>Saving…</span>}
       </div>
@@ -13920,7 +13969,16 @@ function IncidentQR({ url, size }) {
   return <div ref={ref} />;
 }
 
-function IncidentReportsTab({ reports, setReports, currentUser, mode, people, subAcl, onSubChange }) {
+function IncidentReportsTab({ reports, setReports, currentUser, mode, people, subAcl, onSubChange, readOnly }) {
+  // View-only. Reachable now that one inbox can be granted edit and the other
+  // not — marking a report resolved is the write this has to stop, and it has
+  // to stop it before the optimistic local patch, or the row would show as
+  // actioned until the next reload.
+  const _roStop = () => {
+    if (!readOnly) return false;
+    alert("View-only — you can read these reports but not action them.");
+    return true;
+  };
   // Same component, two inboxes: the default view hides the auto-filed leave-
   // expiry alerts so genuine staff reports aren't buried; mode="leaveExpiry"
   // shows ONLY those. Everything else (status/store filters, review actions,
@@ -13960,6 +14018,7 @@ function IncidentReportsTab({ reports, setReports, currentUser, mode, people, su
   // review, so it is an explicit HR action with an audit note, never inferred
   // from the reporter's free-text "people involved".
   const saveTags = async (r, ecs) => {
+    if (_roStop()) return;
     setBusy(true);
     try {
       await window.BOA_DB.setIncidentTags(r.id, ecs, currentUser.name || currentUser.pin || "");
@@ -13991,11 +14050,12 @@ function IncidentReportsTab({ reports, setReports, currentUser, mode, people, su
   const onOpen = async (r) => {
     const next = openId === r.id ? null : r.id;
     setOpenId(next);
-    if (next && !r.reviewed) {
+    if (next && !r.reviewed && !readOnly) {
       try { await window.BOA_DB.markIncidentReviewed(r.id); patchLocal(r.id, { reviewed: true }); } catch (_e) { }
     }
   };
   const changeStatus = async (r, status) => {
+    if (_roStop()) return;
     // Closing a report requires a written resolution — open the note box first.
     if (status === "resolved") {
       setResolvingId(r.id);
@@ -14008,6 +14068,7 @@ function IncidentReportsTab({ reports, setReports, currentUser, mode, people, su
     setBusy(false);
   };
   const doResolve = async (r) => {
+    if (_roStop()) return;
     const text = (resolveText || "").trim();
     if (!text) return;
     setBusy(true);
@@ -24178,7 +24239,45 @@ function AlertModal({ data, onResolve }) {
   );
 }
 
-function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
+function App({ currentUser: _realUser, onSignOut, appUsers, onUsersUpdate }) {
+  /* ═══ VIEW AS ════════════════════════════════════════════════════════════
+     Every permission bug in this rework was found the same way: sign in as
+     the person, look, sign out. That is slow, it needs their PIN, and it
+     only ever gets done after somebody complains.
+
+     Enforcement is centralised now, so impersonation is nearly free: swap
+     the record `deriveAcl` reads and the whole app answers as that person.
+     `currentUser` is deliberately SHADOWED below — every consumer keeps
+     working unchanged, which is the property that makes this trustworthy.
+     `_realUser` survives for the two things that must never be simulated:
+     who the audit log names, and who may leave simulation.
+
+     The simulated record is forced read-only on every tab and every
+     sub-tab. The point is to see what they see, never to act as them, and
+     because the DB write guard reads the same field the block is the real
+     one rather than a promise not to click anything.                      */
+  const _simEligible = !!(_realUser && (_realUser.isOwner || can(_realUser, "sys.accessAdmin")));
+  const [simulateAs, setSimulateAs] = useState(() => {
+    try {
+      const q = new URLSearchParams(window.location.search);
+      const v = q.get("simulate");
+      return v && v !== "1" ? v : null;
+    } catch (_e) { return null; }
+  });
+  const simOffered = _simEligible && (() => {
+    try { return new URLSearchParams(window.location.search).has("simulate"); } catch (_e) { return false; }
+  })();
+  const simulatedUser = useMemo(() => {
+    if (!_simEligible || !simulateAs) return null;
+    const u = (appUsers || {})[simulateAs];
+    if (!u) return null;
+    const ro = Object.keys(TAB_ACCESS).concat(
+      Object.keys(TAB_SUBS).reduce((a, pt) => a.concat(subsOf(pt).map(s => subKey(pt, s.k))), [])
+    );
+    return { ...u, pin: simulateAs, readOnlyTabs: ro, _simulated: true };
+  }, [_simEligible, simulateAs, appUsers]);
+  const currentUser = simulatedUser || _realUser;
+
   // ── Activity logger — records who did what to the boa_activity_log_v1 row.
   // Failures are swallowed so a logging hiccup never blocks the actual edit.
   // Signature: logActivity(action, target, details, category?). If category is
@@ -24205,7 +24304,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   };
   const logActivity = async (action, target, details, category) => {
     if (!window.BOA_DB || !window.BOA_DB.appendActivity) return;
-    const u = currentUser || window.BOA_CURRENT_USER || {};
+    const u = _realUser || window.BOA_CURRENT_USER || {};
     try {
       await window.BOA_DB.appendActivity({
         who: u.name || "Unknown",
@@ -25387,17 +25486,23 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     }
   };
 
-  // PIN-gated delete for custom locations. Removes the branch from the
+  // Delete for custom locations. Removes the branch from the
   // boa_custom_salons app_state row and splices it out of the in-memory
-  // SALONS array so the Locations grid re-renders without it. The PIN
-  // ("2002") is checked client-side; this is a soft guard against
-  // misclicks, not a security boundary.
-  const DELETE_LOCATION_PIN = "2002";
+  // SALONS array so the Locations grid re-renders without it.
+  //
+  // This used to ask for a shared PIN ("2002") that was written in the
+  // source, so everyone who had ever loaded the page had it and it named
+  // nobody. The capability is now the authorisation; typing the branch name
+  // is what is left of the PIN's actual job, which was stopping a misclick.
   const submitDeleteLocation = async () => {
     const m = deleteLocationModal;
     if (!m || !m.salon) return;
-    if ((m.pin || "").trim() !== DELETE_LOCATION_PIN) {
-      setDeleteLocationModal({ ...m, error: "Incorrect PIN." });
+    if (!can(currentUser, "act.locations.delete")) {
+      setDeleteLocationModal({ ...m, error: "You don't have permission to delete a location." });
+      return;
+    }
+    if ((m.pin || "").trim() !== String(m.salon.name || "").trim()) {
+      setDeleteLocationModal({ ...m, error: "Type the branch name exactly to confirm." });
       return;
     }
     const target = m.salon.name;
@@ -26263,22 +26368,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     })();
     return () => { dead = true; };
   }, []);
-  const canOffboard = canSeeOffboarding(currentUser, offboardAccess);
+  const _roleOffboard = canSeeOffboarding(currentUser, offboardAccess);
   const isPayrollOfficer = isOffboardPayrollOfficer(currentUser, offboardAccess);   // gets the nudge
   const canSignOffRecords = canSignOffPayroll(currentUser, offboardAccess);         // may sign off
   const [trackerRows, setTrackerRows] = useState([]);
   const [trackerLoading, setTrackerLoading] = useState(false);
   const [trackerErr, setTrackerErr] = useState("");
-  // Both trackers come back in one read and are split client-side — they are
-  // one table, and the payroll badge on the pill bar needs both counts anyway.
-  const loadTrackers = React.useCallback(async () => {
-    if (!canOffboard || !window.BOA_DB.listHrTrackerRecords) return;
-    setTrackerLoading(true); setTrackerErr("");
-    try { setTrackerRows(await window.BOA_DB.listHrTrackerRecords(null) || []); }
-    catch (e) { setTrackerErr((e && e.message) || String(e)); }
-    setTrackerLoading(false);
-  }, [canOffboard]);
-  useEffect(() => { if (tab === "offboard" && canOffboard) loadTrackers(); }, [tab, canOffboard, loadTrackers]);
   // What payroll still has to sign off. This is the number that decides whether
   // a final payout is safe to run, so it is surfaced on the pill bar and, for
   // the payroll officer, on the dashboard.
@@ -26329,11 +26424,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     logActivity("Updated SM trial criteria", "", "Classification criteria / evaluation form / trial policy", "Admin");
   };
   // Declared after officeHoursCfg — referencing it earlier is a TDZ crash.
-  const canSeeOfficeHours = accessAllows(currentUser, officeHoursCfg);
-  // Manager minus-hours alert audience: National Ops + whoever sees the payroll
-  // Office-Hours queue (payroll officer), plus owners. Same "investigate now"
-  // crowd, since a wrong manager deduction is a payroll error to catch early.
-  const canSeeMgrHours = !!(can(currentUser, "sys.seniorOps") || canSeeOfficeHours);
+  const _roleOfficeHours = accessAllows(currentUser, officeHoursCfg);
   // Who may REVIEW ("tick off") a store's daily cash-up (boa_cashup_review_access_v1).
   // Default: Regional Ops managers (owners always allowed). Editable in Settings.
   const [cashupReviewAccess, setCashupReviewAccess] = useState({});
@@ -26375,7 +26466,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // granted the operational or payroll leave check in Settings (e.g. an Ops
   // person ticked for the operational gate). Previously this only used
   // canSeeIncidents, so granting leave-ops access alone didn't reveal the tab.
-  const canSeeLeaveRequests = canSeeIncidents(currentUser) || accessAllows(currentUser, leaveOpsCfg) || accessAllows(currentUser, leavePayrollCfg);
+  const _roleLeaveRequests = canSeeIncidents(currentUser) || accessAllows(currentUser, leaveOpsCfg) || accessAllows(currentUser, leavePayrollCfg);
   // Who can see the Leave Expiry Reports tab (People): the confidential-incident
   // audience PLUS the payroll / balance-check team, since those auto-filed
   // "leave expiring" notices are administrative — the people who action leave
@@ -26385,8 +26476,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // Permit / asylum / DHA status is restricted — see canSeeCompliance. Gates
   // the Compliance TAB and the Compliance COLUMN together; hiding one without
   // the other would leave the same data a click away.
-  const canCompliance = canSeeCompliance(currentUser);
-  const canSeeLeaveExpiry = canSeeIncidents(currentUser) || accessAllows(currentUser, leavePayrollCfg);
+  const _roleCompliance = canSeeCompliance(currentUser);
+  const _roleLeaveExpiry = canSeeIncidents(currentUser) || accessAllows(currentUser, leavePayrollCfg);
   const saveLeaveOpsCfg = async (next) => {
     setLeaveOpsAccess(next);
     try { if (window.BOA_DB.saveLeaveOpsAccess) await window.BOA_DB.saveLeaveOpsAccess(next); }
@@ -26418,12 +26509,12 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     isNationalOps: can(currentUser, "sys.nationalOps"),
     isDev: can(currentUser, "sys.accessAdmin"),
     isRom: isRomRole(currentUser?.role),
-    canOffboard, canCompliance,
+    canOffboard: _roleOffboard, canCompliance: _roleCompliance,
     canIncidents: canSeeIncidents(currentUser),
-    canLeaveExpiry: canSeeLeaveExpiry,
-    canLeaveRequests: canSeeLeaveRequests,
+    canLeaveExpiry: _roleLeaveExpiry,
+    canLeaveRequests: _roleLeaveRequests,
     canCalledInSick: canSeeCalledInSick(currentUser),
-    canOfficeHours: canSeeOfficeHours,
+    canOfficeHours: _roleOfficeHours,
     canAddOfficeStaff,
     canPayrollInbox: accessAllows(currentUser, leavePayrollCfg),
     canLeaveBalances: accessAllows(currentUser, leaveBalancesCfg),
@@ -26431,8 +26522,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     hoOnlyCount: hoOnlyStaff.length,
     ccStaffCount: ccStaff.length,
     officeTrialCount: (officeTrialList || []).length
-  }), [currentUser, canOffboard, canCompliance, canSeeLeaveExpiry, canSeeLeaveRequests,
-    canSeeOfficeHours, canAddOfficeStaff, leavePayrollCfg, leaveBalancesCfg,
+  }), [currentUser, _roleOffboard, _roleCompliance, _roleLeaveExpiry, _roleLeaveRequests,
+    _roleOfficeHours, canAddOfficeStaff, leavePayrollCfg, leaveBalancesCfg,
     hoStaff.length, hoOnlyStaff.length, ccStaff.length, officeTrialList]);
   // Sub-tab normalisation. The parent equivalent of this effect closed ~27
   // unguarded tab bodies without editing 27 of them; this closes every sub-tab
@@ -26450,6 +26541,45 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       if (first) set(first.k);
     });
   }, [currentUser, acl, schedSubTab, leaveSubTab, offSubTab, trialSubTab, officeTrialSubTab, recruitSubTab]);
+  /* ═══ ONE ANSWER, EVERYWHERE ═════════════════════════════════════════════
+     Below this line the role predicates are gone. Every surface — the tab
+     body, the data that fills it, the columns inside it and the dashboard
+     cards that point at it — asks `sees`.
+
+     They are deliberately given the names the role predicates used to have,
+     because the whole file below already reads them. That is the point: a
+     grant made in the Settings grid now reaches ~45 call sites that used to
+     ask "what is your role" and answer "nothing to show".
+
+     The _role* originals live on above, and are consumed in exactly one
+     place — the gate context handed to deriveAcl. A role is the DEFAULT
+     audience for a tab; it stopped being the final word in the last phase,
+     and this is where the rest of the app catches up.                       */
+  const sees = React.useCallback((t) => acl.visible.has(t), [acl]);
+  const canOffboard = sees("offboard");
+  const canCompliance = sees("compliance");
+  const canSeeOfficeHours = sees("officeHours");
+  const canSeeLeaveExpiry = sees("leaveExpiry");
+  const canSeeLeaveRequests = sees("leaveRequests");
+  const canIncidents = sees("incidents");
+  // Manager minus-hours alert audience: National Ops + whoever sees the payroll
+  // Office-Hours queue (payroll officer), plus owners. Same "investigate now"
+  // crowd, since a wrong manager deduction is a payroll error to catch early.
+  const canSeeMgrHours = !!(can(currentUser, "sys.seniorOps") || canSeeOfficeHours);
+  // Both trackers come back in one read and are split client-side — they are
+  // one table, and the payroll badge on the pill bar needs both counts anyway.
+  // Keyed on the ACL so a grid grant loads the data: the term/disc sub-tabs
+  // are driven entirely by these rows, so gating them on the access list left
+  // a granted user with two sub-tabs that opened onto nothing.
+  const loadTrackers = React.useCallback(async () => {
+    if (!sees("offboard") || !window.BOA_DB.listHrTrackerRecords) return;
+    setTrackerLoading(true); setTrackerErr("");
+    try { setTrackerRows(await window.BOA_DB.listHrTrackerRecords(null) || []); }
+    catch (e) { setTrackerErr((e && e.message) || String(e)); }
+    setTrackerLoading(false);
+  }, [sees]);
+  useEffect(() => { if (tab === "offboard" && sees("offboard")) loadTrackers(); }, [tab, sees, loadTrackers]);
+
   // Handed to the two tabs that own their sub-tab state. Memoised on `acl`
   // because the child effects take it as a dependency — a fresh object every
   // render would re-fire them forever.
@@ -26465,7 +26595,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // dashboard alerts; the effect must sit below leaveBalancesCfg's declaration.)
   useEffect(() => {
     if (tab !== "dashboard") return;
-    if (!(currentUser?.isOwner || accessAllows(currentUser, leaveBalancesCfg))) return;
+    if (!sees("leaveBalances")) return;
     if (balAnchorAlert) return;   // once per session — asOf only moves on an upload
     if (!window.BOA_DB || !window.BOA_DB.loadLeaveBalances) return;
     let cancelled = false;
@@ -27968,15 +28098,36 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     // same promises are reused in the array below, so nothing is fetched twice.
     const _pLeaveOps = window.BOA_DB.loadLeaveOpsAccess ? window.BOA_DB.loadLeaveOpsAccess() : Promise.resolve({});
     const _pLeavePayroll = window.BOA_DB.loadLeavePayrollAccess ? window.BOA_DB.loadLeavePayrollAccess() : Promise.resolve({});
+    // Which tabs this loader should fetch for. It has to come from deriveAcl,
+    // not from the role predicates directly: a tab granted in the Settings grid
+    // is visible to someone no role test passes, and gating the FETCH on the
+    // role left exactly that person on a tab that opened fine and then said
+    // "No reports here yet" forever — the grid appearing to work and quietly
+    // not working, one layer below where the last fix looked.
+    // The context is built from the user record alone. The data-presence gates
+    // in the real `acl` (hoStaff.length, …) describe data this function has not
+    // fetched yet, and depending on `acl` here would re-run the loader every
+    // time its own results landed.
+    const _bootAcl = deriveAcl(currentUser, {
+      canIncidents: canSeeIncidents(currentUser),
+      canLeaveExpiry: _roleLeaveExpiry,
+      canCalledInSick: canSeeCalledInSick(currentUser)
+    });
+    const _seeIncidents = _bootAcl.visible.has("incidents");
+    const _seeExtraDay = _bootAcl.visible.has("extraDayRequests");
+    const _seeCalledInSick = _bootAcl.visible.has("calledInSick");
+    const _seeLeaveExpiry = _bootAcl.visible.has("leaveExpiry");
     const _asCfg = (c, defRoles) => ({
       roles: Array.isArray(c && c.roles) ? c.roles : defRoles,
       pins: Array.isArray(c && c.pins) ? c.pins : []
     });
-    const _needRequestsP = (canSeeIncidents(currentUser) || _canSeeFreshaTodo || canSeeCalledInSick(currentUser))
+    const _needRequestsP = (_seeIncidents || _seeExtraDay || _canSeeFreshaTodo || _seeCalledInSick)
       ? Promise.resolve(true)
-      : Promise.all([_pLeaveOps, _pLeavePayroll])
-        .then(([o, p]) => accessAllows(currentUser, _asCfg(o, ["regional"]))
-          || accessAllows(currentUser, _asCfg(p, ["payroll"])))
+      : _bootAcl.visible.has("leaveRequests")
+        ? Promise.resolve(true)
+        : Promise.all([_pLeaveOps, _pLeavePayroll])
+          .then(([o, p]) => accessAllows(currentUser, _asCfg(o, ["regional"]))
+            || accessAllows(currentUser, _asCfg(p, ["payroll"])))
         .catch(() => false);
     Promise.all([
       window.BOA_DB.loadAll(),
@@ -27996,7 +28147,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       _pLeaveOps,
       _pLeavePayroll,
       window.BOA_DB.loadLeaveBalancesAccess ? window.BOA_DB.loadLeaveBalancesAccess() : Promise.resolve({}),
-      (window.BOA_DB.loadIncidentReports && canSeeLeaveExpiry) ? window.BOA_DB.loadIncidentReports() : Promise.resolve([]),
+      (window.BOA_DB.loadIncidentReports && (_seeIncidents || _seeLeaveExpiry)) ? window.BOA_DB.loadIncidentReports() : Promise.resolve([]),
       _needRequestsP.then(n => (window.BOA_DB.loadLeaveRequests && n) ? window.BOA_DB.loadLeaveRequests() : []),
       _needRequestsP.then(n => (window.BOA_DB.loadExtraDayRequests && n) ? window.BOA_DB.loadExtraDayRequests() : []),
       window.BOA_DB.loadFreshaExtraOpenings ? window.BOA_DB.loadFreshaExtraOpenings() : Promise.resolve({}),
@@ -28121,7 +28272,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       // confidential Incident Reports tab. They only need the auto-filed expiry
       // notices, so drop genuine incidents before they ever enter session state.
       const _incidents = Array.isArray(incidents) ? incidents : [];
-      setIncidentReports(canSeeIncidents(currentUser) ? _incidents : _incidents.filter(isLeaveExpiryReport));
+      setIncidentReports(_seeIncidents ? _incidents : _incidents.filter(isLeaveExpiryReport));
       setLeaveRequests(Array.isArray(leaveReqs) ? leaveReqs : []);
       setExtraDayRequests(Array.isArray(extraReqs) ? extraReqs : []);
       setFreshaExtraOpen(freshaExtraOpenMap && typeof freshaExtraOpenMap === "object" ? freshaExtraOpenMap : {});
@@ -28740,7 +28891,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // their "Not clocked in" roster can skip people who are simply off or on
   // leave. Only the FINDINGS are permission-gated, not the schedule itself.
   useEffect(() => {
-    const wantPayroll = canSeeOfficeHours && (tab === "officeHours" || tab === "dashboard");
+    const wantPayroll = acl.visible.has("officeHours") && (tab === "officeHours" || tab === "dashboard");
     const wantCheckins = tab === "hoCheckins" || tab === "ccCheckins";
     if (!wantPayroll && !wantCheckins) return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
@@ -29144,7 +29295,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
   // costs nothing for everyone else. The clock feed itself is the effect above.
   useEffect(() => {
     const isOffice = tab === "attendance" && (attBranch === HEAD_OFFICE || attBranch === CALL_CENTRE);
-    if (!isOffice || !canSeeOfficeHours) return;
+    if (!isOffice || !acl.visible.has("officeHours")) return;
     if (!window.BOA_DB || !window.BOA_DB.isReady) return;
     let cancelled = false;
     const safeP = (p) => Promise.resolve(p).catch(() => null);
@@ -29169,7 +29320,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       if (fixes) setOfficeHoursFixes(typeof fixes === "object" ? fixes : {});
     })();
     return () => { cancelled = true; };
-  }, [tab, attBranch, attYM, canSeeOfficeHours, attOfficeCycle]);
+  }, [tab, attBranch, attYM, acl, attOfficeCycle]);
 
   // Load selfies for just the HO clock-ins on the selected day (same sidecar
   // + loader as managers), so stepping day-by-day stays snappy.
@@ -29822,7 +29973,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
     // deliberately NOT a dependency: it only refines off-day estimates, and its
     // identity changes on every schedule prefetch.
     if (tab !== "dashboard" && tab !== "leaveBalances") return;
-    if (!canSeeIncidents(currentUser)) return;
+    if (!acl.visible.has("incidents")) return;
     if (!leaveBalancesData || !leaveBalancesData.entries) return;
     // Head Office + CC&S ride the same expiry radar/auto-incident as techs. They
     // live in enrichedOffice (declared below this effect, so only referenced in
@@ -29891,7 +30042,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       })();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, currentUser, leaveBalancesData, enriched, managers, leaveRecs]);
+  }, [tab, currentUser, acl, leaveBalancesData, enriched, managers, leaveRecs]);
   // Same enrichment for the office population (Head Office + Call Centre &
   // Sales). hoStaff is a THIRD population that never flows through `enriched`,
   // so without this the Office Staff List would have no Status / Return Date
@@ -31404,7 +31555,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
 
       {/* Incident reports pop-up — greets HR/senior staff when reports are
           waiting. Louder (red) when any unread report is marked urgent. */}
-      {!loading && !incidentPopupSeen && canSeeIncidents(currentUser) && (
+      {!loading && !incidentPopupSeen && canIncidents && (
         <IncidentPopup
           reports={incidentReports}
           onView={() => { setIncidentPopupSeen(true); tryChangeTab("incidents"); }}
@@ -31418,7 +31569,34 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         </div>
       )}
 
-      {currentTabIsReadOnly && !currentUser?.demo && (
+      {/* View As. Deliberately the first thing on the page and impossible to
+          miss: the failure mode of an impersonation tool is forgetting you
+          are in one and reporting what you saw as your own account. */}
+      {simOffered && (
+        <div style={{ background: simulatedUser ? "#7c2d12" : "#1f2937", color: "#fff", padding: "8px 24px", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", fontSize: 12.5, fontWeight: 700 }}>
+          <span style={{ letterSpacing: "0.04em" }}>{simulatedUser ? "👁 VIEWING AS" : "👁 VIEW AS"}</span>
+          <select value={simulateAs || ""} onChange={e => { setSimulateAs(e.target.value || null); setTab("dashboard"); }}
+            style={{ fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, padding: "4px 8px", borderRadius: 7, border: "none", maxWidth: 320 }}>
+            <option value="">— nobody (your own account) —</option>
+            {Object.keys(appUsers || {}).sort((a, b) => String((appUsers[a] || {}).name || "").localeCompare(String((appUsers[b] || {}).name || ""))).map(pin => (
+              <option key={pin} value={pin}>{(appUsers[pin] || {}).name || pin} · {(appUsers[pin] || {}).role || "—"}</option>
+            ))}
+          </select>
+          {simulatedUser && (
+            <>
+              <span style={{ fontWeight: 500, opacity: 0.92 }}>
+                Everything below is exactly what <strong>{simulatedUser.name}</strong> sees — the nav, the tabs, the sub-tabs and the data inside them.
+                Read-only is forced on, so nothing here can be saved and the activity log still names you.
+              </span>
+              <button onClick={() => { setSimulateAs(null); setTab("dashboard"); }}
+                style={{ marginLeft: "auto", background: "#fff", color: "#7c2d12", border: "none", borderRadius: 8, padding: "5px 14px", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 800 }}>
+                Stop viewing as
+              </button>
+            </>
+          )}
+        </div>
+      )}
+      {currentTabIsReadOnly && !currentUser?.demo && !simulatedUser && (
         <div style={{ background: "#dbeafe", color: "#1e3a8a", borderBottom: "2px solid #60a5fa", padding: "8px 24px", textAlign: "center", fontSize: 12, fontWeight: 700, letterSpacing: "0.02em" }}>
           🔒 VIEW-ONLY — Your role ({currentUser?.role}) can browse this tab but can't save changes here. Edit access is enabled on the tabs your role allows.
         </div>
@@ -31799,7 +31977,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             );
           })()}
           <div style={{ display: isMobile ? "none" : "flex", justifyContent: "flex-end", alignItems: "center", gap: 10, paddingTop: 8, fontSize: 11, color: "#831843" }}>
-            <span>Signed in as <strong>{currentUser.name}</strong> · {currentUser.role}</span>
+            <span>Signed in as <strong>{_realUser.name}</strong> · {_realUser.role}{simulatedUser ? <em style={{ fontStyle: "normal", fontWeight: 700, color: "#7c2d12" }}>{" · viewing as " + simulatedUser.name}</em> : ""}</span>
             <button onClick={onSignOut}
               style={{ background: "#fff", border: "1px solid #FBCFE8", color: "#831843", borderRadius: 7, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "inherit" }}>
               Sign out
@@ -32288,7 +32466,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                 </div>
               ));
               dashAlert("sageReanchor", "payroll", "warning",
-              (currentUser?.isOwner || accessAllows(currentUser, leaveBalancesCfg)) && balAnchorAlert && balAnchorAlert.stale && (
+              sees("leaveBalances") && balAnchorAlert && balAnchorAlert.stale && (
                 <div style={{ background: "#f5f3ff", border: "1px solid #c4b5fd", borderRadius: 16, padding: "16px 20px", marginBottom: 20, boxShadow: "0 4px 14px rgba(109,40,217,0.10)", display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
                   <div style={{ flex: 1, minWidth: 280 }}>
                     <div style={{ fontSize: 15, fontWeight: 800, color: "#5b21b6", letterSpacing: "0.04em", textTransform: "uppercase" }}>🧾 Sage leave balances need re-anchoring</div>
@@ -32436,7 +32614,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   forfeiting. HR + National Ops audience; an incident is also
                   filed automatically (once per person per deadline). */
               dashAlert("leaveExpiry", "payroll", "warning",
-              canSeeIncidents(currentUser) && expiryRadar && expiryRadar.red.length > 0 && (
+              canIncidents && expiryRadar && expiryRadar.red.length > 0 && (
                 <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: 16, padding: "16px 20px", marginBottom: 20, boxShadow: "0 4px 14px rgba(185,28,28,0.10)", display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
                   <div style={{ flex: 1, minWidth: 280 }}>
                     <div style={{ fontSize: 15, fontWeight: 800, color: "#b91c1c", letterSpacing: "0.04em", textTransform: "uppercase" }}>⏳ Annual leave about to expire</div>
@@ -32487,7 +32665,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   closing (called in sick / absent) where that day is less than
                   3 days away and still not done. Links through to the tab. */
               dashAlert("freshaDue", "scheduling", "warning",
-              canSeeIncidents(currentUser) && (() => {
+              canIncidents && (() => {
                 const _now0 = new Date(); _now0.setHours(0, 0, 0, 0);
                 const daysUntil = (ymd) => ymd ? Math.ceil((new Date(ymd + "T00:00:00") - _now0) / 86400000) : null;
                 const isTech = (ec) => !isManagerEc(ec);
@@ -32611,7 +32789,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   onboarded. The trial itself runs automatically from the kiosk;
                   this card is the short list of things only HR can do. */
               dashAlert("trialHrActions", "people", "warning",
-              canSeeIncidents(currentUser) && (() => {
+              canIncidents && (() => {
                 const _nt = (c) => c && String(c.role || "nt").toLowerCase() === "nt";
                 const _trial = (c) => c && ["nt", "am"].includes(String(c.role || "nt").toLowerCase());
                 const _active = (c) => ["trial_w1", "trial_w2", "pending_mid_review", "pending_final_review"].includes(c.status);
@@ -32918,7 +33096,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   action and a "Mark done" so it can be cleared off the dashboard.
                   Scoped to the ROM's own stores. */
               dashAlert("mgrSick", "people", "info",
-              canSeeIncidents(currentUser) && (() => {
+              canIncidents && (() => {
                 const { today, tomorrow, list } = calledInSickWindow(leaveRequests);
                 const isMgrEc = (ec) => isManagerEc(ec);
                 const mgrSick = list.filter(r => isMgrEc(r.ec) && !r.reviewed
@@ -32981,7 +33159,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                   summary; click through to the Called in Sick tab for details.
                   (Managers are handled by the ROM-action card above.) */
               dashAlert("techSick", "people", "info",
-              canSeeIncidents(currentUser) && (() => {
+              canIncidents && (() => {
                 const { today, tomorrow, list: _list } = calledInSickWindow(leaveRequests);
                 const list = _list.filter(r => !isManagerEc(r.ec));
                 if (!list.length) return null;
@@ -34335,6 +34513,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             }}
             initialBranch={_myStores[0] || SALONS[0].name}
             isOwner={!!(currentUser && currentUser.isOwner)}
+            readOnly={currentTabIsReadOnly}
           />
         )}
         {tab === "scheduling" && schedSubTab === "headoffice" && hoOnlyStaff.length > 0 && (
@@ -35383,12 +35562,14 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
                       Any staff or managers currently assigned to this branch will still exist but their branch field will need to be reassigned.
                     </div>
 
-                    <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>PIN to confirm</label>
-                    <input type="password" autoFocus value={deleteLocationModal.pin || ""}
+                    <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>
+                      Type <strong style={{ color: "#991b1b" }}>{deleteLocationModal.salon && deleteLocationModal.salon.name}</strong> to confirm
+                    </label>
+                    <input type="text" autoFocus value={deleteLocationModal.pin || ""}
                       onChange={e => setDeleteLocationModal({ ...deleteLocationModal, pin: e.target.value, error: null })}
                       onKeyDown={e => { if (e.key === "Enter" && !deleteLocationModal.saving) submitDeleteLocation(); }}
-                      placeholder="••••"
-                      style={{ width: "100%", padding: "9px 11px", border: `1px solid ${deleteLocationModal.error ? "#fca5a5" : "#e5e7eb"}`, borderRadius: 8, fontSize: 16, letterSpacing: "0.3em", marginBottom: 6, fontFamily: "monospace" }}
+                      placeholder={(deleteLocationModal.salon && deleteLocationModal.salon.name) || "Branch name"}
+                      style={{ width: "100%", padding: "9px 11px", border: `1px solid ${deleteLocationModal.error ? "#fca5a5" : "#e5e7eb"}`, borderRadius: 8, fontSize: 14, marginBottom: 6, fontFamily: "inherit" }}
                     />
                     {deleteLocationModal.error && (
                       <div style={{ fontSize: 11, color: "#991b1b", marginBottom: 6 }}>{deleteLocationModal.error}</div>
@@ -35951,7 +36132,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             people (Z/NA or no permit on file). Tracking lives in
             app_state['boa_compliance_actions_v1'] so requests survive page
             reloads and other users. */}
-        {tab === "compliance" && canCompliance && (() => {
+        {tab === "compliance" && acl.visible.has("compliance") && (() => {
           // A transferred person belongs to their destination store once the
           // transfer has taken effect (transfer_date reached) — same rule the
           // schedule, check-in and Locations views use. Until then, and when
@@ -36925,47 +37106,47 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         })()}
 
         {/* ── INCIDENT REPORTS TAB ── */}
-        {tab === "incidents" && canSeeIncidents(currentUser) && (
+        {tab === "incidents" && acl.visible.has("incidents") && (
           <IncidentReportsTab reports={incidentReports} setReports={setIncidentReports} currentUser={currentUser} people={taggablePeople}
-            subAcl={incidentsSubAcl} onSubChange={reportIncidentsSub} />
+            subAcl={incidentsSubAcl} onSubChange={reportIncidentsSub} readOnly={currentTabIsReadOnly} />
         )}
 
         {/* ── LEAVE EXPIRY REPORTS TAB (same component, expiry-only slice) ── */}
-        {tab === "leaveExpiry" && canSeeLeaveExpiry && (
-          <IncidentReportsTab reports={incidentReports} setReports={setIncidentReports} currentUser={currentUser} mode="leaveExpiry" />
+        {tab === "leaveExpiry" && acl.visible.has("leaveExpiry") && (
+          <IncidentReportsTab reports={incidentReports} setReports={setIncidentReports} currentUser={currentUser} mode="leaveExpiry" readOnly={currentTabIsReadOnly} />
         )}
 
         {/* ── LEAVE REQUESTS TAB ── */}
-        {tab === "leaveRequests" && canSeeLeaveRequests && (
+        {tab === "leaveRequests" && acl.visible.has("leaveRequests") && (
           <LeaveRequestsTab requests={leaveRequests} setRequests={setLeaveRequests} currentUser={currentUser} leaveRecs={leaveRecs} setLeaveRecs={setLeaveRecs} enriched={enriched} managers={managers} staff={staff} hoStaff={hoStaff} ccOnly={ccOnly} opsCfg={leaveOpsCfg} logActivity={logActivity} schedCache={schedCache} ymdToSchedYm={ymdToSchedYm} reverseLeave={reverseLeave} readOnly={currentTabIsReadOnly} />
         )}
 
         {/* ── PAYROLL INBOX TAB ── */}
-        {tab === "payrollInbox" && accessAllows(currentUser, leavePayrollCfg) && (
+        {tab === "payrollInbox" && acl.visible.has("payrollInbox") && (
           <PayrollInboxTab requests={leaveRequests} setRequests={setLeaveRequests} currentUser={currentUser} leaveRecs={leaveRecs} setLeaveRecs={setLeaveRecs} enriched={enriched} managers={managers} logActivity={logActivity} goTo={tryChangeTab} schedCache={schedCache} ymdToSchedYm={ymdToSchedYm} />
         )}
 
         {/* ── LEAVE BALANCES TAB ── */}
-        {tab === "leaveBalances" && accessAllows(currentUser, leaveBalancesCfg) && (
+        {tab === "leaveBalances" && acl.visible.has("leaveBalances") && (
           <LeaveBalancesTab enriched={enriched} managers={enrichedManagers} office={enrichedOffice} currentUser={currentUser} logActivity={logActivity} leaveRecs={leaveRecs} schedCache={schedCache} ymdToSchedYm={ymdToSchedYm} />
         )}
 
-        {tab === "frl" && accessAllows(currentUser, leaveBalancesCfg) && (
+        {tab === "frl" && acl.visible.has("frl") && (
           <FamilyResponsibilityTab enriched={enriched} managers={enrichedManagers} currentUser={currentUser} logActivity={logActivity} />
         )}
 
         {/* ── BARGAINING COUNCIL TAB ── */}
-        {tab === "bargainingCouncil" && accessAllows(currentUser, leaveBalancesCfg) && (
+        {tab === "bargainingCouncil" && acl.visible.has("bargainingCouncil") && (
           <BargainingCouncilTab enriched={enriched} managers={enrichedManagers} currentUser={currentUser} logActivity={logActivity} onApplyCouncil={applyCouncilFlags} />
         )}
 
         {/* ── CALLED IN SICK TAB ── */}
-        {tab === "calledInSick" && canSeeCalledInSick(currentUser) && (
+        {tab === "calledInSick" && acl.visible.has("calledInSick") && (
           <CalledInSickTab requests={leaveRequests} setRequests={setLeaveRequests} currentUser={currentUser} />
         )}
 
         {/* ── EXTRA-DAY REQUESTS TAB ── */}
-        {tab === "extraDayRequests" && canSeeIncidents(currentUser) && (
+        {tab === "extraDayRequests" && acl.visible.has("extraDayRequests") && (
           <ExtraDayRequestsTab requests={extraDayRequests} setRequests={setExtraDayRequests} currentUser={currentUser} />
         )}
 
@@ -39420,7 +39601,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
           const daysLeft = endYmd ? daysBetween(today, endYmd) : 0;
           const endingSoon = isActive && daysLeft >= 0 && daysLeft <= 14;
           const overdueEnd = isActive && daysLeft < 0;
-          const irs = canSeeIncidents(currentUser) ? smIrsForTrial(r, incidentReports) : [];
+          const irs = canIncidents ? smIrsForTrial(r, incidentReports) : [];
           const summary = smTrialSummary(r, cfg, irs);
           const warnings = r.warnings || [];
           const cool = r.cooldown || null;
@@ -39617,7 +39798,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               )}
 
               {/* Incident reports */}
-              {!isApplied && canSeeIncidents(currentUser) && (
+              {!isApplied && canIncidents && (
                 <div style={{ marginTop: 12 }}>
                   <div style={{ fontSize: 10, fontWeight: 800, color: "#831843", letterSpacing: "0.07em", textTransform: "uppercase", marginBottom: 6 }}>
                     Incident reports in the trial window {irs.length > 0 && <span style={{ color: "#b45309" }}>({irs.length})</span>}
@@ -39784,8 +39965,8 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
               <SmDecisionModal
                 rec={decisionRec}
                 cfg={cfg}
-                irs={canSeeIncidents(currentUser) ? smIrsForTrial(decisionRec, incidentReports) : []}
-                summary={smTrialSummary(decisionRec, cfg, canSeeIncidents(currentUser) ? smIrsForTrial(decisionRec, incidentReports) : [])}
+                irs={canIncidents ? smIrsForTrial(decisionRec, incidentReports) : []}
+                summary={smTrialSummary(decisionRec, cfg, canIncidents ? smIrsForTrial(decisionRec, incidentReports) : [])}
                 onClose={() => setSmDecisionId(null)}
                 onPass={(d) => decidePass(decisionRec._id, d)}
                 onFail={(d) => decideFail(decisionRec._id, d)}
@@ -40726,7 +40907,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       })()}
 
       {/* ── OFF-BOARDING TAB ── */}
-      {tab === "offboard" && canOffboard && (() => {
+      {tab === "offboard" && acl.visible.has("offboard") && (() => {
         const now = new Date();
         const p2 = z => String(z).padStart(2, "0");
         const todayStr = now.getFullYear() + "-" + p2(now.getMonth() + 1) + "-" + p2(now.getDate());
@@ -42708,10 +42889,17 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
             + "  • Schedule version history and approved versions\n\n"
             + "Re-import Check-ins or Auto-fill to repopulate the grid.\n\n"
             + "Continue?";
+          if (!can(currentUser, "act.attendance.totalReset")) {
+            alert("You don't have permission to run a Total Reset on the attendance grid.");
+            return;
+          }
           if (!confirm(step1)) return;
-          const step2 = window.prompt("Enter the Total Reset PIN to confirm.");
+          // Was a shared PIN in the source. The capability above is the
+          // authorisation now; this is the fat-finger guard it was standing in
+          // for, and typing RESET cannot be shoulder-surfed into a password.
+          const step2 = window.prompt("This cannot be undone.\n\nType RESET to confirm.");
           if (step2 === null) return;
-          if ((step2 || "").trim() !== "2002") { alert("Cancelled — incorrect PIN."); return; }
+          if ((step2 || "").trim().toUpperCase() !== "RESET") { alert("Cancelled."); return; }
           pushUndo("Total Reset");
           const nextGrid = {};
           const nextMeta = { freshaWorked: {}, reviewedWarnings: {}, adminOverrides: {}, freshaCoverage: null, mirrorSuppressed: true };
@@ -45403,7 +45591,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         // person's leave balance (on Sage). Everyone else (e.g. National Ops)
         // can still log the leave, but it's added "balance pending" and lands in
         // the payroll officer's inbox to confirm the days.
-        const canCheckBalance = accessAllows(currentUser, leavePayrollCfg);
+        const canCheckBalance = sees("payrollInbox");
         const peopleType = isHoLikeSub ? "staff member" : (isTechMode ? "nail tech" : "manager");
         const peopleTypePlural = isHoLikeSub ? "staff" : (isTechMode ? "nail techs" : "managers");
         // Off-boarded people (leftDate in the past) should not appear in
@@ -48477,7 +48665,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
       {tab === "storeReports" && <StoreReportsTab extraDayRequests={extraDayRequests} managers={managers} />}
 
       {/* ── HR REPORTS (HR Outlook + H&S) ── */}
-      {tab === "hrReports" && (canSeeIncidents(currentUser) ? (
+      {tab === "hrReports" && (acl.visible.has("hrReports") ? (
         <HRReportsTab
           subAcl={hrReportsSubAcl} onSubChange={reportHrReportsSub}
           salonData={salonData} recruitFuture={recruitFuture}
@@ -49493,7 +49681,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         );
       })()}
 
-      {tab === "officeHours" && (!canSeeOfficeHours ? (
+      {tab === "officeHours" && (!acl.visible.has("officeHours") ? (
         <div style={{ padding: "0 24px" }}>
           <div style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 11, padding: 20, color: "#831843", fontSize: 13 }}>
             You don't have access to Office Hours. An owner can grant it under <b>Settings → ⏰ Office Hours alerts</b>.
@@ -52645,15 +52833,15 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         );
       })()}
 
-      {tab === "voucherAdmin" && _isOwnerOrMaster(currentUser) && (
+      {tab === "voucherAdmin" && acl.visible.has("voucherAdmin") && (
         <div style={{ padding: "0 24px" }}><VoucherAdmin currentUser={currentUser} /></div>
       )}
 
-      {tab === "bonusConfig" && _isOwnerOrMaster(currentUser) && (
+      {tab === "bonusConfig" && acl.visible.has("bonusConfig") && (
         <div style={{ padding: "0 24px" }}><BonusConfig /></div>
       )}
 
-      {tab === "storeHours" && _isOwnerOrMaster(currentUser) && (
+      {tab === "storeHours" && acl.visible.has("storeHours") && (
         <div style={{ padding: "0 24px" }}><StoreHoursConfig /></div>
       )}
 
@@ -52667,7 +52855,7 @@ function App({ currentUser, onSignOut, appUsers, onUsersUpdate }) {
         /></div>
       )}
 
-      {tab === "hrLibrary" && _isOwnerOrMaster(currentUser) && (
+      {tab === "hrLibrary" && acl.visible.has("hrLibrary") && (
         <div style={{ padding: "0 24px" }}>{window.EmployeeDataLibrary ? React.createElement(window.EmployeeDataLibrary, { staff: staff, currentUser: currentUser, managers: managers, obList: obList, offList: offList }) : <div style={{ padding: 24 }}>Loading Employee Files...</div>}</div>
       )}
 

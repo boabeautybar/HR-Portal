@@ -1,6 +1,6 @@
 # Portal Permissions — Audit & Rework Plan
 
-**Status: DRAFT for review** · 2026-09-01
+**Status: complete — all five phases shipped to `main`.** · drafted 2026-09-01, last revised 2026-09-03
 Scope: the HR portal's 4-digit-PIN logins (`app.jsx`). Kiosk/My BOA PINs are a different population and are deliberately out of scope.
 
 > Line numbers are as of today's working tree and will drift — every claim is keyed to a **symbol name** first; `grep -n "<symbol>" app.jsx` will always find it.
@@ -215,7 +215,8 @@ Invert the guard: wrap **every** `BOA_DB` function except an explicit read allow
 
 Each phase ships and verifies alone. Order: stop the bleeding → invisible plumbing → the headline promise → payroll-adjacent writes → lockout-risk last.
 
-**Status (branch `feat/permissions-hardening`, unpushed):** Phase 1 ✅ · Phase 2 ✅ · Phase 3 ✅ · Phase 4 ✅ + affordance pass ✅ · Phase 5 not started.
+**Status:** Phase 1 ✅ · Phase 2 ✅ · Phase 3 ✅ · Phase 4 ✅ + affordance pass ✅ · Phase 5 ✅.
+Phases 1–4 merged as PR #27; §5.1 and Phase 5 went straight to `main`.
 
 **`CALLED_IN_SICK_PINS` is gone.** The hardcode that opened this whole review — the one whose own comment read *"Remove once the permission model is reworked to make the Settings toggle authoritative"* — was deleted once `__BOA_ACL_AUDIT("3030")` confirmed the V5 migration had moved her access into `grantTabs` on her own record. `SCHED_ALERT_PINS` went the same way in Phase 2. No permission is written into the code body any more; the only named-PIN list left is the schedule-alert worklist, which is a notification target rather than an access rule.
 Phases 1 and 4 were taken out of order deliberately: 4's read-only flip is what makes the *existing* grid ticks mean anything, and it needed no model change, so it could ship while 2–3 were still on paper.
@@ -269,8 +270,10 @@ Wrap-all denylist DB guard (**102 methods guarded, up from 30**; 0 reads mis-gua
 
 *Payroll-adjacent: attendance Total Reset, sign-off — the before/after payroll export diff is still outstanding (the attendance classifier is shared with payroll).*
 
-### Phase 5 — Seed & legacy retirement *(size S, lockout-risk, last)*
-AppGate seeds only when the store key is truly missing (stop per-boot re-insertion — defect K); drop the `STAFF_USERS` login fallback once all live records are verified in Supabase; keep **one break-glass owner recovery path**; delete deprecated wrappers, the `showTabs` write path, and the migration PIN literals.
+### Phase 5 — Seed & legacy retirement *(size S, lockout-risk, last)* — ✅ SHIPPED
+Deleting a login in Settings did not delete it: AppGate re-inserted any missing `STAFF_USERS` pin on every boot, and `store[pin] || STAFF_USERS[pin]` signed them in meanwhile. Session restore had the same hole and was harder to spot, because a tab that already held a session simply kept working. Gone: the per-boot re-insertion loop (seeding is once, on a genuine first run), both seed fallbacks, and the V3 / V3c / V5 migrations — one-shot repairs keyed on the PIN literals `"3030"` / `"4040"`, each confirmed in live data first. V3 and V3c were also the last writers of `showTabs`; the key is still **read**, so nobody loses a tab, but `grantTabs` is how a tab is handed out now.
+
+**Break-glass:** if the live roster holds no owner *at all*, a seed owner may still sign in. The owner can be lost two ways — deleted or demoted — and a demoted record still exists, so a "does the live record exist" test would hand back the demoted one and leave nobody able to promote anybody. The decision moved to module scope as `resolveLogin`, because it is the one place where being wrong either lets a deleted account keep working or locks the owner out. `login.js`, 31 assertions, covers both directions.
 
 ---
 
@@ -349,9 +352,53 @@ Non-registry dashboard sections with no key at all: hero, TODAY stat tiles, Toda
 
 All seeds are currently **undeletable** (defect K).
 
+### 5.1 After the plan — sub-tab permissions and the enforcement sweep *(2026-09-03)*
+
+Three things landed after PR #27 that the plan above does not describe.
+
+**Sub-tab permissions.** A permission stopped at the tab: granting Scheduling granted all four rosters. `TAB_SUBS` is the child half of `TAB_ACCESS`, covering eight parents — Scheduling, Leave, Off-boarding, Recruitment, Trial Period, HQ Trials, Incident Reports, HR Reports. A child is stored as the composite key `"parent:child"` in the **same** `hideTabs` / `readOnlyTabs` arrays, so nothing migrates: every key stored before this is a bare parent key, and a bare parent key still means the whole tab. A child key only narrows. The grid folds this into the two boxes already there — a parent row with children gets a `▸ N SUB-TABS` disclosure, and its boxes go tri-state (ticked / **filled** / empty) with the count underneath. `currentTabIsReadOnly` follows the child on screen, so the write guard arms per sub-tab. Two parents keep their state inside their own component and report it upward via `reportSub`.
+
+**The bodies were guarded by the wrong thing.** Phase 3 closed the ~27 bodies that had *no* guard (defect C). Nineteen others had the *wrong* one — they re-asked `canSeeIncidents(currentUser)` and friends, the role question the ACL had already answered. Invisible until `grantTabs` existed, because until then the two answers could never disagree. All nineteen now read `acl.visible`.
+
+**Defect E was not actually closed.** Phase 1 fixed `_needRequests`; everything else still gated data on a role — the incident *fetch* itself, the off-boarding trackers (so the term/disc sub-tabs opened onto nothing), Office Hours findings, the manager-hours alert, the Compliance column, the Sage re-anchor, ten incident surfaces. Fixed by inverting ownership: the raw role answers became `_role*` and feed **only** the gate context; the resolved answers took their old names (`canOffboard = sees("offboard")`, …), so ~45 call sites became correct without being edited.
+
+**New harnesses.** `bodygates.js` — every registered tab body must read the ACL. `onceanswered.js` — below the resolver, no role predicate may be consulted; this is the invariant all three rounds violated. `subtabs.js` — 179 assertions, including a block proving the rename widened nobody. `goldsub.js` — 317,952 comparisons, zero drift.
+
+**Known gap:** `Schedule` and `IncidentReportsTab` take no `readOnly` prop, so a view-only sub-tab blocks the writes (the DB guard fires) but still draws live controls.
+
 ---
 
-*Next step: Phase 5 — seed & legacy retirement (defect K). Lockout-risk, so last, and it needs the live records verified first.*
+### 5.2 The rest of the plan — closed
+
+| Item | Outcome |
+|---|---|
+| **Phase 5 — defect K** | ✅ Above. |
+| **Magic `"2002"` PINs** | ✅ Both sites now resolve locked capabilities — `act.locations.delete`, `act.attendance.totalReset` — with the typed confirmation kept, because stopping a misclick was the only thing the PIN really did. A shared PIN in the source was in every browser that ever loaded the page and identified nobody. **Narrowing to note:** both actions are now Owner / Master Admin / Developer only. |
+| **`act.*` keys** | ✅ 12 of 13. `act.cashups.delete` / `.reopen` remain folded into `act.cashups.review` (gated since Phase 1) rather than getting keys of their own — the hole they described is closed, the key split earned nothing. |
+| **"View as" simulator** | ✅ `?simulate=1`, or the button in Settings. `currentUser` is **shadowed** in App, so every consumer answers as the impersonated person unchanged; `_realUser` survives for the audit log and for leaving simulation. Read-only is forced on every tab and sub-tab, so the block is the real write guard. |
+| **View-only affordances** | ✅ `Schedule` and `IncidentReportsTab` now take `readOnly` and pre-flight their write entry points, so a view-only sub-tab stops drawing live controls. |
+
+**Closed 2026-09-03.** `"International Ops"` satisfied both national gates because the substring is literally there — inter|national. Confirmed no role in the roster contains `"national"` at all, so both matchers are word-boundary'd: `/\bnational/` and `/\bnational (ops|operations)/`. In `"international"` the character before `"national"` is a word character, so the boundary does not match. Pinned by `subtabs.js` block L, which fails on the previous commit with exactly the nine `International` cases — the golden master cannot see this, because `deriveAcl` is handed pre-computed booleans and the role matchers only ever run inside `can()`.
+
+**Closed 2026-09-04.** `ignoreCategoryHide` is deleted. A category hide now strips every tab in the category without exception, including the six ex-`forceShow` ones. It was a transitional guard, and it made a category hide mean one thing for most tabs and another for six of them — a rule nobody can hold in their head while filling in a grid. Measured rather than asserted: the golden master's matrix now varies `hideCategories` (it was fixed at `[]`, so it could not see the exception it was hiding) and reports **1,271,808 comparisons, 12,672 differences, all of them one of the six losing a hidden category and nothing else**. `hideCategories` is additionally re-derived where it could not be before — one of the six was the hold-out keeping a category "not fully hidden" — so `subtabs.js` block M pins the property that matters: the second save is a no-op, and the third.
+
+**Open decisions — these need a call, not code.** (3) `PINK` and `isSMRole` are undefined identifiers — pre-existing, unrelated to permissions, latent until those branches render.
+
+### 5.3 The harnesses
+
+No test suite exists, so each round left behind the check that would have caught it. All run against the working tree; `goldsub` also takes a git ref.
+
+| Harness | What it pins |
+|---|---|
+| `check.js` | app.jsx parses |
+| `undef.js` | scope analysis — every identifier resolves (2 findings, both pre-existing on `main`) |
+| `bodygates.js` | every registered tab body reads the ACL, not a role |
+| `onceanswered.js` | below the resolver, no role predicate is consulted at all |
+| `subtabs.js` | 195 assertions — registry, resolver, round-trip, the locked capabilities, and a block proving the consumer rename widened nobody |
+| `login.js` | 31 assertions — deleted logins refused, break-glass open only when no owner exists |
+| `goldsub.js` | 317,952 comparisons of old vs new, both sides sliced from source |
+
+---
 
 ### Pre-PR verification — complete
 
@@ -362,6 +409,4 @@ All seeds are currently **undeletable** (defect K).
 | Payroll numbers | ✅ Static proof rather than a CSV diff: 14 of 16 payroll/attendance functions are **byte-identical** to `origin/main`, and the shared `attClassify` region — the classifier payroll and HR both read — is identical. The two that changed (`canSignOffPayroll`, `isOffboardPayrollOfficer`) are permission gates, not arithmetic, and the golden master reports zero differences on them. No payroll calculation changed in this branch. |
 | Background-refresh soak (view-only tab) | ✅ PASS with `__BOA_RO_ACTIVE: true` — the 90-second self-repair (transfer auto-settle, leave-expiry auto-filing) completed with no lock dialog, and `__BOA_RO_SYSTEM` returned to 0, confirming the `boaSystemWrite` bypass unwound rather than leaving read-only disabled. |
 
-*Ready to push.*
-
-*Delivery note: Phases 1 and 4 are accumulating as commits on `feat/permissions-hardening` and land as **one** PR to main, rather than a PR per phase, to keep hosting/deploy cost down.*
+*Shipped as PR #27 on 2026-09-02.*
