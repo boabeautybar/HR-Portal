@@ -335,5 +335,191 @@ else fail("match: 50c broke the tolerance");
 if (CF.matchFreshaToCashup(grossCashup, null, cfg).status === "none") pass("match: missing Fresha data says so");
 else fail("match: missing Fresha data mishandled");
 
+/* ── 3. Other payment mismatches ────────────────────────────────────────
+   The tab layered over the matcher. Its whole value is that it tells the
+   four kinds of mistake apart, so each tag is pinned to a fixture and the
+   two heuristics are pinned to a negative case as well as a positive one. */
+
+const mmCfg = { matchTolerance: 1 };
+
+// A Fresha day with something in every payment line.
+const mmFresha = {
+  branch: "Claremont", date: "2026-09-01",
+  card: 10000, tips: 400, cash: 0, yoco_link: 500, gift_card: 300,
+  gift_cards_sold: 700, eft: 0, shopify: 0, other: 0, prepayment_redemption: 0,
+  total: 11500
+};
+// The cash-up that reconciles against it, read gross of tips.
+const mmClean = {
+  branch: "Claremont", date: "2026-09-01",
+  yoco: 10000, yoco_link: 500, cash: 0, gift_card: 300, vouchers: 700, card_tips: 400
+};
+function mmOne(over, fOver) {
+  return CF.paymentMismatches(
+    Object.assign({}, mmClean, over || {}),
+    Object.assign({}, mmFresha, fOver || {}), mmCfg);
+}
+function reasonOf(rows, key) {
+  const r = rows.filter((x) => x.key === key)[0];
+  return r ? r.reason : "(no row)";
+}
+
+eq2("mismatch: a clean day produces nothing", mmOne().length, 0);
+eq2("mismatch: a 50c slip stays inside the tolerance", mmOne({ yoco_link: 500.5 }).length, 0);
+
+// Cash and the grand total belong to the other two sub-tabs, never here.
+const mmCash = mmOne({ cash: 250 });
+eq2("mismatch: cash is never listed", mmCash.filter((r) => r.key === "cash" || r.key === "collected").length, 0);
+
+eq2("mismatch: blank field", reasonOf(mmOne({ yoco: 0 }), "card"), "blank");
+eq2("mismatch: figures differ", reasonOf(mmOne({ yoco_link: 620 }), "yoco_link"), "differ");
+eq2("mismatch: declared with no Fresha sale",
+  reasonOf(mmOne({ yoco_link: 620 }, { yoco_link: 0 }), "yoco_link"), "declared_only");
+
+// Somerset West, 29 Aug: vouchers sold and gift cards redeemed entered the
+// wrong way round. One correction fixes both rows, so both must say so.
+const mmSwap = mmOne({ vouchers: 300, gift_card: 700 });
+eq2("mismatch: vouchers/gift card swap tagged on both rows",
+  mmSwap.filter((r) => r.reason === "swap").length, 2);
+eq2("mismatch: a swap names its partner",
+  mmSwap.filter((r) => r.key === "vouchers")[0].swappedWith, "Gift card redeemed");
+// Not observed yet, but the same shape and the same test.
+const mmSwap2 = mmOne({ yoco: 500, yoco_link: 10000 });
+eq2("mismatch: yoco/link swap is caught by the same rule",
+  mmSwap2.filter((r) => r.reason === "swap").length, 2);
+
+// Green Point 1 Sep and Somerset West 28 Aug, both real.
+eq2("mismatch: digit slip 14323.25 -> 1432.25",
+  reasonOf(mmOne({ yoco: 1432.25 }, { card: 14323.25, tips: 0 }), "card"), "slip");
+eq2("mismatch: digit slip 505 -> 5050",
+  reasonOf(mmOne({ card_tips: 5050 }, { tips: 505 }), "tips"), "slip");
+// The negative case that keeps the heuristic honest: an ordinary near-miss.
+eq2("mismatch: 11690.50 vs 11635.50 is NOT a digit slip",
+  reasonOf(mmOne({ yoco: 11690.5 }, { card: 11635.5, tips: 0 }), "card"), "differ");
+eq2("mismatch: digitSlip rejects equal-length figures", CF.digitSlip(1234.56, 1234.65), false);
+
+// Money Fresha collected that the cash-up form has no field for.
+eq2("mismatch: EFT is 'not on the form'", reasonOf(mmOne({}, { eft: 915 }), "extra"), "form");
+// Zero in every export so far, which is exactly why it is easy to get wrong.
+const mmPre = mmOne({}, { prepayment_redemption: 450 });
+eq2("mismatch: a redeemed deposit lands on the extra line", reasonOf(mmPre, "extra"), "form");
+eq("mismatch: the redeemed deposit carries its amount",
+  mmPre.filter((r) => r.key === "extra")[0].fresha, 450);
+
+// Direction, because declaring MORE than Fresha saw is the worrying way round.
+eq2("mismatch: declaring more than Fresha reads 'over'",
+  mmOne({ yoco: 10600 })[0].direction, "over");
+eq2("mismatch: declaring less reads 'under'",
+  mmOne({ yoco: 9400 })[0].direction, "under");
+
+/* The card reading habit. One store reads its Yoco figure net of tips and
+   every other reads it gross; grading the net reader against gross would add
+   that day's tips to every slip it makes. */
+const convDays = [];
+const convFresha = [];
+for (let d = 1; d <= 6; d++) {
+  const day = "2026-09-0" + d;
+  convFresha.push({ branch: "Netshire", date: day, card: 1000 + d, tips: 100, gift_cards_sold: 0, gift_card: 0, yoco_link: 0, cash: 0, eft: 0, shopify: 0, other: 0, prepayment_redemption: 0, total: 1000 + d });
+  convDays.push({ branch: "Netshire", date: day, yoco: 900 + d, card_tips: 100, cash: 0, yoco_link: 0, gift_card: 0, vouchers: 0 });
+}
+const conv = CF.inferCardConventions(convDays, convFresha, mmCfg);
+eq2("mismatch: a store that always reads net is learned as net", conv.Netshire, "net");
+// Now break one day by exactly R100 and check it is reported as R100.
+const brokeDay = Object.assign({}, convDays[0], { yoco: 900 + 1 - 100 });
+const brokeRow = CF.paymentMismatches(brokeDay, convFresha[0], mmCfg, { cardConvention: "net" })[0];
+eq("mismatch: a net reader off by R100 reports R100, not R100 + tips", brokeRow.delta, -100);
+eq2("mismatch: the row names the reading it was graded against", brokeRow.cardReading, "net");
+// Without the convention the same day would be graded against gross.
+const blindRow = CF.paymentMismatches(brokeDay, convFresha[0], mmCfg)[0];
+eq("mismatch: with no convention known, the closer reading is used", blindRow.delta, -100);
+
+/* Sign-off notes. A note speaks only for the figures it was written
+   against — the reason all three are stored. */
+const noteFresha = Object.assign({}, mmFresha, { tips: 0 });   // no tips: one unambiguous reading
+const noteRows = CF.mismatchRows(
+  [Object.assign({}, mmClean, { yoco: 9000, card_tips: 0 })], [noteFresha], mmCfg);
+eq2("mismatch: one unexplained row before any note", noteRows.length, 1);
+const nBase = { branch: "Claremont", date: "2026-09-01", line: "card", status: "resolved", note: "machine reprinted" };
+function joined(over) {
+  return CF.applyMismatchNotes(noteRows, [Object.assign({}, nBase, over)], mmCfg);
+}
+eq2("mismatch: a matching note resolves the row",
+  joined({ declared_at_note: 9000, fresha_at_note: 10000, delta_at_note: -1000 })[0].state, "resolved");
+eq2("mismatch: a moved difference reopens it",
+  joined({ declared_at_note: 9500, fresha_at_note: 10000, delta_at_note: -500 })[0].state, "changed");
+// The case a delta-only comparison would miss: both sides moved by R100, so
+// the gap is identical but it is a different day's trading.
+eq2("mismatch: both figures moving by the same amount still reopens it",
+  joined({ declared_at_note: 8900, fresha_at_note: 9900, delta_at_note: -1000 })[0].state, "changed");
+eq2("mismatch: no note leaves the row open", CF.applyMismatchNotes(noteRows, [], mmCfg)[0].state, "open");
+// A note whose line the store has since corrected still has something to say.
+const balanced = CF.applyMismatchNotes([], [Object.assign({}, nBase,
+  { declared_at_note: 9000, fresha_at_note: 10000, delta_at_note: -1000 })], mmCfg);
+eq2("mismatch: a note on a now-correct line reads 'Now balances'", balanced[0].state, "balanced");
+eq2("mismatch: it keeps the line's proper label", balanced[0].label, "Yoco (card)");
+
+/* What the dashboard shouts about: rows nobody has looked at. */
+const alertRows = CF.applyMismatchNotes(
+  CF.mismatchRows([
+    Object.assign({}, mmClean, { yoco: 9000 }),                                  // R1000 under
+    Object.assign({}, mmClean, { branch: "B", date: "2026-09-02", vouchers: 0 }), // blank voucher
+    Object.assign({}, mmClean, { branch: "C", date: "2026-09-03", yoco_link: 480 }) // R20, under threshold
+  ], [
+    mmFresha,
+    Object.assign({}, mmFresha, { branch: "B", date: "2026-09-02" }),
+    Object.assign({}, mmFresha, { branch: "C", date: "2026-09-03" })
+  ], mmCfg), [], mmCfg);
+const alertCfg = { matchTolerance: 1, mismatch: { alertThreshold: 500, blankFloor: 0 } };
+eq2("alert: R1000 and a blank field fire, R20 does not",
+  CF.alertableMismatches(alertRows, alertCfg).length, 2);
+eq2("alert: muting a line silences it without hiding the row",
+  CF.alertableMismatches(alertRows, { matchTolerance: 1, mismatch: { alertThreshold: 500, alertMuteLines: ["vouchers"] } }).length, 1);
+eq2("alert: the muted row is still on the tab", alertRows.length, 3);
+// An escalated row is somebody's job already.
+const escalated = CF.applyMismatchNotes(noteRows, [Object.assign({}, nBase,
+  { status: "escalated", declared_at_note: 9000, fresha_at_note: 10000, delta_at_note: -1000 })], mmCfg);
+eq2("alert: an escalated row does not also shout from the dashboard",
+  CF.alertableMismatches(escalated, alertCfg).length, 0);
+
+/* Config: a cfg written before this tab existed must still work. */
+const oldCfg = CF.normalizeCfg({ ceiling: 10000, matchTolerance: 1 });
+eq("cfg: alert threshold defaults", oldCfg.mismatch.alertThreshold, 500);
+eq("cfg: alert window defaults", oldCfg.mismatch.alertWindowDays, 14);
+eq2("cfg: mute list defaults empty", oldCfg.mismatch.alertMuteLines.length, 0);
+eq("cfg: a set threshold survives normalising",
+  CF.normalizeCfg({ mismatch: { alertThreshold: 250 } }).mismatch.alertThreshold, 250);
+
+/* Real exports again, this time through the mismatch layer. */
+if (fs.existsSync(sampleDir) && fs.readdirSync(sampleDir).filter((f) => f.endsWith(".csv")).length) {
+  const salonNames = ["Sea Point", "Claremont", "Green Point", "Cobble Walk", "Betty", "Ballito",
+    "Bree", "Durbanville", "Kloof", "Rondebosch", "Table Bay", "Verdi", "Somerset West",
+    "Kuils River", "Cape Gate", "Mushroom Farm", "Plumstead", "Riverlands", "Eastgate",
+    "Fourways", "Sandown", "Mall of the South", "Winelands", "Melrose Arch"];
+  const rows = [];
+  fs.readdirSync(sampleDir).filter((f) => f.endsWith(".csv")).forEach((f) => {
+    const b = CF.resolveFreshaBranch(CF.freshaBranchFromFilename(f), salonNames, { buiten: "Betty" });
+    if (!b) return;
+    const res = CF.parseFreshaFile(fs.readFileSync(path.join(sampleDir, f), "utf8"));
+    if (!res.ok) return;
+    res.rows.forEach((r) => { r.branch = b; rows.push(r); });
+  });
+  // Every store's own Yoco reading, learned from the file rather than assumed:
+  // a cash-up built gross-of-tips must reconcile for all of them.
+  const synth = rows.map((r) => ({
+    branch: r.branch, date: r.date, yoco: r.card, yoco_link: r.yoco_link,
+    cash: r.cash, gift_card: r.gift_card, vouchers: r.gift_cards_sold, card_tips: r.tips
+  }));
+  const clean = CF.mismatchRows(synth, rows, mmCfg);
+  // EFT / Shopify / a redeemed deposit have no field on the cash-up form, so
+  // even a perfect cash-up cannot express them. Those rows are the "not on
+  // the form" tag doing its job; anything else would be a false positive.
+  const bogus = clean.filter((r) => r.reason !== "form");
+  if (!bogus.length) pass("mismatch (local files): a perfect cash-up for every one of "
+    + rows.length + " store-days produces no mismatch beyond the "
+    + clean.length + " Fresha-only payment(s) the form cannot hold");
+  else fail("mismatch (local files): " + bogus.length + " false mismatch(es), e.g. "
+    + bogus.slice(0, 3).map((r) => r.branch + " " + r.date + " " + r.label).join("; "));
+}
+
 console.log(failed ? "\ncash-float check FAILED" : "\ncash-float check passed");
 process.exit(failed ? 1 : 0);

@@ -1646,6 +1646,65 @@
     return true;
   }
 
+  /* ── Other payment mismatches — sign-off notes ───────────────────────────
+     The mismatches themselves are never stored. They are recomputed from the
+     live cash-up and the live Fresha row by cash-float.js every time the tab
+     opens, exactly like every other figure in Cash Ups; a stored mismatch
+     would drift the moment a cash-up was reopened or a file re-imported.
+     What IS stored is the human part: that somebody looked at one, and what
+     they concluded. See sql/payment_mismatch.sql. */
+  var MISMATCH_NOTE_COLS = "branch,date,line,status,note,declared_at_note," +
+    "fresha_at_note,delta_at_note,actor,created_at,updated_at";
+
+  async function listMismatchNotes(fromYmd, toYmd) {
+    var q = sb.from("cashup_mismatch_notes").select(MISMATCH_NOTE_COLS);
+    if (fromYmd) q = q.gte("date", fromYmd);
+    if (toYmd) q = q.lte("date", toYmd);
+    var res = await q.order("date", { ascending: false });
+    if (res.error) { console.error("listMismatchNotes:", res.error); throw res.error; }
+    return res.data || [];
+  }
+
+  /* Upsert on (branch, date, line): signing off the same line twice replaces
+     the note rather than failing, which is what "I got that wrong, here is
+     the real reason" should do. The three figures are stamped here rather
+     than trusted from the caller's memory of them, so a note can never claim
+     to have been written against numbers it was not. */
+  async function saveMismatchNote(p) {
+    var branch = (p && p.branch || "").trim();
+    var dateStr = (p && p.date || "").trim();
+    var line = (p && p.line || "").trim();
+    var note = (p && p.note || "").trim();
+    if (!branch || !dateStr || !line) throw new Error("Missing store, date or payment line");
+    if (p.status !== "resolved" && p.status !== "escalated") throw new Error("Unknown status: " + p.status);
+    // Required by the database too — a sign-off with no reason is worth
+    // nothing to whoever reads it next.
+    if (!note) throw new Error("A note is required — say what you found.");
+    var row = {
+      branch: branch, date: dateStr, line: line, status: p.status, note: note,
+      declared_at_note: Number(p.declared) || 0,
+      fresha_at_note: Number(p.fresha) || 0,
+      delta_at_note: Number(p.delta) || 0,
+      actor: (p.actor || "").trim() || null,
+      updated_at: new Date().toISOString()
+    };
+    var res = await sb.from("cashup_mismatch_notes")
+      .upsert(row, { onConflict: "branch,date,line" })
+      .select(MISMATCH_NOTE_COLS).maybeSingle();
+    if (res.error) { console.error("saveMismatchNote:", res.error); throw res.error; }
+    return res.data;
+  }
+
+  // Reopen. Deleting the note cannot destroy the mismatch — that is derived
+  // from the cash-up and the Fresha row and comes straight back.
+  async function deleteMismatchNote(branch, dateStr, line) {
+    if (!branch || !dateStr || !line) throw new Error("Missing store, date or payment line");
+    var res = await sb.from("cashup_mismatch_notes").delete()
+      .eq("branch", branch).eq("date", dateStr).eq("line", line);
+    if (res.error) { console.error("deleteMismatchNote:", res.error); throw res.error; }
+    return true;
+  }
+
   // portal's spot-check viewer. Photo + GPS lives in the clockin_meta table,
   // keyed by clockin id — fetch lazily per row.
   // Fetch ALL clockins since a cutoff, paging past PostgREST's server-side
@@ -3296,6 +3355,9 @@
     listFreshaDailySalesForRange: listFreshaDailySalesForRange,
     upsertFreshaDailySales: upsertFreshaDailySales,
     deleteFreshaDailySales: deleteFreshaDailySales,
+    listMismatchNotes: listMismatchNotes,
+    saveMismatchNote: saveMismatchNote,
+    deleteMismatchNote: deleteMismatchNote,
 
     loadManagerDayStatuses: loadManagerDayStatuses,
     getManagerDayProof: getManagerDayProof,

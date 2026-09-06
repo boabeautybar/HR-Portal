@@ -59,6 +59,19 @@
   var DEFAULT_CEILING = 10000;
   var DEFAULT_TOLERANCE = 1;
 
+  /* Other-payment-mismatch settings. These tune the DASHBOARD only — the
+     mismatch tab always shows everything that does not balance, because
+     muting a line there would hide the very problem someone is trying to
+     fix. `alertMuteLines` exists for a line the stores are still being
+     trained on (vouchers, at the time of writing) that would otherwise
+     shout every day until the training lands. */
+  var DEFAULT_MISMATCH = {
+    alertThreshold: 500,   // rand; one line's difference
+    blankFloor: 0,         // rand; a blank field alerts at any size
+    alertWindowDays: 14,   // trailing days the dashboard reads
+    alertMuteLines: []     // line keys silenced on the dashboard only
+  };
+
   function normalizeCfg(cfg) {
     var c = cfg && typeof cfg === "object" ? cfg : {};
     var ceiling = Number(c.ceiling);
@@ -71,7 +84,21 @@
       // Fresha locations that are deliberately not cash-up stores (other
       // regions, non-salon locations). Remembered so a bulk import stops
       // asking about the same seven places every week.
-      freshaIgnore: Array.isArray(c.freshaIgnore) ? c.freshaIgnore : []
+      freshaIgnore: Array.isArray(c.freshaIgnore) ? c.freshaIgnore : [],
+      mismatch: normalizeMismatchCfg(c.mismatch)
+    };
+  }
+
+  // Kept separate so a config written before the mismatch tab existed still
+  // normalises to working defaults rather than undefined.
+  function normalizeMismatchCfg(m) {
+    var x = m && typeof m === "object" ? m : {};
+    var thr = Number(x.alertThreshold), floor = Number(x.blankFloor), win = Number(x.alertWindowDays);
+    return {
+      alertThreshold: isFinite(thr) && thr >= 0 ? thr : DEFAULT_MISMATCH.alertThreshold,
+      blankFloor: isFinite(floor) && floor >= 0 ? floor : DEFAULT_MISMATCH.blankFloor,
+      alertWindowDays: isFinite(win) && win >= 1 ? Math.round(win) : DEFAULT_MISMATCH.alertWindowDays,
+      alertMuteLines: Array.isArray(x.alertMuteLines) ? x.alertMuteLines.slice() : []
     };
   }
 
@@ -621,9 +648,10 @@
      gross or net of tips is a habit, not a setting. So both readings are
      accepted and the matching one is named in the result — self-calibrating
      instead of hard-coding a convention that would be wrong half the time. */
-  function matchFreshaToCashup(cashup, fresha, cfg) {
+  function matchFreshaToCashup(cashup, fresha, cfg, opts) {
     var c = normalizeCfg(cfg);
     var tolC = cents(c.matchTolerance);
+    opts = opts || {};
     if (!fresha) return { status: "none", label: "No Fresha data", lines: [], cashDelta: 0 };
     if (!cashup) return { status: "nocashup", label: "No cash-up", lines: [], cashDelta: 0 };
 
@@ -650,16 +678,35 @@
     var netC = grossC - cents(fresha.tips);
     var okGross = Math.abs(declaredCardC - grossC) <= tolC;
     var okNet = Math.abs(declaredCardC - netC) <= tolC;
+    // When NEITHER reading matches we still have to report a difference, and
+    // which figure we subtract from decides how big it looks. Grading a
+    // net-reading store against the gross figure would add that day's tips to
+    // every slip it ever makes. So use the store's own habit when the caller
+    // knows it (inferCardConventions), and otherwise the closer of the two —
+    // never a hard-coded convention that is wrong for somebody.
+    var conv = opts.cardConvention === "net" || opts.cardConvention === "gross" ? opts.cardConvention : "";
+    var useNet = okNet && !okGross;
+    if (!okGross && !okNet) {
+      useNet = conv ? conv === "net"
+        : Math.abs(declaredCardC - netC) < Math.abs(declaredCardC - grossC);
+    }
+    var usedC = useNet ? netC : grossC;
     lines.push({
       key: "card", label: "Yoco (card)", declared: money(declaredCardC),
-      fresha: money(okNet && !okGross ? netC : grossC),
-      delta: money(declaredCardC - (okNet && !okGross ? netC : grossC)),
+      fresha: money(usedC), delta: money(declaredCardC - usedC),
       ok: okGross || okNet, critical: false,
+      cardReading: useNet ? "net" : "gross",
+      cardConventionKnown: !!conv,
+      // The reading NOT used above. Swap detection needs it: a store that
+      // types its card total into the Yoco-link box typed the figure it
+      // reads off the machine, which may be either of these.
+      freshaAlt: money(useNet ? grossC : netC),
       note: okGross && okNet ? ""
         : okNet ? "matches Fresha card net of tips"
         : okGross ? "matches Fresha card including tips"
         : "Fresha card is " + money(grossC).toFixed(2) + " including tips, "
           + money(netC).toFixed(2) + " without"
+          + (conv ? "; this store usually reads it " + conv : "")
     });
 
     line("yoco_link", "Yoco payment link", cashup.yoco_link, fresha.yoco_link);
@@ -667,11 +714,23 @@
     line("vouchers", "Vouchers / gift cards sold", cashup.vouchers, fresha.gift_cards_sold);
     line("tips", "Card tips", cashup.card_tips, fresha.tips);
 
-    // Fresha-only money with nowhere to go on the cash-up form.
-    var extraC = cents(fresha.eft) + cents(fresha.shopify) + cents(fresha.other);
+    /* Fresha-only money with nowhere to go on the cash-up form. Prepayment
+       redemption belongs here: Fresha counts it inside the day's total, but
+       the cash-up form has no field for a deposit taken on an earlier day, so
+       without this line the "Total collected" comparison would drift by it
+       with nothing on the page explaining why. Zero across every store today,
+       which is exactly why it is easy to get wrong later. */
+    var extraParts = [];
+    if (cents(fresha.eft)) extraParts.push("EFT");
+    if (cents(fresha.shopify)) extraParts.push("Shopify");
+    if (cents(fresha.prepayment_redemption)) extraParts.push("deposit redeemed");
+    if (cents(fresha.other)) extraParts.push("other");
+    var extraC = cents(fresha.eft) + cents(fresha.shopify) + cents(fresha.other)
+      + cents(fresha.prepayment_redemption);
     if (extraC) {
       lines.push({
-        key: "extra", label: "EFT / Shopify / other", declared: 0, fresha: money(extraC),
+        key: "extra", label: extraParts.length ? extraParts.join(" / ") : "EFT / Shopify / other",
+        declared: 0, fresha: money(extraC),
         delta: money(-extraC), ok: false, critical: false,
         note: "Fresha collected this outside the cash-up's payment fields"
       });
@@ -703,6 +762,259 @@
     };
   }
 
+  /* ── Other payment mismatches ───────────────────────────────────────────
+     A layer over matchFreshaToCashup, not a second implementation of it.
+     Cash and the grand total are dropped: cash is graded on its own on the
+     daily tab and tracked on the float ledger, and a grand total tells you
+     that something is wrong without telling you what.
+
+     What is left is tagged, because the tag decides who does what. A blank
+     field is an incomplete cash-up and a phone call to the store; a swap is
+     one correction that fixes two rows; a digit slip is a keying error; two
+     figures that genuinely disagree is an investigation. Lumping them into
+     "off by R x" throws that away. */
+
+  var MISMATCH_LINES = ["card", "yoco_link", "gift_card", "vouchers", "tips", "extra"];
+
+  var MISMATCH_REASON = {
+    blank: "Field left blank",
+    differ: "Figures differ",
+    swap: "Swapped",
+    form: "Not on the form",
+    slip: "Digit slip",
+    declared_only: "Declared, no Fresha sale"
+  };
+
+  // The nature of these four is not in doubt, only the correction. "differ"
+  // and "declared_only" need somebody to go and find out what happened.
+  var MISMATCH_CERTAIN = { blank: 1, swap: 1, form: 1, slip: 1 };
+
+  var MISMATCH_STATE = {
+    open: "Open",
+    changed: "Changed since sign-off",
+    escalated: "Escalated",
+    resolved: "Resolved",
+    balanced: "Now balances"
+  };
+
+  /* One character deleted from the larger figure gives the smaller one:
+     14323.25 -> 1432.25, 5050.00 -> 505.00. Compared as two-decimal strings
+     rather than arithmetically, because a dropped digit is a typing mistake,
+     not a factor of ten — 14323.25 / 10 is 1432.325, which is not what was
+     typed. Across 122 real mismatching lines this fired twice, both genuine,
+     and never on an ordinary near-miss like 11690.50 vs 11635.50. */
+  function digitSlip(a, b) {
+    var hi = Math.abs(cents(a)) >= Math.abs(cents(b)) ? a : b;
+    var lo = hi === a ? b : a;
+    var H = (Math.abs(cents(hi)) / 100).toFixed(2);
+    var L = (Math.abs(cents(lo)) / 100).toFixed(2);
+    if (H.length !== L.length + 1) return false;
+    for (var i = 0; i < H.length; i++) {
+      if (H.slice(0, i) + H.slice(i + 1) === L) return true;
+    }
+    return false;
+  }
+
+  // Accepts an array of fresha_daily_sales rows or an already-built index.
+  function indexFresha(fresha) {
+    if (!fresha) return {};
+    if (!Array.isArray(fresha)) return fresha;
+    var fx = {};
+    fresha.forEach(function (f) { if (f && f.branch && f.date) fx[f.branch + "|" + f.date] = f; });
+    return fx;
+  }
+
+  /* Which way each store reads its Yoco figure. Every store in the sample
+     reads it gross of tips except one, which reads it net on every single
+     day — so this is a habit, not a setting, and it has to be learned per
+     store rather than assumed. Days with no tips are skipped: they match
+     both readings and so tell us nothing. */
+  function inferCardConventions(cashups, fresha, cfg) {
+    var c = normalizeCfg(cfg), tolC = cents(c.matchTolerance);
+    var fx = indexFresha(fresha), tally = {};
+    (cashups || []).forEach(function (cu) {
+      if (!cu || cu.archived_at) return;
+      var f = fx[cu.branch + "|" + cu.date];
+      if (!f) return;
+      var g = cents(f.card), n = g - cents(f.tips);
+      if (g === n) return;
+      var d = cents(cu.yoco);
+      var t = tally[cu.branch] || (tally[cu.branch] = { gross: 0, net: 0 });
+      if (Math.abs(d - g) <= tolC) t.gross++;
+      else if (Math.abs(d - n) <= tolC) t.net++;
+    });
+    var out = {};
+    Object.keys(tally).forEach(function (b) {
+      var t = tally[b];
+      out[b] = t.gross > t.net ? "gross" : t.net > t.gross ? "net" : null;
+    });
+    return out;
+  }
+
+  /**
+   * paymentMismatches(cashup, fresha, cfg, opts) -> [row]
+   * The non-cash lines of one store-day that do not balance, each tagged.
+   * Nothing is filtered out for being muted — muting is the dashboard's
+   * concern, and hiding a line here would hide the problem being fixed.
+   */
+  function paymentMismatches(cashup, fresha, cfg, opts) {
+    var c = normalizeCfg(cfg), tolC = cents(c.matchTolerance);
+    opts = opts || {};
+    if (!cashup || cashup.archived_at || !fresha) return [];
+    var m = matchFreshaToCashup(cashup, fresha, cfg, { cardConvention: opts.cardConvention });
+    if (m.status === "none" || m.status === "nocashup") return [];
+
+    var bad = m.lines.filter(function (l) {
+      return !l.ok && l.key !== "cash" && l.key !== "collected";
+    });
+
+    /* Swap detection, across every pair rather than just vouchers and gift
+       cards. Only that pair has been seen so far, but Yoco and Yoco link is
+       the obvious next one and the test costs nothing: A's declared equals
+       B's Fresha and B's declared equals A's Fresha. "extra" is excluded —
+       it has no declared side to swap with. */
+    var swap = {};
+    // Does `declared` match what line `l` shows on the Fresha side, under
+    // either reading of it?
+    function nearAny(declared, l, tol) {
+      var d = cents(declared);
+      if (Math.abs(d - cents(l.fresha)) <= tol) return true;
+      return l.freshaAlt != null && Math.abs(d - cents(l.freshaAlt)) <= tol;
+    }
+    for (var i = 0; i < bad.length; i++) {
+      for (var j = i + 1; j < bad.length; j++) {
+        var a = bad[i], b = bad[j];
+        if (swap[a.key] || swap[b.key]) continue;
+        if (a.key === "extra" || b.key === "extra") continue;
+        if (!cents(a.declared) && !cents(b.declared)) continue;
+        if (nearAny(a.declared, b, tolC) && nearAny(b.declared, a, tolC)) {
+          swap[a.key] = b.label;
+          swap[b.key] = a.label;
+        }
+      }
+    }
+
+    return bad.map(function (l) {
+      var reason;
+      if (swap[l.key]) reason = "swap";
+      else if (l.key === "extra") reason = "form";
+      else if (!cents(l.declared) && cents(l.fresha)) reason = "blank";
+      else if (!cents(l.fresha) && cents(l.declared)) reason = "declared_only";
+      else if (digitSlip(l.declared, l.fresha)) reason = "slip";
+      else reason = "differ";
+      return {
+        branch: cashup.branch, date: cashup.date, cashupId: cashup.id || null,
+        key: l.key, label: l.label,
+        declared: l.declared, fresha: l.fresha, delta: l.delta,
+        // Declaring MORE than Fresha recorded a sale for is the worrying
+        // direction; declaring less is takings not accounted for.
+        direction: cents(l.delta) > 0 ? "over" : "under",
+        reason: reason, reasonLabel: MISMATCH_REASON[reason],
+        certain: !!MISMATCH_CERTAIN[reason],
+        swappedWith: swap[l.key] || "",
+        cardReading: l.cardReading || "",
+        cardConventionKnown: !!l.cardConventionKnown,
+        note: l.note || ""
+      };
+    });
+  }
+
+  /** Every mismatching line across a window, biggest difference first. */
+  function mismatchRows(cashups, fresha, cfg) {
+    var fx = indexFresha(fresha);
+    var conv = inferCardConventions(cashups, fresha, cfg);
+    var out = [];
+    (cashups || []).forEach(function (cu) {
+      if (!cu || cu.archived_at) return;
+      var f = fx[cu.branch + "|" + cu.date];
+      if (!f) return;
+      paymentMismatches(cu, f, cfg, { cardConvention: conv[cu.branch] })
+        .forEach(function (r) { out.push(r); });
+    });
+    out.sort(function (a, b) { return Math.abs(b.delta) - Math.abs(a.delta); });
+    return out;
+  }
+
+  /* Join live mismatches to the sign-off notes. The result is the UNION of
+     the two, not just the mismatches: a note whose line the store has since
+     corrected still has something to say ("Now balances"), and dropping it
+     would leave the person who wrote it wondering what happened.
+
+     A note carries the three figures it was written against, and any of them
+     moving reopens the row. Comparing only the difference would miss a store
+     re-submitting R100 higher against a Fresha re-import R100 higher — the
+     same gap, a different day's trading, and an explanation that may no
+     longer hold. */
+  function applyMismatchNotes(rows, notes, cfg) {
+    var c = normalizeCfg(cfg), tolC = cents(c.matchTolerance);
+    var byKey = {};
+    (notes || []).forEach(function (n) {
+      if (n && n.branch && n.date && n.line) byKey[n.branch + "|" + n.date + "|" + n.line] = n;
+    });
+    var seen = {}, out = [];
+
+    (rows || []).forEach(function (r) {
+      var k = r.branch + "|" + r.date + "|" + r.key;
+      seen[k] = true;
+      var n = byKey[k], o = {};
+      Object.keys(r).forEach(function (p) { o[p] = r[p]; });
+      if (!n) { o.state = "open"; o.signoff = null; }
+      else {
+        var moved = Math.abs(cents(r.declared) - cents(n.declared_at_note)) > tolC ||
+                    Math.abs(cents(r.fresha) - cents(n.fresha_at_note)) > tolC ||
+                    Math.abs(cents(r.delta) - cents(n.delta_at_note)) > tolC;
+        o.state = moved ? "changed" : n.status;
+        o.signoff = n;
+      }
+      o.stateLabel = MISMATCH_STATE[o.state] || o.state;
+      out.push(o);
+    });
+
+    (notes || []).forEach(function (n) {
+      if (!n || !n.branch || !n.date || !n.line) return;
+      var k = n.branch + "|" + n.date + "|" + n.line;
+      if (seen[k]) return;
+      out.push({
+        branch: n.branch, date: n.date, key: n.line,
+        label: LINE_LABEL[n.line] || n.line,
+        declared: num(n.declared_at_note), fresha: num(n.fresha_at_note),
+        delta: 0, direction: "under",
+        reason: "differ", reasonLabel: MISMATCH_REASON.differ, certain: false,
+        swappedWith: "", cardReading: "", cardConventionKnown: false, note: "",
+        state: "balanced", stateLabel: MISMATCH_STATE.balanced, signoff: n
+      });
+    });
+
+    return out;
+  }
+
+  var LINE_LABEL = {
+    card: "Yoco (card)",
+    yoco_link: "Yoco payment link",
+    gift_card: "Gift card redeemed",
+    vouchers: "Vouchers / gift cards sold",
+    tips: "Card tips",
+    extra: "EFT / Shopify / other"
+  };
+
+  /* What the dashboard shouts about: rows nobody has looked at yet. An
+     escalated row is somebody's job already and does not need chasing from
+     the dashboard as well. A muted line still appears on the tab — muting is
+     for the training problem that would otherwise ring the bell every
+     morning, not for making a mismatch disappear. */
+  function alertableMismatches(rows, cfg) {
+    var c = normalizeCfg(cfg), m = c.mismatch;
+    var muted = {};
+    m.alertMuteLines.forEach(function (k) { muted[k] = 1; });
+    var thrC = cents(m.alertThreshold), floorC = cents(m.blankFloor);
+    return (rows || []).filter(function (r) {
+      if (r.state !== "open" && r.state !== "changed") return false;
+      if (muted[r.key]) return false;
+      if (r.reason === "blank") return Math.abs(cents(r.fresha)) >= floorC;
+      return Math.abs(cents(r.delta)) >= thrC;
+    });
+  }
+
   var API = {
     DEFAULT_CEILING: DEFAULT_CEILING,
     DEFAULT_TOLERANCE: DEFAULT_TOLERANCE,
@@ -722,7 +1034,18 @@
     normalizeFreshaLocation: normalizeFreshaLocation,
     isFreshaIgnored: isFreshaIgnored,
     resolveFreshaBranch: resolveFreshaBranch,
-    matchFreshaToCashup: matchFreshaToCashup
+    matchFreshaToCashup: matchFreshaToCashup,
+    MISMATCH_LINES: MISMATCH_LINES,
+    MISMATCH_REASON: MISMATCH_REASON,
+    MISMATCH_STATE: MISMATCH_STATE,
+    LINE_LABEL: LINE_LABEL,
+    digitSlip: digitSlip,
+    indexFresha: indexFresha,
+    inferCardConventions: inferCardConventions,
+    paymentMismatches: paymentMismatches,
+    mismatchRows: mismatchRows,
+    applyMismatchNotes: applyMismatchNotes,
+    alertableMismatches: alertableMismatches
   };
 
   if (typeof module !== "undefined" && module.exports) module.exports = API;

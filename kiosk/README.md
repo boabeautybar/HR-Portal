@@ -29,7 +29,7 @@ archived once this folder is the live source.
 | `styles.css`     | All kiosk-specific styles. |
 | `diag.html`      | Diagnostics page for debugging Supabase + branch config from inside the kiosk. |
 | `shift-rules.js` | **Mirror** of `/shift-rules.js`. Must stay byte-identical — `node scripts/check-shift-rules.js`. |
-| `cash-float.js`  | **Mirror** of `/cash-float.js` — the cash-on-hand maths shared with the HR portal, so a tablet and the portal can never show different balances. Must stay byte-identical — `node scripts/check-cash-float.js`. |
+| `cash-float.js`  | **Mirror** of `/cash-float.js` — the cash-on-hand maths shared with the HR portal, so a tablet and the portal can never show different balances. It also carries the portal's Fresha parsing and payment-mismatch logic, which the kiosk never calls; the copy is byte-identical rather than trimmed, because a mirror you are allowed to edit is a mirror that drifts. Must stay byte-identical — `node scripts/check-cash-float.js`. |
 
 Both mirrors exist because this site's publish root is `kiosk/`, so a page here
 cannot load a script from above it. Edit one copy, copy it over the other, and

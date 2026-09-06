@@ -11215,7 +11215,8 @@ const DASH_CARDS = [
   { id: "probationEnding", key: "dashProbationEnding", l: "Probation ending", icon: "📋" },
   { id: "trialHrActions", key: "dashTrialHrActions", l: "Trial · HR actions", icon: "🧪" },
   { id: "storeOpenings", key: "dashStoreOpenings", l: "Store openings", icon: "🔓" },
-  { id: "cashFloatOver", key: "dashCashFloatOver", l: "Cash float · over ceiling", icon: "🏦" }
+  { id: "cashFloatOver", key: "dashCashFloatOver", l: "Cash float · over ceiling", icon: "🏦" },
+  { id: "paymentMismatch", key: "dashPaymentMismatch", l: "Payments · not balancing", icon: "⚖️" }
 ];
 const DASH_BY_ID = DASH_CARDS.reduce((m, c) => { m[c.id] = c; return m; }, {});
 // Is this dashboard card hidden for this user? One place, so a card can never
@@ -12075,7 +12076,8 @@ const TAB_SUBS = {
     state: "cashupSubTab",
     subs: [
       { k: "daily", l: "Daily cash-ups", icon: "📅" },
-      { k: "float", l: "Cash float / balance sheet", icon: "🏦" }
+      { k: "float", l: "Cash float / balance sheet", icon: "🏦" },
+      { k: "mismatch", l: "Other payment mismatches", icon: "⚖️" }
     ]
   },
   // These two live in child components (IncidentReportsTab, HRReportsTab)
@@ -24768,6 +24770,354 @@ function CashupExportModal({ from, to, cfg, scopeFilter, regionByBranch, onClose
   );
 }
 
+/* ═══ OTHER PAYMENT MISMATCHES ══════════════════════════════════════════════
+   The third of the Cash Ups sub-tabs. Daily asks "did the store declare the
+   right takings today"; Float asks "is the cash they declared still there".
+   This one asks what neither covers: of the payments that are NOT cash —
+   card, Yoco link, gift cards, vouchers, tips, EFT — which do not balance
+   against Fresha, and what kind of mistake is each one?
+
+   Cash is deliberately absent. It is graded on its own on Daily and tracked
+   on the float ledger, and it is the only line that can walk out of the
+   building; mixing it into a list of sixty voucher-field slips would bury it.
+
+   The rows are recomputed from live data every time — nothing about a
+   mismatch is stored. What IS stored is the human part: that somebody looked
+   at one and what they concluded. cash-float.js owns all of the arithmetic,
+   so this file only decides how it looks. */
+
+function MismatchResolveModal({ row, userName, readOnly, onSave, onClose, fmtMoney }) {
+  const [status, setStatus] = useState(row.state === "escalated" ? "escalated" : "resolved");
+  const [note, setNote] = useState((row.signoff && row.signoff.note) || "");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const run = async () => {
+    if (!note.trim()) { setErr("Say what you found — a sign-off with no reason is no help to the next person."); return; }
+    setBusy(true); setErr("");
+    try {
+      await onSave({
+        branch: row.branch, date: row.date, line: row.key, status: status,
+        note: note, actor: userName,
+        declared: row.declared, fresha: row.fresha, delta: row.delta
+      });
+      onClose();
+    } catch (e) { setErr((e && e.message) || String(e)); }
+    finally { setBusy(false); }
+  };
+
+  const label = { display: "block", fontSize: 10.5, fontWeight: 800, color: "#F472B6", letterSpacing: "0.06em", marginBottom: 3 };
+  const fig = (t, v, tone) => (
+    <div style={{ flex: 1, background: "#FDF2F8", borderRadius: 9, padding: "8px 10px" }}>
+      <div style={{ fontSize: 9.5, fontWeight: 800, color: "#F472B6", letterSpacing: "0.06em", textTransform: "uppercase" }}>{t}</div>
+      <div style={{ fontSize: 15, fontWeight: 800, color: tone || "#831843", fontVariantNumeric: "tabular-nums" }}>{fmtMoney(v)}</div>
+    </div>
+  );
+
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999, padding: 16 }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 14, padding: "18px 20px", maxWidth: 520, width: "100%", boxShadow: "0 12px 40px rgba(0,0,0,0.2)", maxHeight: "90vh", overflowY: "auto" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+          <div style={{ fontWeight: 800, color: "#831843", fontSize: 15 }}>⚖️ {row.label}</div>
+          <button onClick={onClose} style={{ background: "transparent", border: "none", fontSize: 22, cursor: "pointer", color: "#831843", lineHeight: 1 }}>×</button>
+        </div>
+        <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 12 }}>{row.branch} · {row.date}</div>
+
+        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+          {fig("Declared", row.declared)}
+          {fig("Fresha", row.fresha)}
+          {fig("Difference", row.delta, row.direction === "over" ? "#b91c1c" : "#b45309")}
+        </div>
+
+        <div style={{ background: "#FFF7ED", border: "1px solid #fed7aa", borderRadius: 9, padding: "9px 12px", fontSize: 12, color: "#7c2d12", marginBottom: 12, lineHeight: 1.5 }}>
+          <strong>{row.reasonLabel}</strong>
+          {row.swappedWith ? <> — swapped with <strong>{row.swappedWith}</strong>, so one correction fixes both rows.</> : null}
+          {row.note ? <div style={{ marginTop: 3 }}>{row.note}</div> : null}
+        </div>
+
+        {row.state === "changed" && row.signoff && (
+          <div style={{ background: "#fee2e2", border: "1px solid #fecaca", borderRadius: 9, padding: "9px 12px", fontSize: 12, color: "#7f1d1d", marginBottom: 12, lineHeight: 1.5 }}>
+            The figures moved since this was signed off — it was
+            {" "}{fmtMoney(row.signoff.declared_at_note)} against {fmtMoney(row.signoff.fresha_at_note)} then.
+            {row.signoff.note ? <div style={{ marginTop: 3, fontStyle: "italic" }}>“{row.signoff.note}”</div> : null}
+          </div>
+        )}
+
+        <div style={{ marginBottom: 10 }}>
+          <label style={label}>OUTCOME</label>
+          <div style={{ display: "flex", gap: 6 }}>
+            {[["resolved", "✔ Resolved", "This is explained and needs nothing further"],
+              ["escalated", "⚑ Escalated", "Being chased — stays visible, stops nagging the dashboard"]].map(([k, l, hint]) => (
+              <button key={k} onClick={() => setStatus(k)} title={hint}
+                style={{ flex: 1, padding: "8px 10px", borderRadius: 8, border: "1px solid " + (status === k ? "#BE185D" : "#FBCFE8"), background: status === k ? "#BE185D" : "#fff", color: status === k ? "#fff" : "#831843", fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>{l}</button>
+            ))}
+          </div>
+          <div style={{ fontSize: 10.5, color: "#9ca3af", marginTop: 4 }}>
+            {status === "resolved"
+              ? "Clears from the open list. Comes back on its own if the figures change."
+              : "Stays on the list under Escalated, but the dashboard stops counting it — somebody already owns it."}
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 12 }}>
+          <label style={label}>WHAT DID YOU FIND?</label>
+          <textarea value={note} onChange={e => setNote(e.target.value)} rows={3}
+            placeholder="e.g. store re-ran the Yoco batch, corrected on the cash-up"
+            style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid #FBCFE8", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box", resize: "vertical" }} />
+        </div>
+
+        {err && <div style={{ background: "#fee2e2", color: "#7f1d1d", borderRadius: 8, padding: "9px 12px", fontSize: 12, marginBottom: 10 }}>{err}</div>}
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <button onClick={onClose} style={{ background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 8, padding: "8px 15px", cursor: "pointer", fontSize: 12.5, fontWeight: 700 }}>Cancel</button>
+          <button onClick={run} disabled={busy || readOnly}
+            style={{ background: "#BE185D", color: "#fff", border: "none", borderRadius: 8, padding: "8px 17px", cursor: readOnly ? "not-allowed" : "pointer", fontSize: 12.5, fontWeight: 700, opacity: (busy || readOnly) ? 0.6 : 1 }}>
+            {busy ? "Saving…" : "Sign off"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PaymentMismatchTab({
+  rows, cfg, loading, range, setRange, filters, setFilters, branches,
+  canReview, readOnly, userName, onSaveNote, onDeleteNote, onReload,
+  onOpenDaily, onOpenImport, hasFresha,
+  fmtMoney, fmtDate, roStyle, roTitle
+}) {
+  const [modal, setModal] = useState(null);
+  const CF = window.BOA_CASH_FLOAT;
+  const norm = CF ? CF.normalizeCfg(cfg) : { mismatch: { alertMuteLines: [] } };
+  const muted = {};
+  (norm.mismatch.alertMuteLines || []).forEach(k => { muted[k] = true; });
+
+  const shown = rows.filter(r => {
+    if (filters.store !== "All" && r.branch !== filters.store) return false;
+    if (filters.line !== "all" && r.key !== filters.line) return false;
+    if (filters.reason !== "all" && r.reason !== filters.reason) return false;
+    if (filters.status === "open" && r.state !== "open" && r.state !== "changed") return false;
+    if (filters.status !== "all" && filters.status !== "open" && r.state !== filters.status) return false;
+    const min = Number(filters.minAmount);
+    if (isFinite(min) && min > 0 && Math.abs(r.delta) < min) return false;
+    return true;
+  });
+
+  const openRows = rows.filter(r => r.state === "open" || r.state === "changed");
+  const unexplained = openRows.reduce((a, r) => a + Math.abs(r.delta), 0);
+  const blanks = openRows.filter(r => r.reason === "blank").length;
+  const certain = openRows.filter(r => r.certain).length;
+  const storeCount = new Set(openRows.map(r => r.branch)).size;
+
+  const card = { background: "#fff", border: "1px solid #FBCFE8", borderRadius: 13 };
+  const th = { padding: "8px 10px", fontSize: 11, fontWeight: 800, letterSpacing: "0.04em", borderBottom: "1px solid #FBCFE8", whiteSpace: "nowrap", textAlign: "left", color: "#831843" };
+  const td = { padding: "7px 10px", borderBottom: "1px solid #FCE7F3", whiteSpace: "nowrap" };
+  const tdNum = { ...td, textAlign: "right", fontVariantNumeric: "tabular-nums" };
+  const sel = { padding: "7px 11px", borderRadius: 7, border: "1px solid #FBCFE8", fontSize: 13, background: "#fff" };
+  const lbl = { fontSize: 10, fontWeight: 700, color: "#F472B6", letterSpacing: "0.06em" };
+
+  const stat = (label, value, sub, tone) => (
+    <div style={{ ...card, padding: "10px 14px", minWidth: 140 }}>
+      <div style={{ fontSize: 10, fontWeight: 800, color: "#F472B6", letterSpacing: "0.08em", textTransform: "uppercase" }}>{label}</div>
+      <div style={{ fontSize: 20, fontWeight: 800, color: tone || "#831843", marginTop: 2 }}>{value}</div>
+      {sub && <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 2 }}>{sub}</div>}
+    </div>
+  );
+
+  const REASON_TONE = {
+    blank: ["#FEF3C7", "#92400E"], swap: ["#DBEAFE", "#1E40AF"], slip: ["#DBEAFE", "#1E40AF"],
+    form: ["#F3F4F6", "#4B5563"], declared_only: ["#FEE2E2", "#991B1B"], differ: ["#FCE7F3", "#9D174D"]
+  };
+  const STATE_TONE = {
+    open: ["#FCE7F3", "#9D174D"], changed: ["#FEE2E2", "#991B1B"],
+    escalated: ["#FEF3C7", "#92400E"], resolved: ["#DCFCE7", "#166534"], balanced: ["#DCFCE7", "#166534"]
+  };
+  const chip = (text, tone, title) => (
+    <span title={title || ""} style={{ background: tone[0], color: tone[1], borderRadius: 999, padding: "2px 8px", fontSize: 10.5, fontWeight: 700, whiteSpace: "nowrap" }}>{text}</span>
+  );
+
+  const save = async (p) => { await onSaveNote(p); await onReload(); };
+  const reopen = async (r) => {
+    if (!window.confirm("Reopen this mismatch? The note will be removed.")) return;
+    await onDeleteNote(r.branch, r.date, r.key);
+    await onReload();
+  };
+
+  return (
+    <>
+      {/* ── Range + filters ── */}
+      <div style={{ ...card, padding: "12px 14px", marginBottom: 14, display: "flex", gap: 14, alignItems: "flex-end", flexWrap: "wrap" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+          <label style={lbl}>FROM</label>
+          <input type="date" max={ymdStr(new Date())} value={range.from}
+            onChange={e => setRange({ ...range, from: e.target.value, to: e.target.value > range.to ? e.target.value : range.to })} style={sel} />
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+          <label style={lbl}>TO</label>
+          <input type="date" max={ymdStr(new Date())} min={range.from} value={range.to}
+            onChange={e => setRange({ ...range, to: e.target.value })} style={sel} />
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+          <label style={lbl}>STORE</label>
+          <select value={filters.store} onChange={e => setFilters({ ...filters, store: e.target.value })} style={{ ...sel, minWidth: 150 }}>
+            <option value="All">All stores</option>
+            {branches.map(b => <option key={b} value={b}>{b}</option>)}
+          </select>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+          <label style={lbl}>PAYMENT</label>
+          <select value={filters.line} onChange={e => setFilters({ ...filters, line: e.target.value })} style={sel}>
+            <option value="all">All payments</option>
+            {(CF ? CF.MISMATCH_LINES : []).map(k => <option key={k} value={k}>{CF.LINE_LABEL[k]}</option>)}
+          </select>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+          <label style={lbl}>REASON</label>
+          <select value={filters.reason} onChange={e => setFilters({ ...filters, reason: e.target.value })} style={sel}>
+            <option value="all">Any reason</option>
+            {Object.keys(CF ? CF.MISMATCH_REASON : {}).map(k => <option key={k} value={k}>{CF.MISMATCH_REASON[k]}</option>)}
+          </select>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+          <label style={lbl}>STATUS</label>
+          <select value={filters.status} onChange={e => setFilters({ ...filters, status: e.target.value })} style={sel}>
+            <option value="open">Open + changed</option>
+            <option value="escalated">Escalated</option>
+            <option value="resolved">Resolved</option>
+            <option value="balanced">Now balances</option>
+            <option value="all">Everything</option>
+          </select>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+          <label style={lbl}>AT LEAST (R)</label>
+          <input type="number" min="0" step="50" value={filters.minAmount} placeholder="0"
+            onChange={e => setFilters({ ...filters, minAmount: e.target.value })} style={{ ...sel, width: 100 }} />
+        </div>
+      </div>
+
+      {/* ── Stats ── */}
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+        {stat("Open", openRows.length, storeCount + " store" + (storeCount === 1 ? "" : "s"))}
+        {stat("Unexplained", fmtMoney(unexplained), "across every open line", unexplained > 0 ? "#b91c1c" : null)}
+        {stat("Fields left blank", blanks, "cash-up incomplete")}
+        {stat("Certain errors", certain, "swap, slip, blank or form gap")}
+        {stat("Showing", shown.length, "after filters")}
+      </div>
+
+      {loading && <div style={{ fontSize: 12, color: "#F472B6", marginBottom: 10 }}>Loading…</div>}
+
+      {/* Two very different empty states: nothing to compare against, versus
+          genuinely nothing wrong. Saying "all clear" when no Fresha file has
+          been imported would be a lie the size of the whole tab. */}
+      {!loading && !hasFresha && (
+        <div style={{ ...card, padding: "22px 20px", textAlign: "center" }}>
+          <div style={{ fontSize: 30, marginBottom: 6 }}>📄</div>
+          <div style={{ fontWeight: 800, color: "#831843", marginBottom: 4 }}>No Fresha data for these dates</div>
+          <div style={{ fontSize: 12.5, color: "#6b7280", marginBottom: 12 }}>
+            There is nothing to compare the cash-ups against yet. Import the Finance summary export for each store first.
+          </div>
+          {canReview && <button onClick={onOpenImport} disabled={readOnly} style={{ ...(readOnly ? roStyle : {}), background: "#BE185D", color: "#fff", border: "none", borderRadius: 8, padding: "8px 17px", cursor: "pointer", fontSize: 12.5, fontWeight: 700 }}>⇪ Import Fresha</button>}
+        </div>
+      )}
+
+      {!loading && hasFresha && !shown.length && (
+        <div style={{ ...card, padding: "22px 20px", textAlign: "center" }}>
+          <div style={{ fontSize: 30, marginBottom: 6 }}>{openRows.length ? "🔍" : "✅"}</div>
+          <div style={{ fontWeight: 800, color: "#831843", marginBottom: 4 }}>
+            {openRows.length ? "Nothing matches these filters" : "Every non-cash payment balances"}
+          </div>
+          <div style={{ fontSize: 12.5, color: "#6b7280" }}>
+            {openRows.length
+              ? openRows.length + " open mismatch" + (openRows.length === 1 ? " is" : "es are") + " hidden by the filters above."
+              : "Card, Yoco link, gift cards, vouchers and tips all agree with Fresha for this range."}
+          </div>
+        </div>
+      )}
+
+      {!!shown.length && (
+        <div style={{ ...card, overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+            <thead style={{ background: "#FDF2F8" }}>
+              <tr>
+                <th style={th}>Date</th><th style={th}>Store</th><th style={th}>Payment</th>
+                <th style={{ ...th, textAlign: "right" }}>Declared</th>
+                <th style={{ ...th, textAlign: "right" }}>Fresha</th>
+                <th style={{ ...th, textAlign: "right" }}>Difference</th>
+                <th style={th}>Reason</th><th style={th}>Status</th><th style={th}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {shown.map(r => {
+                const k = r.branch + "|" + r.date + "|" + r.key;
+                const over = r.direction === "over";
+                const dim = r.state === "resolved" || r.state === "balanced";
+                return (
+                  <tr key={k} style={{ opacity: dim ? 0.62 : 1 }}>
+                    <td style={td}>
+                      <button onClick={() => onOpenDaily(r.branch, r.date)} title="Open this cash-up on the daily tab"
+                        style={{ background: "transparent", border: "none", padding: 0, color: "#BE185D", fontWeight: 700, cursor: "pointer", fontSize: 12.5, fontFamily: "inherit", textDecoration: "underline" }}>
+                        {fmtDate(r.date)}
+                      </button>
+                    </td>
+                    <td style={{ ...td, fontWeight: 700, color: "#831843" }}>{r.branch}</td>
+                    <td style={td}>
+                      {r.label}
+                      {r.key === "card" && r.cardReading === "net" && (
+                        <div style={{ fontSize: 10, color: "#9ca3af" }}>graded net of tips{r.cardConventionKnown ? ", this store's usual reading" : ""}</div>
+                      )}
+                    </td>
+                    <td style={tdNum}>{fmtMoney(r.declared)}</td>
+                    <td style={tdNum}>{fmtMoney(r.fresha)}</td>
+                    <td style={{ ...tdNum, fontWeight: 800, color: r.delta === 0 ? "#9ca3af" : over ? "#b91c1c" : "#b45309" }}
+                      title={over ? "Declared more than Fresha recorded a sale for" : "Declared less than Fresha collected"}>
+                      {r.delta === 0 ? "—" : (over ? "▲ " : "▼ ") + fmtMoney(Math.abs(r.delta))}
+                    </td>
+                    <td style={td}>
+                      <div style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>
+                        {chip(r.reasonLabel, REASON_TONE[r.reason] || REASON_TONE.differ, r.note)}
+                        {r.swappedWith ? chip("↔ " + r.swappedWith, ["#DBEAFE", "#1E40AF"], "One correction fixes both rows") : null}
+                        {muted[r.key] ? chip("muted", ["#F3F4F6", "#6B7280"], "Still listed here; silenced on the dashboard") : null}
+                      </div>
+                    </td>
+                    <td style={td}>
+                      <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                        {chip(r.stateLabel, STATE_TONE[r.state] || STATE_TONE.open)}
+                      </div>
+                      {r.signoff && (
+                        <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 2, maxWidth: 220, whiteSpace: "normal" }}>
+                          {r.signoff.actor || "—"}: “{r.signoff.note}”
+                        </div>
+                      )}
+                    </td>
+                    <td style={{ ...td, textAlign: "right" }}>
+                      <div style={{ display: "flex", gap: 5, justifyContent: "flex-end" }}>
+                        {r.state !== "balanced" && canReview && (
+                          <button onClick={() => setModal(r)} disabled={readOnly} title={readOnly ? roTitle : "Sign this off"}
+                            style={{ ...(readOnly ? roStyle : {}), background: "#BE185D", color: "#fff", border: "none", borderRadius: 7, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>
+                            {r.signoff ? "Edit" : "Sign off"}
+                          </button>
+                        )}
+                        {r.signoff && canReview && (
+                          <button onClick={() => reopen(r)} disabled={readOnly} title={readOnly ? roTitle : "Remove the note and reopen"}
+                            style={{ ...(readOnly ? roStyle : {}), background: "#fff", color: "#831843", border: "1px solid #FBCFE8", borderRadius: 7, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>Reopen</button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {modal && (
+        <MismatchResolveModal row={modal} userName={userName} readOnly={readOnly}
+          onSave={save} onClose={() => setModal(null)} fmtMoney={fmtMoney} />
+      )}
+    </>
+  );
+}
+
 /* ═══ CASH FLOAT / BALANCE SHEET ════════════════════════════════════════════
    The second half of Cash Ups. The daily tab answers "did the store declare
    the right takings"; this one answers the question that was never asked
@@ -24796,7 +25146,7 @@ function CashFloatTab({
 
   const todayYmd = ymdStr(new Date());
   const names = branches.map(b => b.name);
-  const norm = CF ? CF.normalizeCfg(cfg) : { ceiling: 10000, matchTolerance: 1, stores: {}, freshaAliases: {} };
+  const norm = CF ? CF.normalizeCfg(cfg) : { ceiling: 10000, matchTolerance: 1, stores: {}, freshaAliases: {}, mismatch: { alertThreshold: 500, blankFloor: 0, alertWindowDays: 14, alertMuteLines: [] } };
   const ledger = useMemo(
     () => (CF ? CF.computeCashFloat(cfg, data.cashups, data.movements, names) : {}),
     [CF, cfg, data, names.join("|")]
@@ -25153,6 +25503,43 @@ function CashFloatTab({
                 {field("FRESHA TOLERANCE (R)", <input type="number" step="0.5" defaultValue={norm.matchTolerance} disabled={readOnly}
                   onBlur={e => { const v = Number(e.target.value); if (v >= 0 && v !== norm.matchTolerance) onSaveCfg({ ...CF.normalizeCfg(cfg), matchTolerance: v }); }}
                   style={inputStyle} />, "Differences under this count as a match.")}
+              </div>
+              {/* Mismatch alerting. These tune the DASHBOARD only — the
+                  mismatch tab always lists everything that does not balance,
+                  because hiding a line there would hide the problem someone
+                  is trying to fix. */}
+              <div style={{ minWidth: 190 }}>
+                {field("ALERT OVER (R)", <input type="number" step="50" defaultValue={norm.mismatch.alertThreshold} disabled={readOnly}
+                  onBlur={e => { const v = Number(e.target.value); const n = CF.normalizeCfg(cfg); if (v >= 0 && v !== n.mismatch.alertThreshold) onSaveCfg({ ...n, mismatch: { ...n.mismatch, alertThreshold: v } }); }}
+                  style={inputStyle} />, "A non-cash payment out by this much reaches the dashboard.")}
+              </div>
+              <div style={{ minWidth: 190 }}>
+                {field("ALERT WINDOW (DAYS)", <input type="number" step="1" min="1" defaultValue={norm.mismatch.alertWindowDays} disabled={readOnly}
+                  onBlur={e => { const v = Number(e.target.value); const n = CF.normalizeCfg(cfg); if (v >= 1 && v !== n.mismatch.alertWindowDays) onSaveCfg({ ...n, mismatch: { ...n.mismatch, alertWindowDays: Math.round(v) } }); }}
+                  style={inputStyle} />, "How far back the dashboard looks.")}
+              </div>
+              <div style={{ flex: 1, minWidth: 260 }}>
+                <label style={{ display: "block", fontSize: 10.5, fontWeight: 800, color: "#F472B6", letterSpacing: "0.06em", marginBottom: 3 }}>SILENCE ON THE DASHBOARD</label>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {(CF.MISMATCH_LINES || []).map(k => {
+                    const on = (norm.mismatch.alertMuteLines || []).indexOf(k) >= 0;
+                    return (
+                      <button key={k} disabled={readOnly}
+                        onClick={() => {
+                          const n = CF.normalizeCfg(cfg);
+                          const cur = n.mismatch.alertMuteLines || [];
+                          const next = on ? cur.filter(x => x !== k) : cur.concat([k]);
+                          onSaveCfg({ ...n, mismatch: { ...n.mismatch, alertMuteLines: next } });
+                        }}
+                        style={{ background: on ? "#6B7280" : "#fff", color: on ? "#fff" : "#831843", border: "1px solid " + (on ? "#6B7280" : "#FBCFE8"), borderRadius: 999, padding: "3px 10px", fontSize: 11, fontWeight: 700, cursor: readOnly ? "not-allowed" : "pointer", fontFamily: "inherit" }}>
+                        {on ? "🔇 " : ""}{CF.LINE_LABEL[k]}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div style={{ fontSize: 10.5, color: "#9ca3af", marginTop: 4 }}>
+                  A muted line still appears in full on the mismatch tab — this only stops it reaching the dashboard. Use it for a line the stores are still being trained on.
+                </div>
               </div>
               <div style={{ flex: 1, minWidth: 260 }}>
                 <label style={{ display: "block", fontSize: 10.5, fontWeight: 800, color: "#F472B6", letterSpacing: "0.06em", marginBottom: 3 }}>FRESHA STORE NAMES</label>
@@ -27348,6 +27735,71 @@ function App({ currentUser: _realUser, onSignOut, appUsers, onUsersUpdate }) {
   const [freshaDaily, setFreshaDaily] = useState([]);           // fresha_daily_sales for cashupDate
   const [freshaImport, setFreshaImport] = useState(null);       // null = closed, {} = import modal open
   const [cashupExport, setCashupExport] = useState(null);       // null = closed, { from, to } = export modal open
+
+  /* ── Other payment mismatches ──────────────────────────────────────────
+     ONE window, two consumers. The tab reads the range the user picked; the
+     dashboard alert filters the same loaded rows down to its trailing
+     window. Fetching twice would mean invalidating one when a note is
+     written on the other, which is exactly the kind of wiring that goes
+     stale and starts lying. */
+  const [mismatchRange, setMismatchRange] = useState(() => {
+    const to = new Date();
+    const from = new Date(to.getTime() - 13 * 86400000);   // 14 days inclusive
+    return { from: ymdStr(from), to: ymdStr(to) };
+  });
+  const [mismatchData, setMismatchData] = useState({ cashups: [], fresha: [], notes: [] });
+  const [mismatchLoading, setMismatchLoading] = useState(false);
+  const [mismatchFilters, setMismatchFilters] = useState({
+    store: "All", line: "all", reason: "all", status: "open", minAmount: ""
+  });
+  const [mismatchModal, setMismatchModal] = useState(null);     // the row being signed off
+
+  const reloadMismatches = React.useCallback(async () => {
+    if (!window.BOA_DB || !window.BOA_DB.isReady || !window.BOA_DB.listMismatchNotes) return;
+    const cfgN = window.BOA_CASH_FLOAT ? window.BOA_CASH_FLOAT.normalizeCfg(cashFloatCfg) : null;
+    const windowDays = cfgN ? cfgN.mismatch.alertWindowDays : 14;
+    const alertFrom = ymdStr(new Date(Date.now() - (windowDays - 1) * 86400000));
+    // Cover whichever is earlier so the dashboard never reads a window the
+    // tab has not loaded.
+    const from = mismatchRange.from < alertFrom ? mismatchRange.from : alertFrom;
+    const today = ymdStr(new Date());
+    const to = mismatchRange.to > today ? mismatchRange.to : today;
+    setMismatchLoading(true);
+    try {
+      const [cus, fre, notes] = await Promise.all([
+        window.BOA_DB.listCashupsForRange(from, to),
+        window.BOA_DB.listFreshaDailySalesForRange(from, to),
+        window.BOA_DB.listMismatchNotes(from, to)
+      ]);
+      setMismatchData({ cashups: cus || [], fresha: fre || [], notes: notes || [] });
+    } catch (e) {
+      console.error("reloadMismatches:", e);
+    } finally {
+      setMismatchLoading(false);
+    }
+  }, [cashFloatCfg, mismatchRange.from, mismatchRange.to]);
+
+  useEffect(() => {
+    const want = (tab === "cashups" && cashupSubTab === "mismatch") || tab === "dashboard";
+    if (!want) return;
+    reloadMismatches();
+  }, [tab, cashupSubTab, reloadMismatches]);
+
+  /* Live mismatches joined to their sign-off notes. Computed once here rather
+     than inside the tab, because the dashboard alert reads exactly the same
+     rows — that is what stops the two from ever disagreeing about how many
+     payments are unaccounted for. */
+  const mismatchRowsAll = useMemo(() => {
+    const CF = window.BOA_CASH_FLOAT;
+    if (!CF || !CF.mismatchRows) return [];
+    return CF.applyMismatchNotes(
+      CF.mismatchRows(mismatchData.cashups, mismatchData.fresha, cashFloatCfg),
+      mismatchData.notes, cashFloatCfg);
+  }, [mismatchData, cashFloatCfg]);
+
+  const mismatchRowsInScope = useMemo(
+    () => mismatchRowsAll.filter(r => scopedSalonNames.has(r.branch)),
+    [mismatchRowsAll, scopedSalonNames]);
 
   const persistCashFloatCfg = async (next) => {
     setCashFloatCfg(next);                       // optimistic, same as persistOfficeTrial
@@ -34069,6 +34521,76 @@ function App({ currentUser: _realUser, onSignOut, appUsers, onUsersUpdate }) {
                       })}
                     </div>
                   </div>
+                  )
+                };
+              })());
+
+              /* ── SECTION: PAYMENTS THAT DON'T BALANCE ──
+                  The non-cash half of the Fresha reconciliation. Counts only
+                  rows nobody has looked at yet: an escalated one is already
+                  somebody's job and does not need chasing from here as well.
+                  A muted line still appears on the tab — muting is for a
+                  training problem that would otherwise ring this bell every
+                  morning, not for making a mismatch disappear. */
+              dashAlert("paymentMismatch", "operations", "warning",
+              acl.visible.has("cashups") && window.BOA_CASH_FLOAT && (() => {
+                const CF = window.BOA_CASH_FLOAT;
+                const norm = CF.normalizeCfg(cashFloatCfg);
+                const days = norm.mismatch.alertWindowDays;
+                const from = ymdStr(new Date(Date.now() - (days - 1) * 86400000));
+                const hot = CF.alertableMismatches(
+                  mismatchRowsInScope.filter(r => r.date >= from), cashFloatCfg);
+                if (!hot.length) return null;
+                const money = (v) => "R " + (Number(v) || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+                const total = hot.reduce((a, r) => a + Math.abs(r.delta), 0);
+                const stores = new Set(hot.map(r => r.branch));
+                const worst = hot.slice().sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta)).slice(0, 5);
+                // Both thresholds scale off the one configured number, so
+                // there is a single dial to turn rather than three.
+                const thr = norm.mismatch.alertThreshold;
+                const severe = hot.some(r => Math.abs(r.delta) >= thr * 10) || total >= thr * 20;
+                return {
+                  severity: severe ? "critical" : "warning",
+                  node: (
+                    <div style={{ background: "linear-gradient(135deg,#FEF3C7 0%,#FFFFFF 70%)", border: "2px solid #fde68a", borderRadius: 18, padding: "16px 20px", marginBottom: 22, boxShadow: "0 4px 18px rgba(180,83,9,0.10)" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+                        <span style={{ fontSize: 24 }}>⚖️</span>
+                        <div>
+                          <div style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 10, fontWeight: 800, color: "#b45309", letterSpacing: "0.18em", textTransform: "uppercase" }}>Payments not balancing</div>
+                          <div style={{ fontFamily: "'Outfit',system-ui,sans-serif", fontSize: 16, fontWeight: 700, color: "#78350f" }}>
+                            {hot.length} payment{hot.length === 1 ? "" : "s"} across {stores.size} store{stores.size === 1 ? "" : "s"} · {money(total)} unexplained
+                          </div>
+                          <div style={{ fontSize: 11, color: "#92400e", marginTop: 2 }}>Last {days} days, against the Fresha import. Nobody has signed these off yet.</div>
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                        {worst.map(r => (
+                          <div key={r.branch + r.date + r.key} style={{ background: "#fff", border: "1px solid #fde68a", borderLeft: "6px solid #b45309", borderRadius: 12, padding: "12px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                            <div>
+                              <div style={{ fontSize: 14, fontWeight: 700, color: "#78350f" }}>
+                                {r.branch} · {r.label} out by {money(Math.abs(r.delta))}
+                              </div>
+                              <div style={{ fontSize: 11, color: "#6b7280", marginTop: 2 }}>
+                                {r.date} · {r.reasonLabel}
+                                {r.direction === "over" ? " · declared more than Fresha recorded a sale for" : ""}
+                                {r.swappedWith ? " · swapped with " + r.swappedWith : ""}
+                              </div>
+                            </div>
+                            <button
+                              onClick={() => { setTab("cashups"); setCashupSubTab("mismatch"); setMismatchFilters(f => ({ ...f, store: r.branch, status: "open" })); }}
+                              style={{ background: "#b45309", color: "#fff", border: "none", padding: "6px 13px", borderRadius: 999, fontSize: 12, fontWeight: 800, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}
+                            >Open</button>
+                          </div>
+                        ))}
+                        {hot.length > worst.length && (
+                          <div style={{ fontSize: 11.5, color: "#92400e" }}>
+                            …and {hot.length - worst.length} more.
+                            <button onClick={() => { setTab("cashups"); setCashupSubTab("mismatch"); }}
+                              style={{ background: "transparent", border: "none", color: "#b45309", fontWeight: 800, cursor: "pointer", fontSize: 11.5, fontFamily: "inherit", textDecoration: "underline", padding: "0 4px" }}>See all</button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
                   )
                 };
               })());
@@ -53456,6 +53978,8 @@ function App({ currentUser: _realUser, onSignOut, appUsers, onUsersUpdate }) {
               <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, color: "#831843", fontWeight: 700, marginBottom: 4 }}>💰 Cash Ups</div>
               <div style={{ fontSize: 12, color: "#F472B6" }}>{cashupSubTab === "float"
                 ? <>How much cash each store is holding right now. Cash declared on a cash-up adds to the balance; banking it, an ops collection or a signed adjustment takes it away. Anything over the ceiling means too much cash is sitting in a salon.</>
+                : cashupSubTab === "mismatch"
+                ? <>Everything that is <strong>not</strong> cash — card, Yoco link, gift cards, vouchers, tips, EFT — checked line by line against the Fresha import. Each difference is tagged with the kind of mistake it looks like, because a field left blank, two figures swapped and a genuine discrepancy need three different phone calls. Cash itself is graded on the daily tab and tracked on the float.</>
                 : <>Every store's daily cash-up — Yoco machine photo, banking slip and manual-discount reasons in one place. Hover any <strong>?</strong> for an explanation. Submitted from the BOA Check-in kiosk → Cash Up screen.</>}</div>
             </div>
 
@@ -53802,6 +54326,40 @@ function App({ currentUser: _realUser, onSignOut, appUsers, onUsersUpdate }) {
               </div>
             )}
             </>)}
+
+            {cashupSubTab === "mismatch" && (
+              <PaymentMismatchTab
+                rows={mismatchRowsInScope.filter(r => r.date >= mismatchRange.from && r.date <= mismatchRange.to)}
+                cfg={cashFloatCfg}
+                loading={mismatchLoading}
+                range={mismatchRange}
+                setRange={setMismatchRange}
+                filters={mismatchFilters}
+                setFilters={setMismatchFilters}
+                branches={branchesInScope.map(s => s.name)}
+                canReview={canReviewCashups}
+                readOnly={currentTabIsReadOnly}
+                userName={currentUser?.name || currentUser?.email || ""}
+                onSaveNote={p => window.BOA_DB.saveMismatchNote(p)}
+                onDeleteNote={(b, d, l) => window.BOA_DB.deleteMismatchNote(b, d, l)}
+                onReload={reloadMismatches}
+                hasFresha={(mismatchData.fresha || []).some(f => f.date >= mismatchRange.from && f.date <= mismatchRange.to)}
+                onOpenImport={() => setFreshaImport({})}
+                onOpenDaily={(b, d) => {
+                  // Jump to that store-day on the daily tab, where the whole
+                  // cash-up and the Yoco photo are.
+                  setCashupDate(d);
+                  const sal = SALONS.filter(x => x.name === b)[0];
+                  setCashupRegion(sal ? sal.region : "all");
+                  setCashupBranchFilter(b);
+                  setCashupSubTab("daily");
+                }}
+                fmtMoney={_fmtMoney}
+                fmtDate={_fmtDate}
+                roStyle={roStyle}
+                roTitle={roTitle}
+              />
+            )}
 
             {cashupSubTab === "float" && (
               <CashFloatTab
