@@ -88,6 +88,7 @@
       '<button class="gp-btn"  data-action="staff"    type="button"><span>👥</span> Staff</button>' +
       '<button class="gp-btn"  data-action="today"    type="button"><span>🕒</span> Today</button>' +
       '<button class="gp-btn"  data-action="cashlist" type="button"><span>📊</span> Cash History</button>' +
+      '<button class="gp-btn"  data-action="bankcash" type="button"><span>🏦</span> Bank Cash</button>' +
       '<button class="gp-btn gp-logout" data-action="logout" type="button">LOG OUT</button>' +
       '</div>' +
       '<div class="gp-header-right">' +
@@ -140,6 +141,7 @@
       if (a === "staff") { renderStaff(); return; }
       if (a === "today") { renderCheckins(); return; }
       if (a === "cashlist") { renderCashups(); return; }
+      if (a === "bankcash" && window.BOA_FLOWS) { window.BOA_FLOWS.renderBankCash(); return; }
     });
 
     // PWA Install Button Logic
@@ -673,6 +675,11 @@
       '<div class="tile-label">Cash Up</div>' +
       '<div class="tile-hint">SUBMIT DAILY TOTALS</div>' +
       '</button>' +
+      '<button class="tile tile-big" id="tile-bankcash" type="button">' +
+      '<div class="tile-icon">🏦</div>' +
+      '<div class="tile-label">Bank Cash</div>' +
+      '<div class="tile-hint">RECORD A DEPOSIT</div>' +
+      '</button>' +
       '<button class="tile tile-big" id="tile-offreq" type="button">' +
       '<div class="tile-icon">📝</div>' +
       '<div class="tile-label">Request ' + esc(nextMonth) + ' Off</div>' +
@@ -693,13 +700,16 @@
     loadKioskRemindersIntoPanel();
     loadMgrClockinNagIntoPanel();
     loadEdAlertIntoSlot();
-    if (window.BOA_FLOWS) { window.BOA_FLOWS.refreshEvalNag(); window.BOA_FLOWS.refreshCheckinNag(); window.BOA_FLOWS.refreshCashupNag(); }
+    if (window.BOA_FLOWS) { window.BOA_FLOWS.refreshEvalNag(); window.BOA_FLOWS.refreshCheckinNag(); window.BOA_FLOWS.refreshCashupNag(); window.BOA_FLOWS.refreshCashFloatNag(); }
     document.getElementById("tile-nailtech").onclick = function () {
       if (window.BOA_FLOWS) window.BOA_FLOWS.renderCheckin();
     };
     document.getElementById("tile-mgrclock").onclick = function () { renderMgrClockin(); };
     document.getElementById("tile-cashup").onclick = function () {
       if (window.BOA_FLOWS) window.BOA_FLOWS.renderCashup();
+    };
+    document.getElementById("tile-bankcash").onclick = function () {
+      if (window.BOA_FLOWS) window.BOA_FLOWS.renderBankCash();
     };
     document.getElementById("tile-offreq").onclick = function () {
       if (window.BOA_FLOWS) window.BOA_FLOWS.renderOffRequests();
@@ -2839,7 +2849,10 @@
     document.getElementById("cu-refresh").onclick = renderCashups;
     var rows = await window.APP_DATA.listRecentCashups(60);
     if (rows.length === 0) {
-      document.getElementById("cu-body").innerHTML = '<div class="empty">No cash-ups submitted yet.</div>';
+      // Deposits can exist without a cash-up (a lump-sum banking run), so the
+      // movements list still renders here.
+      document.getElementById("cu-body").innerHTML = '<div class="empty">No cash-ups submitted yet.</div><div id="cu-moves"></div>';
+      renderCashMovementsInto("cu-moves");
       return;
     }
     document.getElementById("cu-body").innerHTML =
@@ -2879,7 +2892,40 @@
           '</tr>';
       }).join("") +
       '</tbody>' +
-      '</table>';
+      '</table>' +
+      '<div id="cu-moves"></div>';
+    renderCashMovementsInto("cu-moves");
+  }
+
+  // Deposits, collections and adjustments that are NOT part of a daily
+  // cash-up — the other half of the store's cash story. Shown here so a
+  // manager can see what head office has already signed off.
+  async function renderCashMovementsInto(slotId) {
+    var slot = document.getElementById(slotId);
+    if (!slot || !window.APP_DATA || !window.APP_DATA.listRecentCashMovements) return;
+    var moves = [];
+    try { moves = await window.APP_DATA.listRecentCashMovements(60); }
+    catch (e) { console.warn("cash movements list failed (non-fatal):", e); return; }
+    if (!moves.length) return;
+    var LABEL = { deposit: "Banked", collection: "Collected by head office", adjustment: "Adjustment" };
+    slot.innerHTML =
+      '<h3 style="margin:22px 0 10px;font-size:15px">🏦 Deposits &amp; collections</h3>' +
+      '<table class="data-table">' +
+      '<thead><tr><th>Date</th><th>What</th><th>Amount</th><th>Reference</th><th>Recorded by</th><th>Signed off</th></tr></thead>' +
+      '<tbody>' +
+      moves.map(function (m) {
+        return '<tr>' +
+          '<td>' + fmtDate(m.date) + '</td>' +
+          '<td>' + esc(LABEL[m.kind] || m.kind) + (m.source === "kiosk" ? ' <span class="pill pill-mute">from this store</span>' : '') + '</td>' +
+          '<td><strong>' + fmtMoney(m.amount) + '</strong></td>' +
+          '<td>' + esc(m.ref || "—") + (m.note ? ' <span class="pill pill-mute" title="' + esc(m.note) + '">note</span>' : '') + '</td>' +
+          '<td>' + esc(m.recorded_by || "—") + '</td>' +
+          '<td>' + (m.reviewed_at
+            ? '<span class="pill">✓ ' + esc(m.reviewed_by || "signed off") + '</span>'
+            : '<span class="pill pill-warn">awaiting</span>') + '</td>' +
+          '</tr>';
+      }).join("") +
+      '</tbody></table>';
   }
 
   // ---------------- helpers ----------------

@@ -511,6 +511,7 @@
       '<div id="sick-today-slot"></div>' +
       '<div id="checkin-nag-slot"></div>' +
       '<div id="cashup-nag-slot"></div>' +
+      '<div id="cashfloat-nag-slot"></div>' +
       '<div class="tile-grid tile-grid-4">' +
         '<button class="tile tile-big" id="tile-checkin" type="button">' +
           '<div class="tile-icon">✍️</div>' +
@@ -532,15 +533,22 @@
           '<div class="tile-label">Cash Up</div>' +
           '<div class="tile-hint">SUBMIT DAILY TOTALS</div>' +
         '</button>' +
+        '<button class="tile tile-big" id="tile-bankcash" type="button">' +
+          '<div class="tile-icon">🏦</div>' +
+          '<div class="tile-label">Bank Cash</div>' +
+          '<div class="tile-hint">RECORD A DEPOSIT</div>' +
+        '</button>' +
       '</div>'
     );
     document.getElementById("tile-checkin").onclick  = renderCheckin;
     document.getElementById("tile-schedule").onclick = renderSchedule;
     document.getElementById("tile-offreq").onclick   = renderOffRequests;
     document.getElementById("tile-cashup").onclick   = function () { renderCashup(); };
+    document.getElementById("tile-bankcash").onclick = function () { renderBankCash(); };
     refreshEvalNag();
     refreshCheckinNag();
     refreshCashupNag();
+    refreshCashFloatNag();
     refreshSickToday();
   }
 
@@ -3478,6 +3486,7 @@
     var existing = await window.APP_DATA.cashupForDate(forDate);
     if (existing) {
       document.getElementById("cashup-body").innerHTML =
+        '<div id="cu-float-slot"></div>' +
         '<div class="result-card result-ok">' +
           '<div class="result-icon">✓</div>' +
           '<div class="result-title">' + (isBackfill ? esc(prettyDate) + '\'s' : 'Today\'s') + ' cash-up already submitted</div>' +
@@ -3512,6 +3521,7 @@
             : "") +
           '<div id="cu-yoco-photo"></div>' +
         '</div>';
+      refreshCashFloatCard("cu-float-slot", { noButton: true });
       // The photo is not part of the cashup row any more (each is a ~220 KB
       // base64 JPEG; list/summary reads exclude the column) — fetch this one
       // row's photo separately and inject it if there is one.
@@ -3530,6 +3540,7 @@
     }
 
     document.getElementById("cashup-body").innerHTML =
+      '<div id="cu-float-slot"></div>' +
       '<div class="cashup-form">' +
         amountField("yoco",       "💳 Yoco (Card)") +
         amountField("yoco_link",  "🔗 Yoco Payment Link") +
@@ -3591,6 +3602,10 @@
         '<div class="btn-row"><button class="btn btn-primary" id="cu-submit" disabled>Submit Cash Up</button></div>' +
         '<div id="cu-result"></div>' +
       '</div>';
+
+    // Shows what the store is already holding, so "how much cash do we have?"
+    // is answered on the screen where they are about to declare more of it.
+    refreshCashFloatCard("cu-float-slot", { noButton: true });
 
     var ids = ["yoco", "yoco_link", "cash", "card_tips", "vouchers", "gift_card", "manual_discounts", "amount_banked"];
     ids.forEach(function (id) {
@@ -3694,6 +3709,189 @@
         btn.disabled = false;
       }
     };
+  }
+
+  /* ---------- Cash float: on-hand card + Bank Cash ------------------------
+     A store is not supposed to hold cash, but some clients can only pay it.
+     Until now the tablet gave no sign of how much had piled up. These two
+     pieces close that: a running "cash on hand" figure wherever cash is being
+     talked about, and a way to bank it that doesn't have to wait for the next
+     cash-up (which is what made a single lump-sum deposit impossible to match
+     against the little daily amounts). */
+
+  // Paints the on-hand / headroom card into a slot. Renders nothing at all if
+  // head office hasn't set this store's opening balance yet — better silent
+  // than confidently wrong.
+  async function refreshCashFloatCard(slotId, opts) {
+    var el = document.getElementById(slotId);
+    if (!el) return;
+    if (!window.APP_DATA || !window.APP_DATA.cashOnHand) { el.innerHTML = ""; return; }
+    var st;
+    try { st = await window.APP_DATA.cashOnHand(); }
+    catch (e) { console.warn("cash on hand check failed (non-fatal):", e); el.innerHTML = ""; return; }
+    if (!st || !st.configured) { el.innerHTML = ""; return; }
+    var withBtn = !(opts && opts.noButton);
+    if (st.over) {
+      el.innerHTML =
+        '<div class="checkin-nag" role="alert" style="flex-direction:column;align-items:stretch">' +
+          '<div style="display:flex;align-items:center;gap:12px">' +
+            '<div class="checkin-nag-icon">🏦</div>' +
+            '<div class="checkin-nag-text">' +
+              '<div class="checkin-nag-title">TOO MUCH CASH ON HAND — ' + esc(fmtMoney(st.onHand)) + '</div>' +
+              '<div class="checkin-nag-sub">This store is holding more than the ' + esc(fmtMoney(st.ceiling)) + ' limit. Bank it today and record the deposit here so head office can see it.</div>' +
+            '</div>' +
+          '</div>' +
+          (withBtn ? '<div style="margin-top:8px"><button class="btn btn-primary" id="cf-bank-now" style="padding:8px 16px">Bank cash now →</button></div>' : '') +
+        '</div>';
+      var b = document.getElementById("cf-bank-now");
+      if (b) b.onclick = function () { renderBankCash(); };
+    } else {
+      el.innerHTML =
+        '<div class="cashup-summary" style="margin-bottom:12px">' +
+          '<div class="cashup-row"><span>💵 Cash on hand</span><span><strong>' + esc(fmtMoney(st.onHand)) + '</strong></span></div>' +
+          '<div class="cashup-row" style="font-size:0.85em;color:#6b7280">' +
+            '<span>Room left before the ' + esc(fmtMoney(st.ceiling)) + ' limit</span><span>' + esc(fmtMoney(st.headroom)) + '</span>' +
+          '</div>' +
+        '</div>';
+    }
+  }
+
+  // Landing-screen banner: only ever shows when the store is over the limit.
+  async function refreshCashFloatNag() {
+    return refreshCashFloatCard("cashfloat-nag-slot");
+  }
+
+  async function renderBankCash() {
+    setSublabel("Bank Cash");
+    setMain(
+      '<div class="panel">' +
+        '<div class="panel-head">' +
+          '<h2>Bank Cash</h2>' +
+          '<button class="link-btn link-btn-dark" id="back-home">← Back</button>' +
+        '</div>' +
+        '<div id="bankcash-body">Loading…</div>' +
+      '</div>'
+    );
+    document.getElementById("back-home").onclick = function () { _backHandler(); };
+
+    if (!window.APP_DATA || !window.APP_DATA.isConfigured()) {
+      document.getElementById("bankcash-body").innerHTML = configMissingHtml();
+      return;
+    }
+
+    var st = null;
+    try { st = await window.APP_DATA.cashOnHand(); } catch (_e) { st = null; }
+    if (!st || !st.configured) {
+      document.getElementById("bankcash-body").innerHTML =
+        '<div class="result-card">' +
+          '<div class="result-title">Cash tracking isn\'t switched on for this store yet</div>' +
+          '<div class="result-sub">Head office needs to count the cash in the store and set the opening balance before deposits can be recorded here. Keep using the banking section of the daily cash-up in the meantime.</div>' +
+        '</div>';
+      return;
+    }
+
+    var today = window.APP_DATA.todayStr ? window.APP_DATA.todayStr() : "";
+    document.getElementById("bankcash-body").innerHTML =
+      '<div id="bc-float-slot"></div>' +
+      '<div class="cashup-form">' +
+        '<div class="lbl">🏦 Record a deposit</div>' +
+        '<div style="font-size:12.5px;color:#6b7280;line-height:1.55;margin-bottom:12px">' +
+          'Use this when you take cash to the bank <strong>outside</strong> the daily cash-up — including one deposit that covers several days. ' +
+          'It comes off this store\'s cash on hand straight away, and head office signs it off against the slip.' +
+        '</div>' +
+        '<label class="lbl" for="bc-date">Date banked</label>' +
+        '<input type="date" id="bc-date" value="' + esc(today) + '" max="' + esc(today) + '" min="' + esc(st.startDate || "") + '">' +
+        '<label class="lbl" for="bc-amount">Amount banked (R)</label>' +
+        '<input type="number" inputmode="decimal" step="0.01" id="bc-amount" placeholder="0.00">' +
+        '<label class="lbl" for="bc-ref">Bank reference / slip number</label>' +
+        '<input type="text" id="bc-ref" placeholder="e.g. deposit slip number">' +
+        '<label class="lbl" for="bc-slip">Photo of the deposit slip</label>' +
+        '<input type="file" id="bc-slip" accept="image/*" capture="environment">' +
+        '<div id="bc-slip-err" class="err-text"></div>' +
+        '<div id="bc-slip-preview" style="margin-top:8px"></div>' +
+        '<label class="lbl" for="bc-note">Note (optional)</label>' +
+        '<textarea id="bc-note" rows="2" placeholder="Anything head office should know"></textarea>' +
+        '<label class="lbl" for="bc-name">Your name</label>' +
+        '<input type="text" id="bc-name" placeholder="Who banked the cash">' +
+        '<button class="btn btn-primary" id="bc-submit" style="margin-top:14px" disabled>Save deposit</button>' +
+        '<div id="bc-result"></div>' +
+      '</div>' +
+      '<div id="bc-recent" style="margin-top:18px"></div>';
+
+    refreshCashFloatCard("bc-float-slot", { noButton: true });
+
+    var slipDataUrl = null;
+    function recalc() {
+      var amt = parseFloat(document.getElementById("bc-amount").value) || 0;
+      var nm  = (document.getElementById("bc-name").value || "").trim();
+      document.getElementById("bc-submit").disabled = !(amt > 0 && nm.length >= 2);
+    }
+    ["bc-amount", "bc-name", "bc-ref"].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) el.addEventListener("input", recalc);
+    });
+    document.getElementById("bc-slip").addEventListener("change", function () {
+      var errEl = document.getElementById("bc-slip-err");
+      var prev  = document.getElementById("bc-slip-preview");
+      errEl.textContent = "";
+      var file = this.files && this.files[0];
+      if (!file) { slipDataUrl = null; prev.innerHTML = ""; return; }
+      compressImage(file, 1600, 0.8, function (dataUrl, err) {
+        if (err) { errEl.textContent = err; slipDataUrl = null; prev.innerHTML = ""; return; }
+        slipDataUrl = dataUrl;
+        prev.innerHTML = '<img src="' + dataUrl + '" alt="deposit slip" style="max-width:100%;max-height:200px;border-radius:8px;border:1px solid var(--pink-100)">';
+      });
+    });
+
+    document.getElementById("bc-submit").onclick = async function () {
+      var btn = this; btn.disabled = true;
+      var resEl = document.getElementById("bc-result");
+      var amt = parseFloat(document.getElementById("bc-amount").value) || 0;
+      // Banking more than the store is holding usually means a typo or a
+      // missed cash-up, so ask before it lands and skews the balance.
+      if (amt > st.onHand + 0.005 &&
+          !window.confirm("You're recording " + fmtMoney(amt) + " banked, but this store's cash on hand is " +
+            fmtMoney(st.onHand) + ".\n\nThat will leave the balance negative. Is the amount right?")) {
+        btn.disabled = false; return;
+      }
+      try {
+        await window.APP_DATA.addCashDeposit({
+          date:  document.getElementById("bc-date").value,
+          amount: amt,
+          ref:   document.getElementById("bc-ref").value,
+          note:  document.getElementById("bc-note").value,
+          slip:  slipDataUrl,
+          recorded_by: document.getElementById("bc-name").value
+        });
+        resEl.innerHTML = '<div class="result-card result-ok"><div class="result-icon">✓</div><div class="result-title">Deposit recorded. Thank you!</div><div class="result-sub">Head office will check it against the slip.</div></div>';
+        setTimeout(function () { renderBankCash(); }, 900);
+      } catch (err) {
+        resEl.innerHTML = '<div class="result-card result-err">Could not save: ' + esc(err.message || err) + '</div>';
+        btn.disabled = false;
+      }
+    };
+
+    // Recent movements, so the store can see what head office has seen.
+    try {
+      var moves = await window.APP_DATA.listRecentCashMovements(10);
+      var slot = document.getElementById("bc-recent");
+      if (slot && moves && moves.length) {
+        slot.innerHTML =
+          '<div class="lbl">Recent deposits &amp; collections</div>' +
+          '<div class="cashup-summary">' +
+            moves.map(function (m) {
+              var when = new Date(m.date + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short" });
+              var what = m.kind === "collection" ? "Collected" : m.kind === "adjustment" ? "Adjustment" : "Banked";
+              var who  = m.recorded_by ? " · " + m.recorded_by : "";
+              var sign = m.reviewed_at ? "✓ signed off" : "awaiting sign-off";
+              return '<div class="cashup-row">' +
+                       '<span>' + esc(when) + ' · ' + esc(what) + esc(who) + '</span>' +
+                       '<span>' + esc(fmtMoney(m.amount)) + ' <span style="color:#9ca3af;font-size:0.85em">' + esc(sign) + '</span></span>' +
+                     '</div>';
+            }).join("") +
+          '</div>';
+      }
+    } catch (_e) { /* the list is a nicety — never block the form on it */ }
   }
 
   function amountField(id, label) {
@@ -4300,6 +4498,9 @@
     refreshNewsBadge:   function () { return refreshNewsBadge.apply(null, arguments); },
     refreshCheckinNag:  function () { return refreshCheckinNag.apply(null, arguments); },
     refreshCashupNag:   function () { return refreshCashupNag.apply(null, arguments); },
+    renderBankCash:     function () { return renderBankCash.apply(null, arguments); },
+    refreshCashFloatNag: function () { return refreshCashFloatNag.apply(null, arguments); },
+    refreshCashFloatCard: function () { return refreshCashFloatCard.apply(null, arguments); },
     refreshEvalNag:     function () { return refreshEvalNag.apply(null, arguments); }
   };
 })();

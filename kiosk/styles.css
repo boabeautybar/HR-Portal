@@ -272,6 +272,10 @@ main { padding: 22px; max-width: 1024px; margin: 0 auto; }
 .tile-grid-4 .tile-big:nth-child(4) { animation-delay: 0.20s; }
 .tile-grid-4 .tile-big:nth-child(5) { animation-delay: 0.26s; }
 .tile-grid-4 .tile-big:nth-child(6) { animation-delay: 0.32s; }
+/* The manager landing reached seven tiles when Bank Cash was added; without
+   these the last ones pop in with no stagger. */
+.tile-grid-4 .tile-big:nth-child(7) { animation-delay: 0.38s; }
+.tile-grid-4 .tile-big:nth-child(8) { animation-delay: 0.44s; }
 .tile-big:hover { box-shadow: var(--shadow-lift); transform: translateY(-4px); border-color: var(--pink-200); }
 .tile-big:active { transform: translateY(-1px); box-shadow: var(--shadow-soft); }
 .tile-big .tile-icon {

@@ -1207,8 +1207,11 @@
   // MB through Postgres per page load and was saturating the database.
   // The list queries return has_yoco_photo instead; the actual image is
   // fetched per-row on demand via getCashupPhoto(id).
-  // (banking_slip stays in the list: it is a URL today. If slips ever start
-  // being stored as data URIs they must move to the same lazy path.)
+  // (banking_slip is ALSO a base64 data URL — the kiosk compresses the photo
+  // and stores the bytes, so a banked row costs ~100-200 KB here. It is kept
+  // in this list because the Cash Ups tab reads a single day at a time; any
+  // read spanning weeks must use CASHUP_FLOAT_COLS / CASHUP_EXPORT_COLS,
+  // which leave it out and fetch it per row via getCashupSlip.)
   var CASHUP_COLS = "id,branch,date,yoco,cash,vouchers,discounts,notes,signed_by,created_at," +
     "yoco_link,card_tips,gift_card,manual_discounts,manual_discount_reason,cash_banked," +
     "amount_banked,banking_ref,banked_by,banking_slip,total,archived_at,reopened_by," +
@@ -1432,6 +1435,215 @@
       .maybeSingle();
     if (res.error) { console.error("unreviewCashup:", res.error); throw res.error; }
     return res.data;
+  }
+
+  /* ---------- Cash float ledger (cash_movements + boa_cash_float_cfg_v1) ----
+     Why a ledger at all: a store's declared cash used to disappear into a gap
+     between "we took R500" and "it reached the bank". These reads feed one
+     running cash-on-hand balance per store — see cash-float.js for the maths,
+     sql/cash_float.sql for the tables.
+
+     Column discipline: cash_movements.slip and cashups.banking_slip are base64
+     data URLs (~100-200 KB each). A ledger spans months, so neither may appear
+     in a list select — the list carries a has_* flag and the bytes are fetched
+     for the one row someone clicked, exactly as cashups.yoco_photo is. */
+
+  // Cash-up columns the ledger needs. Deliberately NOT CASHUP_COLS: that one
+  // still carries banking_slip, which is fine for one day and ruinous for a
+  // year.
+  var CASHUP_FLOAT_COLS = "id,branch,date,cash,cash_banked,amount_banked,banking_ref," +
+    "banked_by,signed_by,archived_at,reviewed_at,reviewed_by,created_at";
+
+  // Every cash-up column except the two heavy ones, for range exports.
+  var CASHUP_EXPORT_COLS = "id,branch,date,yoco,cash,vouchers,discounts,notes,signed_by,created_at," +
+    "yoco_link,card_tips,gift_card,manual_discounts,manual_discount_reason,cash_banked," +
+    "amount_banked,banking_ref,banked_by,total,archived_at,reopened_by," +
+    "reviewed_at,reviewed_by,review_comment";
+
+  var CASH_MOVE_COLS = "id,branch,date,kind,amount,ref,note,recorded_by,source,cashup_id," +
+    "reviewed_at,reviewed_by,review_comment,archived_at,archived_by,created_at";
+
+  // Everything except `breakdown` (the verbatim raw columns, kept for tracing
+  // an odd figure back to the file but never needed to render a row).
+  var FRESHA_COLS = "branch,date,report,gross_sales,discounts,refund_amount,net_sales,taxes," +
+    "total_sales,gift_cards_sold,service_charges,tips,net_other_sales,total_other_sales," +
+    "total,net_collected,sales_paid,unpaid_sales,card,cash,yoco_link,eft,shopify,other," +
+    "total_payments,prepayments,prepayment_redemption,gift_card,total_redemptions," +
+    "services,products,refunds_paid,sales_qty,refund_qty,location_raw,source_file," +
+    "imported_by,imported_at";
+
+  // Same id-only side-query trick as _markPhotoRows, for banking slips.
+  function _markFlagRows(rows, idsRes, flag, label) {
+    if (idsRes && idsRes.error) console.error(label + ":", idsRes.error);
+    var has = {};
+    (((idsRes && idsRes.data) || [])).forEach(function (r) { has[r.id] = true; });
+    (rows || []).forEach(function (r) { r[flag] = !!has[r.id]; });
+    return rows || [];
+  }
+
+  async function loadCashFloatCfg() {
+    var v = await cachedSingleton("boa_cash_float_cfg_v1");
+    return (v && typeof v === "object") ? v : null;
+  }
+  async function saveCashFloatCfg(cfg) {
+    var res = await sb.from("app_state").upsert({ key: "boa_cash_float_cfg_v1", value: cfg || {} });
+    if (res.error) { console.error("saveCashFloatCfg:", res.error); throw res.error; }
+    _ssCacheSet("boa_cash_float_cfg_v1", null, null);   // force the next read to refetch
+    return true;
+  }
+
+  // Cash-ups from every store since the earliest configured start date.
+  async function listCashupsForFloat(sinceYmd) {
+    if (!sinceYmd) return [];
+    var both = await Promise.all([
+      sb.from("cashups").select(CASHUP_FLOAT_COLS)
+        .gte("date", sinceYmd).order("date", { ascending: true }).limit(20000),
+      sb.from("cashups").select("id").gte("date", sinceYmd)
+        .not("banking_slip", "is", null).limit(20000)
+    ]);
+    if (both[0].error) { console.error("listCashupsForFloat:", both[0].error); return []; }
+    return _markFlagRows(both[0].data, both[1], "has_banking_slip", "cashup slip-ids");
+  }
+
+  // Cash-ups across a date range, for the CSV / PDF export.
+  async function listCashupsForRange(fromYmd, toYmd) {
+    if (!fromYmd || !toYmd) return [];
+    var both = await Promise.all([
+      sb.from("cashups").select(CASHUP_EXPORT_COLS)
+        .gte("date", fromYmd).lte("date", toYmd)
+        .order("date", { ascending: true }).order("branch", { ascending: true }).limit(20000),
+      sb.from("cashups").select("id").gte("date", fromYmd).lte("date", toYmd)
+        .not("banking_slip", "is", null).limit(20000)
+    ]);
+    if (both[0].error) { console.error("listCashupsForRange:", both[0].error); return []; }
+    return _markFlagRows(both[0].data, both[1], "has_banking_slip", "cashup slip-ids");
+  }
+
+  async function getCashupSlip(id) {
+    if (!id) return null;
+    var res = await sb.from("cashups").select("banking_slip").eq("id", id).maybeSingle();
+    if (res.error) { console.error("getCashupSlip:", res.error); return null; }
+    return (res.data && res.data.banking_slip) || null;
+  }
+
+  async function listCashMovements(sinceYmd) {
+    if (!sinceYmd) return [];
+    var both = await Promise.all([
+      sb.from("cash_movements").select(CASH_MOVE_COLS)
+        .gte("date", sinceYmd).order("date", { ascending: true }).limit(20000),
+      sb.from("cash_movements").select("id").gte("date", sinceYmd)
+        .not("slip", "is", null).limit(20000)
+    ]);
+    if (both[0].error) { console.error("listCashMovements:", both[0].error); return []; }
+    return _markFlagRows(both[0].data, both[1], "has_slip", "movement slip-ids");
+  }
+
+  async function getCashMovementSlip(id) {
+    if (!id) return null;
+    var res = await sb.from("cash_movements").select("slip").eq("id", id).maybeSingle();
+    if (res.error) { console.error("getCashMovementSlip:", res.error); return null; }
+    return (res.data && res.data.slip) || null;
+  }
+
+  // Record a deposit, a collection, or a signed adjustment. The DB enforces
+  // "an adjustment must carry a reason" too — this is the friendly copy of
+  // that rule, so the user gets a sentence instead of a constraint name.
+  async function addCashMovement(p) {
+    var payload = p || {};
+    var kind = String(payload.kind || "").trim();
+    if (["deposit", "collection", "adjustment"].indexOf(kind) < 0) throw new Error("Unknown movement type: " + kind);
+    if (!payload.branch) throw new Error("Missing store");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(payload.date || ""))) throw new Error("Missing or invalid date");
+    var amount = Number(payload.amount);
+    if (!isFinite(amount) || amount === 0) throw new Error("Enter an amount other than zero.");
+    if (kind !== "adjustment") amount = Math.abs(amount);
+    var note = (payload.note || "").trim();
+    if (kind === "adjustment" && !note) throw new Error("An adjustment needs a reason.");
+    var row = {
+      branch: payload.branch, date: payload.date, kind: kind, amount: amount,
+      ref: (payload.ref || "").trim() || null,
+      note: note || null,
+      slip: payload.slip || null,
+      recorded_by: (payload.recorded_by || "").trim() || null,
+      source: payload.source === "kiosk" ? "kiosk" : "portal",
+      cashup_id: payload.cashup_id || null
+    };
+    var res = await sb.from("cash_movements").insert(row).select(CASH_MOVE_COLS).single();
+    if (res.error) { console.error("addCashMovement:", res.error); throw res.error; }
+    return res.data;
+  }
+
+  async function reviewCashMovement(id, reviewer, comment) {
+    if (!id) throw new Error("Missing movement id");
+    var res = await sb.from("cash_movements")
+      .update({
+        reviewed_at:    new Date().toISOString(),
+        reviewed_by:    (reviewer || "").trim() || null,
+        review_comment: (comment || "").trim() || null
+      })
+      .eq("id", id).select(CASH_MOVE_COLS).maybeSingle();
+    if (res.error) { console.error("reviewCashMovement:", res.error); throw res.error; }
+    return res.data;
+  }
+
+  async function unreviewCashMovement(id) {
+    if (!id) throw new Error("Missing movement id");
+    var res = await sb.from("cash_movements")
+      .update({ reviewed_at: null, reviewed_by: null, review_comment: null })
+      .eq("id", id).select(CASH_MOVE_COLS).maybeSingle();
+    if (res.error) { console.error("unreviewCashMovement:", res.error); throw res.error; }
+    return res.data;
+  }
+
+  // Soft delete. A movement is money someone said they moved; the record of
+  // the claim outlives the correction, so there is no hard delete (and no
+  // delete policy on the table either).
+  async function archiveCashMovement(id, actorName) {
+    if (!id) throw new Error("Missing movement id");
+    var res = await sb.from("cash_movements")
+      .update({ archived_at: new Date().toISOString(), archived_by: (actorName || "").trim() || null })
+      .eq("id", id).select(CASH_MOVE_COLS).maybeSingle();
+    if (res.error) { console.error("archiveCashMovement:", res.error); throw res.error; }
+    return res.data;
+  }
+
+  /* ---------- Fresha daily sales (fresha_daily_sales) ---------------------- */
+  async function listFreshaDailySalesForDate(dateStr) {
+    if (!dateStr) return [];
+    var res = await sb.from("fresha_daily_sales").select(FRESHA_COLS).eq("date", dateStr).limit(500);
+    if (res.error) { console.error("listFreshaDailySalesForDate:", res.error); return []; }
+    return res.data || [];
+  }
+
+  async function listFreshaDailySalesForRange(fromYmd, toYmd) {
+    if (!fromYmd || !toYmd) return [];
+    var res = await sb.from("fresha_daily_sales").select(FRESHA_COLS)
+      .gte("date", fromYmd).lte("date", toYmd)
+      .order("date", { ascending: true }).limit(20000);
+    if (res.error) { console.error("listFreshaDailySalesForRange:", res.error); return []; }
+    return res.data || [];
+  }
+
+  // Re-importing a day replaces it: the primary key is (branch, date).
+  var _FRESHA_CHUNK = 200;
+  async function upsertFreshaDailySales(rows) {
+    var clean = (rows || []).filter(function (r) { return r && r.branch && r.date; });
+    if (!clean.length) throw new Error("Nothing to import.");
+    var saved = 0;
+    for (var i = 0; i < clean.length; i += _FRESHA_CHUNK) {
+      var slice = clean.slice(i, i + _FRESHA_CHUNK);
+      var res = await sb.from("fresha_daily_sales").upsert(slice, { onConflict: "branch,date" });
+      if (res.error) { console.error("upsertFreshaDailySales:", res.error); throw res.error; }
+      saved += slice.length;
+    }
+    return saved;
+  }
+
+  async function deleteFreshaDailySales(branch, dateStr) {
+    if (!branch || !dateStr) throw new Error("Missing store or date");
+    var res = await sb.from("fresha_daily_sales").delete().eq("branch", branch).eq("date", dateStr);
+    if (res.error) { console.error("deleteFreshaDailySales:", res.error); throw res.error; }
+    return true;
   }
 
   // portal's spot-check viewer. Photo + GPS lives in the clockin_meta table,
@@ -3065,6 +3277,26 @@
     deleteCashup: deleteCashup,
     reviewCashup: reviewCashup,
     unreviewCashup: unreviewCashup,
+
+    // Cash float ledger + Fresha reconciliation (sql/cash_float.sql).
+    // Read names start load/list/get so the read-only guard leaves them alone;
+    // every other name here is treated as a write, which is what they are.
+    loadCashFloatCfg: loadCashFloatCfg,
+    saveCashFloatCfg: saveCashFloatCfg,
+    listCashupsForFloat: listCashupsForFloat,
+    listCashupsForRange: listCashupsForRange,
+    getCashupSlip: getCashupSlip,
+    listCashMovements: listCashMovements,
+    getCashMovementSlip: getCashMovementSlip,
+    addCashMovement: addCashMovement,
+    reviewCashMovement: reviewCashMovement,
+    unreviewCashMovement: unreviewCashMovement,
+    archiveCashMovement: archiveCashMovement,
+    listFreshaDailySalesForDate: listFreshaDailySalesForDate,
+    listFreshaDailySalesForRange: listFreshaDailySalesForRange,
+    upsertFreshaDailySales: upsertFreshaDailySales,
+    deleteFreshaDailySales: deleteFreshaDailySales,
+
     loadManagerDayStatuses: loadManagerDayStatuses,
     getManagerDayProof: getManagerDayProof,
     saveManagerDayStatus: saveManagerDayStatus,
