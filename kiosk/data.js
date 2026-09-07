@@ -803,6 +803,82 @@
     return res.data || [];
   }
 
+  // ---------- Cash float (cash_movements + boa_cash_float_cfg_v1) ----------
+  // The store side of the ledger: a standalone "Bank Cash" deposit, and a
+  // read-only view of how much cash this store is holding right now. The
+  // maths lives in cash-float.js so the tablet and the HR portal can never
+  // disagree about a balance. See sql/cash_float.sql.
+  //
+  // slip is a base64 data URL — never selected in a list read.
+  var CASH_MOVE_COLS = "id,branch,date,kind,amount,ref,note,recorded_by,source,cashup_id," +
+    "reviewed_at,reviewed_by,review_comment,archived_at,archived_by,created_at";
+
+  async function loadCashFloatCfg() {
+    var v = await cachedSingleton("boa_cash_float_cfg_v1");
+    return (v && typeof v === "object") ? v : null;
+  }
+
+  async function addCashDeposit(payload) {
+    var c = client(); if (!c) throw new Error("Supabase not configured");
+    var p = payload || {};
+    var amount = Math.abs(Number(p.amount) || 0);
+    if (!amount) throw new Error("Enter the amount you banked.");
+    var row = {
+      branch: branch(),
+      date: (p.date || todayStr()),
+      kind: "deposit",
+      amount: amount,
+      ref: (p.ref || "").trim() || null,
+      note: (p.note || "").trim() || null,
+      slip: p.slip || null,
+      recorded_by: (p.recorded_by || "").trim() || null,
+      source: "kiosk",
+      cashup_id: p.cashup_id || null
+    };
+    var res = await c.from("cash_movements").insert(row).select(CASH_MOVE_COLS).single();
+    if (res.error) throw res.error;
+    return res.data;
+  }
+
+  // This store's recent deposits / collections / adjustments, newest first.
+  async function listRecentCashMovements(limit) {
+    var c = client(); if (!c) return [];
+    var res = await c.from("cash_movements").select(CASH_MOVE_COLS)
+      .eq("branch", branch()).is("archived_at", null)
+      .order("date", { ascending: false }).order("created_at", { ascending: false })
+      .limit(limit || 30);
+    if (res.error) { console.error("listRecentCashMovements:", res.error); return []; }
+    return res.data || [];
+  }
+
+  // How much cash this store is holding, and how much room is left under the
+  // ceiling. Returns { configured: false } when head office hasn't set this
+  // store's opening balance yet — the screens then show nothing rather than a
+  // confident zero.
+  async function cashOnHand() {
+    var c = client(); if (!c) return { configured: false };
+    var CF = window.BOA_CASH_FLOAT;
+    if (!CF) return { configured: false };
+    var cfg = await loadCashFloatCfg();
+    var sc = CF.storeCfg(cfg, branch());
+    if (!sc) return { configured: false };
+    var both = await Promise.all([
+      c.from("cashups").select("id,branch,date,cash,cash_banked,amount_banked,archived_at,created_at")
+        .eq("branch", branch()).gte("date", sc.startDate).limit(2000),
+      c.from("cash_movements").select("id,branch,date,kind,amount,archived_at,created_at")
+        .eq("branch", branch()).gte("date", sc.startDate).limit(2000)
+    ]);
+    if (both[0].error) { console.error("cashOnHand cashups:", both[0].error); return { configured: false }; }
+    if (both[1].error) { console.error("cashOnHand movements:", both[1].error); return { configured: false }; }
+    var led = CF.computeCashFloat(cfg, both[0].data || [], both[1].data || [], [branch()]);
+    var b = led[branch()];
+    if (!b || !b.configured) return { configured: false };
+    return {
+      configured: true, onHand: b.onHand, ceiling: b.ceiling,
+      headroom: b.headroom, over: b.over, startDate: b.startDate
+    };
+  }
+
   // ---------- Attendance grid (boa_att_<branch>_<ym>) ----------
   function ymForDate(date) {
     var y = date.getFullYear(), m = date.getMonth() + 1;
@@ -2041,6 +2117,7 @@
     deactivateStaff: deactivateStaff,
     lastClockinToday: lastClockinToday, addClockin: addClockin, listTodayClockins: listTodayClockins,
     todaysCashup: todaysCashup, cashupForDate: cashupForDate, getCashupPhoto: getCashupPhoto, outstandingCashupDates: outstandingCashupDates, addCashup: addCashup, listRecentCashups: listRecentCashups,
+    loadCashFloatCfg: loadCashFloatCfg, addCashDeposit: addCashDeposit, listRecentCashMovements: listRecentCashMovements, cashOnHand: cashOnHand,
     currentSchedYm: currentSchedYm, periodLabel: periodLabel, periodDays: periodDays, getSchedule: getSchedule, getApprovedSchedule: getApprovedSchedule, getSchedulesForBranches: getSchedulesForBranches, getMgrTimes: getMgrTimes,
     ymForDate: ymForDate, endOfSchedulePeriod: endOfSchedulePeriod,
     getAttendance: getAttendance, setAttendanceStatus: setAttendanceStatus, backfillCheckinLog: backfillCheckinLog,

@@ -20,3 +20,6 @@ Gift Card Transactions.csv
 .repowise/
 .vscode/
 .mcp.json
+# .claude/CLAUDE.md IS committed (it's the repo's instructions); the
+# settings.local.json beside it is per-machine tool permissions and is not.
+.claude/settings.local.json

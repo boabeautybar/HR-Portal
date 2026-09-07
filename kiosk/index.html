@@ -61,6 +61,10 @@
 
 <!-- App scripts. Order matters: config → data → security → gate → role apps -->
 <script src="config.js"></script>
+<!-- Shared cash-float maths — LOCAL mirror of /cash-float.js (this site's
+     publish root is kiosk/, so ../ cannot be reached). Byte-identical;
+     verified by scripts/check-cash-float.js. -->
+<script src="cash-float.js"></script>
 <script src="data.js"></script>
 <script src="security.js"></script>
 <script src="pin-gate.js"></script>
