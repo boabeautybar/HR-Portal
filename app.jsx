@@ -25700,24 +25700,28 @@ function CashFloatTab({
    component is the four sub-tabs, the asset drawer, and the modals — it holds
    no rule of its own. Kept as a separate component rather than another inline
    IIFE in App: App is already the size it is.                               */
+// Frosted glass, shared with off-boarding — GLASS_SURFACE / glassCard /
+// glassTile / GLASS_INPUT / BTN_* are defined once above and reused here, so
+// the two tabs cannot drift apart. The wash they blur is painted by the
+// .boa-glass class on this tab's root (see index.html).
 const ASSET_UI = {
-  ink: "#831843", pink: "#BE185D", rose: "#F472B6", soft: "#FBCFE8", bg: "#FCE7F3",
-  muted: "#9ca3af", text: "#1f2937", line: "#F3E8EE"
+  ink: "#4A1230", head: "#831843", pink: "#BE185D", rose: "#9d174d",
+  muted: "#9d6a82", text: "#6B1739", faint: "#B49DCB",
+  hair: "rgba(190,24,93,0.09)", edge: "rgba(190,24,93,0.18)"
 };
-const ASSET_INPUT = { padding: "7px 9px", borderRadius: 7, border: "1px solid #FBCFE8", fontSize: 13, width: "100%", boxSizing: "border-box", fontFamily: "inherit", background: "#fff" };
-const ASSET_LABEL = { fontSize: 10, fontWeight: 700, color: "#F472B6", letterSpacing: "0.05em", display: "block", marginBottom: 3, textTransform: "uppercase" };
-const ASSET_BTN = (kind) => ({
-  padding: "7px 13px", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap",
-  border: kind === "primary" ? "none" : "1px solid #FBCFE8",
-  background: kind === "primary" ? "#BE185D" : kind === "danger" ? "#fef2f2" : "#fff",
-  color: kind === "primary" ? "#fff" : kind === "danger" ? "#b91c1c" : "#831843"
-});
+const ASSET_INPUT = GLASS_INPUT;
+const ASSET_LABEL = GLASS_LABEL;
+const ASSET_BTN = (kind) => kind === "primary" ? BTN_PRIMARY
+  : kind === "danger" ? { ...BTN_GHOST, color: "#9b1c1c", border: "1px solid rgba(220,38,38,0.26)", background: "rgba(254,242,242,0.70)" }
+  : BTN_GHOST;
 const _assetFmtDate = (ymd) => { if (!ymd) return ""; try { return new Date(ymd + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }); } catch (_) { return ymd; } };
 const _assetStatusPill = (status) => {
   const A = window.BOA_ASSETS;
   const fam = A ? A.familyOf(status) : "active";
   const f = (A ? A.FAMILIES : []).find(x => x.k === fam) || { colour: "#BE185D" };
-  return <span style={{ display: "inline-block", padding: "2px 8px", borderRadius: 999, fontSize: 10.5, fontWeight: 800, color: "#fff", background: f.colour, whiteSpace: "nowrap" }}>{status || "—"}</span>;
+  return <span style={{ display: "inline-block", padding: "3px 10px", borderRadius: 999, fontSize: 10.5, fontWeight: 800, color: "#fff", whiteSpace: "nowrap",
+    background: "linear-gradient(180deg, " + f.colour + ", " + f.colour + "dd)",
+    boxShadow: "inset 0 1px 0 rgba(255,255,255,0.30), 0 6px 14px -8px " + f.colour }}>{status || "—"}</span>;
 };
 
 // ── Small building blocks ────────────────────────────────────────────────────
@@ -25731,10 +25735,10 @@ function AssetField({ label, children, span }) {
 }
 function AssetModal({ title, sub, onClose, children, width, busy }) {
   return (
-    <div onClick={() => !busy && onClose()} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "flex-start", justifyContent: "center", zIndex: 9999, padding: 16, overflow: "auto" }}>
-      <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 14, padding: "20px 22px", maxWidth: width || 640, width: "100%", margin: "24px 0", boxShadow: "0 12px 40px rgba(0,0,0,0.25)" }}>
+    <div className="boa-glass" onClick={() => !busy && onClose()} style={{ position: "fixed", inset: 0, background: "rgba(74,18,48,0.38)", backdropFilter: "blur(6px)", WebkitBackdropFilter: "blur(6px)", display: "flex", alignItems: "flex-start", justifyContent: "center", zIndex: 9999, padding: 16, overflow: "auto" }}>
+      <div onClick={e => e.stopPropagation()} style={{ ...GLASS_SURFACE, background: "linear-gradient(158deg, rgba(255,255,255,0.97) 0%, rgba(253,242,248,0.92) 100%)", borderRadius: 20, padding: "22px 24px", maxWidth: width || 640, width: "100%", margin: "24px 0", boxSizing: "border-box", boxShadow: "0 30px 70px -30px rgba(74,18,48,0.65)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-          <div style={{ fontWeight: 800, color: ASSET_UI.ink, fontSize: 16 }}>{title}</div>
+          <div style={{ ...glassHeading(), fontSize: 17 }}>{title}</div>
           <button onClick={() => !busy && onClose()} style={{ background: "transparent", border: "none", fontSize: 22, cursor: "pointer", color: ASSET_UI.ink, lineHeight: 1 }}>×</button>
         </div>
         {sub && <div style={{ fontSize: 12, color: ASSET_UI.muted, marginBottom: 14 }}>{sub}</div>}
@@ -25759,10 +25763,10 @@ function AssetPersonPicker({ people, value, onPick, placeholder }) {
         onChange={e => { setQ(e.target.value); setOpen(true); if (value) onPick(null); }}
         onFocus={() => setOpen(true)} onBlur={() => setTimeout(() => setOpen(false), 150)} />
       {open && hits.length > 0 && (
-        <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: "#fff", border: "1px solid #FBCFE8", borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", zIndex: 20, maxHeight: 240, overflow: "auto" }}>
+        <div style={{ position: "absolute", top: "100%", left: 0, right: 0, marginTop: 4, background: "linear-gradient(158deg, rgba(255,255,255,0.97), rgba(253,242,248,0.94))", backdropFilter: "blur(16px) saturate(160%)", WebkitBackdropFilter: "blur(16px) saturate(160%)", border: "1px solid rgba(255,255,255,0.8)", borderRadius: 12, boxShadow: "0 22px 44px -24px rgba(74,18,48,0.65)", zIndex: 20, maxHeight: 240, overflow: "auto" }}>
           {hits.map(p => (
             <div key={p.ec} onMouseDown={() => { onPick(p); setQ(p.name + " (" + p.ec + ")"); setOpen(false); }}
-              style={{ padding: "7px 10px", fontSize: 12.5, cursor: "pointer", borderBottom: "1px solid #F3E8EE" }}>
+              style={{ padding: "8px 11px", fontSize: 12.5, cursor: "pointer", borderBottom: "1px solid " + ASSET_UI.hair }}>
               <div style={{ fontWeight: 700, color: ASSET_UI.ink }}>{p.name} <span style={{ color: ASSET_UI.muted, fontWeight: 600 }}>{p.ec}</span>{p.departed && <span style={{ marginLeft: 6, fontSize: 10, color: "#b91c1c", fontWeight: 800 }}>LEFT</span>}</div>
               <div style={{ fontSize: 11, color: ASSET_UI.muted }}>{[p.jobTitle, p.department, p.branch].filter(Boolean).join(" · ")}</div>
             </div>
@@ -25788,10 +25792,10 @@ function AssetPicker({ assets, value, onPick, filter }) {
         onChange={e => { setQ(e.target.value); setOpen(true); if (value) onPick(null); }}
         onFocus={() => setOpen(true)} onBlur={() => setTimeout(() => setOpen(false), 150)} />
       {open && hits.length > 0 && (
-        <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: "#fff", border: "1px solid #FBCFE8", borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", zIndex: 20, maxHeight: 240, overflow: "auto" }}>
+        <div style={{ position: "absolute", top: "100%", left: 0, right: 0, marginTop: 4, background: "linear-gradient(158deg, rgba(255,255,255,0.97), rgba(253,242,248,0.94))", backdropFilter: "blur(16px) saturate(160%)", WebkitBackdropFilter: "blur(16px) saturate(160%)", border: "1px solid rgba(255,255,255,0.8)", borderRadius: 12, boxShadow: "0 22px 44px -24px rgba(74,18,48,0.65)", zIndex: 20, maxHeight: 240, overflow: "auto" }}>
           {hits.map(a => (
             <div key={a.id} onMouseDown={() => { onPick(a); setQ(a.asset_id + " — " + a.description); setOpen(false); }}
-              style={{ padding: "7px 10px", fontSize: 12.5, cursor: "pointer", borderBottom: "1px solid #F3E8EE" }}>
+              style={{ padding: "8px 11px", fontSize: 12.5, cursor: "pointer", borderBottom: "1px solid " + ASSET_UI.hair }}>
               <div style={{ fontWeight: 700, color: ASSET_UI.ink }}>{a.asset_id} <span style={{ fontWeight: 600, color: ASSET_UI.text }}>{a.description}</span></div>
               <div style={{ fontSize: 11, color: ASSET_UI.muted }}>{[a.category, a.branch, a.assigned_name ? "with " + a.assigned_name : "", a.status].filter(Boolean).join(" · ")}</div>
             </div>
@@ -25805,7 +25809,7 @@ function AssetPicker({ assets, value, onPick, filter }) {
 // ── Charts (inline SVG, no library) ──────────────────────────────────────────
 // Horizontal bars: rows [{ label, value, colour?, sub? }], values formatted by fmt.
 function AssetBars({ rows, fmt, height, onPick, colour }) {
-  if (!rows || !rows.length) return <div style={{ fontSize: 12, color: ASSET_UI.muted, padding: "12px 0" }}>Nothing to show yet.</div>;
+  if (!rows || !rows.length) return <div style={{ fontSize: 12, color: ASSET_UI.faint, padding: "12px 0" }}>Nothing to show yet.</div>;
   const rowH = 22, labelW = 150, W = 640, padR = 70;
   const H = rows.length * rowH + 6;
   const max = Math.max(1, ...rows.map(r => Number(r.value) || 0));
@@ -25818,7 +25822,7 @@ function AssetBars({ rows, fmt, height, onPick, colour }) {
           <g key={r.label + i} onClick={onPick ? () => onPick(r) : undefined} style={{ cursor: onPick ? "pointer" : "default" }}>
             <title>{r.label + ": " + (fmt ? fmt(r.value) : r.value)}</title>
             <text x={labelW - 8} y={y + 14} textAnchor="end" fontSize="11" fill={ASSET_UI.ink} fontWeight="600">{String(r.label).length > 22 ? String(r.label).slice(0, 21) + "…" : r.label}</text>
-            <rect x={labelW} y={y + 3} width={bw} height={rowH - 8} rx="4" fill="#F5F3FF" />
+            <rect x={labelW} y={y + 3} width={bw} height={rowH - 8} rx="4" fill="rgba(190,24,93,0.07)" />
             <rect x={labelW} y={y + 3} width={w} height={rowH - 8} rx="4" fill={r.colour || colour || ASSET_UI.pink} />
             <text x={labelW + w + 6} y={y + 14} fontSize="11" fill={ASSET_UI.text} fontWeight="700">{fmt ? fmt(r.value) : r.value}</text>
           </g>
@@ -25844,8 +25848,8 @@ function AssetStack({ cols, series, height, fmt }) {
       <svg width="100%" viewBox={"0 0 " + W + " " + H} preserveAspectRatio="xMidYMid meet" style={{ display: "block", height: "auto" }} role="img">
         {[0, nice / 2, nice].map((t, i) => (
           <g key={i}>
-            <line x1={padL} x2={W - padR} y1={base - hOf(t)} y2={base - hOf(t)} stroke="#EDE9FE" strokeWidth="1" />
-            <text x={padL - 6} y={base - hOf(t) + 4} textAnchor="end" fontSize="10" fill="#A78BC7">{Math.round(t)}</text>
+            <line x1={padL} x2={W - padR} y1={base - hOf(t)} y2={base - hOf(t)} stroke="rgba(190,24,93,0.12)" strokeWidth="1" />
+            <text x={padL - 6} y={base - hOf(t) + 4} textAnchor="end" fontSize="10" fill={ASSET_UI.muted}>{Math.round(t)}</text>
           </g>
         ))}
         {cols.map((c, i) => {
@@ -25863,14 +25867,14 @@ function AssetStack({ cols, series, height, fmt }) {
                 return <rect key={s.k} x={x} y={yTop} width={bw} height={hh} rx="2" fill={s.colour} />;
               })}
               {totals[i] > 0 && <text x={x + bw / 2} y={base - hOf(totals[i]) - 4} textAnchor="middle" fontSize="10" fontWeight="700" fill={ASSET_UI.ink}>{fmt ? fmt(totals[i]) : totals[i]}</text>}
-              <text x={x + bw / 2} y={base + 14} textAnchor="middle" fontSize="10" fill="#6b7280">{c.label}</text>
+              <text x={x + bw / 2} y={base + 14} textAnchor="middle" fontSize="10" fill={ASSET_UI.muted}>{c.label}</text>
             </g>
           );
         })}
-        <line x1={padL} x2={W - padR} y1={base} y2={base} stroke="#EDE9FE" />
+        <line x1={padL} x2={W - padR} y1={base} y2={base} stroke="rgba(190,24,93,0.16)" />
       </svg>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginTop: 4 }}>
-        {series.map(s => <span key={s.k} style={{ fontSize: 10.5, color: "#6b7280", display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 10, height: 10, borderRadius: 2, background: s.colour, display: "inline-block" }} />{s.label}</span>)}
+        {series.map(s => <span key={s.k} style={{ fontSize: 10.5, color: ASSET_UI.muted, display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 10, height: 10, borderRadius: 2, background: s.colour, display: "inline-block" }} />{s.label}</span>)}
       </div>
     </div>
   );
@@ -26072,30 +26076,38 @@ function AssetsTab(props) {
     </select>
   );
   const filterSel = (value, onChange, options, allLabel) => (
-    <select value={value} onChange={e => onChange(e.target.value)} style={{ padding: "6px 8px", borderRadius: 7, border: "1px solid #FBCFE8", fontSize: 12, fontFamily: "inherit", background: "#fff", color: ASSET_UI.ink }}>
+    <select value={value} onChange={e => onChange(e.target.value)} style={{ ...GLASS_INPUT, width: "auto", padding: "8px 10px", fontSize: 12 }}>
       <option value="All">{allLabel}</option>
       {options.map(o => <option key={o} value={o}>{o}</option>)}
     </select>
   );
-  const th = (l, extra) => <th key={l} style={{ padding: "8px 10px", fontSize: 11, fontWeight: 800, letterSpacing: "0.04em", borderBottom: "1px solid #FBCFE8", whiteSpace: "nowrap", textAlign: "left", ...(extra || {}) }}>{l}</th>;
-  const td = (v, extra) => <td style={{ padding: "7px 10px", borderBottom: "1px solid #F3E8EE", verticalAlign: "top", ...(extra || {}) }}>{v}</td>;
+  // Sticky frosted header, hairline rows — the same grid treatment the
+  // off-boarding tables use, so a glass table reads the same anywhere.
+  const th = (l, extra) => <th key={l} style={{
+    textAlign: "left", padding: "11px 13px", fontSize: 9.5, fontWeight: 800, color: ASSET_UI.rose,
+    textTransform: "uppercase", letterSpacing: "0.07em", whiteSpace: "nowrap",
+    background: "linear-gradient(180deg, rgba(253,242,248,0.97), rgba(252,231,243,0.92))",
+    backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)",
+    position: "sticky", top: 0, zIndex: 2, boxShadow: "inset 0 -1px 0 rgba(190,24,93,0.16)", ...(extra || {})
+  }}>{l}</th>;
+  const td = (v, extra) => <td style={{ padding: "11px 13px", fontSize: 12.5, lineHeight: 1.5, color: ASSET_UI.text, borderBottom: "1px solid " + ASSET_UI.hair, verticalAlign: "top", ...(extra || {}) }}>{v}</td>;
   const idLink = (asset) => asset && asset.id ? (
     <a href="#" onClick={e => { e.preventDefault(); setDrawer(asset.id); }} style={{ color: ASSET_UI.pink, fontWeight: 800, textDecoration: "none", whiteSpace: "nowrap" }}>{asset.asset_id}</a>
   ) : <span style={{ color: ASSET_UI.muted }}>—</span>;
   const card = (label, value, sub, colour) => (
-    <div style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 12, padding: "10px 14px", minWidth: 128, flex: "1 1 128px" }}>
-      <div style={{ fontSize: 10, fontWeight: 800, color: ASSET_UI.rose, letterSpacing: "0.08em", textTransform: "uppercase" }}>{label}</div>
-      <div style={{ fontSize: 20, fontWeight: 800, color: colour || ASSET_UI.ink, marginTop: 2 }}>{value}</div>
-      {sub && <div style={{ fontSize: 11, color: ASSET_UI.muted, marginTop: 2 }}>{sub}</div>}
+    <div style={glassTile({ padding: "12px 15px", minWidth: 128, flex: "1 1 128px" })}>
+      <div style={{ ...GLASS_LABEL, marginBottom: 3 }}>{label}</div>
+      <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 23, fontWeight: 600, color: colour || ASSET_UI.head, lineHeight: 1.1 }}>{value}</div>
+      {sub && <div style={{ fontSize: 11, color: ASSET_UI.muted, marginTop: 3 }}>{sub}</div>}
     </div>
   );
-  const emptyRow = (cols, text) => <tr><td colSpan={cols} style={{ padding: "18px 12px", color: ASSET_UI.muted, fontSize: 12, textAlign: "center" }}>{text}</td></tr>;
+  const emptyRow = (cols, text) => <tr><td colSpan={cols} style={{ padding: "28px 16px", color: ASSET_UI.faint, fontSize: 12.5, textAlign: "center" }}>{text}</td></tr>;
   const segBar = (items, value, onChange) => (
-    <div style={{ display: "flex", gap: 4, background: "#fff", border: "1px solid #FBCFE8", borderRadius: 10, padding: 3, width: "fit-content", flexWrap: "wrap" }}>
+    <div style={{ display: "flex", gap: 4, background: "rgba(255,255,255,0.58)", backdropFilter: "blur(12px) saturate(150%)", WebkitBackdropFilter: "blur(12px) saturate(150%)", border: "1px solid rgba(255,255,255,0.75)", borderRadius: 13, padding: 4, width: "fit-content", flexWrap: "wrap", boxShadow: "inset 0 1px 0 rgba(255,255,255,0.9), 0 10px 22px -18px rgba(131,24,67,0.6)" }}>
       {items.map(it => (
-        <button key={it.k} onClick={() => onChange(it.k)}
-          style={{ padding: "5px 12px", borderRadius: 7, border: "none", background: value === it.k ? "#FCE7F3" : "transparent", color: ASSET_UI.ink, fontWeight: value === it.k ? 800 : 600, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
-          {it.icon ? it.icon + " " : ""}{it.l}{it.n != null ? <span style={{ marginLeft: 6, fontSize: 10, color: ASSET_UI.muted }}>{it.n}</span> : null}
+        <button key={it.k} className="boa-pill" onClick={() => onChange(it.k)}
+          style={{ padding: "6px 13px", borderRadius: 9, border: "1px solid " + (value === it.k ? "rgba(255,255,255,0.8)" : "transparent"), background: value === it.k ? "linear-gradient(180deg, rgba(255,255,255,0.95), rgba(253,240,246,0.75))" : "transparent", color: value === it.k ? ASSET_UI.head : ASSET_UI.muted, fontWeight: value === it.k ? 800 : 600, fontSize: 12, cursor: "pointer", fontFamily: "inherit", boxShadow: value === it.k ? "inset 0 1px 0 rgba(255,255,255,0.95), 0 6px 14px -10px rgba(131,24,67,0.55)" : "none", transition: "background .16s ease, color .16s ease" }}>
+          {it.icon ? it.icon + " " : ""}{it.l}{it.n != null ? <span style={{ marginLeft: 6, fontSize: 10, color: ASSET_UI.faint }}>{it.n}</span> : null}
         </button>
       ))}
     </div>
@@ -26106,14 +26118,14 @@ function AssetsTab(props) {
     if (!modal) return null;
     const m = modal;
     const upd = (k, v) => setModal(prev => ({ ...prev, [k]: v }));
-    const errBox = err ? <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", color: "#b91c1c", borderRadius: 8, padding: "8px 10px", fontSize: 12, marginBottom: 10 }}>{err}</div> : null;
+    const errBox = err ? <div style={glassTile({ background: "rgba(254,242,242,0.9)", border: "1px solid rgba(252,165,165,0.9)", color: "#9b1c1c", padding: "10px 12px", fontSize: 12.5, marginBottom: 12 })}>{err}</div> : null;
     const footer = (label, onOk, disabled) => (
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
-        <button onClick={() => !busy && setModal(null)} style={ASSET_BTN()}>Cancel</button>
-        <button onClick={onOk} disabled={busy || disabled} style={{ ...ASSET_BTN("primary"), opacity: busy || disabled ? 0.55 : 1 }}>{busy ? "Saving…" : label}</button>
+        <button className="boa-btn" onClick={() => !busy && setModal(null)} style={ASSET_BTN()}>Cancel</button>
+        <button className="boa-btn" onClick={onOk} disabled={busy || disabled} style={{ ...ASSET_BTN("primary"), opacity: busy || disabled ? 0.55 : 1 }}>{busy ? "Saving…" : label}</button>
       </div>
     );
-    const assetHead = (a) => a ? <div style={{ background: "#FCE7F3", borderRadius: 8, padding: "8px 10px", fontSize: 12, marginBottom: 12 }}><strong style={{ color: ASSET_UI.ink }}>{a.asset_id}</strong> · {a.description} · {a.branch || "no branch"}{a.assigned_name ? " · with " + a.assigned_name : ""} · {_assetStatusPill(a.status)}</div> : null;
+    const assetHead = (a) => a ? <div style={glassTile({ padding: "10px 12px", fontSize: 12, marginBottom: 14, color: ASSET_UI.text })}><strong style={{ color: ASSET_UI.head }}>{a.asset_id}</strong> · {a.description} · {a.branch || "no branch"}{a.assigned_name ? " · with " + a.assigned_name : ""} · {_assetStatusPill(a.status)}</div> : null;
     const grid = (children, cols) => <div style={{ display: "grid", gridTemplateColumns: "repeat(" + (cols || 2) + ", minmax(0, 1fr))", gap: 10 }}>{children}</div>;
     const text = (k, ph, type) => <input type={type || "text"} value={m[k] == null ? "" : m[k]} placeholder={ph || ""} onChange={e => upd(k, e.target.value)} style={ASSET_INPUT} />;
     const dateIn = (k) => <input type="date" value={m[k] || ""} onChange={e => upd(k, e.target.value)} style={ASSET_INPUT} />;
@@ -26164,8 +26176,8 @@ function AssetsTab(props) {
             <AssetField key="notes" label="Notes" span><textarea value={m.notes || ""} onChange={e => upd("notes", e.target.value)} rows={2} style={{ ...ASSET_INPUT, resize: "vertical" }} /></AssetField>
           ])}
           {isNew && (
-            <div style={{ marginTop: 12, background: "#FDF2F8", border: "1px dashed #FBCFE8", borderRadius: 10, padding: "10px 12px" }}>
-              <div style={{ fontSize: 11, fontWeight: 800, color: ASSET_UI.ink, marginBottom: 6 }}>🧑 Issue to an employee now (optional)</div>
+            <div style={glassTile({ marginTop: 14, padding: "12px 14px", border: "1px dashed rgba(190,24,93,0.28)" })}>
+              <div style={{ ...glassHeading(), fontSize: 13.5, marginBottom: 8 }}>🧑 Issue to an employee now (optional)</div>
               {grid([
                 <AssetField key="p" label="Employee" span><AssetPersonPicker people={people} value={m._person || null} onPick={p => { upd("_person", p); if (p && !m.branch) upd("branch", p.branch || ""); if (p && !m.department) upd("department", p.department || ""); }} /></AssetField>,
                 <AssetField key="d" label="Date issued">{dateIn("_issueDate")}</AssetField>,
@@ -26467,13 +26479,13 @@ function AssetsTab(props) {
         sub="Use the downloaded CSV template (or an .xlsx with the same headings). Every row is checked first; repeated codes go to the review list below where you choose Skip or Replace per row. Nothing is saved until you press Import.">
         {errBox}
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
-          <button onClick={() => downloadTemplate(table)} style={ASSET_BTN()}>⬇ Download CSV template</button>
-          <label style={{ ...ASSET_BTN("primary"), display: "inline-block" }}>
+          <button className="boa-btn" onClick={() => downloadTemplate(table)} style={ASSET_BTN()}>⬇ Download CSV template</button>
+          <label className="boa-btn" style={{ ...ASSET_BTN("primary"), display: "inline-block" }}>
             Choose file… <input type="file" accept=".csv,.xlsx,.xls,text/csv" style={{ display: "none" }} onChange={e => onFile(e.target.files && e.target.files[0])} />
           </label>
           {m.fileName && <span style={{ fontSize: 12, color: ASSET_UI.muted }}>Loaded: {m.fileName}</span>}
         </div>
-        {parsed && parsed.missing.length > 0 && <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", color: "#b91c1c", borderRadius: 8, padding: "8px 10px", fontSize: 12, marginBottom: 10 }}>Required column{parsed.missing.length > 1 ? "s" : ""} not found: {parsed.missing.join(", ")}. Download the template and keep its headings.</div>}
+        {parsed && parsed.missing.length > 0 && <div style={glassTile({ background: "rgba(254,242,242,0.9)", border: "1px solid rgba(252,165,165,0.9)", color: "#9b1c1c", padding: "10px 12px", fontSize: 12.5, marginBottom: 12 })}>Required column{parsed.missing.length > 1 ? "s" : ""} not found: {parsed.missing.join(", ")}. Download the template and keep its headings.</div>}
         {parsed && parsed.unknown.length > 0 && <div style={{ fontSize: 11, color: ASSET_UI.muted, marginBottom: 8 }}>Ignored columns: {parsed.unknown.join(", ")}</div>}
         {parsed && !results && (
           <>
@@ -26483,9 +26495,9 @@ function AssetsTab(props) {
             {dups.length > 0 && (
               <div style={{ marginBottom: 12 }}>
                 <div style={{ fontSize: 12, fontWeight: 800, color: "#b45309", marginBottom: 6 }}>⚠ Review — these codes already exist. Was it entered in error, or is it the same item that needs updating?</div>
-                <div style={{ overflowX: "auto", border: "1px solid #fde68a", borderRadius: 10 }}>
+                <div style={{ overflowX: "auto", border: "1px solid rgba(253,230,138,0.9)", background: "rgba(255,251,235,0.6)", borderRadius: 14 }}>
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-                    <thead><tr style={{ background: "#FEF3C7", color: "#78350f" }}>{th("Row")}{th("Uploaded")}{th("Problem")}{th("Existing record")}{th("Decision")}</tr></thead>
+                    <thead><tr>{[th("Row"), th("Uploaded"), th("Problem"), th("Existing record"), th("Decision")]}</tr></thead>
                     <tbody>
                       {dups.map(r => {
                         const ex = r.dup.existing;
@@ -26514,17 +26526,17 @@ function AssetsTab(props) {
             {invalid.length > 0 && (
               <div style={{ marginBottom: 12 }}>
                 <div style={{ fontSize: 12, fontWeight: 800, color: "#b91c1c", marginBottom: 6 }}>✗ Rows with errors — fix them in the file and upload again, or import the rest without them</div>
-                <div style={{ maxHeight: 180, overflow: "auto", border: "1px solid #fca5a5", borderRadius: 10, padding: "6px 10px", fontSize: 12 }}>
-                  {invalid.map(r => <div key={r.n} style={{ padding: "3px 0", borderBottom: "1px solid #fee2e2" }}><strong>Row {r.n}</strong> {r.data.description || r.data.asset_id || ""}: {r.errors.join("; ")}</div>)}
+                <div style={{ maxHeight: 180, overflow: "auto", border: "1px solid rgba(252,165,165,0.9)", background: "rgba(254,242,242,0.6)", borderRadius: 14, padding: "8px 12px", fontSize: 12 }}>
+                  {invalid.map(r => <div key={r.n} style={{ padding: "4px 0", borderBottom: "1px solid rgba(220,38,38,0.12)" }}><strong>Row {r.n}</strong> {r.data.description || r.data.asset_id || ""}: {r.errors.join("; ")}</div>)}
                 </div>
               </div>
             )}
-            <div style={{ maxHeight: 260, overflow: "auto", border: "1px solid #FBCFE8", borderRadius: 10 }}>
+            <div style={{ maxHeight: 260, overflow: "auto", border: "1px solid rgba(255,255,255,0.75)", background: "rgba(255,255,255,0.5)", borderRadius: 14 }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
-                <thead><tr style={{ background: "#FCE7F3", color: ASSET_UI.ink }}>{th("Row")}{spec.columns.map(c => th(c.label))}{th("Warnings")}</tr></thead>
+                <thead><tr>{th("Row")}{spec.columns.map(c => th(c.label))}{th("Warnings")}</tr></thead>
                 <tbody>
                   {valid.map(r => (
-                    <tr key={r.n} style={{ opacity: r.dup && dec(r.n) === "skip" ? 0.45 : 1 }}>
+                    <tr key={r.n} className="boa-row" style={{ opacity: r.dup && dec(r.n) === "skip" ? 0.45 : 1 }}>
                       {td(r.n)}
                       {spec.columns.map(c => <React.Fragment key={c.key}>{td(c.t === "yesno" ? (r.data[c.key] ? "Yes" : "No") : (r.data[c.key] == null ? "" : String(r.data[c.key])))}</React.Fragment>)}
                       {td(r.warnings.join("; "), { color: "#b45309" })}
@@ -26535,8 +26547,8 @@ function AssetsTab(props) {
               </table>
             </div>
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
-              <button onClick={() => !busy && setModal(null)} style={ASSET_BTN()}>Cancel</button>
-              <button onClick={commit} disabled={busy || !toImport.length} style={{ ...ASSET_BTN("primary"), opacity: busy || !toImport.length ? 0.55 : 1 }}>{busy ? "Importing…" : "Import " + toImport.length + " row" + (toImport.length === 1 ? "" : "s")}</button>
+              <button className="boa-btn" onClick={() => !busy && setModal(null)} style={ASSET_BTN()}>Cancel</button>
+              <button className="boa-btn" onClick={commit} disabled={busy || !toImport.length} style={{ ...ASSET_BTN("primary"), opacity: busy || !toImport.length ? 0.55 : 1 }}>{busy ? "Importing…" : "Import " + toImport.length + " row" + (toImport.length === 1 ? "" : "s")}</button>
             </div>
           </>
         )}
@@ -26545,10 +26557,10 @@ function AssetsTab(props) {
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
               {card("Imported", results.filter(r => r.ok).length, null, "#15803d")}{card("Skipped", results.filter(r => r.skipped).length)}{card("Failed", results.filter(r => r.error).length, null, results.some(r => r.error) ? "#b91c1c" : undefined)}
             </div>
-            <div style={{ maxHeight: 260, overflow: "auto", border: "1px solid #FBCFE8", borderRadius: 10, padding: "6px 10px", fontSize: 12 }}>
-              {results.map((r, i) => <div key={i} style={{ padding: "3px 0", borderBottom: "1px solid #F3E8EE", color: r.error ? "#b91c1c" : r.ok ? "#15803d" : ASSET_UI.muted }}>Row {r.n}: {r.error ? "✗ " + r.error : r.ok ? "✓ " + r.id : "skipped"}</div>)}
+            <div style={{ maxHeight: 260, overflow: "auto", border: "1px solid rgba(255,255,255,0.75)", background: "rgba(255,255,255,0.5)", borderRadius: 14, padding: "8px 12px", fontSize: 12 }}>
+              {results.map((r, i) => <div key={i} style={{ padding: "4px 0", borderBottom: "1px solid " + ASSET_UI.hair, color: r.error ? "#b91c1c" : r.ok ? "#15803d" : ASSET_UI.muted }}>Row {r.n}: {r.error ? "✗ " + r.error : r.ok ? "✓ " + r.id : "skipped"}</div>)}
             </div>
-            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 14 }}><button onClick={() => setModal(null)} style={ASSET_BTN("primary")}>Done</button></div>
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 14 }}><button className="boa-btn" onClick={() => setModal(null)} style={ASSET_BTN("primary")}>Done</button></div>
           </div>
         )}
       </AssetModal>
@@ -26564,19 +26576,24 @@ function AssetsTab(props) {
     const act = (label, kind, extra, danger) => {
       const gate = A.canAct(p, kind === "status_change" ? "status" : kind);
       return (
-        <button key={kind + label} disabled={!gate.ok || !canEdit} title={gate.ok ? "" : gate.why}
+        <button className="boa-btn" key={kind + label} disabled={!gate.ok || !canEdit} title={gate.ok ? "" : gate.why}
           onClick={() => setModal({ kind, asset: a, date: today, ...(extra || {}) })}
           style={{ ...ASSET_BTN(danger ? "danger" : undefined), opacity: gate.ok && canEdit ? 1 : 0.45, cursor: gate.ok && canEdit ? "pointer" : "not-allowed" }}>{label}</button>
       );
     };
-    const row = (l, v) => v ? <div style={{ display: "flex", gap: 8, fontSize: 12, padding: "3px 0", borderBottom: "1px solid #F3E8EE" }}><span style={{ width: 130, color: ASSET_UI.muted, flexShrink: 0 }}>{l}</span><span style={{ color: ASSET_UI.text, fontWeight: 600 }}>{v}</span></div> : null;
+    const row = (l, v) => v ? <div style={{ display: "flex", gap: 8, fontSize: 12.5, padding: "5px 0", borderBottom: "1px solid " + ASSET_UI.hair }}><span style={{ width: 130, color: ASSET_UI.muted, flexShrink: 0 }}>{l}</span><span style={{ color: ASSET_UI.text, fontWeight: 600 }}>{v}</span></div> : null;
     const d = a.details || {};
     return (
-      <div onClick={() => setDrawer(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", zIndex: 9000 }}>
-        <div onClick={e => e.stopPropagation()} style={{ position: "absolute", top: 0, right: 0, bottom: 0, width: "min(560px, 100%)", background: "#fff", boxShadow: "-12px 0 40px rgba(0,0,0,0.2)", overflow: "auto", padding: "18px 20px" }}>
+      <div className="boa-glass" onClick={() => setDrawer(null)} style={{ position: "fixed", inset: 0, background: "rgba(74,18,48,0.32)", backdropFilter: "blur(5px)", WebkitBackdropFilter: "blur(5px)", zIndex: 9000 }}>
+        <div onClick={e => e.stopPropagation()} style={{
+          position: "absolute", top: 0, right: 0, bottom: 0, width: "min(580px, 100%)", boxSizing: "border-box", overflow: "auto", padding: "20px 22px",
+          background: "linear-gradient(200deg, rgba(255,255,255,0.96) 0%, rgba(253,242,248,0.93) 55%, rgba(252,231,243,0.90) 100%)",
+          backdropFilter: "blur(26px) saturate(180%)", WebkitBackdropFilter: "blur(24px) saturate(170%)",
+          borderLeft: "1px solid rgba(255,255,255,0.8)", boxShadow: "-30px 0 70px -30px rgba(74,18,48,0.65)"
+        }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
             <div>
-              <div style={{ fontSize: 11, fontWeight: 800, color: ASSET_UI.rose, letterSpacing: "0.08em" }}>{A.REGISTER_BY_KEY[a.register].icon} {A.REGISTER_BY_KEY[a.register].label}{a.archived_at ? " · ARCHIVED" : ""}</div>
+              <div style={{ ...GLASS_LABEL, marginBottom: 2 }}>{A.REGISTER_BY_KEY[a.register].icon} {A.REGISTER_BY_KEY[a.register].label}{a.archived_at ? " · ARCHIVED" : ""}</div>
               <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 22, color: ASSET_UI.ink, fontWeight: 700 }}>{a.asset_id} <span style={{ fontFamily: "inherit", fontSize: 15, fontWeight: 600, color: ASSET_UI.text }}>{a.description}</span></div>
               <div style={{ marginTop: 6, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>{_assetStatusPill(p.status)}<span style={{ fontSize: 12, color: ASSET_UI.muted }}>{[a.category, a.brand, a.model].filter(Boolean).join(" · ")}</span></div>
             </div>
@@ -26591,31 +26608,31 @@ function AssetsTab(props) {
 
           {canEdit && (
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
-              <button onClick={() => setModal({ kind: "asset", ...a, _hasHistory: p.has_history })} style={ASSET_BTN()}>✏️ Edit details</button>
+              <button className="boa-btn" onClick={() => setModal({ kind: "asset", ...a, _hasHistory: p.has_history })} style={ASSET_BTN()}>✏️ Edit details</button>
               {act("🧑 Allocate", "allocate")}
-              {p.open_alloc && <button onClick={() => setModal({ kind: "return", alloc: p.open_alloc, date_returned: today, returned_to: p.branch || "" })} style={ASSET_BTN()}>↩️ Record return</button>}
+              {p.open_alloc && <button className="boa-btn" onClick={() => setModal({ kind: "return", alloc: p.open_alloc, date_returned: today, returned_to: p.branch || "" })} style={ASSET_BTN()}>↩️ Record return</button>}
               {act("🔀 Transfer", "transfer")}
               {p.status === "Under Repair" ? act("✅ Back from repair", "repair_in") : act("🔧 Send for repair", "repair_out")}
               {act("✏️ Change status", "status_change")}
               {isAdmin && (p.disposed
-                ? <button onClick={() => setModal({ kind: "undo_disposal", asset: a, event: p.disposal })} style={ASSET_BTN("danger")}>↺ Undo disposal</button>
+                ? <button className="boa-btn" onClick={() => setModal({ kind: "undo_disposal", asset: a, event: p.disposal })} style={ASSET_BTN("danger")}>↺ Undo disposal</button>
                 : act("🗑 Dispose", "disposal", null, true))}
-              {isAdmin && !a.archived_at && <button onClick={() => { if (window.confirm("Archive " + a.asset_id + "? It disappears from the registers (kept in the database; an admin can show archived assets).")) run(() => window.BOA_DB.archiveAsset(a.id, who), { log: ["Archived asset", a.asset_id + " " + a.description, ""], toast: "Archived" }).then(() => setDrawer(null)); }} style={ASSET_BTN("danger")}>Archive</button>}
-              {isAdmin && a.archived_at && <button onClick={() => run(() => window.BOA_DB.restoreAsset(a.id, who), { log: ["Restored asset", a.asset_id, ""], toast: "Restored" })} style={ASSET_BTN()}>Restore</button>}
+              {isAdmin && !a.archived_at && <button className="boa-btn" onClick={() => { if (window.confirm("Archive " + a.asset_id + "? It disappears from the registers (kept in the database; an admin can show archived assets).")) run(() => window.BOA_DB.archiveAsset(a.id, who), { log: ["Archived asset", a.asset_id + " " + a.description, ""], toast: "Archived" }).then(() => setDrawer(null)); }} style={ASSET_BTN("danger")}>Archive</button>}
+              {isAdmin && a.archived_at && <button className="boa-btn" onClick={() => run(() => window.BOA_DB.restoreAsset(a.id, who), { log: ["Restored asset", a.asset_id, ""], toast: "Restored" })} style={ASSET_BTN()}>Restore</button>}
             </div>
           )}
-          {err && !modal && <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", color: "#b91c1c", borderRadius: 8, padding: "8px 10px", fontSize: 12, marginBottom: 10 }}>{err}</div>}
+          {err && !modal && <div style={glassTile({ background: "rgba(254,242,242,0.9)", border: "1px solid rgba(252,165,165,0.9)", color: "#9b1c1c", padding: "10px 12px", fontSize: 12.5, marginBottom: 12 })}>{err}</div>}
 
-          <div style={{ fontSize: 11, fontWeight: 800, color: ASSET_UI.ink, letterSpacing: "0.06em", textTransform: "uppercase", margin: "6px 0" }}>Details</div>
+          <div style={{ ...GLASS_LABEL, margin: "10px 0 6px" }}>Details</div>
           {row("Serial number", a.serial_number)}{row("Asset tag", a.asset_tag)}{row("Purchased", a.purchase_date ? _assetFmtDate(a.purchase_date) : "")}{row("Cost", a.purchase_cost != null ? A.money(a.purchase_cost) : "")}
           {row("Supplier", a.supplier)}{row("Invoice", a.invoice_ref)}{row("Warranty expiry", a.warranty_expiry ? _assetFmtDate(a.warranty_expiry) : "")}{row("Department", a.department)}{row("Condition", p.condition)}
           {(A.DETAIL_FIELDS[a.register] || []).map(f => <React.Fragment key={f.k}>{row(f.l, d[f.k] ? (f.t === "date" ? _assetFmtDate(d[f.k]) : String(d[f.k])) : "")}</React.Fragment>)}
           {row("Notes", a.notes)}{row("Added", (a.created_by ? a.created_by + " · " : "") + (a.created_at ? new Date(a.created_at).toLocaleDateString("en-ZA") : ""))}
 
-          <div style={{ fontSize: 11, fontWeight: 800, color: ASSET_UI.ink, letterSpacing: "0.06em", textTransform: "uppercase", margin: "16px 0 6px" }}>Timeline</div>
-          {!tl.length && <div style={{ fontSize: 12, color: ASSET_UI.muted }}>No movements, allocations or changes recorded yet.</div>}
+          <div style={{ ...GLASS_LABEL, margin: "18px 0 6px" }}>Timeline</div>
+          {!tl.length && <div style={{ fontSize: 12.5, color: ASSET_UI.faint }}>No movements, allocations or changes recorded yet.</div>}
           {tl.map((t, i) => (
-            <div key={i} style={{ display: "flex", gap: 10, padding: "8px 0", borderBottom: "1px solid #F3E8EE" }}>
+            <div key={i} style={{ display: "flex", gap: 10, padding: "9px 0", borderBottom: "1px solid " + ASSET_UI.hair }}>
               <div style={{ fontSize: 18, width: 26, textAlign: "center" }}>{t.icon}</div>
               <div style={{ flex: 1 }}>
                 <div style={{ fontSize: 12.5, fontWeight: 700, color: ASSET_UI.text }}>{t.label} {t.no && <span style={{ fontSize: 10.5, fontWeight: 800, color: ASSET_UI.pink, marginLeft: 4 }}>{t.no}</span>}</div>
@@ -26634,7 +26651,7 @@ function AssetsTab(props) {
 
   /* ═══ SUB-TABS ═════════════════════════════════════════════════════════ */
   const toolbar = (extraLeft, extraRight) => (
-    <div style={{ background: "#fff", borderRadius: 13, padding: "10px 14px", border: "1px solid #FBCFE8", marginBottom: 12, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+    <div style={glassCard({ padding: "12px 14px", marginBottom: 14, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" })}>
       <input value={search} onChange={e => setSearch(e.target.value)} placeholder="🔍 Search ID, tag, serial, description, name…" style={{ ...ASSET_INPUT, width: 260, flex: "0 1 260px" }} />
       {extraLeft}
       <div style={{ flex: 1 }} />
@@ -26647,13 +26664,13 @@ function AssetsTab(props) {
     const regCards = (r) => {
       const x = S.perRegister[r.k];
       return (
-        <div key={r.k} style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 12, padding: "10px 14px", flex: "1 1 200px", minWidth: 200 }}>
-          <div style={{ fontSize: 11, fontWeight: 800, color: ASSET_UI.ink, marginBottom: 6 }}>{r.icon} {r.label}</div>
+        <div key={r.k} style={glassTile({ padding: "13px 15px", flex: "1 1 200px", minWidth: 200 })}>
+          <div style={{ ...glassHeading(), fontSize: 14, marginBottom: 8 }}>{r.icon} {r.label}</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "2px 10px", fontSize: 12 }}>
             {[["Total", x.total], ["In use / assigned", x.active], ["In storage", x.storage], ["Under repair", x.repair], ["Lost / stolen / damaged", x.problem], ["Awaiting disposal", x.awaiting], ["Disposed", x.disposed]].map(([l, v]) => (
-              <React.Fragment key={l}><span style={{ color: ASSET_UI.muted }}>{l}</span><span style={{ fontWeight: 800, color: v && l !== "Total" && (l.startsWith("Lost") || l.startsWith("Await")) ? "#b91c1c" : ASSET_UI.ink, textAlign: "right" }}>{v}</span></React.Fragment>
+              <React.Fragment key={l}><span style={{ color: ASSET_UI.muted }}>{l}</span><span style={{ fontWeight: 800, color: v && l !== "Total" && (l.startsWith("Lost") || l.startsWith("Await")) ? "#b91c1c" : ASSET_UI.head, textAlign: "right" }}>{v}</span></React.Fragment>
             ))}
-            <span style={{ color: ASSET_UI.muted }}>Cost / book value</span><span style={{ fontWeight: 700, color: ASSET_UI.ink, textAlign: "right", fontSize: 11 }}>{A.money(x.cost)} / {A.money(x.book)}</span>
+            <span style={{ color: ASSET_UI.muted }}>Cost / book value</span><span style={{ fontWeight: 700, color: ASSET_UI.head, textAlign: "right", fontSize: 11 }}>{A.money(x.cost)} / {A.money(x.book)}</span>
           </div>
         </div>
       );
@@ -26663,13 +26680,13 @@ function AssetsTab(props) {
     const branchRows = Object.keys(S.byBranch).map(b => ({ label: b, value: S.byBranch[b] })).sort((p, q) => q.value - p.value);
     const costRows = Object.keys(S.costByBranch).map(b => ({ label: b, value: S.costByBranch[b] })).sort((p, q) => q.value - p.value).slice(0, 15);
     const monthCols = S.monthly.map(mm => ({ label: mm.ym.slice(5) + "/" + mm.ym.slice(2, 4), parts: [{ k: "transfers", value: mm.transfers }, { k: "disposals", value: mm.disposals }, { k: "allocations", value: mm.allocations }] }));
-    const panel = (title, body, wide) => <div style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 13, padding: "12px 14px", flex: wide ? "1 1 100%" : "1 1 420px", minWidth: 0 }}><div style={{ fontSize: 12, fontWeight: 800, color: ASSET_UI.ink, marginBottom: 8 }}>{title}</div>{body}</div>;
+    const panel = (title, body, wide) => <div style={glassCard({ padding: "16px 18px", marginBottom: 0, flex: wide ? "1 1 100%" : "1 1 420px", minWidth: 0 })}><div style={{ ...glassHeading(), fontSize: 14, marginBottom: 10 }}>{title}</div>{body}</div>;
     const list = (title, rows, cols, empty) => panel(title, rows.length ? (
       <div style={{ overflowX: "auto" }}><table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-        <thead><tr style={{ background: "#FCE7F3", color: ASSET_UI.ink }}>{cols.map(c => th(c.l))}</tr></thead>
+        <thead><tr>{cols.map(c => th(c.l))}</tr></thead>
         <tbody>{rows.map((r, i) => <tr key={i}>{cols.map(c => <React.Fragment key={c.l}>{td(c.get(r))}</React.Fragment>)}</tr>)}</tbody>
       </table></div>
-    ) : <div style={{ fontSize: 12, color: "#15803d" }}>✓ {empty}</div>);
+    ) : <div style={{ fontSize: 12.5, color: "#15803d", fontWeight: 600 }}>✓ {empty}</div>);
     return (
       <div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
@@ -26689,9 +26706,9 @@ function AssetsTab(props) {
           {panel("Purchase value by location (top 15)", <AssetBars rows={costRows} fmt={v => A.money(v)} colour="#A78BC7" />)}
           {panel("Disposals by method", Object.keys(S.disposalsByMethod).length ? (
             <table style={{ borderCollapse: "collapse", fontSize: 12, minWidth: 260 }}><tbody>
-              {Object.keys(S.disposalsByMethod).sort((p, q) => S.disposalsByMethod[q] - S.disposalsByMethod[p]).map(k => <tr key={k}><td style={{ padding: "5px 10px" }}>{k}</td><td style={{ padding: "5px 10px", textAlign: "right", fontWeight: 800 }}>{S.disposalsByMethod[k]}</td></tr>)}
+              {Object.keys(S.disposalsByMethod).sort((p, q) => S.disposalsByMethod[q] - S.disposalsByMethod[p]).map(k => <tr key={k} className="boa-row"><td style={{ padding: "8px 11px", color: ASSET_UI.text, borderBottom: "1px solid " + ASSET_UI.hair }}>{k}</td><td style={{ padding: "8px 11px", textAlign: "right", fontWeight: 800, color: ASSET_UI.head, borderBottom: "1px solid " + ASSET_UI.hair }}>{S.disposalsByMethod[k]}</td></tr>)}
             </tbody></table>
-          ) : <div style={{ fontSize: 12, color: ASSET_UI.muted }}>No disposals recorded.</div>)}
+          ) : <div style={{ fontSize: 12, color: ASSET_UI.faint }}>No disposals recorded.</div>)}
         </div>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           {list("🚪 Leavers still holding assets", S.attention.leavers, [
@@ -26729,17 +26746,18 @@ function AssetsTab(props) {
             {isAdmin && <label style={{ fontSize: 11.5, color: ASSET_UI.ink, display: "flex", alignItems: "center", gap: 4 }}><input type="checkbox" checked={f.showArchived} onChange={e => setF({ ...f, showArchived: e.target.checked })} /> show archived</label>}
           </>,
           <>
-            {canEdit && <button onClick={() => setModal({ kind: "asset", register, status: "In Storage", details: {} })} style={ASSET_BTN("primary")}>➕ Add asset</button>}
-            {canEdit && <button onClick={() => setModal({ kind: "import", table: "asset", decisions: {} })} style={ASSET_BTN()}>⬆ Upload</button>}
-            <button onClick={() => downloadTemplate("asset")} style={ASSET_BTN()}>⬇ Template</button>
-            <button onClick={() => exportRows("csv", title, regColumns, regRows, "assets-" + register)} style={ASSET_BTN()}>CSV</button>
-            <button onClick={() => exportRows("pdf", title, regColumns, regRows, "assets-" + register)} style={ASSET_BTN()}>PDF</button>
-            {isAdmin && canEdit && <button onClick={openLists} style={ASSET_BTN()}>⚙ Lists</button>}
+            {canEdit && <button className="boa-btn" onClick={() => setModal({ kind: "asset", register, status: "In Storage", details: {} })} style={ASSET_BTN("primary")}>➕ Add asset</button>}
+            {canEdit && <button className="boa-btn" onClick={() => setModal({ kind: "import", table: "asset", decisions: {} })} style={ASSET_BTN()}>⬆ Upload</button>}
+            <button className="boa-btn" onClick={() => downloadTemplate("asset")} style={ASSET_BTN()}>⬇ Template</button>
+            <button className="boa-btn" onClick={() => exportRows("csv", title, regColumns, regRows, "assets-" + register)} style={ASSET_BTN()}>CSV</button>
+            <button className="boa-btn" onClick={() => exportRows("pdf", title, regColumns, regRows, "assets-" + register)} style={ASSET_BTN()}>PDF</button>
+            {isAdmin && canEdit && <button className="boa-btn" onClick={openLists} style={ASSET_BTN()}>⚙ Lists</button>}
           </>
         )}
-        <div style={{ background: "#fff", borderRadius: 13, border: "1px solid #FBCFE8", overflowX: "auto" }}>
+        <div style={{ ...glassCard({ padding: 0, marginBottom: 0 }), overflow: "hidden" }}>
+          <div style={{ overflow: "auto", maxHeight: regRows.length > 18 ? 720 : "none" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, color: ASSET_UI.text }}>
-            <thead><tr style={{ background: "#FCE7F3", color: ASSET_UI.ink }}>
+            <thead><tr>
               {th("Asset ID")}{th("Category")}{th("Description")}{th("Brand / model")}{th("Serial")}{th("Tag")}{th("Purchased")}{th("Cost", { textAlign: "right" })}{th("Book value", { textAlign: "right" })}{th("Assigned to")}{th("Location")}{th("Dept")}{th("Issued")}{th("Condition")}{th("Status")}
               {register === "IT" && th("Warranty")}{(A.DETAIL_FIELDS[register] || []).map(d => th(d.l))}
             </tr></thead>
@@ -26750,7 +26768,7 @@ function AssetsTab(props) {
                 const bv = bookOf(a);
                 const dim = a.status === "Disposed" || a.archived_at;
                 return (
-                  <tr key={a.id} onClick={() => setDrawer(a.id)} style={{ cursor: "pointer", opacity: dim ? 0.55 : 1, background: drawer === a.id ? "#FDF2F8" : undefined }}>
+                  <tr key={a.id} className="boa-row" onClick={() => setDrawer(a.id)} style={{ cursor: "pointer", opacity: dim ? 0.55 : 1, background: drawer === a.id ? "rgba(253,242,248,0.85)" : "transparent" }}>
                     {td(<span style={{ color: ASSET_UI.pink, fontWeight: 800, whiteSpace: "nowrap" }}>{a.asset_id}{a.archived_at ? " 🗄" : ""}</span>)}
                     {td(a.category)}{td(<span style={{ fontWeight: 600 }}>{a.description}</span>)}{td([a.brand, a.model].filter(Boolean).join(" "))}{td(a.serial_number)}{td(a.asset_tag)}
                     {td(a.purchase_date ? _assetFmtDate(a.purchase_date) : "", { whiteSpace: "nowrap" })}
@@ -26765,8 +26783,9 @@ function AssetsTab(props) {
               })}
             </tbody>
           </table>
+          </div>
         </div>
-        <div style={{ fontSize: 11, color: ASSET_UI.muted, marginTop: 6 }}>{regRows.length} asset{regRows.length === 1 ? "" : "s"} shown · click a row for details, history and actions · book value is straight-line over {cfg.usefulLifeDefault[register]} months unless the category overrides it.</div>
+        <div style={{ fontSize: 11, color: ASSET_UI.muted, marginTop: 8 }}>{regRows.length} asset{regRows.length === 1 ? "" : "s"} shown · click a row for details, history and actions · book value is straight-line over {cfg.usefulLifeDefault[register]} months unless the category overrides it.</div>
       </div>
     );
   };
@@ -26786,21 +26805,22 @@ function AssetsTab(props) {
             {filterSel(moveBranch, setMoveBranch, locations, "All locations")}
           </>,
           <>
-            {canEdit && isT && <button onClick={() => setModal({ kind: "transfer", asset: null, date: today })} style={ASSET_BTN("primary")}>➕ Record movement</button>}
-            {canEdit && !isT && isAdmin && <button onClick={() => setModal({ kind: "disposal", asset: null, date: today })} style={ASSET_BTN("primary")}>➕ Record disposal</button>}
-            {canEdit && (isT || isAdmin) && <button onClick={() => setModal({ kind: "import", table: moveKind, decisions: {} })} style={ASSET_BTN()}>⬆ Upload</button>}
-            <button onClick={() => downloadTemplate(moveKind)} style={ASSET_BTN()}>⬇ Template</button>
-            <button onClick={() => exportRows("csv", title, cols, moveRows, isT ? "asset-movements" : "asset-disposals")} style={ASSET_BTN()}>CSV</button>
-            <button onClick={() => exportRows("pdf", title, cols, moveRows, isT ? "asset-movements" : "asset-disposals")} style={ASSET_BTN()}>PDF</button>
+            {canEdit && isT && <button className="boa-btn" onClick={() => setModal({ kind: "transfer", asset: null, date: today })} style={ASSET_BTN("primary")}>➕ Record movement</button>}
+            {canEdit && !isT && isAdmin && <button className="boa-btn" onClick={() => setModal({ kind: "disposal", asset: null, date: today })} style={ASSET_BTN("primary")}>➕ Record disposal</button>}
+            {canEdit && (isT || isAdmin) && <button className="boa-btn" onClick={() => setModal({ kind: "import", table: moveKind, decisions: {} })} style={ASSET_BTN()}>⬆ Upload</button>}
+            <button className="boa-btn" onClick={() => downloadTemplate(moveKind)} style={ASSET_BTN()}>⬇ Template</button>
+            <button className="boa-btn" onClick={() => exportRows("csv", title, cols, moveRows, isT ? "asset-movements" : "asset-disposals")} style={ASSET_BTN()}>CSV</button>
+            <button className="boa-btn" onClick={() => exportRows("pdf", title, cols, moveRows, isT ? "asset-movements" : "asset-disposals")} style={ASSET_BTN()}>PDF</button>
           </>
         )}
-        <div style={{ background: "#fff", borderRadius: 13, border: "1px solid #FBCFE8", overflowX: "auto" }}>
+        <div style={{ ...glassCard({ padding: 0, marginBottom: 0 }), overflow: "hidden" }}>
+          <div style={{ overflow: "auto", maxHeight: moveRows.length > 18 ? 720 : "none" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, color: ASSET_UI.text }}>
-            <thead><tr style={{ background: "#FCE7F3", color: ASSET_UI.ink }}>{cols.map(c => th(c.label, c.money ? { textAlign: "right" } : null))}{isAdmin && canEdit && th("")}</tr></thead>
+            <thead><tr>{cols.map(c => th(c.label, c.money ? { textAlign: "right" } : null))}{isAdmin && canEdit && th("")}</tr></thead>
             <tbody>
               {!moveRows.length && emptyRow(cols.length + 1, "No " + (isT ? "movements" : "disposals") + " in this range.")}
               {moveRows.map(r => (
-                <tr key={r.id}>
+                <tr key={r.id} className="boa-row">
                   {cols.map(c => {
                     const v = c.get ? c.get(r) : r[c.key];
                     let cell;
@@ -26816,6 +26836,7 @@ function AssetsTab(props) {
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       </div>
     );
@@ -26828,7 +26849,7 @@ function AssetsTab(props) {
       return Object.values(g).sort((p, q) => p.name.localeCompare(q.name));
     })() : null;
     const rowJsx = (r) => (
-      <tr key={r.id} style={{ opacity: r.date_returned ? 0.6 : 1 }}>
+      <tr key={r.id} className="boa-row" style={{ opacity: r.date_returned ? 0.6 : 1, background: "transparent" }}>
         {td(<span style={{ fontWeight: 800, color: ASSET_UI.ink, whiteSpace: "nowrap" }}>{r.allocation_no}</span>)}
         {td(r.ec)}{td(<span style={{ fontWeight: 600 }}>{r.employee_name}{r._leaver ? <span style={{ marginLeft: 5, fontSize: 9.5, fontWeight: 800, color: "#b91c1c" }}>LEFT{r._leaver.leftDate ? " " + r._leaver.leftDate : ""}</span> : null}</span>)}
         {td(r.job_title)}{td(r.department)}{td(r.branch)}{td(idLink(r._asset))}{td(r._asset.description)}{td(r._asset.category)}
@@ -26837,16 +26858,16 @@ function AssetsTab(props) {
         {td(r.date_returned ? _assetFmtDate(r.date_returned) : "", { whiteSpace: "nowrap" })}{td(r.condition_returned)}{td(r.outstanding_notes)}
         {td(
           <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-            <button onClick={() => _assetAckPrint(r, r._asset)} title="Print the acknowledgement form" style={{ ...ASSET_BTN(), padding: "3px 8px", fontSize: 11 }}>🖨</button>
-            {canEdit && !r.date_returned && !r.acknowledged && <button onClick={() => setModal({ kind: "ack", alloc: r, date: today })} style={{ ...ASSET_BTN(), padding: "3px 8px", fontSize: 11 }}>✍️ Acknowledged</button>}
-            {canEdit && !r.date_returned && r.acknowledged && <button onClick={() => setModal({ kind: "ack", alloc: r, undo: true })} title="Remove acknowledgement" style={{ ...ASSET_BTN(), padding: "3px 8px", fontSize: 11, color: ASSET_UI.muted }}>✗</button>}
-            {canEdit && !r.date_returned && <button onClick={() => setModal({ kind: "return", alloc: r, date_returned: today, returned_to: r.branch || "" })} style={{ ...ASSET_BTN("primary"), padding: "3px 8px", fontSize: 11 }}>↩️ Return</button>}
+            <button className="boa-btn" onClick={() => _assetAckPrint(r, r._asset)} title="Print the acknowledgement form" style={{ ...ASSET_BTN(), padding: "3px 8px", fontSize: 11 }}>🖨</button>
+            {canEdit && !r.date_returned && !r.acknowledged && <button className="boa-btn" onClick={() => setModal({ kind: "ack", alloc: r, date: today })} style={{ ...ASSET_BTN(), padding: "3px 8px", fontSize: 11 }}>✍️ Acknowledged</button>}
+            {canEdit && !r.date_returned && r.acknowledged && <button className="boa-btn" onClick={() => setModal({ kind: "ack", alloc: r, undo: true })} title="Remove acknowledgement" style={{ ...ASSET_BTN(), padding: "3px 8px", fontSize: 11, color: ASSET_UI.muted }}>✗</button>}
+            {canEdit && !r.date_returned && <button className="boa-btn" onClick={() => setModal({ kind: "return", alloc: r, date_returned: today, returned_to: r.branch || "" })} style={{ ...ASSET_BTN("primary"), padding: "3px 8px", fontSize: 11 }}>↩️ Return</button>}
             {canEdit && isAdmin && <button onClick={() => setModal({ kind: "archive_alloc", asset: r._asset, alloc: r })} title="Remove this allocation record" style={{ background: "transparent", border: "none", color: ASSET_UI.muted, cursor: "pointer" }}>🗑</button>}
           </div>
         )}
       </tr>
     );
-    const head = <tr style={{ background: "#FCE7F3", color: ASSET_UI.ink }}>{["Allocation No.", "Employee No.", "Employee", "Job title", "Department", "Branch", "Asset ID", "Description", "Category", "Issued", "Condition issued", "Acknowledged", "Returned", "Condition returned", "Outstanding / notes", ""].map(l => th(l))}</tr>;
+    const head = <tr>{["Allocation No.", "Employee No.", "Employee", "Job title", "Department", "Branch", "Asset ID", "Description", "Category", "Issued", "Condition issued", "Acknowledged", "Returned", "Condition returned", "Outstanding / notes", ""].map(l => th(l))}</tr>;
     return (
       <div>
         <div style={{ marginBottom: 10 }}>{segBar([{ k: "open", l: "Open", n: allocs.filter(a => !a.archived_at && !a.date_returned).length }, { k: "returned", l: "Returned" }, { k: "all", l: "All" }], allocView, setAllocView)}</div>
@@ -26859,14 +26880,15 @@ function AssetsTab(props) {
             <label style={{ fontSize: 11.5, color: ASSET_UI.ink, display: "flex", alignItems: "center", gap: 4 }}><input type="checkbox" checked={allocF.group} onChange={e => setAllocF({ ...allocF, group: e.target.checked })} /> group by employee</label>
           </>,
           <>
-            {canEdit && <button onClick={() => setModal({ kind: "allocate", asset: null, date_issued: today })} style={ASSET_BTN("primary")}>➕ Allocate</button>}
-            {canEdit && <button onClick={() => setModal({ kind: "import", table: "allocation", decisions: {} })} style={ASSET_BTN()}>⬆ Upload</button>}
-            <button onClick={() => downloadTemplate("allocation")} style={ASSET_BTN()}>⬇ Template</button>
-            <button onClick={() => exportRows("csv", title, allocColumns, allocRows, "asset-allocations")} style={ASSET_BTN()}>CSV</button>
-            <button onClick={() => exportRows("pdf", title, allocColumns, allocRows, "asset-allocations")} style={ASSET_BTN()}>PDF</button>
+            {canEdit && <button className="boa-btn" onClick={() => setModal({ kind: "allocate", asset: null, date_issued: today })} style={ASSET_BTN("primary")}>➕ Allocate</button>}
+            {canEdit && <button className="boa-btn" onClick={() => setModal({ kind: "import", table: "allocation", decisions: {} })} style={ASSET_BTN()}>⬆ Upload</button>}
+            <button className="boa-btn" onClick={() => downloadTemplate("allocation")} style={ASSET_BTN()}>⬇ Template</button>
+            <button className="boa-btn" onClick={() => exportRows("csv", title, allocColumns, allocRows, "asset-allocations")} style={ASSET_BTN()}>CSV</button>
+            <button className="boa-btn" onClick={() => exportRows("pdf", title, allocColumns, allocRows, "asset-allocations")} style={ASSET_BTN()}>PDF</button>
           </>
         )}
-        <div style={{ background: "#fff", borderRadius: 13, border: "1px solid #FBCFE8", overflowX: "auto" }}>
+        <div style={{ ...glassCard({ padding: 0, marginBottom: 0 }), overflow: "hidden" }}>
+          <div style={{ overflow: "auto", maxHeight: allocRows.length > 18 ? 720 : "none" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, color: ASSET_UI.text }}>
             <thead>{head}</thead>
             <tbody>
@@ -26874,13 +26896,14 @@ function AssetsTab(props) {
               {!groups && allocRows.map(rowJsx)}
               {groups && groups.map(g => (
                 <React.Fragment key={g.key}>
-                  <tr><td colSpan={16} style={{ padding: "8px 10px", background: "#FDF2F8", fontWeight: 800, color: ASSET_UI.ink, fontSize: 12 }}>{g.name} <span style={{ color: ASSET_UI.muted, fontWeight: 600 }}>{g.key !== g.name ? g.key + " · " : ""}{g.rows.length} item{g.rows.length === 1 ? "" : "s"}</span>
-                    <button onClick={() => exportRows("pdf", "Assets held by " + g.name, allocColumns, g.rows, "assets-" + g.key)} style={{ ...ASSET_BTN(), padding: "2px 8px", fontSize: 11, marginLeft: 10 }}>🖨 List</button></td></tr>
+                  <tr><td colSpan={16} style={{ padding: "10px 12px", background: "rgba(252,231,243,0.72)", fontWeight: 800, color: ASSET_UI.head, fontSize: 12.5, borderBottom: "1px solid " + ASSET_UI.hair }}>{g.name} <span style={{ color: ASSET_UI.muted, fontWeight: 600 }}>{g.key !== g.name ? g.key + " · " : ""}{g.rows.length} item{g.rows.length === 1 ? "" : "s"}</span>
+                    <button className="boa-btn" onClick={() => exportRows("pdf", "Assets held by " + g.name, allocColumns, g.rows, "assets-" + g.key)} style={{ ...ASSET_BTN(), padding: "2px 8px", fontSize: 11, marginLeft: 10 }}>🖨 List</button></td></tr>
                   {g.rows.map(rowJsx)}
                 </React.Fragment>
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       </div>
     );
@@ -26894,29 +26917,29 @@ function AssetsTab(props) {
     allocation: <>Who holds what (AL-). Print the acknowledgement form, tick it when signed, and record the return when the asset comes back — a leaver's outstanding assets show on the dashboard.</>
   };
   return (
-    <div style={{ padding: "0 24px", position: "relative" }}>
-      <div style={{ marginBottom: 14 }}>
-        <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, color: ASSET_UI.ink, fontWeight: 700, marginBottom: 4 }}>📦 Assets</div>
-        <div style={{ fontSize: 12, color: ASSET_UI.rose }}>{subDesc[sub]}</div>
+    <div className="boa-glass" style={{ padding: "4px 24px 40px", position: "relative" }}>
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 26, color: ASSET_UI.head, fontWeight: 600, marginBottom: 4 }}>📦 Assets</div>
+        <div style={{ fontSize: 12.5, color: ASSET_UI.muted, maxWidth: 940, lineHeight: 1.5 }}>{subDesc[sub]}</div>
       </div>
       {renderScopeBar && renderScopeBar({ marginBottom: 12 })}
-      <div style={{ display: "flex", gap: 6, background: "#FCE7F3", border: "1px solid #FBCFE8", borderRadius: 10, padding: 4, marginBottom: 14, width: "fit-content", flexWrap: "wrap" }}>
+      <div style={{ display: "flex", gap: 5, background: "rgba(255,255,255,0.55)", backdropFilter: "blur(14px) saturate(160%)", WebkitBackdropFilter: "blur(14px) saturate(160%)", border: "1px solid rgba(255,255,255,0.75)", borderRadius: 15, padding: 5, marginBottom: 16, width: "fit-content", flexWrap: "wrap", boxShadow: "inset 0 1px 0 rgba(255,255,255,0.92), 0 14px 30px -22px rgba(131,24,67,0.7)" }}>
         {subsOf("assets").filter(s => acl.subVisible("assets", s.k)).map(s => (
-          <button key={s.k} onClick={() => setSub(s.k)}
-            style={{ padding: "6px 14px", borderRadius: 7, border: "none", background: sub === s.k ? "#BE185D" : "transparent", color: sub === s.k ? "#fff" : "#831843", fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
+          <button key={s.k} className="boa-pill" onClick={() => setSub(s.k)}
+            style={{ padding: "8px 16px", borderRadius: 11, border: "1px solid " + (sub === s.k ? "transparent" : "rgba(255,255,255,0)"), background: sub === s.k ? "linear-gradient(180deg,#D6246F,#A3134F)" : "transparent", color: sub === s.k ? "#fff" : ASSET_UI.head, fontWeight: 700, fontSize: 12.5, cursor: "pointer", fontFamily: "inherit", boxShadow: sub === s.k ? "0 8px 18px -8px rgba(163,19,79,0.75), inset 0 1px 0 rgba(255,255,255,0.28)" : "none", transition: "background .16s ease, color .16s ease" }}>
             {s.icon} {s.l}
           </button>
         ))}
-        <button onClick={() => reload()} title="Refresh" style={{ padding: "6px 10px", borderRadius: 7, border: "none", background: "transparent", color: "#831843", fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>{loading ? "⏳" : "↻"}</button>
+        <button className="boa-pill" onClick={() => reload()} title="Refresh" style={{ padding: "8px 12px", borderRadius: 11, border: "none", background: "transparent", color: ASSET_UI.muted, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>{loading ? "⏳" : "↻"}</button>
       </div>
-      {readOnly && <div style={{ fontSize: 12, color: "#b45309", background: "#FEF3C7", border: "1px solid #fde68a", borderRadius: 8, padding: "6px 10px", marginBottom: 10 }}>View only — you can browse and export, not change anything.</div>}
+      {readOnly && <div style={glassCard({ padding: "10px 14px", marginBottom: 14, fontSize: 12.5, color: "#92400e", background: "linear-gradient(158deg, rgba(255,252,240,0.94) 0%, rgba(254,243,199,0.60) 100%)", border: "1px solid rgba(253,230,138,0.9)" })}>View only — you can browse and export, not change anything.</div>}
       {sub === "dashboard" && renderDashboard()}
       {sub === "register" && renderRegister()}
       {sub === "movements" && renderMovements()}
       {sub === "allocation" && renderAllocation()}
       {renderDrawer()}
       {renderModal()}
-      {toast && <div style={{ position: "fixed", bottom: 22, left: "50%", transform: "translateX(-50%)", background: "#831843", color: "#fff", padding: "9px 16px", borderRadius: 999, fontSize: 12.5, fontWeight: 700, zIndex: 10000, boxShadow: "0 8px 24px rgba(0,0,0,0.25)" }}>{toast}</div>}
+      {toast && <div style={{ position: "fixed", bottom: 26, left: "50%", transform: "translateX(-50%)", background: "linear-gradient(180deg, rgba(74,18,48,0.94), rgba(74,18,48,0.86))", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)", border: "1px solid rgba(255,255,255,0.18)", color: "#fff", padding: "10px 18px", borderRadius: 999, fontSize: 12.5, fontWeight: 700, zIndex: 10000, boxShadow: "0 20px 44px -20px rgba(74,18,48,0.9)" }}>{toast}</div>}
     </div>
   );
 }

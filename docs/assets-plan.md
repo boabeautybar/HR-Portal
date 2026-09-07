@@ -444,6 +444,16 @@ upload preview against fixture data — 40 renders, no undefined references. Rem
 in the browser after the SQL has run: the first real add / transfer / allocate / return round trip,
 and the Settings grid showing the Assets row and the Asset admin column.
 
+**Look & feel (2026-09-07, after review):** the tab wears the same frosted-glass treatment as
+off-boarding. It reuses that tab's kit rather than copying it — `GLASS_SURFACE`, `glassCard`,
+`glassTile`, `GLASS_INPUT`, `GLASS_LABEL`, `glassHeading`, `BTN_PRIMARY` / `BTN_GHOST` are all
+defined once in `app.jsx` above both components. The scoped CSS in `index.html` (box-sizing,
+focus rings, button lift, row hover, slim scrollbars, the aurora wash the panels blur) is shared
+by rewriting its selectors as `:is(.boa-off,.boa-glass)`, so the two surfaces cannot drift; the
+Assets root, the drawer overlay and the modal overlay carry `className="boa-glass"`. Editing
+either tab's glass CSS now moves both — that is the point, but it is worth knowing before you
+touch it. The printable acknowledgement form keeps its flat, opaque styling: it is for paper.
+
 **Deviations from the plan worth knowing**
 - Manual edits to branch / status / condition are allowed only while the asset has no history
   (§4 D5); afterwards the form shows them read-only and the drawer actions change them.
