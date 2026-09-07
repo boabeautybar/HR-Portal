@@ -69,20 +69,23 @@
     100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0); }
   }
 
-  /* ── OFF-BOARDING TAB ────────────────────────────────────────────────────
-     Scoped to .boa-off on purpose. The app is inline-styled throughout and
+  /* ── GLASS TABS (off-boarding, assets) ───────────────────────────────────
+     Scoped to .boa-off / .boa-glass on purpose. The app is inline-styled throughout and
      has no global box-sizing reset, so every `width:100%` field was rendering
      100% PLUS its own padding and border and spilling out of its card. Fixing
      that globally would move layout in ~50k lines of unrelated screens; fixing
      it for this subtree is the whole bug and nothing else.
+
+     .boa-glass is the same treatment on the Assets tab. The selectors are
+     shared via :is() rather than copied, so the two surfaces cannot drift.
      ──────────────────────────────────────────────────────────────────────── */
-  .boa-off, .boa-off *, .boa-off *::before, .boa-off *::after { box-sizing: border-box; }
+  :is(.boa-off,.boa-glass), :is(.boa-off,.boa-glass) *, :is(.boa-off,.boa-glass) *::before, :is(.boa-off,.boa-glass) *::after { box-sizing: border-box; }
 
   /* The wash the frosted panels blur. Painted as this element's own background
      (not a pseudo-element or a fixed overlay) so it introduces no stacking
      context — the quick-pick modal still layers above everything. Without
      something behind it, backdrop-filter over a flat page just reads as grey. */
-  .boa-off {
+  :is(.boa-off,.boa-glass) {
     background-image:
       radial-gradient(880px circle at 4% -14%, rgba(236,72,153,0.24), transparent 56%),
       radial-gradient(740px circle at 98% -2%, rgba(139,92,246,0.20), transparent 58%),
@@ -90,51 +93,51 @@
     background-attachment: fixed;
   }
 
-  .boa-off input, .boa-off select, .boa-off textarea {
+  :is(.boa-off,.boa-glass) input, :is(.boa-off,.boa-glass) select, :is(.boa-off,.boa-glass) textarea {
     transition: border-color .16s ease, box-shadow .16s ease, background .16s ease;
   }
-  .boa-off input:focus, .boa-off select:focus, .boa-off textarea:focus {
+  :is(.boa-off,.boa-glass) input:focus, :is(.boa-off,.boa-glass) select:focus, :is(.boa-off,.boa-glass) textarea:focus {
     border-color: #D6246F;
     background: rgba(255,255,255,0.94);
     box-shadow: 0 0 0 3px rgba(214,36,111,0.15), inset 0 1px 2px rgba(131,24,67,0.05);
   }
-  .boa-off input::placeholder, .boa-off textarea::placeholder { color: #c69bb2; }
+  :is(.boa-off,.boa-glass) input::placeholder, :is(.boa-off,.boa-glass) textarea::placeholder { color: #c69bb2; }
 
-  .boa-off .boa-btn { transition: transform .14s ease, box-shadow .14s ease, filter .14s ease; }
-  .boa-off .boa-btn:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.05); }
-  .boa-off .boa-btn:active:not(:disabled) { transform: translateY(0); filter: brightness(0.96); }
-  .boa-off .boa-btn:disabled { opacity: 0.55; cursor: default; }
-  .boa-off .boa-pill:hover { background: rgba(255,255,255,0.55); }
-  .boa-off .boa-pill:hover[style*="linear-gradient"] { filter: brightness(1.06); }
+  :is(.boa-off,.boa-glass) .boa-btn { transition: transform .14s ease, box-shadow .14s ease, filter .14s ease; }
+  :is(.boa-off,.boa-glass) .boa-btn:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.05); }
+  :is(.boa-off,.boa-glass) .boa-btn:active:not(:disabled) { transform: translateY(0); filter: brightness(0.96); }
+  :is(.boa-off,.boa-glass) .boa-btn:disabled { opacity: 0.55; cursor: default; }
+  :is(.boa-off,.boa-glass) .boa-pill:hover { background: rgba(255,255,255,0.55); }
+  :is(.boa-off,.boa-glass) .boa-pill:hover[style*="linear-gradient"] { filter: brightness(1.06); }
 
-  .boa-off tr.boa-row:hover > td { background: rgba(253,242,248,0.72); }
+  :is(.boa-off,.boa-glass) tr.boa-row:hover > td { background: rgba(253,242,248,0.72); }
 
   /* Column headers are real buttons so the grid sorts from the keyboard too;
      they inherit every bit of the th's typography so nothing shifts. */
-  .boa-off .boa-sort {
+  :is(.boa-off,.boa-glass) .boa-sort {
     background: none; border: none; padding: 0; margin: 0; cursor: pointer;
     font: inherit; color: inherit; letter-spacing: inherit; text-transform: inherit;
     display: inline-flex; align-items: center; white-space: nowrap;
     transition: color .14s ease;
   }
-  .boa-off .boa-sort:hover { color: #BE185D; }
-  .boa-off .boa-sort:hover span { opacity: 0.85; }
-  .boa-off .boa-sort:focus-visible {
+  :is(.boa-off,.boa-glass) .boa-sort:hover { color: #BE185D; }
+  :is(.boa-off,.boa-glass) .boa-sort:hover span { opacity: 0.85; }
+  :is(.boa-off,.boa-glass) .boa-sort:focus-visible {
     outline: 2px solid #D6246F; outline-offset: 3px; border-radius: 4px;
   }
 
   /* Slim scrollbars, so a wide grid does not sit under a chunky grey bar. */
-  .boa-off ::-webkit-scrollbar { width: 10px; height: 10px; }
-  .boa-off ::-webkit-scrollbar-track { background: transparent; }
-  .boa-off ::-webkit-scrollbar-thumb {
+  :is(.boa-off,.boa-glass) ::-webkit-scrollbar { width: 10px; height: 10px; }
+  :is(.boa-off,.boa-glass) ::-webkit-scrollbar-track { background: transparent; }
+  :is(.boa-off,.boa-glass) ::-webkit-scrollbar-thumb {
     background: rgba(190,24,93,0.22); border-radius: 999px;
     border: 3px solid transparent; background-clip: content-box;
   }
-  .boa-off ::-webkit-scrollbar-thumb:hover { background: rgba(190,24,93,0.38); background-clip: content-box; }
+  :is(.boa-off,.boa-glass) ::-webkit-scrollbar-thumb:hover { background: rgba(190,24,93,0.38); background-clip: content-box; }
 
   @media (prefers-reduced-motion: reduce) {
-    .boa-off .boa-btn, .boa-off input, .boa-off select, .boa-off textarea { transition: none; }
-    .boa-off .boa-btn:hover:not(:disabled) { transform: none; }
+    :is(.boa-off,.boa-glass) .boa-btn, :is(.boa-off,.boa-glass) input, :is(.boa-off,.boa-glass) select, :is(.boa-off,.boa-glass) textarea { transition: none; }
+    :is(.boa-off,.boa-glass) .boa-btn:hover:not(:disabled) { transform: none; }
   }
 </style>
 </head>
@@ -197,6 +200,9 @@ window.BOA_GOOGLE_CONFIG = {
 
 <!-- Shared cash-float maths + Fresha parsing (one definition for portal + kiosk) -->
 <script src="cash-float.js"></script>
+
+<!-- Asset register rules (projection, numbering, book value, bulk-upload parser) -->
+<script src="assets.js"></script>
 
 <!-- Data layer: thin Supabase wrappers shared by App.jsx -->
 <script src="data.js"></script>
