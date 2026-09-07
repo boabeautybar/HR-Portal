@@ -11216,7 +11216,8 @@ const DASH_CARDS = [
   { id: "trialHrActions", key: "dashTrialHrActions", l: "Trial · HR actions", icon: "🧪" },
   { id: "storeOpenings", key: "dashStoreOpenings", l: "Store openings", icon: "🔓" },
   { id: "cashFloatOver", key: "dashCashFloatOver", l: "Cash float · over ceiling", icon: "🏦" },
-  { id: "paymentMismatch", key: "dashPaymentMismatch", l: "Payments · not balancing", icon: "⚖️" }
+  { id: "paymentMismatch", key: "dashPaymentMismatch", l: "Payments · not balancing", icon: "⚖️" },
+  { id: "assetsOutstanding", key: "dashAssetsOutstanding", l: "Assets · leavers still holding assets", icon: "📦" }
 ];
 const DASH_BY_ID = DASH_CARDS.reduce((m, c) => { m[c.id] = c; return m; }, {});
 // Is this dashboard card hidden for this user? One place, so a card can never
@@ -11270,6 +11271,7 @@ const SETTINGS_TABS = [
   { t: "dailyTasks", l: "Daily Tasks", cat: "Operations", icon: "📋" },
   { t: "mgrCoverage", l: "Manager Coverage", cat: "Operations", icon: "🗓" },
   { t: "cashups", l: "Cash Ups", cat: "Operations", icon: "💰" },
+  { t: "assets", l: "Assets", cat: "Operations", icon: "📦" },
   { t: "attendance", l: "Attendance / Payroll", cat: "Payroll", icon: "📕" },
   { t: "payrollProgress", l: "Payroll Progress", cat: "Payroll", icon: "📊" },
   { t: "payrollReports", l: "Reports", cat: "Payroll", icon: "📈" },
@@ -11824,6 +11826,14 @@ const CAPABILITIES = {
     tier: "list", surface: "action",
     audience: { cfgRef: "cashupReview", cfgKeys: "legacy" }
   },
+  // Asset register admin: dispose / undo a disposal, archive records, edit
+  // the dropdown lists. Owner (implicit in can()) + Developer + the PINs
+  // ticked in Settings → Asset admin.
+  "act.assets.admin": {
+    tier: "list", surface: "action",
+    audience: { roles: ["master_admin", "dev"], cfgRef: "assetAdmin" },
+    desc: "📦 Assets — dispose / undo a disposal, archive records, edit the dropdown lists."
+  },
   // Publishing the current cycle writes live schedules for every branch. It
   // was reachable from two places with two DIFFERENT audiences: the Scheduling
   // tab button checked isOwner inline, while the dashboard "unpublished
@@ -11976,6 +11986,11 @@ const TAB_ACCESS = {
   dailyTasks: { tier: "open", cat: "Operations" },
   mgrCoverage: { tier: "open", cat: "Operations" },
   cashups: { tier: "open", cat: "Operations" },
+  // Asset register. Default audience is deliberately the Owner and the
+  // Developer only (owner's instruction, 2026-09-07); everyone else is
+  // granted per person here in the grid.
+  assets: { tier: "normal", cat: "Operations", allow: g => !!(g.isOwnerOrMaster || g.isDev),
+    grantedIn: "Default: Owner and Developer. Ticking here grants it directly." },
   mgrPlanner: { tier: "open", cat: "Operations" },
   // ── Payroll ──────────────────────────────────────────────────────────────
   attendance: { tier: "open", cat: "Payroll" },
@@ -12078,6 +12093,18 @@ const TAB_SUBS = {
       { k: "daily", l: "Daily cash-ups", icon: "📅" },
       { k: "float", l: "Cash float / balance sheet", icon: "🏦" },
       { k: "mismatch", l: "Other payment mismatches", icon: "⚖️" }
+    ]
+  },
+  // Operations → Assets. The four registers (IT / Furniture / Salon equipment
+  // / Vehicles) and the two movement kinds are in-page segment toggles under
+  // these children, not sub-tabs of their own — depth stops at one.
+  assets: {
+    state: "assetSubTab",
+    subs: [
+      { k: "dashboard", l: "Asset Summary Dashboard", icon: "📊" },
+      { k: "register", l: "Asset Register", icon: "🗂" },
+      { k: "movements", l: "Movements & Disposals", icon: "🔀" },
+      { k: "allocation", l: "Employee Asset Allocation", icon: "🧑" }
     ]
   },
   // These two live in child components (IncidentReportsTab, HRReportsTab)
@@ -12184,6 +12211,12 @@ const ACCESS_LISTS = [
     icon: "💰", label: "Cash-up review",
     unlocks: "Can tick off a store's daily cash-up as reviewed, reopen one so the store can resubmit, and permanently delete a test or duplicate entry.",
     roleOpts: [{ key: "national", label: "National Ops" }, { key: "regional", label: "Regional managers" }]
+  },
+  {
+    id: "assetAdmin", cfgRef: "assetAdmin",
+    icon: "📦", label: "Asset admin",
+    unlocks: "On the Assets tab: can dispose of an asset or undo a disposal, archive a mistaken record, and edit the dropdown lists (categories, conditions, statuses, useful life). The Owner and the Developer always have this; seeing the Assets tab itself is granted per person in the tab grid above.",
+    roleOpts: []
   }
 ];
 
@@ -12699,7 +12732,7 @@ function TriBox({ checked, mixed, disabled, title, onChange }) {
   return <input ref={ref} type="checkbox" checked={!!checked} disabled={!!disabled} title={title} onChange={onChange} />;
 }
 
-function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, dataCounts, offboardAccess, onOffboardAccessSave, overtimeCfg, onOvertimeCfgSave, cashupReviewCfg, onCashupReviewCfgSave, leaveOpsCfg, onLeaveOpsCfgSave, leavePayrollCfg, onLeavePayrollCfgSave, leaveBalancesCfg, onLeaveBalancesCfgSave, officeStaffCfg, onOfficeStaffCfgSave, officeHoursCfg, onOfficeHoursCfgSave, smCriteriaCfg, onSmCriteriaSave }) {
+function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, dataCounts, offboardAccess, onOffboardAccessSave, overtimeCfg, onOvertimeCfgSave, cashupReviewCfg, onCashupReviewCfgSave, assetAdminCfg, onAssetAdminCfgSave, leaveOpsCfg, onLeaveOpsCfgSave, leavePayrollCfg, onLeavePayrollCfgSave, leaveBalancesCfg, onLeaveBalancesCfgSave, officeStaffCfg, onOfficeStaffCfgSave, officeHoursCfg, onOfficeHoursCfgSave, smCriteriaCfg, onSmCriteriaSave }) {
   const users = appUsers || {};
   const [editing, setEditing] = useState(null);   // {pin, isNew, name, role, demo, isOwner, perms, originalPin}
   const [busy, setBusy] = useState(false);
@@ -13032,14 +13065,16 @@ function SettingsAdmin({ appUsers, onUsersUpdate, currentUser, dataCounts, offbo
         cfgs={{
           offboard: offboardAccess, leaveOps: leaveOpsCfg, leavePayroll: leavePayrollCfg,
           leaveBalances: leaveBalancesCfg, officeStaff: officeStaffCfg,
-          officeHours: officeHoursCfg, overtime: overtimeCfg, cashupReview: cashupReviewCfg
+          officeHours: officeHoursCfg, overtime: overtimeCfg, cashupReview: cashupReviewCfg,
+          assetAdmin: assetAdminCfg
         }}
         onSave={(ref, next) => {
           const save = {
             offboard: onOffboardAccessSave, leaveOps: onLeaveOpsCfgSave,
             leavePayroll: onLeavePayrollCfgSave, leaveBalances: onLeaveBalancesCfgSave,
             officeStaff: onOfficeStaffCfgSave, officeHours: onOfficeHoursCfgSave,
-            overtime: onOvertimeCfgSave, cashupReview: onCashupReviewCfgSave
+            overtime: onOvertimeCfgSave, cashupReview: onCashupReviewCfgSave,
+            assetAdmin: onAssetAdminCfgSave
           }[ref];
           if (save) save(next);
         }}
@@ -25658,6 +25693,1234 @@ function CashFloatTab({
   );
 }
 
+/* ═══ ASSETS TAB ════════════════════════════════════════════════════════════
+   Operations → Assets. Plan, decisions and invariants: docs/assets-plan.md.
+   Rules (projection, numbering, book value, summary, upload parser) live in
+   assets.js; persistence in data.js (saveAsset / addAssetEvent / …). This
+   component is the four sub-tabs, the asset drawer, and the modals — it holds
+   no rule of its own. Kept as a separate component rather than another inline
+   IIFE in App: App is already the size it is.                               */
+const ASSET_UI = {
+  ink: "#831843", pink: "#BE185D", rose: "#F472B6", soft: "#FBCFE8", bg: "#FCE7F3",
+  muted: "#9ca3af", text: "#1f2937", line: "#F3E8EE"
+};
+const ASSET_INPUT = { padding: "7px 9px", borderRadius: 7, border: "1px solid #FBCFE8", fontSize: 13, width: "100%", boxSizing: "border-box", fontFamily: "inherit", background: "#fff" };
+const ASSET_LABEL = { fontSize: 10, fontWeight: 700, color: "#F472B6", letterSpacing: "0.05em", display: "block", marginBottom: 3, textTransform: "uppercase" };
+const ASSET_BTN = (kind) => ({
+  padding: "7px 13px", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap",
+  border: kind === "primary" ? "none" : "1px solid #FBCFE8",
+  background: kind === "primary" ? "#BE185D" : kind === "danger" ? "#fef2f2" : "#fff",
+  color: kind === "primary" ? "#fff" : kind === "danger" ? "#b91c1c" : "#831843"
+});
+const _assetFmtDate = (ymd) => { if (!ymd) return ""; try { return new Date(ymd + "T12:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }); } catch (_) { return ymd; } };
+const _assetStatusPill = (status) => {
+  const A = window.BOA_ASSETS;
+  const fam = A ? A.familyOf(status) : "active";
+  const f = (A ? A.FAMILIES : []).find(x => x.k === fam) || { colour: "#BE185D" };
+  return <span style={{ display: "inline-block", padding: "2px 8px", borderRadius: 999, fontSize: 10.5, fontWeight: 800, color: "#fff", background: f.colour, whiteSpace: "nowrap" }}>{status || "—"}</span>;
+};
+
+// ── Small building blocks ────────────────────────────────────────────────────
+function AssetField({ label, children, span }) {
+  return (
+    <div style={{ gridColumn: span ? "1 / -1" : undefined }}>
+      <label style={ASSET_LABEL}>{label}</label>
+      {children}
+    </div>
+  );
+}
+function AssetModal({ title, sub, onClose, children, width, busy }) {
+  return (
+    <div onClick={() => !busy && onClose()} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "flex-start", justifyContent: "center", zIndex: 9999, padding: 16, overflow: "auto" }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 14, padding: "20px 22px", maxWidth: width || 640, width: "100%", margin: "24px 0", boxShadow: "0 12px 40px rgba(0,0,0,0.25)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+          <div style={{ fontWeight: 800, color: ASSET_UI.ink, fontSize: 16 }}>{title}</div>
+          <button onClick={() => !busy && onClose()} style={{ background: "transparent", border: "none", fontSize: 22, cursor: "pointer", color: ASSET_UI.ink, lineHeight: 1 }}>×</button>
+        </div>
+        {sub && <div style={{ fontSize: 12, color: ASSET_UI.muted, marginBottom: 14 }}>{sub}</div>}
+        {children}
+      </div>
+    </div>
+  );
+}
+// Typeahead over the staff list. Picks {ec, name, jobTitle, department, branch}.
+function AssetPersonPicker({ people, value, onPick, placeholder }) {
+  const [q, setQ] = useState(value ? (value.name + " (" + value.ec + ")") : "");
+  const [open, setOpen] = useState(false);
+  useEffect(() => { setQ(value ? (value.name + " (" + value.ec + ")") : ""); }, [value && value.ec]);
+  const hits = useMemo(() => {
+    const s = q.trim().toLowerCase();
+    if (!s || (value && q === value.name + " (" + value.ec + ")")) return [];
+    return (people || []).filter(p => (p.name || "").toLowerCase().includes(s) || (p.ec || "").toLowerCase().includes(s.replace(/[\s-]+/g, ""))).slice(0, 8);
+  }, [q, people, value]);
+  return (
+    <div style={{ position: "relative" }}>
+      <input value={q} placeholder={placeholder || "Type a name or employee code"} style={ASSET_INPUT}
+        onChange={e => { setQ(e.target.value); setOpen(true); if (value) onPick(null); }}
+        onFocus={() => setOpen(true)} onBlur={() => setTimeout(() => setOpen(false), 150)} />
+      {open && hits.length > 0 && (
+        <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: "#fff", border: "1px solid #FBCFE8", borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", zIndex: 20, maxHeight: 240, overflow: "auto" }}>
+          {hits.map(p => (
+            <div key={p.ec} onMouseDown={() => { onPick(p); setQ(p.name + " (" + p.ec + ")"); setOpen(false); }}
+              style={{ padding: "7px 10px", fontSize: 12.5, cursor: "pointer", borderBottom: "1px solid #F3E8EE" }}>
+              <div style={{ fontWeight: 700, color: ASSET_UI.ink }}>{p.name} <span style={{ color: ASSET_UI.muted, fontWeight: 600 }}>{p.ec}</span>{p.departed && <span style={{ marginLeft: 6, fontSize: 10, color: "#b91c1c", fontWeight: 800 }}>LEFT</span>}</div>
+              <div style={{ fontSize: 11, color: ASSET_UI.muted }}>{[p.jobTitle, p.department, p.branch].filter(Boolean).join(" · ")}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+// Typeahead over assets (ID / tag / serial / description).
+function AssetPicker({ assets, value, onPick, filter }) {
+  const [q, setQ] = useState(value ? value.asset_id + " — " + value.description : "");
+  const [open, setOpen] = useState(false);
+  const hits = useMemo(() => {
+    const s = q.trim().toLowerCase();
+    if (!s || (value && q === value.asset_id + " — " + value.description)) return [];
+    return (assets || []).filter(a => !a.archived_at && (!filter || filter(a)) &&
+      [a.asset_id, a.asset_tag, a.serial_number, a.description, a.brand, a.model, a.assigned_name].some(x => x && String(x).toLowerCase().includes(s))).slice(0, 8);
+  }, [q, assets, value, filter]);
+  return (
+    <div style={{ position: "relative" }}>
+      <input value={q} placeholder="Asset ID, tag, serial or description" style={ASSET_INPUT}
+        onChange={e => { setQ(e.target.value); setOpen(true); if (value) onPick(null); }}
+        onFocus={() => setOpen(true)} onBlur={() => setTimeout(() => setOpen(false), 150)} />
+      {open && hits.length > 0 && (
+        <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: "#fff", border: "1px solid #FBCFE8", borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", zIndex: 20, maxHeight: 240, overflow: "auto" }}>
+          {hits.map(a => (
+            <div key={a.id} onMouseDown={() => { onPick(a); setQ(a.asset_id + " — " + a.description); setOpen(false); }}
+              style={{ padding: "7px 10px", fontSize: 12.5, cursor: "pointer", borderBottom: "1px solid #F3E8EE" }}>
+              <div style={{ fontWeight: 700, color: ASSET_UI.ink }}>{a.asset_id} <span style={{ fontWeight: 600, color: ASSET_UI.text }}>{a.description}</span></div>
+              <div style={{ fontSize: 11, color: ASSET_UI.muted }}>{[a.category, a.branch, a.assigned_name ? "with " + a.assigned_name : "", a.status].filter(Boolean).join(" · ")}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Charts (inline SVG, no library) ──────────────────────────────────────────
+// Horizontal bars: rows [{ label, value, colour?, sub? }], values formatted by fmt.
+function AssetBars({ rows, fmt, height, onPick, colour }) {
+  if (!rows || !rows.length) return <div style={{ fontSize: 12, color: ASSET_UI.muted, padding: "12px 0" }}>Nothing to show yet.</div>;
+  const rowH = 22, labelW = 150, W = 640, padR = 70;
+  const H = rows.length * rowH + 6;
+  const max = Math.max(1, ...rows.map(r => Number(r.value) || 0));
+  const bw = W - labelW - padR;
+  return (
+    <svg width="100%" viewBox={"0 0 " + W + " " + H} preserveAspectRatio="xMidYMid meet" style={{ display: "block", height: "auto", maxHeight: height || 420 }} role="img">
+      {rows.map((r, i) => {
+        const y = i * rowH + 3, w = Math.max(0, (Number(r.value) || 0) / max * bw);
+        return (
+          <g key={r.label + i} onClick={onPick ? () => onPick(r) : undefined} style={{ cursor: onPick ? "pointer" : "default" }}>
+            <title>{r.label + ": " + (fmt ? fmt(r.value) : r.value)}</title>
+            <text x={labelW - 8} y={y + 14} textAnchor="end" fontSize="11" fill={ASSET_UI.ink} fontWeight="600">{String(r.label).length > 22 ? String(r.label).slice(0, 21) + "…" : r.label}</text>
+            <rect x={labelW} y={y + 3} width={bw} height={rowH - 8} rx="4" fill="#F5F3FF" />
+            <rect x={labelW} y={y + 3} width={w} height={rowH - 8} rx="4" fill={r.colour || colour || ASSET_UI.pink} />
+            <text x={labelW + w + 6} y={y + 14} fontSize="11" fill={ASSET_UI.text} fontWeight="700">{fmt ? fmt(r.value) : r.value}</text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+// Vertical stacked bars: cols [{ label, parts: [{ k, value }] }], series [{ k, label, colour }].
+function AssetStack({ cols, series, height, fmt }) {
+  if (!cols || !cols.length) return null;
+  const W = 720, H = height || 220, padL = 36, padR = 8, padT = 14, padB = 40;
+  const iw = W - padL - padR, ih = H - padT - padB;
+  const slot = iw / cols.length;
+  const totals = cols.map(c => c.parts.reduce((s, p) => s + (Number(p.value) || 0), 0));
+  const max = Math.max(1, ...totals);
+  const nice = max <= 5 ? max : Math.ceil(max / 5) * 5;
+  const hOf = v => (Number(v) || 0) / nice * ih;
+  const base = padT + ih;
+  const bw = Math.max(8, Math.min(48, slot * 0.6));
+  return (
+    <div>
+      <svg width="100%" viewBox={"0 0 " + W + " " + H} preserveAspectRatio="xMidYMid meet" style={{ display: "block", height: "auto" }} role="img">
+        {[0, nice / 2, nice].map((t, i) => (
+          <g key={i}>
+            <line x1={padL} x2={W - padR} y1={base - hOf(t)} y2={base - hOf(t)} stroke="#EDE9FE" strokeWidth="1" />
+            <text x={padL - 6} y={base - hOf(t) + 4} textAnchor="end" fontSize="10" fill="#A78BC7">{Math.round(t)}</text>
+          </g>
+        ))}
+        {cols.map((c, i) => {
+          const x = padL + i * slot + (slot - bw) / 2;
+          let acc = 0;
+          return (
+            <g key={c.label + i}>
+              <title>{c.label + ": " + c.parts.map(p => { const s = series.find(z => z.k === p.k); return (s ? s.label : p.k) + " " + p.value; }).join(", ")}</title>
+              {series.map(s => {
+                const p = c.parts.find(z => z.k === s.k);
+                const v = p ? Number(p.value) || 0 : 0;
+                if (!v) return null;
+                const hh = hOf(v), yTop = base - hOf(acc) - hh;
+                acc += v;
+                return <rect key={s.k} x={x} y={yTop} width={bw} height={hh} rx="2" fill={s.colour} />;
+              })}
+              {totals[i] > 0 && <text x={x + bw / 2} y={base - hOf(totals[i]) - 4} textAnchor="middle" fontSize="10" fontWeight="700" fill={ASSET_UI.ink}>{fmt ? fmt(totals[i]) : totals[i]}</text>}
+              <text x={x + bw / 2} y={base + 14} textAnchor="middle" fontSize="10" fill="#6b7280">{c.label}</text>
+            </g>
+          );
+        })}
+        <line x1={padL} x2={W - padR} y1={base} y2={base} stroke="#EDE9FE" />
+      </svg>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginTop: 4 }}>
+        {series.map(s => <span key={s.k} style={{ fontSize: 10.5, color: "#6b7280", display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 10, height: 10, borderRadius: 2, background: s.colour, display: "inline-block" }} />{s.label}</span>)}
+      </div>
+    </div>
+  );
+}
+
+// Printable acknowledgement form: one page the employee signs, matching the record.
+function _assetAckPrint(al, asset) {
+  const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const row = (l, v) => "<tr><th>" + esc(l) + "</th><td>" + esc(v || "") + "</td></tr>";
+  const html = "<!doctype html><html><head><meta charset='utf-8'><title>" + esc(al.allocation_no) + "</title><style>"
+    + "body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;margin:32px;color:#111;max-width:760px}"
+    + "h1{font-size:20px;color:#831843;margin:0 0 2px}.sub{font-size:12px;color:#9d174d;margin-bottom:18px}"
+    + "table{border-collapse:collapse;width:100%;font-size:12.5px;margin-bottom:18px}th,td{border:1px solid #e5e7eb;padding:7px 9px;text-align:left}th{background:#FCE7F3;color:#831843;width:38%}"
+    + "p{font-size:12.5px;line-height:1.5}.sig{display:flex;gap:40px;margin-top:34px}.sig div{flex:1;border-top:1px solid #111;padding-top:6px;font-size:11px;color:#444}"
+    + "@media print{.noprint{display:none}}</style></head><body>"
+    + '<div class="noprint" style="margin-bottom:14px"><button onclick="window.print()" style="padding:8px 14px;font-size:13px;cursor:pointer">🖨 Print / Save as PDF</button> <button onclick="window.close()" style="padding:8px 14px;font-size:13px;cursor:pointer">Close</button></div>'
+    + "<h1>Asset Acknowledgement — " + esc(al.allocation_no) + "</h1><div class='sub'>BOA Beauty Bar Group · HR &amp; Operations Asset Management</div>"
+    + "<table>" + row("Employee", (al.employee_name || "") + (al.ec ? " (" + al.ec + ")" : "")) + row("Job title", al.job_title) + row("Department", al.department) + row("Branch / location", al.branch) + "</table>"
+    + "<table>" + row("Asset ID", asset.asset_id) + row("Description", asset.description) + row("Category", asset.category) + row("Brand / model", [asset.brand, asset.model].filter(Boolean).join(" ")) + row("Serial number", asset.serial_number) + row("Asset tag", asset.asset_tag) + row("Date issued", _assetFmtDate(al.date_issued)) + row("Condition when issued", al.condition_issued) + "</table>"
+    + "<p>I acknowledge receipt of the asset listed above in the stated condition. I accept responsibility for its safekeeping and reasonable care, will report any loss, theft or damage to my manager immediately, and will return it on request or when my employment ends.</p>"
+    + "<div class='sig'><div>Employee signature &amp; date</div><div>Issued by (name, signature &amp; date)</div></div>"
+    + "<script>setTimeout(function(){window.focus();},100);<\/script></body></html>";
+  const w = window.open("", "_blank");
+  if (!w) { alert("Pop-up blocked. Allow pop-ups for this site to print the form."); return; }
+  w.document.open(); w.document.write(html); w.document.close();
+}
+
+function AssetsTab(props) {
+  const A = window.BOA_ASSETS;
+  const { sub, setSub, acl, currentUser, readOnly, isAdmin, cfg: cfgRaw, onCfgSave, data, loading, reload,
+    salons, hasStoreScope, scopedSalonNames, renderScopeBar, people, leavers, logActivity } = props;
+  if (!A) return <div style={{ padding: 24, color: "#b91c1c" }}>assets.js did not load — reload the page.</div>;
+
+  const cfg = useMemo(() => A.normCfg(cfgRaw), [cfgRaw]);
+  const today = A.todayYmd();
+  const who = (currentUser && (currentUser.name || currentUser.pin)) || "";
+  const canEdit = !readOnly;
+  const salonNames = useMemo(() => new Set((salons || []).map(s => s.name)), [salons]);
+  const locations = useMemo(() => {
+    const seen = new Set(), out = [];
+    [].concat((salons || []).map(s => s.name), [HEAD_OFFICE, CALL_CENTRE], cfg.extraLocations).forEach(n => { if (n && !seen.has(n)) { seen.add(n); out.push(n); } });
+    return out;
+  }, [salons, cfg]);
+  // Store scope (ROMs): salon assets outside the scope are hidden; office /
+  // storage locations are always visible.
+  const inScope = (branch) => !hasStoreScope || !branch || !salonNames.has(branch) || scopedSalonNames.has(branch);
+  const peopleByEc = useMemo(() => { const m = {}; (people || []).forEach(p => { m[A.normEc(p.ec)] = p; }); return m; }, [people]);
+
+  // ── UI state ──────────────────────────────────────────────────────────
+  const _ls = (k, d) => { try { return localStorage.getItem("boaAssets:" + k) || d; } catch (_) { return d; } };
+  const _lsSet = (k, v) => { try { localStorage.setItem("boaAssets:" + k, v); } catch (_) { } };
+  const [register, _setRegister] = useState(() => (A.REGISTER_BY_KEY[_ls("register", "IT")] ? _ls("register", "IT") : "IT"));
+  const setRegister = (r) => { _setRegister(r); _lsSet("register", r); };
+  const [moveKind, setMoveKind] = useState("transfer");
+  const [search, setSearch] = useState("");
+  const [f, setF] = useState({ branch: "All", status: "All", condition: "All", category: "All", showDisposed: false, showArchived: false });
+  const [moveRange, setMoveRange] = useState({ from: A.addDays(today, -90), to: today });
+  const [moveBranch, setMoveBranch] = useState("All");
+  const [allocView, setAllocView] = useState("open");
+  const [allocF, setAllocF] = useState({ branch: "All", department: "All", ack: "All", leavers: false, group: false });
+  const [drawer, setDrawer] = useState(props._seedDrawer || null);   // asset uuid (_seed* = render-harness only)
+  const [modal, setModal] = useState(props._seedModal || null);      // { kind, ... }
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [toast, setToast] = useState("");
+  useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(""), 3500); return () => clearTimeout(t); }, [toast]);
+
+  // ── Derived data ──────────────────────────────────────────────────────
+  const assets = data.assets || [], events = data.events || [], allocs = data.allocations || [];
+  const byId = useMemo(() => { const m = {}; assets.forEach(a => { m[a.id] = a; }); return m; }, [assets]);
+  const histById = useMemo(() => {
+    const m = {};
+    events.forEach(e => { (m[e.asset_id] = m[e.asset_id] || { e: [], a: [] }).e.push(e); });
+    allocs.forEach(a => { (m[a.asset_id] = m[a.asset_id] || { e: [], a: [] }).a.push(a); });
+    return m;
+  }, [events, allocs]);
+  const projOf = (a) => { const h = histById[a.id] || { e: [], a: [] }; return A.project(a, h.e, h.a); };
+  const projById = useMemo(() => { const m = {}; assets.forEach(a => { m[a.id] = projOf(a); }); return m; }, [assets, histById]);
+  const bookOf = (a) => A.bookValue(a, cfg, today, projById[a.id]);
+  const summary = useMemo(() => A.summarise(assets.filter(a => inScope(a.branch)), events, allocs, { cfg, today, leavers }), [assets, events, allocs, cfg, today, leavers, hasStoreScope, scopedSalonNames]);
+
+  const drawerAsset = drawer ? byId[drawer] : null;
+  const drawerProj = drawerAsset ? projById[drawerAsset.id] : null;
+
+  // ── Write wrapper ─────────────────────────────────────────────────────
+  const run = async (fn, opts) => {
+    const o = opts || {};
+    setBusy(true); setErr("");
+    try {
+      const r = await fn();
+      if (o.log && logActivity) logActivity(o.log[0], o.log[1] || "", o.log[2] || "", "Assets");
+      await reload();
+      if (!o.keepModal) setModal(null);
+      if (o.toast) setToast(o.toast);
+      return r;
+    } catch (e) {
+      setErr((e && e.message) || String(e));
+      return null;
+    } finally { setBusy(false); }
+  };
+  const personSnapshot = (p) => p ? { ec: p.ec, employee_name: p.name, job_title: p.jobTitle || "", department: p.department || "", branch: p.branch || "" } : {};
+
+  // ── Exports ───────────────────────────────────────────────────────────
+  const exportRows = (kind, title, columns, rows, base) => {
+    if (!rows.length) { setToast("Nothing to export"); return; }
+    if (kind === "csv") _triggerDownload(_safeFile(base) + ".csv", _rowsToCsv(columns, rows, [title]), "text/csv");
+    else _rowsToPrintWindow({ title, subtitle: rows.length + " rows · " + new Date().toLocaleDateString("en-ZA"), columns, rows, filenameBase: _safeFile(base) });
+  };
+  const downloadTemplate = (table) => _triggerDownload("assets-template-" + table + (table === "asset" ? "-" + register : "") + ".csv", A.templateCsv(table), "text/csv");
+
+  // ── Register rows ─────────────────────────────────────────────────────
+  const regRows = useMemo(() => {
+    const s = search.trim().toLowerCase();
+    return assets.filter(a => {
+      if (a.register !== register) return false;
+      if (!f.showArchived && a.archived_at) return false;
+      if (!inScope(a.branch)) return false;
+      if (!f.showDisposed && a.status === "Disposed") return false;
+      if (f.branch !== "All" && (a.branch || "") !== f.branch) return false;
+      if (f.status !== "All" && (a.status || "") !== f.status) return false;
+      if (f.condition !== "All" && (a.condition || "") !== f.condition) return false;
+      if (f.category !== "All" && (a.category || "") !== f.category) return false;
+      if (s && ![a.asset_id, a.asset_tag, a.serial_number, a.description, a.brand, a.model, a.assigned_name, a.assigned_ec, a.branch, a.category].some(x => x && String(x).toLowerCase().includes(s))) return false;
+      return true;
+    });
+  }, [assets, register, f, search, hasStoreScope, scopedSalonNames]);
+  const regColumns = useMemo(() => {
+    const cols = [
+      { key: "asset_id", label: "Asset ID" }, { key: "category", label: "Category" }, { key: "description", label: "Description" },
+      { key: "brand", label: "Brand" }, { key: "model", label: "Model" }, { key: "serial_number", label: "Serial" }, { key: "asset_tag", label: "Tag" },
+      { key: "purchase_date", label: "Purchased" }, { key: "purchase_cost", label: "Cost", money: true },
+      { key: "book", label: "Book value", money: true, get: a => bookOf(a).value },
+      { key: "assigned", label: "Assigned to", get: a => a.assigned_name ? a.assigned_name + (a.assigned_ec ? " (" + a.assigned_ec + ")" : "") : "" },
+      { key: "branch", label: "Branch" }, { key: "department", label: "Department" }, { key: "date_issued", label: "Issued" },
+      { key: "condition", label: "Condition" }, { key: "status", label: "Status" }
+    ];
+    if (register === "IT") cols.push({ key: "warranty_expiry", label: "Warranty" });
+    (A.DETAIL_FIELDS[register] || []).forEach(d => cols.push({ key: "d_" + d.k, label: d.l, get: a => (a.details || {})[d.k] }));
+    return cols;
+  }, [register, cfg, projById]);
+
+  // ── Movement rows ─────────────────────────────────────────────────────
+  const moveRows = useMemo(() => {
+    const kind = moveKind === "transfer" ? "transfer" : "disposal";
+    return events.filter(e => e.kind === kind && !e.archived_at && e.date >= moveRange.from && e.date <= moveRange.to)
+      .map(e => ({ ...e, _asset: byId[e.asset_id] || {} }))
+      .filter(r => inScope(r._asset.branch) && (moveBranch === "All" || r.from_branch === moveBranch || r.to_branch === moveBranch || r._asset.branch === moveBranch))
+      .filter(r => { const s = search.trim().toLowerCase(); return !s || [r.event_no, r._asset.asset_id, r._asset.description, r.from_branch, r.to_branch, r.to_name, r.approved_by, r.reason].some(x => x && String(x).toLowerCase().includes(s)); })
+      .sort((p, q) => (p.date === q.date ? (p.created_at < q.created_at ? 1 : -1) : (p.date < q.date ? 1 : -1)));
+  }, [events, moveKind, moveRange, moveBranch, search, byId, hasStoreScope, scopedSalonNames]);
+  const nameOfEc = (ec) => { const p = peopleByEc[A.normEc(ec)]; return p ? p.name + " (" + p.ec + ")" : (ec || ""); };
+  const transferColumns = [
+    { key: "event_no", label: "Movement No." }, { key: "asset", label: "Asset ID", get: r => r._asset.asset_id }, { key: "desc", label: "Description", get: r => r._asset.description },
+    { key: "from_branch", label: "From branch" }, { key: "to_branch", label: "To branch" },
+    { key: "from", label: "Previous assignee", get: r => nameOfEc(r.from_ec) }, { key: "to", label: "New assignee", get: r => r.to_name || nameOfEc(r.to_ec) },
+    { key: "reason", label: "Reason" }, { key: "date", label: "Date moved" }, { key: "approved_by", label: "Approved by" }, { key: "received_by", label: "Received by" },
+    { key: "condition", label: "Condition on transfer" }, { key: "notes", label: "Notes" }
+  ];
+  const disposalColumns = [
+    { key: "event_no", label: "Disposal No." }, { key: "asset", label: "Asset ID", get: r => r._asset.asset_id }, { key: "desc", label: "Description", get: r => r._asset.description },
+    { key: "cat", label: "Category", get: r => r._asset.category }, { key: "branch", label: "Branch", get: r => r._asset.branch },
+    { key: "holder", label: "Assigned to", get: r => nameOfEc(r.from_ec) }, { key: "reason", label: "Reason" }, { key: "condition", label: "Condition" },
+    { key: "date", label: "Disposal date" }, { key: "disposal_method", label: "Method" }, { key: "approved_by", label: "Approved by" },
+    { key: "disposal_value", label: "Disposal value", money: true }, { key: "notes", label: "Notes" }
+  ];
+
+  // ── Allocation rows ───────────────────────────────────────────────────
+  const allocRows = useMemo(() => {
+    const s = search.trim().toLowerCase();
+    return allocs.filter(a => !a.archived_at)
+      .map(a => ({ ...a, _asset: byId[a.asset_id] || {}, _leaver: a.ec ? leavers[A.normEc(a.ec)] : null }))
+      .filter(r => {
+        if (allocView === "open" && r.date_returned) return false;
+        if (allocView === "returned" && !r.date_returned) return false;
+        if (!inScope(r.branch || r._asset.branch)) return false;
+        if (allocF.branch !== "All" && (r.branch || "") !== allocF.branch) return false;
+        if (allocF.department !== "All" && (r.department || "") !== allocF.department) return false;
+        if (allocF.ack === "yes" && !r.acknowledged) return false;
+        if (allocF.ack === "no" && r.acknowledged) return false;
+        if (allocF.leavers && !r._leaver) return false;
+        if (s && ![r.allocation_no, r.ec, r.employee_name, r.job_title, r.department, r.branch, r._asset.asset_id, r._asset.description].some(x => x && String(x).toLowerCase().includes(s))) return false;
+        return true;
+      })
+      .sort((p, q) => (p.date_issued < q.date_issued ? 1 : p.date_issued > q.date_issued ? -1 : 0));
+  }, [allocs, allocView, allocF, search, byId, leavers, hasStoreScope, scopedSalonNames]);
+  const allocColumns = [
+    { key: "allocation_no", label: "Allocation No." }, { key: "ec", label: "Employee No." }, { key: "employee_name", label: "Employee name" },
+    { key: "job_title", label: "Job title" }, { key: "department", label: "Department" }, { key: "branch", label: "Branch" },
+    { key: "asset", label: "Asset ID", get: r => r._asset.asset_id }, { key: "desc", label: "Description", get: r => r._asset.description }, { key: "cat", label: "Category", get: r => r._asset.category },
+    { key: "date_issued", label: "Date issued" }, { key: "condition_issued", label: "Condition issued" },
+    { key: "ack", label: "Acknowledged", get: r => r.acknowledged ? "Yes" + (r.acknowledged_at ? " " + r.acknowledged_at : "") : "No" },
+    { key: "date_returned", label: "Date returned" }, { key: "condition_returned", label: "Condition returned" }, { key: "outstanding_notes", label: "Outstanding / notes" }
+  ];
+
+  // ── Shared bits ───────────────────────────────────────────────────────
+  const sel = (value, onChange, options, extra) => (
+    <select value={value} onChange={e => onChange(e.target.value)} style={{ ...ASSET_INPUT, ...(extra || {}) }}>
+      {options.map(o => typeof o === "string" ? <option key={o} value={o}>{o}</option> : <option key={o.v} value={o.v}>{o.l}</option>)}
+    </select>
+  );
+  const filterSel = (value, onChange, options, allLabel) => (
+    <select value={value} onChange={e => onChange(e.target.value)} style={{ padding: "6px 8px", borderRadius: 7, border: "1px solid #FBCFE8", fontSize: 12, fontFamily: "inherit", background: "#fff", color: ASSET_UI.ink }}>
+      <option value="All">{allLabel}</option>
+      {options.map(o => <option key={o} value={o}>{o}</option>)}
+    </select>
+  );
+  const th = (l, extra) => <th key={l} style={{ padding: "8px 10px", fontSize: 11, fontWeight: 800, letterSpacing: "0.04em", borderBottom: "1px solid #FBCFE8", whiteSpace: "nowrap", textAlign: "left", ...(extra || {}) }}>{l}</th>;
+  const td = (v, extra) => <td style={{ padding: "7px 10px", borderBottom: "1px solid #F3E8EE", verticalAlign: "top", ...(extra || {}) }}>{v}</td>;
+  const idLink = (asset) => asset && asset.id ? (
+    <a href="#" onClick={e => { e.preventDefault(); setDrawer(asset.id); }} style={{ color: ASSET_UI.pink, fontWeight: 800, textDecoration: "none", whiteSpace: "nowrap" }}>{asset.asset_id}</a>
+  ) : <span style={{ color: ASSET_UI.muted }}>—</span>;
+  const card = (label, value, sub, colour) => (
+    <div style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 12, padding: "10px 14px", minWidth: 128, flex: "1 1 128px" }}>
+      <div style={{ fontSize: 10, fontWeight: 800, color: ASSET_UI.rose, letterSpacing: "0.08em", textTransform: "uppercase" }}>{label}</div>
+      <div style={{ fontSize: 20, fontWeight: 800, color: colour || ASSET_UI.ink, marginTop: 2 }}>{value}</div>
+      {sub && <div style={{ fontSize: 11, color: ASSET_UI.muted, marginTop: 2 }}>{sub}</div>}
+    </div>
+  );
+  const emptyRow = (cols, text) => <tr><td colSpan={cols} style={{ padding: "18px 12px", color: ASSET_UI.muted, fontSize: 12, textAlign: "center" }}>{text}</td></tr>;
+  const segBar = (items, value, onChange) => (
+    <div style={{ display: "flex", gap: 4, background: "#fff", border: "1px solid #FBCFE8", borderRadius: 10, padding: 3, width: "fit-content", flexWrap: "wrap" }}>
+      {items.map(it => (
+        <button key={it.k} onClick={() => onChange(it.k)}
+          style={{ padding: "5px 12px", borderRadius: 7, border: "none", background: value === it.k ? "#FCE7F3" : "transparent", color: ASSET_UI.ink, fontWeight: value === it.k ? 800 : 600, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
+          {it.icon ? it.icon + " " : ""}{it.l}{it.n != null ? <span style={{ marginLeft: 6, fontSize: 10, color: ASSET_UI.muted }}>{it.n}</span> : null}
+        </button>
+      ))}
+    </div>
+  );
+
+  /* ═══ MODALS ═══════════════════════════════════════════════════════════ */
+  const renderModal = () => {
+    if (!modal) return null;
+    const m = modal;
+    const upd = (k, v) => setModal(prev => ({ ...prev, [k]: v }));
+    const errBox = err ? <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", color: "#b91c1c", borderRadius: 8, padding: "8px 10px", fontSize: 12, marginBottom: 10 }}>{err}</div> : null;
+    const footer = (label, onOk, disabled) => (
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
+        <button onClick={() => !busy && setModal(null)} style={ASSET_BTN()}>Cancel</button>
+        <button onClick={onOk} disabled={busy || disabled} style={{ ...ASSET_BTN("primary"), opacity: busy || disabled ? 0.55 : 1 }}>{busy ? "Saving…" : label}</button>
+      </div>
+    );
+    const assetHead = (a) => a ? <div style={{ background: "#FCE7F3", borderRadius: 8, padding: "8px 10px", fontSize: 12, marginBottom: 12 }}><strong style={{ color: ASSET_UI.ink }}>{a.asset_id}</strong> · {a.description} · {a.branch || "no branch"}{a.assigned_name ? " · with " + a.assigned_name : ""} · {_assetStatusPill(a.status)}</div> : null;
+    const grid = (children, cols) => <div style={{ display: "grid", gridTemplateColumns: "repeat(" + (cols || 2) + ", minmax(0, 1fr))", gap: 10 }}>{children}</div>;
+    const text = (k, ph, type) => <input type={type || "text"} value={m[k] == null ? "" : m[k]} placeholder={ph || ""} onChange={e => upd(k, e.target.value)} style={ASSET_INPUT} />;
+    const dateIn = (k) => <input type="date" value={m[k] || ""} onChange={e => upd(k, e.target.value)} style={ASSET_INPUT} />;
+    const listSel = (k, list, allowBlank) => sel(m[k] || "", v => upd(k, v), (allowBlank ? [{ v: "", l: "—" }] : []).concat(list.map(x => ({ v: x, l: x }))));
+
+    // ── Add / edit asset ─────────────────────────────────────────────
+    if (m.kind === "asset") {
+      const isNew = !m.id;
+      const reg = m.register || register;
+      const locked = !isNew && m._hasHistory;
+      const details = m.details || {};
+      const setD = (k, v) => upd("details", { ...details, [k]: v });
+      const ok = !!(m.description || "").trim();
+      const submit = () => run(async () => {
+        const payload = { ...m, register: reg, details, purchase_cost: A.num(m.purchase_cost) };
+        delete payload.kind; delete payload._hasHistory; delete payload._person;
+        if (isNew && m._person) payload.allocateTo = { ...personSnapshot(m._person), branch: m.branch || m._person.branch || "", date_issued: m._issueDate || today, condition_issued: m.condition || "", acknowledged: m._ack === "yes", acknowledged_at: m._ackDate || null };
+        delete payload._issueDate; delete payload._ack; delete payload._ackDate;
+        const saved = await window.BOA_DB.saveAsset(payload, who);
+        setDrawer(saved.id);
+        return saved;
+      }, { log: [isNew ? "Added asset" : "Edited asset", (m.asset_id || "") + " " + (m.description || ""), reg], toast: isNew ? "Asset added" : "Asset saved" });
+      return (
+        <AssetModal title={isNew ? "➕ Add asset — " + A.REGISTER_BY_KEY[reg].label : "✏️ Edit " + m.asset_id} width={720} onClose={() => setModal(null)} busy={busy}
+          sub={isNew ? "The next " + A.REGISTER_BY_KEY[reg].prefix + "- number is assigned when you save. Branch, status and condition set here are the starting state; afterwards they change through Transfer / Allocate / Change status so the history is kept." : (locked ? "Branch, holder, status and condition are derived from this asset's history — change them with the actions in the drawer." : "")}>
+          {errBox}
+          {grid([
+            <AssetField key="cat" label="Category">{listSel("category", cfg.categories[reg], true)}</AssetField>,
+            <AssetField key="desc" label="Asset description *">{text("description", "e.g. Dell Latitude 5540 laptop")}</AssetField>,
+            <AssetField key="brand" label="Brand">{text("brand")}</AssetField>,
+            <AssetField key="model" label="Model">{text("model")}</AssetField>,
+            <AssetField key="serial" label="Serial number">{text("serial_number")}</AssetField>,
+            <AssetField key="tag" label="Asset tag (sticker / barcode)">{text("asset_tag")}</AssetField>,
+            <AssetField key="pd" label="Purchase date">{dateIn("purchase_date")}</AssetField>,
+            <AssetField key="pc" label="Purchase cost (R)">{text("purchase_cost", "0.00", "number")}</AssetField>,
+            <AssetField key="sup" label="Supplier">{text("supplier")}</AssetField>,
+            <AssetField key="inv" label="Invoice ref">{text("invoice_ref")}</AssetField>,
+            <AssetField key="war" label="Warranty expiry">{dateIn("warranty_expiry")}</AssetField>,
+            <AssetField key="dept" label="Department">{listSel("department", cfg.departments, true)}</AssetField>,
+            <AssetField key="br" label="Branch / location">{locked ? <div style={{ ...ASSET_INPUT, background: "#f9fafb", color: ASSET_UI.muted }}>{m.branch || "—"}</div> : listSel("branch", locations, true)}</AssetField>,
+            <AssetField key="cond" label="Condition">{locked ? <div style={{ ...ASSET_INPUT, background: "#f9fafb", color: ASSET_UI.muted }}>{m.condition || "—"}</div> : listSel("condition", cfg.conditions, true)}</AssetField>,
+            <AssetField key="st" label="Status">{locked ? <div style={{ ...ASSET_INPUT, background: "#f9fafb", color: ASSET_UI.muted }}>{m.status || "—"}</div> : listSel("status", cfg.statuses.filter(s => s !== "Disposed" && (isNew ? s !== "Assigned" : true)), false)}</AssetField>,
+            ...(A.DETAIL_FIELDS[reg] || []).map(d => (
+              <AssetField key={"d" + d.k} label={d.l}>
+                <input type={d.t === "date" ? "date" : d.t === "number" ? "number" : "text"} value={details[d.k] == null ? "" : details[d.k]} onChange={e => setD(d.k, e.target.value)} style={ASSET_INPUT} />
+              </AssetField>
+            )),
+            <AssetField key="notes" label="Notes" span><textarea value={m.notes || ""} onChange={e => upd("notes", e.target.value)} rows={2} style={{ ...ASSET_INPUT, resize: "vertical" }} /></AssetField>
+          ])}
+          {isNew && (
+            <div style={{ marginTop: 12, background: "#FDF2F8", border: "1px dashed #FBCFE8", borderRadius: 10, padding: "10px 12px" }}>
+              <div style={{ fontSize: 11, fontWeight: 800, color: ASSET_UI.ink, marginBottom: 6 }}>🧑 Issue to an employee now (optional)</div>
+              {grid([
+                <AssetField key="p" label="Employee" span><AssetPersonPicker people={people} value={m._person || null} onPick={p => { upd("_person", p); if (p && !m.branch) upd("branch", p.branch || ""); if (p && !m.department) upd("department", p.department || ""); }} /></AssetField>,
+                <AssetField key="d" label="Date issued">{dateIn("_issueDate")}</AssetField>,
+                <AssetField key="a" label="Acknowledged (form signed)">{sel(m._ack || "no", v => upd("_ack", v), [{ v: "no", l: "No — not yet" }, { v: "yes", l: "Yes" }])}</AssetField>,
+                ...(m._ack === "yes" ? [<AssetField key="ad" label="Acknowledged on">{dateIn("_ackDate")}</AssetField>] : [])
+              ])}
+              <div style={{ fontSize: 11, color: ASSET_UI.muted, marginTop: 6 }}>Creates the AL- allocation with the asset. Status becomes Assigned.</div>
+            </div>
+          )}
+          {footer(isNew ? "Add asset" : "Save changes", submit, !ok)}
+        </AssetModal>
+      );
+    }
+
+    // ── Transfer ──────────────────────────────────────────────────────
+    if (m.kind === "transfer") {
+      const a = m.asset;
+      const p = a ? projById[a.id] : null;
+      const ok = !!(a && m.date && m.to_branch);
+      const submit = () => run(async () => window.BOA_DB.addAssetEvent({
+        asset_uuid: a.id, kind: "transfer", date: m.date, to_branch: m.to_branch, to_ec: m._person ? m._person.ec : null,
+        to_person: m._person ? { name: m._person.name, job_title: m._person.jobTitle, department: m._person.department } : null,
+        reason: m.reason, condition: m.condition, approved_by: m.approved_by, received_by: m.received_by, notes: m.notes
+      }, who), { log: ["Transferred asset", a.asset_id + " " + (p ? p.branch : "") + " → " + m.to_branch, m.reason || ""], toast: "Transfer recorded" });
+      return (
+        <AssetModal title="🔀 Record a movement / transfer" onClose={() => setModal(null)} busy={busy} sub="From-branch and previous assignee come from the asset. Transferring to a person closes their predecessor's allocation and opens a new AL- number.">
+          {errBox}
+          {!a && <AssetField label="Asset"><AssetPicker assets={assets} value={null} onPick={x => upd("asset", x)} filter={x => !projById[x.id] || !projById[x.id].disposed} /></AssetField>}
+          {a && assetHead(a)}
+          {a && grid([
+            <AssetField key="from" label="From branch"><div style={{ ...ASSET_INPUT, background: "#f9fafb", color: ASSET_UI.muted }}>{(p && p.branch) || "—"}</div></AssetField>,
+            <AssetField key="to" label="To branch *">{listSel("to_branch", locations.filter(l => l !== (p && p.branch)), true)}</AssetField>,
+            <AssetField key="prev" label="Previous assignee"><div style={{ ...ASSET_INPUT, background: "#f9fafb", color: ASSET_UI.muted }}>{p && p.assigned_ec ? nameOfEc(p.assigned_ec) : "Held by branch"}</div></AssetField>,
+            <AssetField key="new" label="New assignee (optional)"><AssetPersonPicker people={people} value={m._person || null} onPick={x => { upd("_person", x); if (x && x.branch && !m.to_branch) upd("to_branch", x.branch); }} /></AssetField>,
+            <AssetField key="date" label="Date moved *">{dateIn("date")}</AssetField>,
+            <AssetField key="reason" label="Reason">{listSel("reason", cfg.moveReasons, true)}</AssetField>,
+            <AssetField key="ap" label="Approved by">{text("approved_by")}</AssetField>,
+            <AssetField key="rc" label="Received by">{text("received_by")}</AssetField>,
+            <AssetField key="cond" label="Condition on transfer">{listSel("condition", cfg.conditions, true)}</AssetField>,
+            <AssetField key="notes" label="Notes">{text("notes")}</AssetField>
+          ])}
+          {footer("Record transfer", submit, !ok)}
+        </AssetModal>
+      );
+    }
+
+    // ── Disposal ──────────────────────────────────────────────────────
+    if (m.kind === "disposal") {
+      const a = m.asset;
+      const ok = !!(a && m.date && m.disposal_method);
+      const submit = () => run(async () => window.BOA_DB.addAssetEvent({
+        asset_uuid: a.id, kind: "disposal", date: m.date, reason: m.reason, condition: m.condition, disposal_method: m.disposal_method,
+        disposal_value: m.disposal_value, approved_by: m.approved_by, notes: m.notes
+      }, who), { log: ["Disposed asset", a.asset_id + " " + a.description, m.disposal_method + (m.disposal_value ? " · " + A.money(A.num(m.disposal_value)) : "")], toast: "Disposal recorded" });
+      return (
+        <AssetModal title="🗑 Record a disposal" onClose={() => setModal(null)} busy={busy} sub="Disposal is terminal: the asset shows as Disposed, its open allocation is closed and no further movement is accepted. An Asset admin can undo it with a reason.">
+          {errBox}
+          {!a && <AssetField label="Asset"><AssetPicker assets={assets} value={null} onPick={x => upd("asset", x)} filter={x => !projById[x.id] || !projById[x.id].disposed} /></AssetField>}
+          {a && assetHead(a)}
+          {a && grid([
+            <AssetField key="date" label="Disposal date *">{dateIn("date")}</AssetField>,
+            <AssetField key="method" label="Disposal method *">{listSel("disposal_method", cfg.disposalMethods, true)}</AssetField>,
+            <AssetField key="reason" label="Reason for disposal">{text("reason")}</AssetField>,
+            <AssetField key="cond" label="Condition">{listSel("condition", cfg.conditions, true)}</AssetField>,
+            <AssetField key="val" label="Disposal value (R)">{text("disposal_value", "0.00", "number")}</AssetField>,
+            <AssetField key="ap" label="Approved by">{text("approved_by")}</AssetField>,
+            <AssetField key="notes" label="Notes" span>{text("notes")}</AssetField>
+          ])}
+          {footer("Record disposal", submit, !ok)}
+        </AssetModal>
+      );
+    }
+
+    // ── Repair out / in, status change ────────────────────────────────
+    if (m.kind === "repair_out" || m.kind === "repair_in" || m.kind === "status_change") {
+      const a = m.asset;
+      const K = A.EVENT_KINDS[m.kind];
+      const ok = !!(a && m.date && (m.kind !== "status_change" || m.to_status || m.condition));
+      const submit = () => run(async () => window.BOA_DB.addAssetEvent({
+        asset_uuid: a.id, kind: m.kind, date: m.date, reason: m.reason, condition: m.condition, to_status: m.to_status, received_by: m.received_by, notes: m.notes
+      }, who), { log: [K.label, a.asset_id + " " + a.description, m.to_status || m.condition || m.reason || ""], toast: K.label + " recorded" });
+      return (
+        <AssetModal title={K.icon + " " + K.label} onClose={() => setModal(null)} busy={busy}>
+          {errBox}
+          {assetHead(a)}
+          {grid([
+            <AssetField key="date" label="Date *">{dateIn("date")}</AssetField>,
+            ...(m.kind === "status_change" ? [<AssetField key="st" label="New status">{listSel("to_status", cfg.statuses.filter(s => s !== "Disposed"), true)}</AssetField>] : []),
+            ...(m.kind === "repair_out" ? [<AssetField key="rb" label="Repairer / sent to">{text("received_by")}</AssetField>] : []),
+            <AssetField key="cond" label={m.kind === "repair_in" ? "Condition after repair" : "Condition"}>{listSel("condition", cfg.conditions, true)}</AssetField>,
+            <AssetField key="reason" label={m.kind === "repair_out" ? "Fault / reason" : "Reason"}>{text("reason")}</AssetField>,
+            <AssetField key="notes" label="Notes" span>{text("notes")}</AssetField>
+          ])}
+          {footer("Save", submit, !ok)}
+        </AssetModal>
+      );
+    }
+
+    // ── Allocate ──────────────────────────────────────────────────────
+    if (m.kind === "allocate") {
+      const a = m.asset;
+      const p = m._person;
+      const ok = !!(a && m.date_issued && (p || m._toBranch));
+      const submit = () => run(async () => window.BOA_DB.addAssetAllocation({
+        asset_uuid: a.id, ...(p ? personSnapshot(p) : {}), employee_name: m.employee_name != null ? m.employee_name : (p ? p.name : null),
+        job_title: m.job_title != null ? m.job_title : (p ? p.jobTitle : null), department: m.department != null ? m.department : (p ? p.department : null),
+        branch: m.branch != null ? m.branch : (p ? p.branch : m._toBranch), date_issued: m.date_issued, condition_issued: m.condition_issued,
+        acknowledged: m._ack === "yes", acknowledged_at: m._ackDate || null, outstanding_notes: m.notes
+      }, who), { log: ["Allocated asset", a.asset_id + " → " + (p ? p.name + " (" + p.ec + ")" : m._toBranch), m.date_issued], toast: "Allocation recorded" });
+      return (
+        <AssetModal title="🧑 Allocate to an employee" width={700} onClose={() => setModal(null)} busy={busy} sub="Name, job title, department and branch are copied from the staff record and saved with the allocation, so a later transfer or departure never changes what was signed for. Allocating to a different branch also records a MOV- transfer.">
+          {errBox}
+          {!a && <AssetField label="Asset"><AssetPicker assets={assets} value={null} onPick={x => upd("asset", x)} filter={x => { const q = projById[x.id]; return !q || (!q.disposed && !q.open_alloc); }} /></AssetField>}
+          {a && assetHead(a)}
+          {a && grid([
+            <AssetField key="p" label="Employee" span><AssetPersonPicker people={people} value={p || null} onPick={x => setModal(prev => ({ ...prev, _person: x, employee_name: x ? x.name : null, job_title: x ? x.jobTitle : null, department: x ? x.department : null, branch: x ? x.branch : null }))} /></AssetField>,
+            ...(p ? [
+              <AssetField key="n" label="Employee name">{text("employee_name")}</AssetField>,
+              <AssetField key="jt" label="Job title">{text("job_title")}</AssetField>,
+              <AssetField key="dp" label="Department">{listSel("department", cfg.departments, true)}</AssetField>,
+              <AssetField key="br" label="Branch / location">{listSel("branch", locations, true)}</AssetField>
+            ] : [
+              <AssetField key="tb" label="…or allocate to a branch (no person)">{sel(m._toBranch || "", v => upd("_toBranch", v), [{ v: "", l: "—" }].concat(locations.map(x => ({ v: x, l: x }))))}</AssetField>
+            ]),
+            <AssetField key="d" label="Date issued *">{dateIn("date_issued")}</AssetField>,
+            <AssetField key="c" label="Condition issued">{listSel("condition_issued", cfg.conditions, true)}</AssetField>,
+            <AssetField key="a" label="Employee acknowledgement">{sel(m._ack || "no", v => upd("_ack", v), [{ v: "no", l: "No — form not signed yet" }, { v: "yes", l: "Yes — form signed" }])}</AssetField>,
+            ...(m._ack === "yes" ? [<AssetField key="ad" label="Acknowledged on">{dateIn("_ackDate")}</AssetField>] : []),
+            <AssetField key="notes" label="Notes" span>{text("notes")}</AssetField>
+          ])}
+          {footer("Allocate", submit, !ok)}
+        </AssetModal>
+      );
+    }
+
+    // ── Return ────────────────────────────────────────────────────────
+    if (m.kind === "return") {
+      const al = m.alloc, a = byId[al.asset_id] || {};
+      const ok = !!m.date_returned;
+      const submit = () => run(async () => window.BOA_DB.returnAssetAllocation(al.id, { date_returned: m.date_returned, condition_returned: m.condition_returned, returned_to: m.returned_to, outstanding_notes: m.notes }, who),
+        { log: ["Asset returned", a.asset_id + " from " + (al.employee_name || al.ec || al.branch), m.date_returned], toast: "Return recorded" });
+      return (
+        <AssetModal title={"↩️ Record return — " + al.allocation_no} onClose={() => setModal(null)} busy={busy} sub="Closes the allocation. The asset goes to In Storage at the location you pick, with the condition you record.">
+          {errBox}
+          {assetHead(a)}
+          {grid([
+            <AssetField key="d" label="Date returned *">{dateIn("date_returned")}</AssetField>,
+            <AssetField key="c" label="Condition returned">{listSel("condition_returned", cfg.conditions, true)}</AssetField>,
+            <AssetField key="to" label="Returned to (location)">{listSel("returned_to", locations, true)}</AssetField>,
+            <AssetField key="n" label="Outstanding / notes">{text("notes", "e.g. charger missing")}</AssetField>
+          ])}
+          {footer("Record return", submit, !ok)}
+        </AssetModal>
+      );
+    }
+
+    // ── Acknowledge ───────────────────────────────────────────────────
+    if (m.kind === "ack") {
+      const al = m.alloc, a = byId[al.asset_id] || {};
+      const submit = () => run(async () => window.BOA_DB.acknowledgeAssetAllocation(al.id, { acknowledged: !m.undo, acknowledged_at: m.date, acknowledged_via: "portal" }, who),
+        { log: [m.undo ? "Acknowledgement removed" : "Acknowledgement recorded", al.allocation_no + " " + (al.employee_name || al.ec), a.asset_id], toast: "Saved" });
+      return (
+        <AssetModal title={(m.undo ? "Remove acknowledgement — " : "✍️ Employee acknowledged — ") + al.allocation_no} onClose={() => setModal(null)} busy={busy} width={460}
+          sub={m.undo ? "Marks the form as not signed." : "Tick this once the employee has signed the acknowledgement form (print it from the row)."}>
+          {errBox}
+          {assetHead(a)}
+          {!m.undo && grid([<AssetField key="d" label="Signed on">{dateIn("date")}</AssetField>], 1)}
+          {footer(m.undo ? "Remove" : "Confirm", submit, false)}
+        </AssetModal>
+      );
+    }
+
+    // ── Undo disposal / archive event ─────────────────────────────────
+    if (m.kind === "undo_disposal" || m.kind === "archive_event" || m.kind === "archive_alloc") {
+      const a = m.asset || {};
+      const ok = !!(m.reason || "").trim() || m.kind === "archive_alloc";
+      const submit = () => run(async () => {
+        if (m.kind === "undo_disposal") return window.BOA_DB.undoAssetDisposal(m.event.id, m.reason, who);
+        if (m.kind === "archive_event") return window.BOA_DB.archiveAssetEvent(m.event.id, m.reason, who);
+        return window.BOA_DB.archiveAssetAllocation(m.alloc.id, who);
+      }, { log: [m.kind === "undo_disposal" ? "Undid disposal" : m.kind === "archive_event" ? "Removed asset event" : "Removed allocation", a.asset_id + " " + (m.event ? (m.event.event_no || m.event.kind) : (m.alloc ? m.alloc.allocation_no : "")), m.reason || ""], toast: "Done" });
+      return (
+        <AssetModal title={m.kind === "undo_disposal" ? "↺ Undo disposal " + (m.event.event_no || "") : m.kind === "archive_event" ? "Remove event " + (m.event.event_no || m.event.kind) : "Remove allocation " + (m.alloc.allocation_no || "")} width={480} onClose={() => setModal(null)} busy={busy}
+          sub="The record is archived, not deleted: it stays in the database with your name and reason, and the asset's state is recomputed without it.">
+          {errBox}
+          {assetHead(a)}
+          {m.kind !== "archive_alloc" && grid([<AssetField key="r" label="Reason *"><textarea rows={2} value={m.reason || ""} onChange={e => upd("reason", e.target.value)} style={{ ...ASSET_INPUT, resize: "vertical" }} /></AssetField>], 1)}
+          {footer("Confirm", submit, !ok)}
+        </AssetModal>
+      );
+    }
+
+    // ── Lists & dropdowns (Asset admin) ───────────────────────────────
+    if (m.kind === "lists") {
+      const L = m.lists;
+      const setL = (k, v) => upd("lists", { ...L, [k]: v });
+      const ta = (k, label) => (
+        <AssetField label={label}><textarea rows={6} value={L[k]} onChange={e => setL(k, e.target.value)} style={{ ...ASSET_INPUT, resize: "vertical", fontSize: 12 }} /></AssetField>
+      );
+      const submit = () => run(async () => {
+        const lines = (s) => String(s || "").split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+        const next = {
+          conditions: lines(L.conditions), statuses: lines(L.statuses), departments: lines(L.departments),
+          categories: { IT: lines(L.cat_IT), FA: lines(L.cat_FA), SE: lines(L.cat_SE), VE: lines(L.cat_VE) },
+          moveReasons: lines(L.moveReasons), disposalMethods: lines(L.disposalMethods), extraLocations: lines(L.extraLocations),
+          usefulLifeDefault: { IT: A.num(L.life_IT), FA: A.num(L.life_FA), SE: A.num(L.life_SE), VE: A.num(L.life_VE) },
+          usefulLifeMonths: {}
+        };
+        lines(L.usefulLifeMonths).forEach(line => { const mm = line.match(/^(IT|FA|SE|VE)\s*:\s*(.+?)\s*=\s*(\d+)\s*$/i); if (mm) next.usefulLifeMonths[mm[1].toUpperCase() + ":" + mm[2]] = +mm[3]; });
+        if (!next.statuses.includes("Disposed")) next.statuses.push("Disposed");
+        if (!next.statuses.includes("In Storage")) next.statuses.unshift("In Storage");
+        if (!next.statuses.includes("Assigned")) next.statuses.unshift("Assigned");
+        await onCfgSave(next);
+      }, { log: ["Edited asset lists", "", ""], toast: "Lists saved" });
+      return (
+        <AssetModal title="⚙ Lists & dropdowns" width={860} onClose={() => setModal(null)} busy={busy} sub="One entry per line. These feed every dropdown on the Assets tab. In Storage, Assigned and Disposed are always kept — the register sets them itself.">
+          {errBox}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10 }}>
+            {ta("conditions", "Conditions")}{ta("statuses", "Statuses")}{ta("departments", "Departments")}
+            {ta("cat_IT", "Categories · IT")}{ta("cat_FA", "Categories · Furniture & General")}{ta("cat_SE", "Categories · Salon Equipment")}
+            {ta("cat_VE", "Categories · Vehicles")}{ta("moveReasons", "Movement reasons")}{ta("disposalMethods", "Disposal methods")}
+            {ta("extraLocations", "Extra locations (besides stores & offices)")}
+            <AssetField label="Useful life per register (months)">
+              {["IT", "FA", "SE", "VE"].map(r => <div key={r} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}><span style={{ fontSize: 11, width: 90, color: ASSET_UI.ink, fontWeight: 700 }}>{A.REGISTER_BY_KEY[r].short}</span><input type="number" min="1" value={L["life_" + r]} onChange={e => setL("life_" + r, e.target.value)} style={{ ...ASSET_INPUT, width: 90 }} /></div>)}
+            </AssetField>
+            {ta("usefulLifeMonths", "Per-category life override (REG:Category = months)")}
+          </div>
+          {footer("Save lists", submit, false)}
+        </AssetModal>
+      );
+    }
+
+    // ── Bulk upload ───────────────────────────────────────────────────
+    if (m.kind === "import") return renderImportModal(m, upd, errBox);
+    return null;
+  };
+
+  const openLists = () => {
+    const j = (a) => (a || []).join("\n");
+    const ov = Object.keys(cfg.usefulLifeMonths).map(k => k.replace(":", ": ") + " = " + cfg.usefulLifeMonths[k]).join("\n");
+    setModal({ kind: "lists", lists: {
+      conditions: j(cfg.conditions), statuses: j(cfg.statuses), departments: j(cfg.departments),
+      cat_IT: j(cfg.categories.IT), cat_FA: j(cfg.categories.FA), cat_SE: j(cfg.categories.SE), cat_VE: j(cfg.categories.VE),
+      moveReasons: j(cfg.moveReasons), disposalMethods: j(cfg.disposalMethods), extraLocations: j(cfg.extraLocations),
+      life_IT: cfg.usefulLifeDefault.IT, life_FA: cfg.usefulLifeDefault.FA, life_SE: cfg.usefulLifeDefault.SE, life_VE: cfg.usefulLifeDefault.VE,
+      usefulLifeMonths: ov
+    } });
+  };
+
+  // ── Import modal ───────────────────────────────────────────────────────
+  const renderImportModal = (m, upd, errBox) => {
+    const table = m.table;
+    const spec = A.IMPORT_SPECS[table];
+    const onFile = async (file) => {
+      if (!file) return;
+      setErr("");
+      try {
+        let aoa;
+        if (window.XLSX) {
+          const wb = window.XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true });
+          aoa = window.XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, blankrows: false, raw: true, defval: "" });
+        } else {
+          const txt = await file.text();
+          aoa = txt.split(/\r?\n/).map(line => line.split(","));
+        }
+        const parsed = A.parseImport(table, aoa, { cfg, register, branches: locations, people: peopleByEc, assets, events, allocations: allocs });
+        const decisions = {};
+        parsed.rows.forEach(r => { if (r.dup) decisions[r.n] = "skip"; });
+        // enrich allocation / transfer rows with the person snapshot the data layer wants
+        parsed.rows.forEach(r => {
+          const ec = r.data.ec || r.data.to_ec || r.data.assigned_ec;
+          const p = ec ? peopleByEc[A.normEc(ec)] : null;
+          if (p) {
+            if (table === "allocation") Object.assign(r.data, { employee_name: p.name, job_title: p.jobTitle, department: p.department, branch: r.data.branch || p.branch });
+            if (table === "transfer") r.data.to_person = { name: p.name, job_title: p.jobTitle, department: p.department };
+            if (table === "asset") Object.assign(r.data, { assigned_name: p.name, job_title: p.jobTitle });
+          }
+        });
+        setModal(prev => ({ ...prev, fileName: file.name, parsed, decisions, results: null }));
+      } catch (e) { setErr("Could not read the file: " + ((e && e.message) || e)); }
+    };
+    const parsed = m.parsed;
+    const rows = parsed ? parsed.rows : [];
+    const valid = rows.filter(r => !r.errors.length);
+    const invalid = rows.filter(r => r.errors.length);
+    const dups = valid.filter(r => r.dup);
+    const toImport = valid.filter(r => !r.dup || (m.decisions[r.n] && m.decisions[r.n] !== "skip"));
+    const commit = () => run(async () => {
+      const items = toImport.map(r => ({ n: r.n, table, data: r.data, action: r.dup ? m.decisions[r.n] : "add", existing: r.dup ? r.dup.existing : null }));
+      const results = await window.BOA_DB.importAssetRows(items, who);
+      setModal(prev => ({ ...prev, results }));
+      return results;
+    }, { keepModal: true, log: ["Bulk upload", spec.label + (table === "asset" ? " · " + A.REGISTER_BY_KEY[register].label : ""), toImport.length + " rows from " + (m.fileName || "file")] });
+    const dec = (n) => m.decisions[n] || "skip";
+    const setDec = (n, v) => upd("decisions", { ...m.decisions, [n]: v });
+    const results = m.results;
+    return (
+      <AssetModal title={"⬆ Upload " + spec.label + (table === "asset" ? " — " + A.REGISTER_BY_KEY[register].label : "")} width={960} onClose={() => setModal(null)} busy={busy}
+        sub="Use the downloaded CSV template (or an .xlsx with the same headings). Every row is checked first; repeated codes go to the review list below where you choose Skip or Replace per row. Nothing is saved until you press Import.">
+        {errBox}
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
+          <button onClick={() => downloadTemplate(table)} style={ASSET_BTN()}>⬇ Download CSV template</button>
+          <label style={{ ...ASSET_BTN("primary"), display: "inline-block" }}>
+            Choose file… <input type="file" accept=".csv,.xlsx,.xls,text/csv" style={{ display: "none" }} onChange={e => onFile(e.target.files && e.target.files[0])} />
+          </label>
+          {m.fileName && <span style={{ fontSize: 12, color: ASSET_UI.muted }}>Loaded: {m.fileName}</span>}
+        </div>
+        {parsed && parsed.missing.length > 0 && <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", color: "#b91c1c", borderRadius: 8, padding: "8px 10px", fontSize: 12, marginBottom: 10 }}>Required column{parsed.missing.length > 1 ? "s" : ""} not found: {parsed.missing.join(", ")}. Download the template and keep its headings.</div>}
+        {parsed && parsed.unknown.length > 0 && <div style={{ fontSize: 11, color: ASSET_UI.muted, marginBottom: 8 }}>Ignored columns: {parsed.unknown.join(", ")}</div>}
+        {parsed && !results && (
+          <>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+              {card("Rows read", rows.length)}{card("Ready to import", toImport.length, null, "#15803d")}{card("Need review", dups.length, "repeated codes", dups.length ? "#b45309" : undefined)}{card("With errors", invalid.length, "will be skipped", invalid.length ? "#b91c1c" : undefined)}
+            </div>
+            {dups.length > 0 && (
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ fontSize: 12, fontWeight: 800, color: "#b45309", marginBottom: 6 }}>⚠ Review — these codes already exist. Was it entered in error, or is it the same item that needs updating?</div>
+                <div style={{ overflowX: "auto", border: "1px solid #fde68a", borderRadius: 10 }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                    <thead><tr style={{ background: "#FEF3C7", color: "#78350f" }}>{th("Row")}{th("Uploaded")}{th("Problem")}{th("Existing record")}{th("Decision")}</tr></thead>
+                    <tbody>
+                      {dups.map(r => {
+                        const ex = r.dup.existing;
+                        const canReplace = r.dup.kind !== "file";
+                        return (
+                          <tr key={r.n}>
+                            {td(r.n)}
+                            {td(table === "asset" ? [r.data.asset_id, r.data.description, r.data.serial_number ? "S/N " + r.data.serial_number : "", r.data.asset_tag ? "tag " + r.data.asset_tag : ""].filter(Boolean).join(" · ") : [r.data.asset_id, r.data.date || r.data.date_issued, r.data.ec || r.data.to_branch || r.data.disposal_method].filter(Boolean).join(" · "))}
+                            {td(<span style={{ color: "#b45309", fontWeight: 700 }}>{r.dup.label}</span>)}
+                            {td(ex ? (ex.asset_id ? [ex.asset_id, ex.description, ex.branch, ex.assigned_name].filter(Boolean).join(" · ") : (ex.allocation_no || ex.event_no || "")) : "—")}
+                            {td(
+                              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                <label style={{ fontSize: 12, cursor: "pointer" }}><input type="radio" checked={dec(r.n) === "skip"} onChange={() => setDec(r.n, "skip")} /> Skip — entered in error</label>
+                                {canReplace && <label style={{ fontSize: 12, cursor: "pointer" }}><input type="radio" checked={dec(r.n) === "replace"} onChange={() => setDec(r.n, "replace")} /> {table === "asset" ? "Replace — update the existing asset" : table === "allocation" ? "Replace — close the open allocation and record this one" : "Record anyway"}</label>}
+                                {!canReplace && <label style={{ fontSize: 12, cursor: "pointer" }}><input type="radio" checked={dec(r.n) === "add"} onChange={() => setDec(r.n, "add")} /> Add anyway — it is a different item</label>}
+                              </div>
+                            )}
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+            {invalid.length > 0 && (
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ fontSize: 12, fontWeight: 800, color: "#b91c1c", marginBottom: 6 }}>✗ Rows with errors — fix them in the file and upload again, or import the rest without them</div>
+                <div style={{ maxHeight: 180, overflow: "auto", border: "1px solid #fca5a5", borderRadius: 10, padding: "6px 10px", fontSize: 12 }}>
+                  {invalid.map(r => <div key={r.n} style={{ padding: "3px 0", borderBottom: "1px solid #fee2e2" }}><strong>Row {r.n}</strong> {r.data.description || r.data.asset_id || ""}: {r.errors.join("; ")}</div>)}
+                </div>
+              </div>
+            )}
+            <div style={{ maxHeight: 260, overflow: "auto", border: "1px solid #FBCFE8", borderRadius: 10 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
+                <thead><tr style={{ background: "#FCE7F3", color: ASSET_UI.ink }}>{th("Row")}{spec.columns.map(c => th(c.label))}{th("Warnings")}</tr></thead>
+                <tbody>
+                  {valid.map(r => (
+                    <tr key={r.n} style={{ opacity: r.dup && dec(r.n) === "skip" ? 0.45 : 1 }}>
+                      {td(r.n)}
+                      {spec.columns.map(c => <React.Fragment key={c.key}>{td(c.t === "yesno" ? (r.data[c.key] ? "Yes" : "No") : (r.data[c.key] == null ? "" : String(r.data[c.key])))}</React.Fragment>)}
+                      {td(r.warnings.join("; "), { color: "#b45309" })}
+                    </tr>
+                  ))}
+                  {!valid.length && emptyRow(spec.columns.length + 2, "No valid rows in this file.")}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
+              <button onClick={() => !busy && setModal(null)} style={ASSET_BTN()}>Cancel</button>
+              <button onClick={commit} disabled={busy || !toImport.length} style={{ ...ASSET_BTN("primary"), opacity: busy || !toImport.length ? 0.55 : 1 }}>{busy ? "Importing…" : "Import " + toImport.length + " row" + (toImport.length === 1 ? "" : "s")}</button>
+            </div>
+          </>
+        )}
+        {results && (
+          <div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+              {card("Imported", results.filter(r => r.ok).length, null, "#15803d")}{card("Skipped", results.filter(r => r.skipped).length)}{card("Failed", results.filter(r => r.error).length, null, results.some(r => r.error) ? "#b91c1c" : undefined)}
+            </div>
+            <div style={{ maxHeight: 260, overflow: "auto", border: "1px solid #FBCFE8", borderRadius: 10, padding: "6px 10px", fontSize: 12 }}>
+              {results.map((r, i) => <div key={i} style={{ padding: "3px 0", borderBottom: "1px solid #F3E8EE", color: r.error ? "#b91c1c" : r.ok ? "#15803d" : ASSET_UI.muted }}>Row {r.n}: {r.error ? "✗ " + r.error : r.ok ? "✓ " + r.id : "skipped"}</div>)}
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 14 }}><button onClick={() => setModal(null)} style={ASSET_BTN("primary")}>Done</button></div>
+          </div>
+        )}
+      </AssetModal>
+    );
+  };
+
+  /* ═══ DRAWER ═══════════════════════════════════════════════════════════ */
+  const renderDrawer = () => {
+    if (!drawerAsset) return null;
+    const a = drawerAsset, p = drawerProj;
+    const bv = bookOf(a);
+    const tl = A.timeline(a, (histById[a.id] || {}).e || [], (histById[a.id] || {}).a || []);
+    const act = (label, kind, extra, danger) => {
+      const gate = A.canAct(p, kind === "status_change" ? "status" : kind);
+      return (
+        <button key={kind + label} disabled={!gate.ok || !canEdit} title={gate.ok ? "" : gate.why}
+          onClick={() => setModal({ kind, asset: a, date: today, ...(extra || {}) })}
+          style={{ ...ASSET_BTN(danger ? "danger" : undefined), opacity: gate.ok && canEdit ? 1 : 0.45, cursor: gate.ok && canEdit ? "pointer" : "not-allowed" }}>{label}</button>
+      );
+    };
+    const row = (l, v) => v ? <div style={{ display: "flex", gap: 8, fontSize: 12, padding: "3px 0", borderBottom: "1px solid #F3E8EE" }}><span style={{ width: 130, color: ASSET_UI.muted, flexShrink: 0 }}>{l}</span><span style={{ color: ASSET_UI.text, fontWeight: 600 }}>{v}</span></div> : null;
+    const d = a.details || {};
+    return (
+      <div onClick={() => setDrawer(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", zIndex: 9000 }}>
+        <div onClick={e => e.stopPropagation()} style={{ position: "absolute", top: 0, right: 0, bottom: 0, width: "min(560px, 100%)", background: "#fff", boxShadow: "-12px 0 40px rgba(0,0,0,0.2)", overflow: "auto", padding: "18px 20px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 800, color: ASSET_UI.rose, letterSpacing: "0.08em" }}>{A.REGISTER_BY_KEY[a.register].icon} {A.REGISTER_BY_KEY[a.register].label}{a.archived_at ? " · ARCHIVED" : ""}</div>
+              <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 22, color: ASSET_UI.ink, fontWeight: 700 }}>{a.asset_id} <span style={{ fontFamily: "inherit", fontSize: 15, fontWeight: 600, color: ASSET_UI.text }}>{a.description}</span></div>
+              <div style={{ marginTop: 6, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>{_assetStatusPill(p.status)}<span style={{ fontSize: 12, color: ASSET_UI.muted }}>{[a.category, a.brand, a.model].filter(Boolean).join(" · ")}</span></div>
+            </div>
+            <button onClick={() => setDrawer(null)} style={{ background: "transparent", border: "none", fontSize: 24, cursor: "pointer", color: ASSET_UI.ink, lineHeight: 1 }}>×</button>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", margin: "14px 0" }}>
+            {card("Location", p.branch || "—")}
+            {card("Holder", p.assigned_name || (p.assigned_ec ? nameOfEc(p.assigned_ec) : "Held by branch"), p.open_alloc ? p.open_alloc.allocation_no + (p.open_alloc.acknowledged ? " · ✓ acknowledged" : " · not acknowledged") : null)}
+            {card("Book value", bv.value == null ? "—" : A.money(bv.value), bv.cost == null ? "no cost" : "cost " + A.money(bv.cost) + (bv.disposed ? " · disposed" : bv.monthsUsed != null ? " · " + bv.monthsUsed + " of " + bv.life + " months" : ""))}
+          </div>
+
+          {canEdit && (
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
+              <button onClick={() => setModal({ kind: "asset", ...a, _hasHistory: p.has_history })} style={ASSET_BTN()}>✏️ Edit details</button>
+              {act("🧑 Allocate", "allocate")}
+              {p.open_alloc && <button onClick={() => setModal({ kind: "return", alloc: p.open_alloc, date_returned: today, returned_to: p.branch || "" })} style={ASSET_BTN()}>↩️ Record return</button>}
+              {act("🔀 Transfer", "transfer")}
+              {p.status === "Under Repair" ? act("✅ Back from repair", "repair_in") : act("🔧 Send for repair", "repair_out")}
+              {act("✏️ Change status", "status_change")}
+              {isAdmin && (p.disposed
+                ? <button onClick={() => setModal({ kind: "undo_disposal", asset: a, event: p.disposal })} style={ASSET_BTN("danger")}>↺ Undo disposal</button>
+                : act("🗑 Dispose", "disposal", null, true))}
+              {isAdmin && !a.archived_at && <button onClick={() => { if (window.confirm("Archive " + a.asset_id + "? It disappears from the registers (kept in the database; an admin can show archived assets).")) run(() => window.BOA_DB.archiveAsset(a.id, who), { log: ["Archived asset", a.asset_id + " " + a.description, ""], toast: "Archived" }).then(() => setDrawer(null)); }} style={ASSET_BTN("danger")}>Archive</button>}
+              {isAdmin && a.archived_at && <button onClick={() => run(() => window.BOA_DB.restoreAsset(a.id, who), { log: ["Restored asset", a.asset_id, ""], toast: "Restored" })} style={ASSET_BTN()}>Restore</button>}
+            </div>
+          )}
+          {err && !modal && <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", color: "#b91c1c", borderRadius: 8, padding: "8px 10px", fontSize: 12, marginBottom: 10 }}>{err}</div>}
+
+          <div style={{ fontSize: 11, fontWeight: 800, color: ASSET_UI.ink, letterSpacing: "0.06em", textTransform: "uppercase", margin: "6px 0" }}>Details</div>
+          {row("Serial number", a.serial_number)}{row("Asset tag", a.asset_tag)}{row("Purchased", a.purchase_date ? _assetFmtDate(a.purchase_date) : "")}{row("Cost", a.purchase_cost != null ? A.money(a.purchase_cost) : "")}
+          {row("Supplier", a.supplier)}{row("Invoice", a.invoice_ref)}{row("Warranty expiry", a.warranty_expiry ? _assetFmtDate(a.warranty_expiry) : "")}{row("Department", a.department)}{row("Condition", p.condition)}
+          {(A.DETAIL_FIELDS[a.register] || []).map(f => <React.Fragment key={f.k}>{row(f.l, d[f.k] ? (f.t === "date" ? _assetFmtDate(d[f.k]) : String(d[f.k])) : "")}</React.Fragment>)}
+          {row("Notes", a.notes)}{row("Added", (a.created_by ? a.created_by + " · " : "") + (a.created_at ? new Date(a.created_at).toLocaleDateString("en-ZA") : ""))}
+
+          <div style={{ fontSize: 11, fontWeight: 800, color: ASSET_UI.ink, letterSpacing: "0.06em", textTransform: "uppercase", margin: "16px 0 6px" }}>Timeline</div>
+          {!tl.length && <div style={{ fontSize: 12, color: ASSET_UI.muted }}>No movements, allocations or changes recorded yet.</div>}
+          {tl.map((t, i) => (
+            <div key={i} style={{ display: "flex", gap: 10, padding: "8px 0", borderBottom: "1px solid #F3E8EE" }}>
+              <div style={{ fontSize: 18, width: 26, textAlign: "center" }}>{t.icon}</div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 700, color: ASSET_UI.text }}>{t.label} {t.no && <span style={{ fontSize: 10.5, fontWeight: 800, color: ASSET_UI.pink, marginLeft: 4 }}>{t.no}</span>}</div>
+                <div style={{ fontSize: 11, color: ASSET_UI.muted }}>{_assetFmtDate(t.date)}{t.who ? " · by " + t.who : ""}{t.sub ? " · " + t.sub : ""}</div>
+              </div>
+              {isAdmin && canEdit && t.kind !== "alloc_close" && (
+                <button title="Remove this record (archived with your name)" onClick={() => setModal(t.kind === "alloc_open" ? { kind: "archive_alloc", asset: a, alloc: t.ref } : { kind: "archive_event", asset: a, event: t.ref })}
+                  style={{ background: "transparent", border: "none", color: ASSET_UI.muted, cursor: "pointer", fontSize: 14 }}>🗑</button>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  /* ═══ SUB-TABS ═════════════════════════════════════════════════════════ */
+  const toolbar = (extraLeft, extraRight) => (
+    <div style={{ background: "#fff", borderRadius: 13, padding: "10px 14px", border: "1px solid #FBCFE8", marginBottom: 12, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+      <input value={search} onChange={e => setSearch(e.target.value)} placeholder="🔍 Search ID, tag, serial, description, name…" style={{ ...ASSET_INPUT, width: 260, flex: "0 1 260px" }} />
+      {extraLeft}
+      <div style={{ flex: 1 }} />
+      {extraRight}
+    </div>
+  );
+
+  const renderDashboard = () => {
+    const S = summary;
+    const regCards = (r) => {
+      const x = S.perRegister[r.k];
+      return (
+        <div key={r.k} style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 12, padding: "10px 14px", flex: "1 1 200px", minWidth: 200 }}>
+          <div style={{ fontSize: 11, fontWeight: 800, color: ASSET_UI.ink, marginBottom: 6 }}>{r.icon} {r.label}</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "2px 10px", fontSize: 12 }}>
+            {[["Total", x.total], ["In use / assigned", x.active], ["In storage", x.storage], ["Under repair", x.repair], ["Lost / stolen / damaged", x.problem], ["Awaiting disposal", x.awaiting], ["Disposed", x.disposed]].map(([l, v]) => (
+              <React.Fragment key={l}><span style={{ color: ASSET_UI.muted }}>{l}</span><span style={{ fontWeight: 800, color: v && l !== "Total" && (l.startsWith("Lost") || l.startsWith("Await")) ? "#b91c1c" : ASSET_UI.ink, textAlign: "right" }}>{v}</span></React.Fragment>
+            ))}
+            <span style={{ color: ASSET_UI.muted }}>Cost / book value</span><span style={{ fontWeight: 700, color: ASSET_UI.ink, textAlign: "right", fontSize: 11 }}>{A.money(x.cost)} / {A.money(x.book)}</span>
+          </div>
+        </div>
+      );
+    };
+    const fams = A.FAMILIES;
+    const stackCols = A.REGISTERS.map(r => ({ label: r.short, parts: fams.map(f => ({ k: f.k, value: S.perRegister[r.k][f.k] || 0 })) }));
+    const branchRows = Object.keys(S.byBranch).map(b => ({ label: b, value: S.byBranch[b] })).sort((p, q) => q.value - p.value);
+    const costRows = Object.keys(S.costByBranch).map(b => ({ label: b, value: S.costByBranch[b] })).sort((p, q) => q.value - p.value).slice(0, 15);
+    const monthCols = S.monthly.map(mm => ({ label: mm.ym.slice(5) + "/" + mm.ym.slice(2, 4), parts: [{ k: "transfers", value: mm.transfers }, { k: "disposals", value: mm.disposals }, { k: "allocations", value: mm.allocations }] }));
+    const panel = (title, body, wide) => <div style={{ background: "#fff", border: "1px solid #FBCFE8", borderRadius: 13, padding: "12px 14px", flex: wide ? "1 1 100%" : "1 1 420px", minWidth: 0 }}><div style={{ fontSize: 12, fontWeight: 800, color: ASSET_UI.ink, marginBottom: 8 }}>{title}</div>{body}</div>;
+    const list = (title, rows, cols, empty) => panel(title, rows.length ? (
+      <div style={{ overflowX: "auto" }}><table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+        <thead><tr style={{ background: "#FCE7F3", color: ASSET_UI.ink }}>{cols.map(c => th(c.l))}</tr></thead>
+        <tbody>{rows.map((r, i) => <tr key={i}>{cols.map(c => <React.Fragment key={c.l}>{td(c.get(r))}</React.Fragment>)}</tr>)}</tbody>
+      </table></div>
+    ) : <div style={{ fontSize: 12, color: "#15803d" }}>✓ {empty}</div>);
+    return (
+      <div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+          {card("Assets on register", S.totals.assets, S.totals.allAssets - S.totals.assets + " disposed")}
+          {card("Purchase value", A.money(S.totals.cost), "book value " + A.money(S.totals.book))}
+          {card("Transfers", S.totals.transfers, "all time")}
+          {card("Disposed", S.totals.disposals, S.totals.disposalValue ? "recovered " + A.money(S.totals.disposalValue) : null)}
+          {card("Open allocations", S.totals.openAllocations, S.totals.allocations + " ever")}
+          {card("Not acknowledged", S.totals.unacknowledged, "open, form unsigned", S.totals.unacknowledged ? "#b45309" : undefined)}
+          {card("Leavers holding assets", S.totals.leaverAllocations, null, S.totals.leaverAllocations ? "#b91c1c" : undefined)}
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>{A.REGISTERS.map(regCards)}</div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+          {panel("Assets by register and status", <AssetStack cols={stackCols} series={fams.map(f => ({ k: f.k, label: f.label, colour: f.colour }))} height={200} />)}
+          {panel("Movements per month (last 12)", <AssetStack cols={monthCols} series={[{ k: "transfers", label: "Transfers", colour: "#BE185D" }, { k: "disposals", label: "Disposals", colour: "#7F1D1D" }, { k: "allocations", label: "Allocations", colour: "#A78BC7" }]} height={200} />)}
+          {panel("Assets by location (click to open the register)", <AssetBars rows={branchRows} onPick={r => { setF(prev => ({ ...prev, branch: r.label })); setSub("register"); }} />)}
+          {panel("Purchase value by location (top 15)", <AssetBars rows={costRows} fmt={v => A.money(v)} colour="#A78BC7" />)}
+          {panel("Disposals by method", Object.keys(S.disposalsByMethod).length ? (
+            <table style={{ borderCollapse: "collapse", fontSize: 12, minWidth: 260 }}><tbody>
+              {Object.keys(S.disposalsByMethod).sort((p, q) => S.disposalsByMethod[q] - S.disposalsByMethod[p]).map(k => <tr key={k}><td style={{ padding: "5px 10px" }}>{k}</td><td style={{ padding: "5px 10px", textAlign: "right", fontWeight: 800 }}>{S.disposalsByMethod[k]}</td></tr>)}
+            </tbody></table>
+          ) : <div style={{ fontSize: 12, color: ASSET_UI.muted }}>No disposals recorded.</div>)}
+        </div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          {list("🚪 Leavers still holding assets", S.attention.leavers, [
+            { l: "Employee", get: r => (r.alloc.employee_name || "") + " (" + r.alloc.ec + ")" }, { l: "Left", get: r => r.leftDate ? _assetFmtDate(r.leftDate) + (r.daysSince != null && r.daysSince >= 0 ? " · " + r.daysSince + "d ago" : r.daysSince != null ? " · in " + (-r.daysSince) + "d" : "") : "on off-boarding list" },
+            { l: "Asset", get: r => <span>{idLink(r.asset)} {r.asset.description}</span> }, { l: "Allocation", get: r => r.alloc.allocation_no }, { l: "Branch", get: r => r.alloc.branch }
+          ], "No leaver is holding an asset.")}
+          {list("✍️ Allocations not acknowledged after 7 days", S.attention.unacknowledged, [
+            { l: "Employee", get: r => (r.alloc.employee_name || "") + " (" + r.alloc.ec + ")" }, { l: "Asset", get: r => <span>{idLink(r.asset)} {r.asset.description}</span> }, { l: "Issued", get: r => _assetFmtDate(r.alloc.date_issued) + " · " + r.days + "d" }, { l: "Allocation", get: r => r.alloc.allocation_no }
+          ], "Every open allocation is acknowledged.")}
+          {list("🔧 Under repair for more than 30 days", S.attention.underRepair, [
+            { l: "Asset", get: r => <span>{idLink(r.asset)} {r.asset.description}</span> }, { l: "Branch", get: r => r.asset.branch }, { l: "Since", get: r => r.since ? _assetFmtDate(r.since) + " · " + r.days + "d" : "date unknown" }
+          ], "Nothing stuck in repair.")}
+          {list("📅 Expiring within 60 days (warranty, licence disc, insurance, service)", S.attention.expiring, [
+            { l: "Asset", get: r => <span>{idLink(r.asset)} {r.asset.description}</span> }, { l: "What", get: r => r.what }, { l: "Date", get: r => _assetFmtDate(r.date) + (r.days < 0 ? " · overdue " + (-r.days) + "d" : " · in " + r.days + "d") }, { l: "Branch", get: r => r.asset.branch }
+          ], "Nothing expiring soon.")}
+        </div>
+      </div>
+    );
+  };
+
+  const renderRegister = () => {
+    const R = A.REGISTER_BY_KEY[register];
+    const counts = {}; A.REGISTERS.forEach(r => { counts[r.k] = assets.filter(a => a.register === r.k && !a.archived_at && a.status !== "Disposed" && inScope(a.branch)).length; });
+    const title = R.label + " register";
+    return (
+      <div>
+        <div style={{ marginBottom: 10 }}>{segBar(A.REGISTERS.map(r => ({ k: r.k, l: r.label + " [" + r.prefix + "-0001]", icon: r.icon, n: counts[r.k] })), register, setRegister)}</div>
+        {toolbar(
+          <>
+            {filterSel(f.branch, v => setF({ ...f, branch: v }), locations, "All locations")}
+            {filterSel(f.status, v => setF({ ...f, status: v }), cfg.statuses, "All statuses")}
+            {filterSel(f.condition, v => setF({ ...f, condition: v }), cfg.conditions, "All conditions")}
+            {filterSel(f.category, v => setF({ ...f, category: v }), cfg.categories[register], "All categories")}
+            <label style={{ fontSize: 11.5, color: ASSET_UI.ink, display: "flex", alignItems: "center", gap: 4 }}><input type="checkbox" checked={f.showDisposed} onChange={e => setF({ ...f, showDisposed: e.target.checked })} /> show disposed</label>
+            {isAdmin && <label style={{ fontSize: 11.5, color: ASSET_UI.ink, display: "flex", alignItems: "center", gap: 4 }}><input type="checkbox" checked={f.showArchived} onChange={e => setF({ ...f, showArchived: e.target.checked })} /> show archived</label>}
+          </>,
+          <>
+            {canEdit && <button onClick={() => setModal({ kind: "asset", register, status: "In Storage", details: {} })} style={ASSET_BTN("primary")}>➕ Add asset</button>}
+            {canEdit && <button onClick={() => setModal({ kind: "import", table: "asset", decisions: {} })} style={ASSET_BTN()}>⬆ Upload</button>}
+            <button onClick={() => downloadTemplate("asset")} style={ASSET_BTN()}>⬇ Template</button>
+            <button onClick={() => exportRows("csv", title, regColumns, regRows, "assets-" + register)} style={ASSET_BTN()}>CSV</button>
+            <button onClick={() => exportRows("pdf", title, regColumns, regRows, "assets-" + register)} style={ASSET_BTN()}>PDF</button>
+            {isAdmin && canEdit && <button onClick={openLists} style={ASSET_BTN()}>⚙ Lists</button>}
+          </>
+        )}
+        <div style={{ background: "#fff", borderRadius: 13, border: "1px solid #FBCFE8", overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, color: ASSET_UI.text }}>
+            <thead><tr style={{ background: "#FCE7F3", color: ASSET_UI.ink }}>
+              {th("Asset ID")}{th("Category")}{th("Description")}{th("Brand / model")}{th("Serial")}{th("Tag")}{th("Purchased")}{th("Cost", { textAlign: "right" })}{th("Book value", { textAlign: "right" })}{th("Assigned to")}{th("Location")}{th("Dept")}{th("Issued")}{th("Condition")}{th("Status")}
+              {register === "IT" && th("Warranty")}{(A.DETAIL_FIELDS[register] || []).map(d => th(d.l))}
+            </tr></thead>
+            <tbody>
+              {loading && !assets.length && emptyRow(20, "Loading…")}
+              {!loading && !regRows.length && emptyRow(20, "No " + R.label.toLowerCase() + " match. Add one with ➕ Add asset, or upload the CSV template.")}
+              {regRows.map(a => {
+                const bv = bookOf(a);
+                const dim = a.status === "Disposed" || a.archived_at;
+                return (
+                  <tr key={a.id} onClick={() => setDrawer(a.id)} style={{ cursor: "pointer", opacity: dim ? 0.55 : 1, background: drawer === a.id ? "#FDF2F8" : undefined }}>
+                    {td(<span style={{ color: ASSET_UI.pink, fontWeight: 800, whiteSpace: "nowrap" }}>{a.asset_id}{a.archived_at ? " 🗄" : ""}</span>)}
+                    {td(a.category)}{td(<span style={{ fontWeight: 600 }}>{a.description}</span>)}{td([a.brand, a.model].filter(Boolean).join(" "))}{td(a.serial_number)}{td(a.asset_tag)}
+                    {td(a.purchase_date ? _assetFmtDate(a.purchase_date) : "", { whiteSpace: "nowrap" })}
+                    {td(a.purchase_cost != null ? A.money(a.purchase_cost) : "", { textAlign: "right", whiteSpace: "nowrap" })}
+                    {td(bv.value != null ? A.money(bv.value) : "", { textAlign: "right", whiteSpace: "nowrap", color: ASSET_UI.muted })}
+                    {td(a.assigned_name ? <span>{a.assigned_name}{a.assigned_ec ? <span style={{ color: ASSET_UI.muted }}> ({a.assigned_ec})</span> : null}{a.assigned_ec && leavers[A.normEc(a.assigned_ec)] ? <span style={{ marginLeft: 5, fontSize: 9.5, fontWeight: 800, color: "#b91c1c" }}>LEFT</span> : null}</span> : <span style={{ color: ASSET_UI.muted }}>—</span>)}
+                    {td(a.branch)}{td(a.department)}{td(a.date_issued ? _assetFmtDate(a.date_issued) : "", { whiteSpace: "nowrap" })}{td(a.condition)}{td(_assetStatusPill(a.status))}
+                    {register === "IT" && td(a.warranty_expiry ? <span style={{ color: a.warranty_expiry < today ? "#b91c1c" : undefined }}>{_assetFmtDate(a.warranty_expiry)}</span> : "", { whiteSpace: "nowrap" })}
+                    {(A.DETAIL_FIELDS[register] || []).map(dd => <React.Fragment key={dd.k}>{td((a.details || {})[dd.k] ? (dd.t === "date" ? _assetFmtDate((a.details || {})[dd.k]) : String((a.details || {})[dd.k])) : "", { whiteSpace: "nowrap" })}</React.Fragment>)}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <div style={{ fontSize: 11, color: ASSET_UI.muted, marginTop: 6 }}>{regRows.length} asset{regRows.length === 1 ? "" : "s"} shown · click a row for details, history and actions · book value is straight-line over {cfg.usefulLifeDefault[register]} months unless the category overrides it.</div>
+      </div>
+    );
+  };
+
+  const renderMovements = () => {
+    const isT = moveKind === "transfer";
+    const cols = isT ? transferColumns : disposalColumns;
+    const title = isT ? "Asset movements / transfers" : "Asset disposals";
+    return (
+      <div>
+        <div style={{ marginBottom: 10 }}>{segBar([{ k: "transfer", l: "Movements / Transfers [MOV-0001]", icon: "🔀" }, { k: "disposal", l: "Disposals [DISP-0001]", icon: "🗑" }], moveKind, setMoveKind)}</div>
+        {toolbar(
+          <>
+            <input type="date" value={moveRange.from} onChange={e => setMoveRange({ ...moveRange, from: e.target.value })} style={{ ...ASSET_INPUT, width: 140 }} />
+            <span style={{ fontSize: 11, color: ASSET_UI.muted }}>to</span>
+            <input type="date" value={moveRange.to} onChange={e => setMoveRange({ ...moveRange, to: e.target.value })} style={{ ...ASSET_INPUT, width: 140 }} />
+            {filterSel(moveBranch, setMoveBranch, locations, "All locations")}
+          </>,
+          <>
+            {canEdit && isT && <button onClick={() => setModal({ kind: "transfer", asset: null, date: today })} style={ASSET_BTN("primary")}>➕ Record movement</button>}
+            {canEdit && !isT && isAdmin && <button onClick={() => setModal({ kind: "disposal", asset: null, date: today })} style={ASSET_BTN("primary")}>➕ Record disposal</button>}
+            {canEdit && (isT || isAdmin) && <button onClick={() => setModal({ kind: "import", table: moveKind, decisions: {} })} style={ASSET_BTN()}>⬆ Upload</button>}
+            <button onClick={() => downloadTemplate(moveKind)} style={ASSET_BTN()}>⬇ Template</button>
+            <button onClick={() => exportRows("csv", title, cols, moveRows, isT ? "asset-movements" : "asset-disposals")} style={ASSET_BTN()}>CSV</button>
+            <button onClick={() => exportRows("pdf", title, cols, moveRows, isT ? "asset-movements" : "asset-disposals")} style={ASSET_BTN()}>PDF</button>
+          </>
+        )}
+        <div style={{ background: "#fff", borderRadius: 13, border: "1px solid #FBCFE8", overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, color: ASSET_UI.text }}>
+            <thead><tr style={{ background: "#FCE7F3", color: ASSET_UI.ink }}>{cols.map(c => th(c.label, c.money ? { textAlign: "right" } : null))}{isAdmin && canEdit && th("")}</tr></thead>
+            <tbody>
+              {!moveRows.length && emptyRow(cols.length + 1, "No " + (isT ? "movements" : "disposals") + " in this range.")}
+              {moveRows.map(r => (
+                <tr key={r.id}>
+                  {cols.map(c => {
+                    const v = c.get ? c.get(r) : r[c.key];
+                    let cell;
+                    if (c.key === "asset") cell = td(idLink(r._asset));
+                    else if (c.key === "event_no") cell = td(<span style={{ fontWeight: 800, color: ASSET_UI.ink, whiteSpace: "nowrap" }}>{v}</span>);
+                    else if (c.key === "date") cell = td(_assetFmtDate(v), { whiteSpace: "nowrap" });
+                    else if (c.money) cell = td(v != null && v !== "" ? A.money(v) : "", { textAlign: "right", whiteSpace: "nowrap" });
+                    else cell = td(v);
+                    return <React.Fragment key={c.key}>{cell}</React.Fragment>;
+                  })}
+                  {isAdmin && canEdit && td(<button title={isT ? "Remove this movement" : "Undo this disposal"} onClick={() => setModal(isT ? { kind: "archive_event", asset: r._asset, event: r } : { kind: "undo_disposal", asset: r._asset, event: r })} style={{ background: "transparent", border: "none", color: ASSET_UI.muted, cursor: "pointer" }}>{isT ? "🗑" : "↺"}</button>)}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  };
+
+  const renderAllocation = () => {
+    const title = "Employee asset allocation (" + allocView + ")";
+    const groups = allocF.group ? (() => {
+      const g = {}; allocRows.forEach(r => { const k = r.ec || r.branch || "—"; (g[k] = g[k] || { key: k, name: r.employee_name || r.branch || k, rows: [] }).rows.push(r); });
+      return Object.values(g).sort((p, q) => p.name.localeCompare(q.name));
+    })() : null;
+    const rowJsx = (r) => (
+      <tr key={r.id} style={{ opacity: r.date_returned ? 0.6 : 1 }}>
+        {td(<span style={{ fontWeight: 800, color: ASSET_UI.ink, whiteSpace: "nowrap" }}>{r.allocation_no}</span>)}
+        {td(r.ec)}{td(<span style={{ fontWeight: 600 }}>{r.employee_name}{r._leaver ? <span style={{ marginLeft: 5, fontSize: 9.5, fontWeight: 800, color: "#b91c1c" }}>LEFT{r._leaver.leftDate ? " " + r._leaver.leftDate : ""}</span> : null}</span>)}
+        {td(r.job_title)}{td(r.department)}{td(r.branch)}{td(idLink(r._asset))}{td(r._asset.description)}{td(r._asset.category)}
+        {td(_assetFmtDate(r.date_issued), { whiteSpace: "nowrap" })}{td(r.condition_issued)}
+        {td(r.acknowledged ? <span style={{ color: "#15803d", fontWeight: 700, whiteSpace: "nowrap" }}>✓ Yes{r.acknowledged_at ? " · " + _assetFmtDate(r.acknowledged_at) : ""}</span> : <span style={{ color: "#b45309", fontWeight: 700 }}>No</span>)}
+        {td(r.date_returned ? _assetFmtDate(r.date_returned) : "", { whiteSpace: "nowrap" })}{td(r.condition_returned)}{td(r.outstanding_notes)}
+        {td(
+          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+            <button onClick={() => _assetAckPrint(r, r._asset)} title="Print the acknowledgement form" style={{ ...ASSET_BTN(), padding: "3px 8px", fontSize: 11 }}>🖨</button>
+            {canEdit && !r.date_returned && !r.acknowledged && <button onClick={() => setModal({ kind: "ack", alloc: r, date: today })} style={{ ...ASSET_BTN(), padding: "3px 8px", fontSize: 11 }}>✍️ Acknowledged</button>}
+            {canEdit && !r.date_returned && r.acknowledged && <button onClick={() => setModal({ kind: "ack", alloc: r, undo: true })} title="Remove acknowledgement" style={{ ...ASSET_BTN(), padding: "3px 8px", fontSize: 11, color: ASSET_UI.muted }}>✗</button>}
+            {canEdit && !r.date_returned && <button onClick={() => setModal({ kind: "return", alloc: r, date_returned: today, returned_to: r.branch || "" })} style={{ ...ASSET_BTN("primary"), padding: "3px 8px", fontSize: 11 }}>↩️ Return</button>}
+            {canEdit && isAdmin && <button onClick={() => setModal({ kind: "archive_alloc", asset: r._asset, alloc: r })} title="Remove this allocation record" style={{ background: "transparent", border: "none", color: ASSET_UI.muted, cursor: "pointer" }}>🗑</button>}
+          </div>
+        )}
+      </tr>
+    );
+    const head = <tr style={{ background: "#FCE7F3", color: ASSET_UI.ink }}>{["Allocation No.", "Employee No.", "Employee", "Job title", "Department", "Branch", "Asset ID", "Description", "Category", "Issued", "Condition issued", "Acknowledged", "Returned", "Condition returned", "Outstanding / notes", ""].map(l => th(l))}</tr>;
+    return (
+      <div>
+        <div style={{ marginBottom: 10 }}>{segBar([{ k: "open", l: "Open", n: allocs.filter(a => !a.archived_at && !a.date_returned).length }, { k: "returned", l: "Returned" }, { k: "all", l: "All" }], allocView, setAllocView)}</div>
+        {toolbar(
+          <>
+            {filterSel(allocF.branch, v => setAllocF({ ...allocF, branch: v }), locations, "All branches")}
+            {filterSel(allocF.department, v => setAllocF({ ...allocF, department: v }), cfg.departments, "All departments")}
+            {sel(allocF.ack, v => setAllocF({ ...allocF, ack: v }), [{ v: "All", l: "Acknowledged: any" }, { v: "yes", l: "Acknowledged" }, { v: "no", l: "Not acknowledged" }], { width: "auto", fontSize: 12, padding: "6px 8px" })}
+            <label style={{ fontSize: 11.5, color: ASSET_UI.ink, display: "flex", alignItems: "center", gap: 4 }}><input type="checkbox" checked={allocF.leavers} onChange={e => setAllocF({ ...allocF, leavers: e.target.checked })} /> leavers only</label>
+            <label style={{ fontSize: 11.5, color: ASSET_UI.ink, display: "flex", alignItems: "center", gap: 4 }}><input type="checkbox" checked={allocF.group} onChange={e => setAllocF({ ...allocF, group: e.target.checked })} /> group by employee</label>
+          </>,
+          <>
+            {canEdit && <button onClick={() => setModal({ kind: "allocate", asset: null, date_issued: today })} style={ASSET_BTN("primary")}>➕ Allocate</button>}
+            {canEdit && <button onClick={() => setModal({ kind: "import", table: "allocation", decisions: {} })} style={ASSET_BTN()}>⬆ Upload</button>}
+            <button onClick={() => downloadTemplate("allocation")} style={ASSET_BTN()}>⬇ Template</button>
+            <button onClick={() => exportRows("csv", title, allocColumns, allocRows, "asset-allocations")} style={ASSET_BTN()}>CSV</button>
+            <button onClick={() => exportRows("pdf", title, allocColumns, allocRows, "asset-allocations")} style={ASSET_BTN()}>PDF</button>
+          </>
+        )}
+        <div style={{ background: "#fff", borderRadius: 13, border: "1px solid #FBCFE8", overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, color: ASSET_UI.text }}>
+            <thead>{head}</thead>
+            <tbody>
+              {!allocRows.length && emptyRow(16, "No allocations match.")}
+              {!groups && allocRows.map(rowJsx)}
+              {groups && groups.map(g => (
+                <React.Fragment key={g.key}>
+                  <tr><td colSpan={16} style={{ padding: "8px 10px", background: "#FDF2F8", fontWeight: 800, color: ASSET_UI.ink, fontSize: 12 }}>{g.name} <span style={{ color: ASSET_UI.muted, fontWeight: 600 }}>{g.key !== g.name ? g.key + " · " : ""}{g.rows.length} item{g.rows.length === 1 ? "" : "s"}</span>
+                    <button onClick={() => exportRows("pdf", "Assets held by " + g.name, allocColumns, g.rows, "assets-" + g.key)} style={{ ...ASSET_BTN(), padding: "2px 8px", fontSize: 11, marginLeft: 10 }}>🖨 List</button></td></tr>
+                  {g.rows.map(rowJsx)}
+                </React.Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  };
+
+  /* ═══ PAGE ═════════════════════════════════════════════════════════════ */
+  const subDesc = {
+    dashboard: <>Every number here is computed live from the registers — nothing is typed in. Click an asset ID anywhere to open its history.</>,
+    register: <>One row per asset, in four registers. The row shows the asset's <strong>current</strong> location, holder and status, which change through Transfer, Allocate, Return and Dispose so the history is never lost. Book value is straight-line depreciation.</>,
+    movements: <>Every transfer between locations (MOV-) and every disposal (DISP-). From-branch and previous assignee are filled from the asset, never typed.</>,
+    allocation: <>Who holds what (AL-). Print the acknowledgement form, tick it when signed, and record the return when the asset comes back — a leaver's outstanding assets show on the dashboard.</>
+  };
+  return (
+    <div style={{ padding: "0 24px", position: "relative" }}>
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, color: ASSET_UI.ink, fontWeight: 700, marginBottom: 4 }}>📦 Assets</div>
+        <div style={{ fontSize: 12, color: ASSET_UI.rose }}>{subDesc[sub]}</div>
+      </div>
+      {renderScopeBar && renderScopeBar({ marginBottom: 12 })}
+      <div style={{ display: "flex", gap: 6, background: "#FCE7F3", border: "1px solid #FBCFE8", borderRadius: 10, padding: 4, marginBottom: 14, width: "fit-content", flexWrap: "wrap" }}>
+        {subsOf("assets").filter(s => acl.subVisible("assets", s.k)).map(s => (
+          <button key={s.k} onClick={() => setSub(s.k)}
+            style={{ padding: "6px 14px", borderRadius: 7, border: "none", background: sub === s.k ? "#BE185D" : "transparent", color: sub === s.k ? "#fff" : "#831843", fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
+            {s.icon} {s.l}
+          </button>
+        ))}
+        <button onClick={() => reload()} title="Refresh" style={{ padding: "6px 10px", borderRadius: 7, border: "none", background: "transparent", color: "#831843", fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>{loading ? "⏳" : "↻"}</button>
+      </div>
+      {readOnly && <div style={{ fontSize: 12, color: "#b45309", background: "#FEF3C7", border: "1px solid #fde68a", borderRadius: 8, padding: "6px 10px", marginBottom: 10 }}>View only — you can browse and export, not change anything.</div>}
+      {sub === "dashboard" && renderDashboard()}
+      {sub === "register" && renderRegister()}
+      {sub === "movements" && renderMovements()}
+      {sub === "allocation" && renderAllocation()}
+      {renderDrawer()}
+      {renderModal()}
+      {toast && <div style={{ position: "fixed", bottom: 22, left: "50%", transform: "translateX(-50%)", background: "#831843", color: "#fff", padding: "9px 16px", borderRadius: 999, fontSize: 12.5, fontWeight: 700, zIndex: 10000, boxShadow: "0 8px 24px rgba(0,0,0,0.25)" }}>{toast}</div>}
+    </div>
+  );
+}
+
 function App({ currentUser: _realUser, onSignOut, appUsers, onUsersUpdate }) {
   /* ═══ VIEW AS ════════════════════════════════════════════════════════════
      Every permission bug in this rework was found the same way: sign in as
@@ -27026,6 +28289,7 @@ function App({ currentUser: _realUser, onSignOut, appUsers, onUsersUpdate }) {
   const [trialSubTab, setTrialSubTab] = useState("nt");             // "nt" | "am"
   const [officeTrialSubTab, setOfficeTrialSubTab] = useState("HO");  // "HO" | "CC" — HQ Trials dept toggle
   const [cashupSubTab, setCashupSubTab] = useState("daily");         // "daily" | "float" — Cash Ups child
+  const [assetSubTab, setAssetSubTab] = useState("dashboard");       // "dashboard" | "register" | "movements" | "allocation" — Assets child
   const [offSubTab, setOffSubTab] = useState("list");               // "list" | "term" | "disc"
   // Two parents keep their sub-tab state inside their own component. They
   // report it up here so read-only can still be answered per child — without
@@ -27043,13 +28307,13 @@ function App({ currentUser: _realUser, onSignOut, appUsers, onUsersUpdate }) {
   const ACTIVE_SUB = {
     scheduling: schedSubTab, leave: leaveSubTab, offboard: offSubTab,
     trialPeriod: trialSubTab, officeTrials: officeTrialSubTab, recruitment: recruitSubTab,
-    cashups: cashupSubTab,
+    cashups: cashupSubTab, assets: assetSubTab,
     incidents: subReport.incidents, hrReports: subReport.hrReports
   };
   const SUB_SETTER = {
     scheduling: setSchedSubTab, leave: setLeaveSubTab, offboard: setOffSubTab,
     trialPeriod: setTrialSubTab, officeTrials: setOfficeTrialSubTab, recruitment: setRecruitSubTab,
-    cashups: setCashupSubTab
+    cashups: setCashupSubTab, assets: setAssetSubTab
   };
 
   // Whether the active tab is read-only for the signed-in user. Surfaced via a
@@ -27066,7 +28330,7 @@ function App({ currentUser: _realUser, onSignOut, appUsers, onUsersUpdate }) {
     if (list.includes(tab)) return true;
     const s = ACTIVE_SUB[tab];
     return !!(s && list.includes(subKey(tab, s)));
-  }, [currentUser, tab, schedSubTab, leaveSubTab, offSubTab, trialSubTab, officeTrialSubTab, recruitSubTab, cashupSubTab, subReport]);
+  }, [currentUser, tab, schedSubTab, leaveSubTab, offSubTab, trialSubTab, officeTrialSubTab, recruitSubTab, cashupSubTab, assetSubTab, subReport]);
   useEffect(() => {
     window.__BOA_RO_ACTIVE = !!currentTabIsReadOnly;
     return () => { window.__BOA_RO_ACTIVE = false; };
@@ -27218,7 +28482,7 @@ function App({ currentUser: _realUser, onSignOut, appUsers, onUsersUpdate }) {
   // Map of tab → category name. Kept in sync with the groups list below.
   const NAV_TAB_TO_CATEGORY = {
     onboard: "People", offboard: "People", staff: "People", officeStaff: "People", recruitment: "People", hrLibrary: "People", maternity: "People", unpaidLegal: "People", trialPeriod: "People", officeTrials: "People", smTrial: "People",
-    scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", hoCheckins: "Operations", ccCheckins: "Operations", leave: "Operations", checkins: "Operations", freshaTodo: "Operations", storeOpenings: "Operations", storeHours: "Operations", movements: "Operations", cashups: "Operations", mgrCoverage: "Operations",
+    scheduling: "Operations", locations: "Operations", mgrclockins: "Operations", hoCheckins: "Operations", ccCheckins: "Operations", leave: "Operations", checkins: "Operations", freshaTodo: "Operations", storeOpenings: "Operations", storeHours: "Operations", movements: "Operations", cashups: "Operations", assets: "Operations", mgrCoverage: "Operations",
     attendance: "Payroll", payrollProgress: "Payroll", payrollReports: "Payroll", overtime: "Payroll", officeHours: "Payroll", payrollInbox: "Payroll", leaveBalances: "Payroll", frl: "Payroll",
     leaveRequests: "Operations", calledInSick: "Operations", extraDayRequests: "Operations",
     alerts: "Insights", activity: "Insights", storeReports: "Insights", hrReports: "Insights", staffingReport: "Insights",
@@ -27991,6 +29255,18 @@ function App({ currentUser: _realUser, onSignOut, appUsers, onUsersUpdate }) {
     try { if (window.BOA_DB.saveCashupReviewAccess) await window.BOA_DB.saveCashupReviewAccess(next); }
     catch (e) { window.alert("Could not save cash-up review access: " + (e.message || e)); }
   };
+  // Asset admin (boa_asset_admin_access_v1): who may dispose / undo / archive
+  // / edit the asset dropdown lists. PIN list only; Owner + Developer implicit.
+  const [assetAdminAccess, setAssetAdminAccess] = useState({});
+  const assetAdminCfg = useMemo(() => {
+    const c = assetAdminAccess || {};
+    return { roles: Array.isArray(c.roles) ? c.roles : [], pins: Array.isArray(c.pins) ? c.pins : [] };
+  }, [assetAdminAccess]);
+  const saveAssetAdminCfg = async (next) => {
+    setAssetAdminAccess(next);
+    try { if (window.BOA_DB.saveAssetAdminAccess) await window.BOA_DB.saveAssetAdminAccess(next); }
+    catch (e) { window.alert("Could not save asset admin access: " + (e.message || e)); }
+  };
   // Leave-request workflow gates: who clears the operational check
   // (boa_leave_ops_access_v1, default Regional Ops) and who does the payroll /
   // leave-balance check (boa_leave_payroll_access_v1, default Payroll roles).
@@ -28009,10 +29285,10 @@ function App({ currentUser: _realUser, onSignOut, appUsers, onUsersUpdate }) {
   // defaults. Read-only: it computes, it never writes.
   useEffect(() => {
     window.__BOA_ACL_AUDIT = (pin) => aclAudit(appUsers, {
-      offboard: offboardAccess, overtime: overtimeCfg, cashupReview: cashupReviewCfg
+      offboard: offboardAccess, overtime: overtimeCfg, cashupReview: cashupReviewCfg, assetAdmin: assetAdminCfg
     }, pin);
     return () => { delete window.__BOA_ACL_AUDIT; };
-  }, [appUsers, offboardAccess, overtimeCfg, cashupReviewCfg]);
+  }, [appUsers, offboardAccess, overtimeCfg, cashupReviewCfg, assetAdminCfg]);
   // Who can see the Leave Requests tab: the broad incident roles PLUS anyone
   // granted the operational or payroll leave check in Settings (e.g. an Ops
   // person ticked for the operational gate). Previously this only used
@@ -28091,7 +29367,39 @@ function App({ currentUser: _realUser, onSignOut, appUsers, onUsersUpdate }) {
       const first = subsOf(pt).find(s => acl.subVisible(pt, s.k));
       if (first) set(first.k);
     });
-  }, [currentUser, acl, schedSubTab, leaveSubTab, offSubTab, trialSubTab, officeTrialSubTab, recruitSubTab, cashupSubTab]);
+  }, [currentUser, acl, schedSubTab, leaveSubTab, offSubTab, trialSubTab, officeTrialSubTab, recruitSubTab, cashupSubTab, assetSubTab]);
+
+  // ── Asset register (Operations → Assets) ───────────────────────────────
+  // Rows are small text (no photos) and are fetched only when the tab or the
+  // dashboard is open — the dashboard alert reads the same rows as the tab,
+  // which is what keeps the two from disagreeing about a leaver's assets.
+  const [assetsCfg, setAssetsCfg] = useState(null);                    // boa_assets_cfg_v1 (raw; normCfg fills defaults)
+  const [assetData, setAssetData] = useState({ assets: [], events: [], allocations: [], loaded: false });
+  const [assetLoading, setAssetLoading] = useState(false);
+  const reloadAssets = React.useCallback(async () => {
+    if (!window.BOA_DB || !window.BOA_DB.loadAssetBundle) return;
+    setAssetLoading(true);
+    try {
+      const [bundle, cfg] = await Promise.all([
+        window.BOA_DB.loadAssetBundle({ includeArchived: true }),
+        window.BOA_DB.loadAssetsCfg()
+      ]);
+      setAssetData({ ...bundle, loaded: true });
+      setAssetsCfg(cfg || null);
+    } catch (e) {
+      console.error("reloadAssets:", e);
+    } finally { setAssetLoading(false); }
+  }, []);
+  useEffect(() => {
+    if (!acl.visible.has("assets")) return;
+    if (tab !== "assets" && tab !== "dashboard") return;
+    reloadAssets();
+  }, [tab, acl, reloadAssets]);
+  const saveAssetsCfg = async (next) => {
+    await window.BOA_DB.saveAssetsCfg(next);
+    setAssetsCfg(next);
+  };
+  const canAssetAdmin = can(currentUser, "act.assets.admin", { assetAdmin: assetAdminCfg });
   /* ═══ ONE ANSWER, EVERYWHERE ═════════════════════════════════════════════
      Below this line the role predicates are gone. Every surface — the tab
      body, the data that fills it, the columns inside it and the dashboard
@@ -29695,6 +31003,7 @@ function App({ currentUser: _realUser, onSignOut, appUsers, onUsersUpdate }) {
       window.BOA_DB.loadOfficeStaffAccess ? window.BOA_DB.loadOfficeStaffAccess() : Promise.resolve({}),
       window.BOA_DB.loadOfficeHoursAccess ? window.BOA_DB.loadOfficeHoursAccess() : Promise.resolve({}),
       window.BOA_DB.loadCashupReviewAccess ? window.BOA_DB.loadCashupReviewAccess() : Promise.resolve({}),
+      window.BOA_DB.loadAssetAdminAccess ? window.BOA_DB.loadAssetAdminAccess() : Promise.resolve({}),
       _pLeaveOps,
       _pLeavePayroll,
       window.BOA_DB.loadLeaveBalancesAccess ? window.BOA_DB.loadLeaveBalancesAccess() : Promise.resolve({}),
@@ -29709,7 +31018,7 @@ function App({ currentUser: _realUser, onSignOut, appUsers, onUsersUpdate }) {
       window.BOA_DB.loadOfficeTrial ? window.BOA_DB.loadOfficeTrial() : Promise.resolve([]),
       window.BOA_DB.loadProbation ? window.BOA_DB.loadProbation() : Promise.resolve({}),
       window.BOA_DB.loadCashFloatCfg ? window.BOA_DB.loadCashFloatCfg() : Promise.resolve(null)
-    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess, offStaffAccess, offHoursAccess, cuReviewAccess, lvOpsAccess, lvPayrollAccess, lvBalancesAccess, incidents, leaveReqs, extraReqs, freshaExtraOpenMap, freshaBlocksMap, interviews, smCriteria, retiredEcList, officeTrial, probationMap, cashFloatCfgIn]) => {
+    ]).then(([d, ob, off, lv, pins, tasks, trial, smTrial, ot, freshaAcc, otAccess, offStaffAccess, offHoursAccess, cuReviewAccess, assetAdminAcc, lvOpsAccess, lvPayrollAccess, lvBalancesAccess, incidents, leaveReqs, extraReqs, freshaExtraOpenMap, freshaBlocksMap, interviews, smCriteria, retiredEcList, officeTrial, probationMap, cashFloatCfgIn]) => {
       // Register Head Office employee codes BEFORE any state update so
       // isManagerEc() never mis-classifies an HO person (e.g. a -M code) as a
       // salon manager. Rebuilt each load; empty when no HO staff exist.
@@ -29818,6 +31127,7 @@ function App({ currentUser: _realUser, onSignOut, appUsers, onUsersUpdate }) {
       setOfficeStaffAccess(offStaffAccess && typeof offStaffAccess === "object" ? offStaffAccess : {});
       setOfficeHoursAccess(offHoursAccess && typeof offHoursAccess === "object" ? offHoursAccess : {});
       setCashupReviewAccess(cuReviewAccess && typeof cuReviewAccess === "object" ? cuReviewAccess : {});
+      setAssetAdminAccess(assetAdminAcc && typeof assetAdminAcc === "object" ? assetAdminAcc : {});
       setLeaveOpsAccess(lvOpsAccess && typeof lvOpsAccess === "object" ? lvOpsAccess : {});
       setLeavePayrollAccess(lvPayrollAccess && typeof lvPayrollAccess === "object" ? lvPayrollAccess : {});
       setLeaveBalancesAccess(lvBalancesAccess && typeof lvBalancesAccess === "object" ? lvBalancesAccess : {});
@@ -31595,6 +32905,35 @@ function App({ currentUser: _realUser, onSignOut, appUsers, onUsersUpdate }) {
   // and its "on maternity / left" filter would be inert.
   const enrichedOffice = useMemo(() => _enrichRoster(hoStaff), [hoStaff, _enrichRoster]);
 
+  // Everyone an asset can be issued to, with the snapshot fields the
+  // allocation stores (job title / department / branch), plus who has left —
+  // the dashboard's "leavers still holding assets" reads this.
+  const assetPeople = useMemo(() => {
+    const t = new Date();
+    const todayYmd = t.getFullYear() + "-" + String(t.getMonth() + 1).padStart(2, "0") + "-" + String(t.getDate()).padStart(2, "0");
+    const MGR_TITLE = { SSM: "Senior Store Manager", SM: "Store Manager", AM: "Assistant Manager", M: "Manager" };
+    const OFFICE_DEPT = { HR: "HR", PM: "Finance", REC: "HR", OA: "Administration", MC: "Marketing", T: "Training", EPA: "Management", HOH: "Operations", MCC: "Call Centre", CC: "Call Centre", SALES: "Call Centre" };
+    const seen = new Set(), out = [];
+    const push = (p, jobTitle, department) => {
+      const ec = String((p && p.ec) || "").trim();
+      if (!ec || seen.has(ec.toUpperCase())) return;
+      seen.add(ec.toUpperCase());
+      const off = offboardedMap[ec] || p.offRec || null;
+      const leftDate = p.leftDate || (off && off.leftDate) || null;
+      const departed = !!(p.offboarded || off || (leftDate && leftDate <= todayYmd) || p.active === false);
+      out.push({ ec, name: (p.name || ((p.firstName || "") + " " + (p.surname || "")).trim() || ec).trim(), branch: p.branch || "", jobTitle, department, departed, leftDate });
+    };
+    (enriched || []).forEach(p => push(p, "Nail Technician", "Salon"));
+    (managers || []).forEach(p => push(p, MGR_TITLE[String(p.role || "").toUpperCase()] || (p.role ? String(p.role) : "Manager"), "Salon"));
+    (enrichedOffice || []).forEach(p => push(p, OFFICE_ROLE_LABEL[String(p.role || "").toUpperCase()] || (p.role ? String(p.role) : "Office"), OFFICE_DEPT[String(p.role || "").toUpperCase()] || (isCcRole(p.role) ? "Call Centre" : "Administration")));
+    return out.sort((a, b) => a.name.localeCompare(b.name));
+  }, [enriched, managers, enrichedOffice, offboardedMap]);
+  const assetLeavers = useMemo(() => {
+    const m = {};
+    assetPeople.forEach(p => { if (p.departed) m[p.ec.toUpperCase().replace(/[\s-]+/g, "")] = { name: p.name, leftDate: p.leftDate, departed: true }; });
+    return m;
+  }, [assetPeople]);
+
   // Authoritative "nail techs working today" tally, derived from the dashboard
   // loader's per-branch techByEc map (which already applies kiosk daily sign-off
   // gating, loan resolution and present/absent classification). Collapses to one
@@ -33293,6 +34632,7 @@ function App({ currentUser: _realUser, onSignOut, appUsers, onUsersUpdate }) {
                   { t: "dailyTasks", l: "📋 Daily Tasks" },
                   { t: "mgrCoverage", l: "🗓 Manager Coverage" },
                   { t: "cashups", l: "💰 Cash Ups" },
+                  { t: "assets", l: "📦 Assets" },
                   ...(acl.subVisible("recruitment", "mgrRecruit") ? [{
                     t: "mgrPlanner", l: "🧩 Manager Planner",
                     isActive: tab === "recruitment" && recruitSubTab === "mgrRecruit" && mgrSubTab === "planner",
@@ -34525,12 +35865,43 @@ function App({ currentUser: _realUser, onSignOut, appUsers, onUsersUpdate }) {
                 };
               })());
 
+              /* ── SECTION: ASSETS — leavers still holding assets ──
+                 Open allocations whose employee has left or is on the
+                 off-boarding list. Same rows the Assets tab shows, so the
+                 count here and the list there cannot disagree. */
+              dashAlert("assetsOutstanding", "operations", "warning",
+              acl.visible.has("assets") && assetData.loaded && (() => {
+                const A = window.BOA_ASSETS;
+                if (!A) return null;
+                const S = A.summarise(assetData.assets, assetData.events, assetData.allocations, { cfg: assetsCfg, leavers: assetLeavers });
+                const rows = S.attention.leavers;
+                if (!rows.length) return null;
+                return (
+                  <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 16, padding: "16px 20px", marginBottom: 20, boxShadow: "0 4px 14px rgba(180,83,9,0.10)", display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+                    <div style={{ flex: 1, minWidth: 280 }}>
+                      <div style={{ fontSize: 15, fontWeight: 800, color: "#92400e", letterSpacing: "0.04em", textTransform: "uppercase" }}>📦 Leavers still holding company assets</div>
+                      <div style={{ fontSize: 12.5, color: "#92400e", fontWeight: 700, marginTop: 4 }}>
+                        {rows.length} asset{rows.length === 1 ? "" : "s"} still allocated to {new Set(rows.map(r => r.alloc.ec)).size} {new Set(rows.map(r => r.alloc.ec)).size === 1 ? "person who has" : "people who have"} left or are being off-boarded.
+                      </div>
+                      <div style={{ fontSize: 11.5, color: "#b45309", marginTop: 3 }}>
+                        {rows.slice(0, 4).map(r => (r.alloc.employee_name || r.alloc.ec) + " · " + (r.asset.asset_id || "") + (r.leftDate ? " (left " + r.leftDate + ")" : "")).join(" · ")}{rows.length > 4 ? " · +" + (rows.length - 4) + " more" : ""}
+                      </div>
+                    </div>
+                    <button onClick={() => { setAssetSubTab("allocation"); tryChangeTab("assets"); }}
+                      style={{ background: "#b45309", color: "#fff", border: "none", borderRadius: 10, padding: "10px 18px", fontWeight: 800, fontSize: 13, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap", boxShadow: "0 4px 12px rgba(180,83,9,0.3)" }}>
+                      Record returns →
+                    </button>
+                  </div>
+                );
+              })());
+
               /* ── SECTION: PAYMENTS THAT DON'T BALANCE ──
                   The non-cash half of the Fresha reconciliation. Counts only
                   rows nobody has looked at yet: an escalated one is already
                   somebody's job and does not need chasing from here as well.
                   A muted line still appears on the tab — muting is for a
                   training problem that would otherwise ring this bell every
+
                   morning, not for making a mismatch disappear. */
               dashAlert("paymentMismatch", "operations", "warning",
               acl.visible.has("cashups") && window.BOA_CASH_FLOAT && (() => {
@@ -54666,6 +56037,8 @@ function App({ currentUser: _realUser, onSignOut, appUsers, onUsersUpdate }) {
           onOfficeHoursCfgSave={saveOfficeHoursCfg}
           cashupReviewCfg={cashupReviewCfg}
           onCashupReviewCfgSave={saveCashupReviewCfg}
+          assetAdminCfg={assetAdminCfg}
+          onAssetAdminCfgSave={saveAssetAdminCfg}
           leaveOpsCfg={leaveOpsCfg}
           onLeaveOpsCfgSave={saveLeaveOpsCfg}
           leavePayrollCfg={leavePayrollCfg}
@@ -54675,6 +56048,18 @@ function App({ currentUser: _realUser, onSignOut, appUsers, onUsersUpdate }) {
           smCriteriaCfg={smCriteriaCfg}
           onSmCriteriaSave={saveSmCriteriaCfg}
         /></div>
+      )}
+
+      {tab === "assets" && acl.visible.has("assets") && (
+        <AssetsTab
+          sub={assetSubTab} setSub={setAssetSubTab} acl={acl}
+          currentUser={currentUser} readOnly={currentTabIsReadOnly} isAdmin={canAssetAdmin}
+          cfg={assetsCfg} onCfgSave={saveAssetsCfg}
+          data={assetData} loading={assetLoading} reload={reloadAssets}
+          salons={SALONS} hasStoreScope={_hasStoreScope} scopedSalonNames={scopedSalonNames} renderScopeBar={renderScopeBar}
+          people={assetPeople} leavers={assetLeavers}
+          logActivity={logActivity}
+        />
       )}
 
       {tab === "storeAllocation" && (() => {

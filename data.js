@@ -3222,9 +3222,438 @@
     return { window: { fromYmd: opts.fromYmd, toYmd: opts.toYmd }, lastPaymentDate: data.lastPaymentDate, cards: cards };
   }
 
+  /* ---------- Asset register (assets / asset_events / asset_allocations) ----
+     Operations → Assets. Plan and rules: docs/assets-plan.md, assets.js.
+
+     The asset row carries the asset's CURRENT state as a projection. Every
+     write that touches history (event, allocation, return, undo) ends with
+     _refreshAssetProjection(), which folds the live history through
+     BOA_ASSETS.project() and writes the result back. That is the one path by
+     which branch / holder / status / condition on the row are ever set once
+     the asset has history, so the register can never disagree with the
+     timeline.
+
+     IDs (IT-0001, MOV-0001, AL-0001 …) are assigned here at insert from
+     max(existing)+1 and never reused; the unique index turns a concurrent
+     collision into a 23505 that we retry once with the next number.
+
+     Column discipline: assets.photo is reserved for a base64 data URL and is
+     NOT in ASSET_COLS. Nothing writes it yet. ---------------------------- */
+  var ASSET_COLS = "id,asset_id,register,category,description,brand,model,serial_number,asset_tag," +
+    "purchase_date,purchase_cost,supplier,invoice_ref,warranty_expiry,branch,department,assigned_ec," +
+    "assigned_name,date_issued,condition,status,details,notes,created_by,created_at,updated_by,updated_at," +
+    "archived_at,archived_by";
+  var ASSET_EVENT_COLS = "id,event_no,asset_id,kind,date,from_branch,to_branch,from_ec,to_ec,to_name,reason," +
+    "disposal_method,disposal_value,condition,to_status,approved_by,received_by,recorded_by,notes,created_at," +
+    "archived_at,archived_by,archive_reason";
+  var ASSET_ALLOC_COLS = "id,allocation_no,asset_id,ec,employee_name,job_title,department,branch,date_issued," +
+    "condition_issued,acknowledged,acknowledged_at,acknowledged_via,date_returned,condition_returned," +
+    "returned_to,outstanding_notes,recorded_by,created_at,archived_at,archived_by";
+  // Fields the asset form may write directly. Branch / holder / status /
+  // condition are in here too, but only land while the asset has NO history —
+  // see saveAsset.
+  var ASSET_EDITABLE = ["register", "category", "description", "brand", "model", "serial_number", "asset_tag",
+    "purchase_date", "purchase_cost", "supplier", "invoice_ref", "warranty_expiry", "department", "details", "notes"];
+  var ASSET_BASE_STATE = ["branch", "status", "condition"];
+
+  function _AS() {
+    if (!window.BOA_ASSETS) throw new Error("assets.js is not loaded");
+    return window.BOA_ASSETS;
+  }
+  function _isUniqueViolation(err) {
+    return !!(err && (err.code === "23505" || /duplicate key/i.test(String(err.message || ""))));
+  }
+  function _nn(v) { return v === "" || v === undefined ? null : v; }
+  function _assetNowIso() { return new Date().toISOString(); }
+
+  async function loadAssetsCfg() {
+    var v = await cachedSingleton("boa_assets_cfg_v1");
+    return (v && typeof v === "object") ? v : null;
+  }
+  async function saveAssetsCfg(cfg) {
+    var res = await sb.from("app_state").upsert({ key: "boa_assets_cfg_v1", value: cfg || {} });
+    if (res.error) { console.error("saveAssetsCfg:", res.error); throw res.error; }
+    _ssCacheSet("boa_assets_cfg_v1", null, null);
+    return true;
+  }
+  // Who may dispose / un-dispose / edit the lists / archive. Shape:
+  //   { pins: ["1234"] }   (Owner + Developer are implicit in the resolver)
+  async function loadAssetAdminAccess() {
+    var res = await sb.from("app_state").select("value").eq("key", "boa_asset_admin_access_v1").maybeSingle();
+    if (res.error) { console.error("loadAssetAdminAccess:", res.error); return {}; }
+    return (res.data && res.data.value) || {};
+  }
+  async function saveAssetAdminAccess(config) {
+    var res = await sb.from("app_state").upsert({ key: "boa_asset_admin_access_v1", value: config || {} });
+    if (res.error) { console.error("saveAssetAdminAccess:", res.error); throw res.error; }
+    return config || {};
+  }
+
+  // ---- reads ----
+  async function listAssets(opts) {
+    var o = opts || {};
+    var q = sb.from("assets").select(ASSET_COLS).order("asset_id", { ascending: true }).limit(20000);
+    if (!o.includeArchived) q = q.is("archived_at", null);
+    if (o.register) q = q.eq("register", o.register);
+    var res = await q;
+    if (res.error) { console.error("listAssets:", res.error); throw res.error; }
+    return res.data || [];
+  }
+  async function listAssetEvents(opts) {
+    var o = opts || {};
+    var q = sb.from("asset_events").select(ASSET_EVENT_COLS).order("date", { ascending: true }).order("created_at", { ascending: true }).limit(50000);
+    if (o.assetId) q = q.eq("asset_id", o.assetId);
+    var res = await q;
+    if (res.error) { console.error("listAssetEvents:", res.error); throw res.error; }
+    return res.data || [];
+  }
+  async function listAssetAllocations(opts) {
+    var o = opts || {};
+    var q = sb.from("asset_allocations").select(ASSET_ALLOC_COLS).order("date_issued", { ascending: true }).order("created_at", { ascending: true }).limit(50000);
+    if (o.assetId) q = q.eq("asset_id", o.assetId);
+    if (o.open) q = q.is("date_returned", null);
+    var res = await q;
+    if (res.error) { console.error("listAssetAllocations:", res.error); throw res.error; }
+    return res.data || [];
+  }
+  // Everything the tab and the dashboard alert need, in one round.
+  async function loadAssetBundle(opts) {
+    var all = await Promise.all([listAssets(opts), listAssetEvents(), listAssetAllocations()]);
+    return { assets: all[0], events: all[1], allocations: all[2] };
+  }
+  async function getAsset(uuid) {
+    var res = await sb.from("assets").select(ASSET_COLS).eq("id", uuid).maybeSingle();
+    if (res.error) { console.error("getAsset:", res.error); throw res.error; }
+    return res.data || null;
+  }
+  async function getAssetPhoto(uuid) {   // reserved — nothing writes photo yet
+    var res = await sb.from("assets").select("photo").eq("id", uuid).maybeSingle();
+    if (res.error) { console.error("getAssetPhoto:", res.error); return null; }
+    return res.data ? (res.data.photo || null) : null;
+  }
+
+  // ---- numbering ----
+  async function _existingNos(table, column, prefix) {
+    var res = await sb.from(table).select(column).like(column, prefix + "-%").limit(100000);
+    if (res.error) { console.error("_existingNos " + table + ":", res.error); throw res.error; }
+    return (res.data || []).map(function (r) { return r[column]; });
+  }
+  // Insert with a freshly-numbered id; on a 23505 (someone else took the
+  // number in between) re-read and try once more.
+  async function _insertNumbered(table, column, prefix, row, cols) {
+    for (var attempt = 0; attempt < 2; attempt++) {
+      var no = _AS().nextId(prefix, await _existingNos(table, column, prefix));
+      var body = Object.assign({}, row); body[column] = no;
+      var res = await sb.from(table).insert(body).select(cols).single();
+      if (!res.error) return res.data;
+      if (_isUniqueViolation(res.error) && attempt === 0) continue;
+      console.error("insert " + table + ":", res.error);
+      throw res.error;
+    }
+    throw new Error("Could not allocate a " + prefix + " number after two attempts");
+  }
+
+  // ---- projection ----
+  async function _refreshAssetProjection(assetUuid, who) {
+    var A = _AS();
+    var parts = await Promise.all([getAsset(assetUuid), listAssetEvents({ assetId: assetUuid }), listAssetAllocations({ assetId: assetUuid })]);
+    var asset = parts[0];
+    if (!asset) throw new Error("Asset not found");
+    var p = A.project(asset, parts[1], parts[2]);
+    var patch = {
+      branch: p.branch, assigned_ec: p.assigned_ec, assigned_name: p.assigned_name,
+      date_issued: p.date_issued, status: p.status, condition: p.condition,
+      updated_by: who || null
+    };
+    var res = await sb.from("assets").update(patch).eq("id", assetUuid).select(ASSET_COLS).single();
+    if (res.error) { console.error("_refreshAssetProjection:", res.error); throw res.error; }
+    return { asset: res.data, events: parts[1], allocations: parts[2], proj: p };
+  }
+  async function rebuildAssetProjection(assetUuid, who) { return _refreshAssetProjection(assetUuid, who); }
+
+  // ---- writes ----
+  // asset: form fields (+ optional `allocateTo` {ec, employee_name, job_title,
+  // department, branch, date_issued, condition_issued} to open an allocation
+  // in the same save — used by the Add form's "assigned to" and the upload).
+  async function saveAsset(asset, who) {
+    var A = _AS();
+    var a = asset || {};
+    if (!a.description || !String(a.description).trim()) throw new Error("Description is required");
+    var body = {};
+    ASSET_EDITABLE.forEach(function (k) { if (a[k] !== undefined) body[k] = _nn(a[k]); });
+    if (body.details && typeof body.details !== "object") body.details = {};
+    if (body.purchase_cost != null) body.purchase_cost = A.num(body.purchase_cost);
+    var saved;
+    if (a.id) {
+      var current = await getAsset(a.id);
+      if (!current) throw new Error("Asset no longer exists");
+      var hist = await Promise.all([listAssetEvents({ assetId: a.id }), listAssetAllocations({ assetId: a.id })]);
+      var hasHistory = A.project(current, hist[0], hist[1]).has_history;
+      if (!hasHistory) ASSET_BASE_STATE.forEach(function (k) { if (a[k] !== undefined) body[k] = _nn(a[k]); });
+      body.updated_by = who || null;
+      var up = await sb.from("assets").update(body).eq("id", a.id).select(ASSET_COLS).single();
+      if (up.error) { console.error("saveAsset update:", up.error); throw up.error; }
+      saved = up.data;
+    } else {
+      if (!A.REGISTER_BY_KEY[body.register]) throw new Error("Pick a register");
+      ASSET_BASE_STATE.forEach(function (k) { body[k] = _nn(a[k]); });
+      if (!body.status) body.status = "In Storage";
+      body.created_by = who || null;
+      body.updated_by = who || null;
+      if (!body.details) body.details = {};
+      if (a.asset_id) {
+        // explicit id (bulk upload "Asset ID" column on a brand-new row)
+        body.asset_id = String(a.asset_id).toUpperCase();
+        var ins = await sb.from("assets").insert(body).select(ASSET_COLS).single();
+        if (ins.error) { console.error("saveAsset insert:", ins.error); throw ins.error; }
+        saved = ins.data;
+      } else {
+        saved = await _insertNumbered("assets", "asset_id", A.prefixForRegister(body.register), body, ASSET_COLS);
+      }
+    }
+    if (a.allocateTo && a.allocateTo.ec) {
+      var al = Object.assign({}, a.allocateTo, { asset_uuid: saved.id, replaceOpen: !!a.allocateTo.replaceOpen });
+      await addAssetAllocation(al, who);
+      saved = (await _refreshAssetProjection(saved.id, who)).asset;
+    } else if (a.id) {
+      saved = (await _refreshAssetProjection(saved.id, who)).asset;
+    }
+    return saved;
+  }
+
+  // ev: { asset_uuid, kind, date, to_branch, to_ec, to_person{name,job_title,department},
+  //       reason, disposal_method, disposal_value, condition, to_status,
+  //       approved_by, received_by, notes }
+  async function addAssetEvent(ev, who) {
+    var A = _AS();
+    var e = ev || {};
+    var K = A.EVENT_KINDS[e.kind];
+    if (!K) throw new Error("Unknown event kind " + e.kind);
+    if (!A.isYmd(e.date)) throw new Error("Date is required");
+    var asset = await getAsset(e.asset_uuid);
+    if (!asset) throw new Error("Asset not found");
+    var hist = await Promise.all([listAssetEvents({ assetId: asset.id }), listAssetAllocations({ assetId: asset.id })]);
+    var p = A.project(asset, hist[0], hist[1]);
+    var gate = A.canAct(p, e.kind);
+    if (!gate.ok) throw new Error(gate.why);
+    if (e.kind === "transfer" && !e.to_branch) throw new Error("Destination branch is required");
+    if (e.kind === "disposal" && !e.disposal_method) throw new Error("Disposal method is required");
+    if (e.kind === "status_change" && !e.to_status && !e.condition) throw new Error("Pick a status or a condition");
+
+    var row = {
+      asset_id: asset.id, kind: e.kind, date: e.date,
+      from_branch: e.kind === "transfer" ? (p.branch || null) : null,
+      to_branch: e.kind === "transfer" ? _nn(e.to_branch) : null,
+      from_ec: e.kind === "transfer" ? (p.assigned_ec || null) : null,
+      to_ec: e.kind === "transfer" ? _nn(e.to_ec) : null,
+      to_name: e.kind === "transfer" && e.to_person ? _nn(e.to_person.name) : null,
+      reason: _nn(e.reason), disposal_method: e.kind === "disposal" ? _nn(e.disposal_method) : null,
+      disposal_value: e.kind === "disposal" ? A.num(e.disposal_value) : null,
+      condition: _nn(e.condition), to_status: e.kind === "status_change" ? _nn(e.to_status) : null,
+      approved_by: _nn(e.approved_by), received_by: _nn(e.received_by),
+      recorded_by: who || null, notes: _nn(e.notes)
+    };
+    var saved = K.prefix
+      ? await _insertNumbered("asset_events", "event_no", K.prefix, row, ASSET_EVENT_COLS)
+      : (await (async function () {
+          var r = await sb.from("asset_events").insert(row).select(ASSET_EVENT_COLS).single();
+          if (r.error) { console.error("addAssetEvent:", r.error); throw r.error; }
+          return r.data;
+        })());
+
+    // A transfer to a person, or a disposal, closes the open allocation; a
+    // transfer to a person then opens the new one.
+    if (p.open_alloc && (e.kind === "disposal" || (e.kind === "transfer" && e.to_ec))) {
+      var close = await sb.from("asset_allocations").update({
+        date_returned: e.date, condition_returned: _nn(e.condition),
+        returned_to: e.kind === "disposal" ? "Disposed" : _nn(e.to_branch),
+        outstanding_notes: e.kind === "disposal" ? "Closed by " + (saved.event_no || "disposal") : "Closed by " + (saved.event_no || "transfer")
+      }).eq("id", p.open_alloc.id);
+      if (close.error) { console.error("addAssetEvent close alloc:", close.error); throw close.error; }
+    }
+    if (e.kind === "transfer" && e.to_ec) {
+      var tp = e.to_person || {};
+      await _insertNumbered("asset_allocations", "allocation_no", A.ALLOC_PREFIX, {
+        asset_id: asset.id, ec: A.normEc(e.to_ec), employee_name: _nn(tp.name), job_title: _nn(tp.job_title),
+        department: _nn(tp.department), branch: _nn(e.to_branch), date_issued: e.date,
+        condition_issued: _nn(e.condition), acknowledged: false, recorded_by: who || null
+      }, ASSET_ALLOC_COLS);
+    }
+    var fresh = await _refreshAssetProjection(asset.id, who);
+    return { event: saved, asset: fresh.asset };
+  }
+
+  // al: { asset_uuid, ec, employee_name, job_title, department, branch,
+  //       date_issued, condition_issued, acknowledged, acknowledged_at,
+  //       outstanding_notes, replaceOpen, date_returned?, condition_returned? }
+  async function addAssetAllocation(al, who) {
+    var A = _AS();
+    var a = al || {};
+    var asset = await getAsset(a.asset_uuid);
+    if (!asset) throw new Error("Asset not found");
+    if (!A.isYmd(a.date_issued)) throw new Error("Date issued is required");
+    if (!a.ec && !a.branch) throw new Error("Pick an employee or a branch");
+    var hist = await Promise.all([listAssetEvents({ assetId: asset.id }), listAssetAllocations({ assetId: asset.id })]);
+    var p = A.project(asset, hist[0], hist[1]);
+    if (p.disposed) throw new Error(asset.asset_id + " is disposed");
+    var closedAlready = !!a.date_returned;     // historical row, already returned
+    if (p.open_alloc && !closedAlready) {
+      if (!a.replaceOpen) throw new Error(asset.asset_id + " is already allocated to " + (p.open_alloc.employee_name || p.open_alloc.ec) + " (" + p.open_alloc.allocation_no + "). Record its return first.");
+      var cl = await sb.from("asset_allocations").update({
+        date_returned: a.date_issued, returned_to: _nn(a.branch) || p.branch || null,
+        outstanding_notes: "Closed on reallocation"
+      }).eq("id", p.open_alloc.id);
+      if (cl.error) { console.error("addAssetAllocation close:", cl.error); throw cl.error; }
+    }
+    var row = {
+      asset_id: asset.id, ec: a.ec ? A.normEc(a.ec) : null, employee_name: _nn(a.employee_name),
+      job_title: _nn(a.job_title), department: _nn(a.department), branch: _nn(a.branch),
+      date_issued: a.date_issued, condition_issued: _nn(a.condition_issued),
+      acknowledged: !!a.acknowledged, acknowledged_at: a.acknowledged ? (_nn(a.acknowledged_at) || a.date_issued) : null,
+      acknowledged_via: a.acknowledged ? (a.acknowledged_via || "portal") : null,
+      date_returned: _nn(a.date_returned), condition_returned: _nn(a.condition_returned), returned_to: _nn(a.returned_to),
+      outstanding_notes: _nn(a.outstanding_notes), recorded_by: who || null
+    };
+    var saved = await _insertNumbered("asset_allocations", "allocation_no", A.ALLOC_PREFIX, row, ASSET_ALLOC_COLS);
+    // Allocating to a person at another branch is a move too, so the branch
+    // history shows it. Reason fixed so the register reads consistently.
+    if (a.ec && a.branch && p.branch && a.branch !== p.branch && !closedAlready) {
+      await _insertNumbered("asset_events", "event_no", "MOV", {
+        asset_id: asset.id, kind: "transfer", date: a.date_issued, from_branch: p.branch, to_branch: a.branch,
+        from_ec: p.assigned_ec || null, to_ec: A.normEc(a.ec), to_name: _nn(a.employee_name),
+        reason: "Employee Allocation", condition: _nn(a.condition_issued), recorded_by: who || null,
+        notes: "Recorded with " + saved.allocation_no
+      }, ASSET_EVENT_COLS);
+    }
+    var fresh = await _refreshAssetProjection(asset.id, who);
+    return { allocation: saved, asset: fresh.asset };
+  }
+  async function returnAssetAllocation(id, ret, who) {
+    var A = _AS();
+    var r = ret || {};
+    if (!A.isYmd(r.date_returned)) throw new Error("Return date is required");
+    var cur = await sb.from("asset_allocations").select(ASSET_ALLOC_COLS).eq("id", id).maybeSingle();
+    if (cur.error || !cur.data) throw (cur.error || new Error("Allocation not found"));
+    if (cur.data.date_returned) throw new Error("Already returned on " + cur.data.date_returned);
+    if (r.date_returned < cur.data.date_issued) throw new Error("Return date is before the issue date");
+    var up = await sb.from("asset_allocations").update({
+      date_returned: r.date_returned, condition_returned: _nn(r.condition_returned),
+      returned_to: _nn(r.returned_to), outstanding_notes: _nn(r.outstanding_notes)
+    }).eq("id", id).select(ASSET_ALLOC_COLS).single();
+    if (up.error) { console.error("returnAssetAllocation:", up.error); throw up.error; }
+    var fresh = await _refreshAssetProjection(cur.data.asset_id, who);
+    return { allocation: up.data, asset: fresh.asset };
+  }
+  async function acknowledgeAssetAllocation(id, ack, who) {
+    var a = ack || {};
+    var on = a.acknowledged !== false;
+    var up = await sb.from("asset_allocations").update({
+      acknowledged: on, acknowledged_at: on ? (_nn(a.acknowledged_at) || _AS().todayYmd()) : null,
+      acknowledged_via: on ? (a.acknowledged_via || "portal") : null
+    }).eq("id", id).select(ASSET_ALLOC_COLS).single();
+    if (up.error) { console.error("acknowledgeAssetAllocation:", up.error); throw up.error; }
+    return up.data;
+  }
+  async function updateAssetAllocationNotes(id, notes) {
+    var up = await sb.from("asset_allocations").update({ outstanding_notes: _nn(notes) }).eq("id", id).select(ASSET_ALLOC_COLS).single();
+    if (up.error) { console.error("updateAssetAllocationNotes:", up.error); throw up.error; }
+    return up.data;
+  }
+  // Undo = archive the disposal event with a reason; the projection recomputes.
+  async function undoAssetDisposal(eventId, reason, who) {
+    if (!reason || !String(reason).trim()) throw new Error("A reason is required to undo a disposal");
+    return archiveAssetEvent(eventId, reason, who);
+  }
+  async function archiveAssetEvent(eventId, reason, who) {
+    var cur = await sb.from("asset_events").select("id,asset_id,archived_at").eq("id", eventId).maybeSingle();
+    if (cur.error || !cur.data) throw (cur.error || new Error("Event not found"));
+    var up = await sb.from("asset_events").update({ archived_at: _assetNowIso(), archived_by: who || null, archive_reason: _nn(reason) }).eq("id", eventId);
+    if (up.error) { console.error("archiveAssetEvent:", up.error); throw up.error; }
+    var fresh = await _refreshAssetProjection(cur.data.asset_id, who);
+    return fresh.asset;
+  }
+  async function archiveAssetAllocation(id, who) {
+    var cur = await sb.from("asset_allocations").select("id,asset_id").eq("id", id).maybeSingle();
+    if (cur.error || !cur.data) throw (cur.error || new Error("Allocation not found"));
+    var up = await sb.from("asset_allocations").update({ archived_at: _assetNowIso(), archived_by: who || null }).eq("id", id);
+    if (up.error) { console.error("archiveAssetAllocation:", up.error); throw up.error; }
+    var fresh = await _refreshAssetProjection(cur.data.asset_id, who);
+    return fresh.asset;
+  }
+  async function archiveAsset(id, who) {
+    var up = await sb.from("assets").update({ archived_at: _assetNowIso(), archived_by: who || null, updated_by: who || null }).eq("id", id).select(ASSET_COLS).single();
+    if (up.error) { console.error("archiveAsset:", up.error); throw up.error; }
+    return up.data;
+  }
+  async function restoreAsset(id, who) {
+    var up = await sb.from("assets").update({ archived_at: null, archived_by: null, updated_by: who || null }).eq("id", id).select(ASSET_COLS).single();
+    if (up.error) { console.error("restoreAsset:", up.error); throw up.error; }
+    return up.data;
+  }
+
+  // Bulk upload. items: [{ table, data, action: "add"|"replace"|"skip", existing }]
+  // Runs sequentially so numbering stays dense; returns per-row outcomes.
+  async function importAssetRows(items, who) {
+    var out = [];
+    for (var i = 0; i < (items || []).length; i++) {
+      var it = items[i];
+      if (!it || it.action === "skip") { out.push({ n: it && it.n, skipped: true }); continue; }
+      try {
+        var d = it.data || {};
+        if (it.table === "asset") {
+          var payload = Object.assign({}, d);
+          delete payload._asset;
+          if (it.action === "replace" && it.existing) { payload.id = it.existing.id; delete payload.asset_id; }
+          if (d.assigned_ec) {
+            payload.allocateTo = {
+              ec: d.assigned_ec, employee_name: d.assigned_name || null, job_title: d.job_title || null,
+              department: d.department || null, branch: d.branch || null,
+              date_issued: d.date_issued || _AS().todayYmd(), condition_issued: d.condition || null,
+              replaceOpen: it.action === "replace"
+            };
+          }
+          delete payload.assigned_ec; delete payload.assigned_name; delete payload.job_title; delete payload.date_issued;
+          var s = await saveAsset(payload, who);
+          out.push({ n: it.n, ok: true, id: s.asset_id });
+        } else if (it.table === "transfer") {
+          var ev = await addAssetEvent({ asset_uuid: d._asset.id, kind: "transfer", date: d.date, to_branch: d.to_branch, to_ec: d.to_ec || null,
+            to_person: d.to_person || null, reason: d.reason, condition: d.condition, approved_by: d.approved_by, received_by: d.received_by, notes: d.notes }, who);
+          out.push({ n: it.n, ok: true, id: ev.event.event_no });
+        } else if (it.table === "disposal") {
+          var dv = await addAssetEvent({ asset_uuid: d._asset.id, kind: "disposal", date: d.date, reason: d.reason, condition: d.condition,
+            disposal_method: d.disposal_method, disposal_value: d.disposal_value, approved_by: d.approved_by, notes: d.notes }, who);
+          out.push({ n: it.n, ok: true, id: dv.event.event_no });
+        } else if (it.table === "allocation") {
+          var al = await addAssetAllocation({ asset_uuid: d._asset.id, ec: d.ec, employee_name: d.employee_name || null, job_title: d.job_title || null,
+            department: d.department || null, branch: d.branch || null, date_issued: d.date_issued, condition_issued: d.condition_issued,
+            acknowledged: !!d.acknowledged, acknowledged_at: d.acknowledged_at, date_returned: d.date_returned || null,
+            condition_returned: d.condition_returned || null, outstanding_notes: d.outstanding_notes, replaceOpen: it.action === "replace" }, who);
+          out.push({ n: it.n, ok: true, id: al.allocation.allocation_no });
+        } else {
+          out.push({ n: it.n, error: "Unknown table " + it.table });
+        }
+      } catch (e) {
+        out.push({ n: it.n, error: (e && e.message) || String(e) });
+      }
+    }
+    return out;
+  }
+
   window.BOA_DB = {
     isReady:       true,
     sb:            sb,
+
+    // Asset register (Operations → Assets) — docs/assets-plan.md
+    loadAssetsCfg: loadAssetsCfg, saveAssetsCfg: saveAssetsCfg,
+    loadAssetAdminAccess: loadAssetAdminAccess, saveAssetAdminAccess: saveAssetAdminAccess,
+    listAssets: listAssets, listAssetEvents: listAssetEvents, listAssetAllocations: listAssetAllocations,
+    loadAssetBundle: loadAssetBundle, getAsset: getAsset, getAssetPhoto: getAssetPhoto,
+    saveAsset: saveAsset, addAssetEvent: addAssetEvent, addAssetAllocation: addAssetAllocation,
+    returnAssetAllocation: returnAssetAllocation, acknowledgeAssetAllocation: acknowledgeAssetAllocation,
+    updateAssetAllocationNotes: updateAssetAllocationNotes, undoAssetDisposal: undoAssetDisposal,
+    archiveAssetEvent: archiveAssetEvent, archiveAssetAllocation: archiveAssetAllocation,
+    archiveAsset: archiveAsset, restoreAsset: restoreAsset, rebuildAssetProjection: rebuildAssetProjection,
+    importAssetRows: importAssetRows,
     loadAll:       loadAll,
     loadConsolidatedStaff: loadConsolidatedStaff,
     saveStaff:     saveStaff,    deleteStaff:   deleteStaff,
